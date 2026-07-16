@@ -1065,6 +1065,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   }, [])
 
   const selectedNode = nodes.find((node) => node.id === selectedId) ?? null
+  const contextMenuNode = nodeContextMenu ? nodes.find((node) => node.id === nodeContextMenu.nodeId) ?? null : null
   const selectedCommentMapId = selectedNode?.data.reference?.mapId ?? activeMapId
   const selectedCommentNodeId = selectedNode?.data.reference?.nodeId ?? selectedId
   const referenceCommentTargets = nodes.flatMap<ReferenceCommentTarget>((node) => node.data.reference ? [{
@@ -1181,7 +1182,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const searchMatchedNodeIds = useMemo(() => new Set(nodes.filter((node) => {
     if (!normalizedNodeSearch || !filterMatchedNodeIds.has(node.id)) return false
     const assignee = teamMembers.find((member) => member.id === node.data.assigneeId)?.name ?? ''
-    return [node.data.label, node.data.description, node.data.taskUrl ?? '', assignee]
+    return [node.data.label, node.data.description, node.data.sharedKnowledge ?? '', node.data.taskUrl ?? '', assignee]
       .some((value) => value.toLowerCase().includes(normalizedNodeSearch))
   }).map((node) => node.id)), [filterMatchedNodeIds, nodes, normalizedNodeSearch, teamMembers])
   const searchContextNodeIds = useMemo(() => {
@@ -1702,11 +1703,20 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     setSavedAt('저장 중…')
   }, [setNodes])
 
-  const openAiConversation = (conversationId: string) => {
-    if (activeMapId && selectedId) {
+  const updateSharedKnowledge = useCallback((id: string, sharedKnowledge: string) => {
+    const hasSharedKnowledge = Boolean(sharedKnowledge.trim())
+    updateNode(id, {
+      sharedKnowledge,
+      sharedKnowledgeUpdatedAt: hasSharedKnowledge ? new Date().toISOString() : undefined,
+      sharedKnowledgeUpdatedBy: hasSharedKnowledge ? { id: user.id, name: user.name } : undefined,
+    })
+  }, [updateNode, user.id, user.name])
+
+  const openAiConversation = (conversationId: string, cardId = selectedId) => {
+    if (activeMapId && cardId) {
       void apiRequest(`/api/integrations/aionui/conversations/${encodeURIComponent(conversationId)}/attribution`, {
         method: 'POST',
-        body: JSON.stringify({ mapId: activeMapId, cardId: selectedId }),
+        body: JSON.stringify({ mapId: activeMapId, cardId }),
         keepalive: true,
       }).catch((error) => {
         console.warn('[AI conversation attribution refresh]', error)
@@ -1714,6 +1724,17 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     }
     const route = encodeURIComponent(`/conversation/${conversationId}`)
     window.location.href = `aionui://navigate?route=${route}`
+  }
+
+  const startOrOpenContextNodeAiConversation = () => {
+    if (!contextMenuNode) return
+    setNodeContextMenu(null)
+    setSelectedId(contextMenuNode.id)
+    if (contextMenuNode.data.aiConversationId) {
+      void openAiConversation(contextMenuNode.data.aiConversationId, contextMenuNode.id)
+      return
+    }
+    setAiDialogOpen(true)
   }
 
   const openAiConversationContextMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -1867,6 +1888,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
       data: {
         label: '새로운 아이디어',
         description: '설명을 입력해 주세요',
+        sharedKnowledge: '',
         progress: 0,
         status: 'planned',
         kind: parent ? 'task' : 'branch',
@@ -1990,8 +2012,8 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     setAiConversationContextMenu(null)
     setSelectedId(nodeId)
     setNodeContextMenu({
-      x: Math.min(event.clientX, window.innerWidth - 230),
-      y: Math.min(event.clientY, window.innerHeight - 270),
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 330)),
       nodeId,
     })
   }, [mode])
@@ -2219,6 +2241,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         data: {
           label: title,
           description: '새로운 마인드맵의 중심 주제',
+          sharedKnowledge: '',
           progress: 0,
           status: 'planned',
           kind: 'root',
@@ -3354,7 +3377,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                       onContextMenu={mode === 'editor' ? openAiConversationContextMenu : undefined}
                       title={mode === 'editor' ? '좌클릭: 기존 대화 열기 · 우클릭: 새 대화 시작' : '편집자만 사용 가능'}
                     >
-                      <Icon name="sparkles" size={15} /><span>AI 대화 선택</span>
+                      <Icon name="sparkles" size={15} /><span>AI 대화 열기</span>
                     </button>
                   ) : (
                     <button
@@ -3433,7 +3456,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                   <input value={selectedNode.data.label} onChange={(event) => updateNode(selectedNode.id, { label: event.target.value })} readOnly={mode === 'viewer'} />
                 </label>
                 <label className="description-field">
-                  <span>설명</span>
+                  <span>업무 설명</span>
                   {mode === 'editor' ? (
                     <>
                       <textarea value={selectedNode.data.description} onChange={(event) => updateNode(selectedNode.id, { description: event.target.value })} rows={3} />
@@ -3449,6 +3472,42 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                     <div className="description-rich-text"><LinkifiedText text={selectedNode.data.description} /></div>
                   )}
                 </label>
+                <section className="shared-knowledge-field">
+                  <div className="shared-knowledge-heading">
+                    <div>
+                      <span>공유 지식</span>
+                      <small>다른 카드와 후속 AI 세션에서 재사용할 결정, 제약과 결과를 기록합니다.</small>
+                    </div>
+                    {selectedNode.data.sharedKnowledgeUpdatedAt && selectedNode.data.sharedKnowledgeUpdatedBy && (
+                      <time dateTime={selectedNode.data.sharedKnowledgeUpdatedAt}>
+                        {selectedNode.data.sharedKnowledgeUpdatedBy.name} · {new Date(selectedNode.data.sharedKnowledgeUpdatedAt).toLocaleString('ko-KR')}
+                      </time>
+                    )}
+                  </div>
+                  {mode === 'editor' ? (
+                    <>
+                      <textarea
+                        value={selectedNode.data.sharedKnowledge ?? ''}
+                        onChange={(event) => updateSharedKnowledge(selectedNode.id, event.target.value)}
+                        rows={4}
+                        maxLength={10_000}
+                        placeholder="예: 적용하기로 한 정책, 재사용할 조사 결과, 구현 제약과 사용 방법"
+                        aria-label="공유 지식"
+                      />
+                      {extractTextLinks(selectedNode.data.sharedKnowledge ?? '').length > 0 && (
+                        <div className="description-links">
+                          {extractTextLinks(selectedNode.data.sharedKnowledge ?? '').map((link) => (
+                            <a key={`${link.start}-${link.label}`} href={link.href} target="_blank" rel="noopener noreferrer"><Icon name="external" size={12} /><span>{link.label}</span></a>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : selectedNode.data.sharedKnowledge ? (
+                    <div className="description-rich-text shared-knowledge-rich-text"><LinkifiedText text={selectedNode.data.sharedKnowledge} /></div>
+                  ) : (
+                    <div className="empty-shared-knowledge">등록된 공유 지식이 없습니다.</div>
+                  )}
+                </section>
                 <section className="knowledge-block">
                   <div className="knowledge-heading">
                     <div><span>선행 지식</span><small>이 카드를 수행할 때 먼저 활용할 결과를 연결합니다.</small></div>
@@ -3860,8 +3919,16 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         >
           <div className="context-menu-title">
             <span>노드 메뉴</span>
-            <strong>{nodes.find((node) => node.id === nodeContextMenu.nodeId)?.data.label}</strong>
+            <strong>{contextMenuNode?.data.label}</strong>
           </div>
+          <button role="menuitem" onClick={startOrOpenContextNodeAiConversation}>
+            <span className="context-icon"><Icon name="sparkles" size={15} /></span>
+            <span>
+              <strong>{contextMenuNode?.data.aiConversationId ? 'AI 대화 열기' : 'AI 대화 시작'}</strong>
+              <small>{contextMenuNode?.data.aiConversationId ? '연결된 AionUi 대화 열기' : '현재 카드를 기준으로 옵션 선택'}</small>
+            </span>
+          </button>
+          <div className="context-divider" />
           <button role="menuitem" onClick={() => copyNode(nodeContextMenu.nodeId)}>
             <span className="context-icon"><Icon name="copy" size={15} /></span>
             <span><strong>복사{nodes.some((node) => node.id === nodeContextMenu.nodeId && node.selected) && nodes.filter((node) => node.selected).length > 1 ? ` (${nodes.filter((node) => node.selected).length}개)` : ''}</strong><small>선택 노드와 내부 연결 관계 복사</small></span>

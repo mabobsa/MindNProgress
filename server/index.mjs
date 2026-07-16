@@ -388,7 +388,11 @@ function requireAdmin(request, response) {
 function isValidMap(map) {
   if (!map || !Array.isArray(map.nodes) || !Array.isArray(map.edges)) return false
   if (map.nodes.length > 1000 || map.edges.length > 2000) return false
-  return map.nodes.every((node) => typeof node?.id === 'string' && node.id.length <= 120)
+  return map.nodes.every((node) =>
+    typeof node?.id === 'string'
+    && node.id.length <= 120
+    && (node.data?.sharedKnowledge === undefined
+      || (typeof node.data.sharedKnowledge === 'string' && node.data.sharedKnowledge.length <= 10_000)))
     && map.edges.every((edge) => typeof edge?.id === 'string' && typeof edge?.source === 'string' && typeof edge?.target === 'string')
 }
 
@@ -425,6 +429,39 @@ function normalizeMapAssignees(map) {
       }
       if (normalizedId !== currentId) return { ...node, data: { ...node.data, assigneeId: normalizedId } }
       return node
+    }),
+  }
+}
+
+function normalizeSharedKnowledgeMetadata(existing, map, user, updatedAt) {
+  if (!map || !Array.isArray(map.nodes)) return map
+  const existingNodes = new Map((existing?.nodes ?? []).map((node) => [node.id, node]))
+  const updatedBy = publicUser(user)
+
+  return {
+    ...map,
+    nodes: map.nodes.map((node) => {
+      const data = { ...(node.data ?? {}) }
+      const existingData = existingNodes.get(node.id)?.data
+      const sharedKnowledge = typeof data.sharedKnowledge === 'string' ? data.sharedKnowledge : ''
+      const existingSharedKnowledge = typeof existingData?.sharedKnowledge === 'string' ? existingData.sharedKnowledge : ''
+
+      if (sharedKnowledge !== existingSharedKnowledge || !existingData) {
+        if (sharedKnowledge.trim()) {
+          data.sharedKnowledgeUpdatedAt = updatedAt
+          data.sharedKnowledgeUpdatedBy = updatedBy
+        } else {
+          delete data.sharedKnowledgeUpdatedAt
+          delete data.sharedKnowledgeUpdatedBy
+        }
+      } else {
+        if (existingData.sharedKnowledgeUpdatedAt) data.sharedKnowledgeUpdatedAt = existingData.sharedKnowledgeUpdatedAt
+        else delete data.sharedKnowledgeUpdatedAt
+        if (existingData.sharedKnowledgeUpdatedBy) data.sharedKnowledgeUpdatedBy = existingData.sharedKnowledgeUpdatedBy
+        else delete data.sharedKnowledgeUpdatedBy
+      }
+
+      return { ...node, data }
     }),
   }
 }
@@ -753,14 +790,14 @@ async function aionUiCandidateBaseUrls() {
   ].filter(Boolean))]
 }
 
-async function fetchAionUi(pathname) {
+async function fetchAionUi(pathname, { timeoutMs = 8_000 } = {}) {
   let lastError = null
   const candidates = await aionUiCandidateBaseUrls()
   for (const baseUrl of candidates) {
     try {
       const response = await fetch(`${baseUrl}${pathname}`, {
         headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(8_000),
+        signal: AbortSignal.timeout(timeoutMs),
       })
       const body = await response.json().catch(() => ({}))
       if (!response.ok || body?.success === false) throw new Error(`AIONUI_REQUEST_FAILED:${response.status}`)
@@ -771,6 +808,47 @@ async function fetchAionUi(pathname) {
     }
   }
   throw lastError ?? new Error('AIONUI_REQUEST_FAILED')
+}
+
+function readAionUiMessageContent(message) {
+  const content = message?.content
+  if (typeof content === 'string') return content
+  if (content && typeof content === 'object' && typeof content.content === 'string') return content.content
+  try {
+    return JSON.stringify(content ?? {}, null, 2)
+  } catch {
+    return String(content ?? '')
+  }
+}
+
+function aionUiMessageRoleLabel(message) {
+  if (message?.position === 'right') return '사용자'
+  if (message?.position === 'left') return '어시스턴트'
+  return '시스템'
+}
+
+function buildAionUiConversationTranscript(conversation, messages, exportedAt = new Date().toISOString()) {
+  const lines = [
+    `대화: ${conversation?.name || '대화'}`,
+    `대화 ID: ${conversation?.id ?? ''}`,
+    `내보낸 시각: ${exportedAt}`,
+    `유형: ${conversation?.type ?? ''}`,
+    '',
+  ]
+  const exportableMessages = messages.filter((message) => message?.type === 'text' || message?.type === 'tips')
+  for (const message of exportableMessages) {
+    lines.push(`${aionUiMessageRoleLabel(message)}:`)
+    lines.push(readAionUiMessageContent(message))
+    lines.push('')
+  }
+  if (exportableMessages.length === 0) {
+    lines.push('메시지가 없습니다')
+    lines.push('')
+  }
+  return {
+    transcript: lines.join('\n').trimEnd(),
+    exportedMessageCount: exportableMessages.length,
+  }
 }
 
 function normalizeAionUiOption(option) {
@@ -1458,7 +1536,7 @@ async function saveMap(mapId, map, user, title, color, revisionReason = 'edit') 
   await mkdir(dataDirectory, { recursive: true })
   const existing = await readMap(mapId)
   const now = new Date().toISOString()
-  const normalizedMap = normalizeMapAssignees(map)
+  const normalizedMap = normalizeSharedKnowledgeMetadata(existing, normalizeMapAssignees(map), user, now)
   const payload = {
     nodes: normalizedMap.nodes,
     edges: normalizeMapEdges(normalizedMap).edges,
@@ -1819,6 +1897,56 @@ const server = createServer(async (request, response) => {
       } catch (error) {
         console.error('[AionUi conversation completion]', error)
         return sendJson(response, 503, { error: '생성된 AionUi 대화를 확인하지 못했습니다.' })
+      }
+    }
+
+    const aionUiConversationTranscriptRoute = url.pathname.match(/^\/api\/integrations\/aionui\/conversations\/([^/]+)\/transcript$/)
+    if (aionUiConversationTranscriptRoute && request.method === 'GET') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 AI 대화 전체 내용을 조회할 수 있습니다.' })
+      const conversationId = decodeURIComponent(aionUiConversationTranscriptRoute[1])
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(conversationId)) {
+        return sendJson(response, 400, { error: '올바르지 않은 AionUi 대화 ID입니다.' })
+      }
+      const scope = integrationRequestScope(request)
+      if (!isValidMapId(scope.mapId) || !scope.cardId) {
+        return sendJson(response, 400, { error: '대화가 연결된 문서와 카드 범위가 필요합니다.' })
+      }
+      const map = await readMap(scope.mapId)
+      const card = map?.nodes.find((node) => node.id === scope.cardId)
+      if (!map || map.trashedAt || !card || card.data?.aiConversationId !== conversationId) {
+        return sendJson(response, 404, { error: '카드에 연결된 AI 대화를 찾을 수 없습니다.' })
+      }
+      try {
+        const [conversation, messagePage] = await Promise.all([
+          fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}`),
+          fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=10000&content_mode=full`, { timeoutMs: 30_000 }),
+        ])
+        if (!conversation || conversation.id !== conversationId) {
+          return sendJson(response, 404, { error: 'AionUi 대화를 찾을 수 없습니다.' })
+        }
+        const messages = Array.isArray(messagePage?.items) ? messagePage.items : []
+        const exportedAt = new Date().toISOString()
+        const exported = buildAionUiConversationTranscript(conversation, messages, exportedAt)
+        return sendJson(response, 200, {
+          conversation: {
+            id: conversation.id,
+            name: String(conversation.name ?? ''),
+            type: String(conversation.type ?? ''),
+            createdAt: conversation.created_at ?? null,
+            modifiedAt: conversation.modified_at ?? null,
+          },
+          card: { mapId: map.id, cardId: card.id, label: card.data?.label ?? card.id },
+          exportedAt,
+          messageCount: messages.length,
+          exportedMessageCount: exported.exportedMessageCount,
+          truncated: messagePage?.has_more_before === true || messagePage?.has_more_after === true,
+          transcript: exported.transcript,
+        })
+      } catch (error) {
+        console.error('[AionUi conversation transcript]', error)
+        return sendJson(response, 503, { error: 'AionUi 대화 전체 내용을 가져오지 못했습니다.' })
       }
     }
 
@@ -2256,6 +2384,34 @@ const server = createServer(async (request, response) => {
     }
 
     const commentItemRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/comments\/([^/]+)$/)
+    if (commentItemRoute && request.method === 'PATCH') {
+      const mapId = decodeURIComponent(commentItemRoute[1])
+      const commentId = decodeURIComponent(commentItemRoute[2])
+      if (!isValidMapId(mapId)) return sendJson(response, 400, { error: '올바르지 않은 문서 ID입니다.' })
+      const user = requireUser(request, response)
+      if (!user) return
+      if (isPublicViewer(user)) return sendJson(response, 403, { error: '공개 뷰어는 댓글을 수정할 수 없습니다.' })
+      const map = await readMap(mapId)
+      if (!map || map.trashedAt) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
+      const comments = await listComments(mapId)
+      const target = comments.find((item) => item.id === commentId)
+      if (!target) return sendJson(response, 404, { error: '댓글을 찾을 수 없습니다.' })
+      if (!canEdit(user) && target.author.id !== user.id) {
+        return sendJson(response, 403, { error: '댓글 작성자 또는 편집자만 댓글을 수정할 수 있습니다.' })
+      }
+      const body = await readJsonBody(request)
+      const text = String(body.text ?? '').trim().slice(0, 1000)
+      if (!text) return sendJson(response, 400, { error: '댓글 내용을 입력해 주세요.' })
+      const comment = {
+        ...target,
+        text,
+        updatedAt: new Date().toISOString(),
+      }
+      await writeStoredArray(commentFileForMap(mapId), comments.map((item) => item.id === commentId ? comment : item))
+      broadcastEvent({ type: 'comment-changed', mapId, nodeId: comment.nodeId, action: 'updated', comment })
+      return sendJson(response, 200, { comment })
+    }
+
     if (commentItemRoute && request.method === 'DELETE') {
       const mapId = decodeURIComponent(commentItemRoute[1])
       const commentId = decodeURIComponent(commentItemRoute[2])

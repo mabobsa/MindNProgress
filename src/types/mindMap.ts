@@ -28,6 +28,12 @@ export type MindNodeReference = {
 export type MindNodeData = {
   label: string
   description: string
+  sharedKnowledge?: string
+  sharedKnowledgeUpdatedAt?: string
+  sharedKnowledgeUpdatedBy?: {
+    id: string
+    name: string
+  }
   progress: number
   status: 'planned' | 'in-progress' | 'done'
   kind: 'root' | 'branch' | 'task'

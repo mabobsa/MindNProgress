@@ -313,6 +313,16 @@
 .description-links > a { min-width: 0; display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: #5d50ca; border: 1px solid #dedaf2; border-radius: 7px; background: #f5f3fd; font-size: 8px; text-decoration: none; }
 .description-links > a:hover { border-color: #c7c0ee; background: #eeebfb; }
 .description-links > a > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shared-knowledge-field { margin: 2px 0 17px; padding: 14px; border: 1px solid #d7e9e1; border-radius: 10px; background: #f7fcfa; }
+.shared-knowledge-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+.shared-knowledge-heading > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.shared-knowledge-heading span { color: #39765f; font-size: 9px; font-weight: 750; }
+.shared-knowledge-heading small { color: #789488; font-size: 7px; line-height: 1.45; }
+.shared-knowledge-heading time { flex: 0 0 auto; max-width: 105px; color: #9aaba4; font-size: 6px; line-height: 1.4; text-align: right; }
+.shared-knowledge-field textarea { min-height: 86px; border-color: #d6e8e0; background: white; line-height: 1.5; }
+.shared-knowledge-field textarea:focus { border-color: #5aaa8b; box-shadow: 0 0 0 3px rgba(67, 166, 132, .1); }
+.shared-knowledge-rich-text { min-height: 72px; border-color: #d6e8e0; background: white; }
+.empty-shared-knowledge { padding: 12px 9px; color: #91a59d; border: 1px dashed #cfe2da; border-radius: 8px; background: rgba(255,255,255,.7); font-size: 8px; text-align: center; }
 .text-link { color: #5d50ca; font-weight: 650; text-decoration: underline; text-decoration-color: #c9c3ef; text-underline-offset: 2px; }
 .text-link:hover { color: #493bb5; text-decoration-color: currentColor; }
 .progress-field > span { display: flex; justify-content: space-between; }

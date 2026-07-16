@@ -14,9 +14,9 @@ let activeAttributionToken = ''
 let activeEditorId = ''
 let activeMapId = ''
 let activeCardId = ''
-const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. get_context의 selection.taskLinks.startupInspection.required가 true이면 실제 작업 전에 targets의 업무 본문, 댓글, 첨부파일 목록과 관련 링크를 조사하세요. 특정 자료가 있다고 가정하지 마세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
+const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. get_context의 selection.taskLinks.startupInspection을 따르세요. mode가 knowledge-guided이면 primary 선행 지식의 sharedKnowledge를 먼저 재사용하고 설명과 댓글로 보완하며, fallbackSources와 fallbackTargets는 정보가 부족할 때만 선택적으로 조사합니다. mode가 default이고 required가 true이면 targets의 업무 본문, 댓글, 첨부파일 목록과 관련 링크를 조사하세요. 진행 과정과 결과는 댓글에 기록하고, 다른 카드나 후속 세션이 재사용할 안정적인 사실·결정·제약은 카드의 sharedKnowledge에 요약하세요. 특정 자료가 있다고 가정하지 마세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
 const productGuide = {
-  version: '1.0',
+  version: '1.1',
   product: {
     name: 'MindNProgress',
     purpose: '아이디어를 계층형 마인드맵으로 구조화하고 실행 업무의 진행 상황을 같은 문서에서 관리하는 웹 서비스',
@@ -26,8 +26,14 @@ const productGuide = {
     },
   },
   dataModel: {
-    document: '하나의 마인드맵. 제목, 아이콘 색상, 버전, 카드(nodes), 계층 연결선(edges)을 가짐',
-    hierarchy: 'edge.source가 상위 카드이고 edge.target이 하위 카드임. 루트 카드는 문서당 하나를 권장',
+    document: '하나의 마인드맵. 제목, 아이콘 색상, 버전, 카드(nodes), 계층선과 지식선(edges)을 가짐',
+    hierarchy: 'data.relation이 knowledge가 아닌 edge에서 source가 상위 카드이고 target이 하위 카드임. 루트 카드는 문서당 하나를 권장',
+    knowledgeLine: 'data.relation=knowledge인 edge는 source 카드의 결과를 target 카드가 선행 지식으로 사용함. knowledgePolicy는 reuse-first 또는 inspect-if-insufficient',
+    cardContent: {
+      description: '업무의 목적, 범위, 요구사항과 완료 조건. 사용자가 작성한 원래 맥락을 보존함',
+      sharedKnowledge: '다른 카드나 후속 AI 세션에서 재사용할 안정적인 사실, 결정, 제약, 조사 결과와 사용 방법',
+      comments: '시간순 진행 과정, 검증 결과, 차단 사유와 완료 기록',
+    },
     cardKinds: {
       root: '문서의 최상위 주제',
       branch: '주제나 영역을 묶는 중간 분류',
@@ -55,17 +61,21 @@ const productGuide = {
     '루트 아래에는 보통 3~7개의 핵심 영역을 branch로 구성',
     '실행 가능한 단위는 task로 만들고 실제 추적 대상이면 isWork=true로 지정',
     '계층 깊이는 보통 2~4단계로 유지하고 중복되는 카드는 합침',
-    '제목은 짧고 명확하게, 설명에는 목적·범위·완료 조건을 기록',
+    '제목은 짧고 명확하게, description에는 목적·범위·요구사항·완료 조건을 기록',
+    '다른 카드나 후속 세션이 재사용할 내용은 sharedKnowledge에 요약하고 진행 과정은 댓글에 기록',
+    'sharedKnowledge를 수정할 때 기존 description의 사용자 요청과 배경을 임의로 덮어쓰지 않음',
     '존재하지 않는 담당자, 불필요한 업무 링크와 임의의 선행 관계를 만들지 않음',
     '진행률이 100이면 status=done, 완료가 아니면 progress를 100 미만으로 유지',
   ],
   operationRules: [
     '분석과 편집 전에 mindnprogress_get_context로 최신 버전과 제품 규칙을 확인',
-    'get_context의 startupInspection이 요구되면 실제 작업 전에 선택 카드와 최상위 카드의 업무 링크를 조사하되 특정 첨부나 자료가 있다고 가정하지 않음',
+    'get_context의 startupInspection.mode가 knowledge-guided이면 주요 선행 지식을 먼저 활용하고 fallback은 정보가 부족할 때만 조사',
+    'startupInspection.mode가 default이고 조사가 요구되면 실제 작업 전에 선택 카드와 최상위 카드의 업무 링크를 조사하되 특정 첨부나 자료가 있다고 가정하지 않음',
     '여러 카드로 새 문서를 만들 때 mindnprogress_create_mindmap을 한 번만 호출',
     'create_document 후 save_document를 연속 호출해 전체 구조를 만들지 않음',
     '기존 문서 변경은 최신 version을 기준으로 수행하고 버전 충돌 시 최신 상태를 다시 조회',
     '변경 후 mindnprogress_get_document로 저장 결과를 검증하고 실제 변경 내용을 요약',
+    '의미 있는 진행·차단·완료는 댓글로 기록하고, 재사용할 결론은 sharedKnowledge에도 반영',
     '문서나 카드 접근 링크를 기록할 때 localhost나 127.0.0.1 주소를 만들지 말고 MCP 응답의 accessUrl을 사용',
     '삭제는 문서를 휴지통으로 이동하는 방식으로 처리',
     '비밀번호 변경이나 관리자 계정 관리는 MCP 범위에 포함하지 않음',
@@ -153,14 +163,27 @@ async function saveDocument(map, force = false, aiCardId = '') {
   })
 }
 
+function isKnowledgeEdge(edge) {
+  return edge?.data?.relation === 'knowledge'
+}
+
+function isHierarchyEdge(edge) {
+  return !isKnowledgeEdge(edge)
+}
+
+function knowledgePolicyOf(edge) {
+  return edge?.data?.knowledgePolicy === 'inspect-if-insufficient' ? 'inspect-if-insufficient' : 'reuse-first'
+}
+
 function descendantsOf(nodeId, edges) {
+  const hierarchyEdges = edges.filter(isHierarchyEdge)
   const result = new Set()
-  const stack = edges.filter((edge) => edge.source === nodeId).map((edge) => edge.target)
+  const stack = hierarchyEdges.filter((edge) => edge.source === nodeId).map((edge) => edge.target)
   while (stack.length > 0) {
     const current = stack.pop()
     if (!current || result.has(current)) continue
     result.add(current)
-    edges.filter((edge) => edge.source === current).forEach((edge) => stack.push(edge.target))
+    hierarchyEdges.filter((edge) => edge.source === current).forEach((edge) => stack.push(edge.target))
   }
   return result
 }
@@ -174,6 +197,7 @@ function relatedCards(ids, nodes) {
     status: node.data?.progress >= 100 ? 'done' : node.data?.status,
     progress: node.data?.progress ?? 0,
     isWork: Boolean(node.data?.isWork),
+    sharedKnowledge: node.data?.sharedKnowledge ?? '',
   }))
 }
 
@@ -183,6 +207,7 @@ const outlineKey = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/, '카드 
 const nodeDataSchema = z.object({
   label: z.string().min(1),
   description: z.string().default(''),
+  sharedKnowledge: z.string().max(10_000).default(''),
   progress: z.number().min(0).max(100).default(0),
   status: z.enum(['planned', 'in-progress', 'done']).default('planned'),
   kind: z.enum(['root', 'branch', 'task']).default('branch'),
@@ -199,6 +224,7 @@ const outlineCardSchema = z.object({
   parentKey: outlineKey.optional().describe('상위 카드 key. 루트 카드는 생략'),
   label: z.string().min(1).max(200),
   description: z.string().max(5000).default(''),
+  sharedKnowledge: z.string().max(10_000).default(''),
   progress: z.number().min(0).max(100).default(0),
   status: z.enum(['planned', 'in-progress', 'done']).optional(),
   kind: z.enum(['root', 'branch', 'task']).optional(),
@@ -276,6 +302,7 @@ function buildMapFromOutline(cards) {
       data: {
         label: card.label,
         description: card.description,
+        sharedKnowledge: card.sharedKnowledge,
         progress: card.progress,
         status,
         kind,
@@ -295,6 +322,7 @@ function buildMapFromOutline(cards) {
     source: card.parentKey,
     target: card.key,
     type: 'bezier',
+    data: { relation: 'hierarchy' },
     markerEnd: { type: 'arrowclosed', width: 16, height: 16 },
   }))
   return { nodes, edges, rootKey: roots[0].key }
@@ -328,6 +356,8 @@ async function main() {
     important: [
       '여러 카드의 새 문서는 create_document와 save_document 조합이 아니라 mindnprogress_create_mindmap으로 생성',
       '업무로 추적할 task만 isWork=true로 설정',
+      'description은 업무 요청과 완료 조건, sharedKnowledge는 다른 카드가 재사용할 안정적인 결론에 사용',
+      '진행 과정과 완료 사실은 댓글에 기록하고 재사용할 결과는 sharedKnowledge에도 요약',
       '업무 링크, 담당자와 마감일은 실제 값이 있을 때만 지정',
       '비밀번호 변경과 관리자 계정 관리는 MCP에서 지원하지 않음',
     ],
@@ -345,7 +375,7 @@ async function main() {
     if (attributionToken) activeAttributionToken = attributionToken
     const [documentResult, commentsResult, usersResult, health] = await Promise.all([
       apiRequest(`/api/maps/${encodeURIComponent(mapId)}`),
-      apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments?nodeId=${encodeURIComponent(cardId)}`),
+      apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments`),
       apiRequest('/api/assignees'),
       apiRequest('/api/health'),
     ])
@@ -353,9 +383,11 @@ async function main() {
     const selectedCard = map.nodes.find((node) => node.id === cardId)
     if (!selectedCard) throw new Error(`선택 카드를 찾을 수 없습니다: ${cardId}`)
 
-    const parentIds = map.edges.filter((edge) => edge.target === cardId).map((edge) => edge.source)
-    const childIds = map.edges.filter((edge) => edge.source === cardId).map((edge) => edge.target)
-    const siblingIds = [...new Set(parentIds.flatMap((parentId) => map.edges
+    const hierarchyEdges = map.edges.filter(isHierarchyEdge)
+    const knowledgeEdges = map.edges.filter(isKnowledgeEdge)
+    const parentIds = hierarchyEdges.filter((edge) => edge.target === cardId).map((edge) => edge.source)
+    const childIds = hierarchyEdges.filter((edge) => edge.source === cardId).map((edge) => edge.target)
+    const siblingIds = [...new Set(parentIds.flatMap((parentId) => hierarchyEdges
       .filter((edge) => edge.source === parentId && edge.target !== cardId)
       .map((edge) => edge.target)))]
     const ancestorIds = new Set()
@@ -364,17 +396,17 @@ async function main() {
       const currentId = ancestorStack.pop()
       if (!currentId || ancestorIds.has(currentId)) continue
       ancestorIds.add(currentId)
-      map.edges.filter((edge) => edge.target === currentId).forEach((edge) => ancestorStack.push(edge.source))
+      hierarchyEdges.filter((edge) => edge.target === currentId).forEach((edge) => ancestorStack.push(edge.source))
     }
-    const descendantIds = descendantsOf(cardId, map.edges)
+    const descendantIds = descendantsOf(cardId, hierarchyEdges)
     const blockedByIds = selectedCard.data?.blockedBy ?? []
     const blockingIds = map.nodes.filter((node) => (node.data?.blockedBy ?? []).includes(cardId)).map((node) => node.id)
     const selectedHierarchyIds = new Set([cardId, ...ancestorIds])
     const topLevelCard = map.nodes.find((node) => selectedHierarchyIds.has(node.id)
       && node.data?.kind === 'root'
-      && !map.edges.some((edge) => edge.target === node.id))
+      && !hierarchyEdges.some((edge) => edge.target === node.id))
       ?? map.nodes.find((node) => selectedHierarchyIds.has(node.id)
-        && !map.edges.some((edge) => edge.target === node.id))
+        && !hierarchyEdges.some((edge) => edge.target === node.id))
       ?? selectedCard
     const taskLinkFor = (card) => {
       const url = typeof card?.data?.taskUrl === 'string' ? card.data.taskUrl.trim() : ''
@@ -388,6 +420,94 @@ async function main() {
     ]
     const startupInspectionTargets = availableTaskLinks.filter((link, index, links) =>
       links.findIndex((candidate) => candidate.url === link.url) === index)
+    const allComments = commentsResult.comments ?? []
+    const incomingKnowledge = knowledgeEdges
+      .filter((edge) => edge.target === cardId)
+      .map((edge) => {
+        const sourceCard = map.nodes.find((node) => node.id === edge.source)
+        if (!sourceCard) return null
+        return {
+          policy: knowledgePolicyOf(edge),
+          card: sourceCard,
+          accessUrl: cardAccessUrl(health.publicBaseUrl, map.id, sourceCard.id),
+          comments: allComments.filter((comment) => comment.nodeId === sourceCard.id),
+          taskLink: taskLinkFor(sourceCard),
+        }
+      })
+      .filter(Boolean)
+    const primaryKnowledge = incomingKnowledge.filter((source) => source.policy === 'reuse-first')
+    const fallbackKnowledge = incomingKnowledge.filter((source) => source.policy === 'inspect-if-insufficient')
+    const hasKnowledgeGuidance = incomingKnowledge.length > 0
+    const conversationInspectionSources = primaryKnowledge
+      .filter((source) => typeof source.card.data?.aiConversationId === 'string' && source.card.data.aiConversationId.trim())
+      .map((source) => ({
+        cardId: source.card.id,
+        label: source.card.data?.label ?? source.card.id,
+        conversationAvailable: true,
+        toolArguments: { mapId, cardId: source.card.id },
+      }))
+    const conversationInspection = {
+      mode: conversationInspectionSources.length > 0 ? 'on-demand' : 'unavailable',
+      required: false,
+      tool: 'mindnprogress_get_ai_conversation_transcript',
+      sources: conversationInspectionSources,
+      triggers: [
+        '공유 지식, 설명과 댓글만으로 현재 작업에 필요한 결정 근거가 부족함',
+        '예외 조건 또는 이전 실패 원인을 확인해야 함',
+        '공유 지식과 댓글이 서로 충돌하여 원래 대화 맥락이 필요함',
+        '사용자가 과거 AI 대화를 직접 확인하도록 요청함',
+      ],
+      instruction: conversationInspectionSources.length > 0
+        ? 'primarySources의 sharedKnowledge, 설명과 댓글을 먼저 사용하세요. 그래도 현재 작업에 필요한 결정 근거, 예외 조건 또는 이전 실패 원인이 구체적으로 부족할 때만 sources 중 필요한 카드의 toolArguments로 대화 기록을 조회하세요.'
+        : '대화가 연결된 주요 선행 지식 카드가 없습니다. 공유 지식, 설명과 댓글을 사용하고 대화 기록 도구를 호출하지 마세요.',
+      evidenceRule: '대화 내용은 보조 근거로 취급합니다. 실제 코드와 산출물로 검증하고, 대화 전문을 댓글이나 sharedKnowledge에 복사하지 말며, 검증된 재사용 가능 결론만 sharedKnowledge에 요약하세요.',
+    }
+    const knowledgePrimaryTargets = selectedTaskLink ? [{
+      scope: selectedCard.id === topLevelCard.id ? 'selected-and-top-level' : 'selected-card',
+      reason: '현재 카드에 직접 연결된 업무 요구사항 확인',
+      ...selectedTaskLink,
+    }] : []
+    const knowledgeFallbackTargets = [
+      ...incomingKnowledge.flatMap((source) => source.taskLink ? [{
+        scope: source.policy === 'reuse-first' ? 'primary-knowledge-source' : 'fallback-knowledge-source',
+        reason: source.policy === 'reuse-first' ? '카드 결과와 댓글만으로 부족할 때 원본 확인' : '주요 지식만으로 부족할 때 확인',
+        ...source.taskLink,
+      }] : []),
+      ...(topLevelTaskLink && topLevelCard.id !== selectedCard.id ? [{
+        scope: 'top-level-card',
+        reason: '선행 지식과 현재 카드 업무만으로 전체 배경이 부족할 때 확인',
+        ...topLevelTaskLink,
+      }] : []),
+    ].filter((link, index, links) =>
+      !knowledgePrimaryTargets.some((candidate) => candidate.url === link.url)
+      && links.findIndex((candidate) => candidate.url === link.url) === index)
+    const startupInspection = hasKnowledgeGuidance ? {
+      mode: 'knowledge-guided',
+      required: knowledgePrimaryTargets.length > 0,
+      targets: knowledgePrimaryTargets,
+      primarySources: primaryKnowledge.map((source) => ({ cardId: source.card.id, label: source.card.data?.label ?? source.card.id })),
+      fallbackSources: fallbackKnowledge.map((source) => ({ cardId: source.card.id, label: source.card.data?.label ?? source.card.id })),
+      fallbackTargets: knowledgeFallbackTargets,
+      conversationInspection,
+      checks: ['현재 카드에 직접 연결된 업무 요구사항', '선행 지식 카드의 공유 지식과 설명', '선행 지식 카드의 댓글'],
+      instruction: 'primarySources의 sharedKnowledge를 먼저 재사용하고 카드 설명과 댓글로 보완하세요. targets는 현재 카드에 직접 연결된 업무가 있을 때만 조사합니다. 최상위 업무와 선행 지식 원본을 처음부터 다시 조사하지 마세요.',
+      fallback: '현재 작업에 필요한 정보가 구체적으로 부족할 때만 fallbackSources와 fallbackTargets에서 필요한 범위를 선택적으로 확인하세요. 외부 업무 도구가 없거나 조회에 실패하면 확인된 카드와 댓글로 가능한 작업은 계속 진행하세요.',
+    } : {
+      mode: 'default',
+      required: startupInspectionTargets.length > 0,
+      targets: startupInspectionTargets,
+      fallbackTargets: [],
+      conversationInspection: {
+        mode: 'not-applicable',
+        required: false,
+        tool: 'mindnprogress_get_ai_conversation_transcript',
+        sources: [],
+        instruction: '선행 지식선이 없어 대화 기록을 주요 지식으로 조회하지 않습니다.',
+      },
+      checks: ['업무 제목과 본문', '댓글과 대화 내용', '첨부파일 목록', '본문과 댓글에 포함된 관련 링크'],
+      instruction: '선택 카드의 작업을 수행하기 전에 targets의 업무를 조사하여 배경, 목적, 요구사항, 제약과 관련 자료를 파악하세요. 기획서나 첨부파일이 있다고 가정하지 말고 본문에 간략한 요구사항만 있을 가능성도 고려하세요.',
+      fallback: 'targets가 없으면 MindNProgress 카드 정보로 진행합니다. 외부 업무 시스템 도구가 없거나 조회에 실패하면 임의로 추측하지 말고 조회하지 못한 대상과 원인을 알린 뒤, 확인된 카드 정보만으로 가능한 작업은 계속 진행하세요.',
+    }
 
     return {
       guide: productGuide,
@@ -412,23 +532,27 @@ async function main() {
         descendants: relatedCards(descendantIds, map.nodes),
         blockedBy: relatedCards(blockedByIds, map.nodes),
         blocks: relatedCards(blockingIds, map.nodes),
+        knowledgeSources: {
+          primary: primaryKnowledge,
+          fallback: fallbackKnowledge,
+          all: incomingKnowledge,
+          rule: hasKnowledgeGuidance
+            ? 'primary의 sharedKnowledge를 먼저 사용하고 설명과 댓글로 보완합니다. fallback 및 각 source의 taskLink는 현재 작업에 필요한 정보가 부족할 때만 확인합니다.'
+            : '들어오는 지식선이 없어 기본 업무 조사 절차를 사용합니다.',
+        },
         taskLinks: {
           selectedCard: selectedTaskLink,
           topLevelCard: topLevelTaskLink,
           available: availableTaskLinks,
-          startupInspection: {
-            required: startupInspectionTargets.length > 0,
-            targets: startupInspectionTargets,
-            checks: ['업무 제목과 본문', '댓글과 대화 내용', '첨부파일 목록', '본문과 댓글에 포함된 관련 링크'],
-            instruction: '선택 카드의 작업을 수행하기 전에 targets의 업무를 조사하여 배경, 목적, 요구사항, 제약과 관련 자료를 파악하세요. 기획서나 첨부파일이 있다고 가정하지 말고 본문에 간략한 요구사항만 있을 가능성도 고려하세요.',
-            fallback: 'targets가 없으면 MindNProgress 카드 정보로 진행합니다. 외부 업무 시스템 도구가 없거나 조회에 실패하면 임의로 추측하지 말고 조회하지 못한 대상과 원인을 알린 뒤, 확인된 카드 정보만으로 가능한 작업은 계속 진행하세요.',
-          },
-          rule: '선택 카드와 최상위 카드의 업무 링크를 독립적으로 유지합니다. 작업 시작 전에 startupInspection을 따르며, 두 링크가 모두 있으면 중복 URL을 제외하고 모두 조사합니다. 링크를 다른 카드 데이터에 상속하거나 복사하지 않습니다.',
+          startupInspection,
+          rule: hasKnowledgeGuidance
+            ? '지식선이 있으므로 현재 카드의 직접 업무와 선행 지식을 우선합니다. 최상위 업무와 지식 원본 링크는 부족할 때만 선택적으로 조사하며 링크를 다른 카드 데이터에 상속하거나 복사하지 않습니다.'
+            : '선택 카드와 최상위 카드의 업무 링크를 독립적으로 유지합니다. 작업 시작 전에 startupInspection을 따르며, 두 링크가 모두 있으면 중복 URL을 제외하고 모두 조사합니다. 링크를 다른 카드 데이터에 상속하거나 복사하지 않습니다.',
         },
-        comments: commentsResult.comments ?? [],
+        comments: allComments.filter((comment) => comment.nodeId === cardId),
       },
       teamMembers: usersResult.users ?? [],
-      nextStep: '사용자 요청을 수행한 뒤 변경이 있었다면 mindnprogress_get_document로 결과를 다시 확인하세요.',
+      nextStep: '사용자 요청을 수행한 뒤 의미 있는 진행과 결과는 댓글에 기록하고, 재사용할 결론은 sharedKnowledge에 요약한 다음 mindnprogress_get_document로 결과를 다시 확인하세요.',
     }
   })
 
@@ -476,7 +600,8 @@ async function main() {
     color: documentColor.default('violet'),
     rootLabel: z.string().min(1),
     rootDescription: z.string().default(''),
-  }, async ({ title, color, rootLabel, rootDescription }) => {
+    rootSharedKnowledge: z.string().max(10_000).default(''),
+  }, async ({ title, color, rootLabel, rootDescription, rootSharedKnowledge }) => {
     const rootId = `node-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
     return apiRequest('/api/maps', {
       method: 'POST',
@@ -488,7 +613,7 @@ async function main() {
             id: rootId,
             type: 'mind',
             position: { x: 0, y: 0 },
-            data: { label: rootLabel, description: rootDescription, progress: 0, status: 'planned', kind: 'root' },
+            data: { label: rootLabel, description: rootDescription, sharedKnowledge: rootSharedKnowledge, progress: 0, status: 'planned', kind: 'root' },
           }],
           edges: [],
         },
@@ -516,7 +641,7 @@ async function main() {
     const map = await getDocument(mapId)
     const parent = parentId ? map.nodes.find((node) => node.id === parentId) : null
     if (parentId && !parent) throw new Error('상위 카드를 찾을 수 없습니다.')
-    const siblingCount = parentId ? map.edges.filter((edge) => edge.source === parentId).length : map.nodes.length
+    const siblingCount = parentId ? map.edges.filter((edge) => isHierarchyEdge(edge) && edge.source === parentId).length : map.nodes.length
     const nodeId = `node-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
     const node = {
       id: nodeId,
@@ -533,12 +658,13 @@ async function main() {
       source: parentId,
       target: nodeId,
       type: 'bezier',
+      data: { relation: 'hierarchy' },
       markerEnd: { type: 'arrowclosed', width: 16, height: 16 },
     })
     return saveDocument(map, false, parentId ?? '')
   })
 
-  registerTool(server, 'mindnprogress_update_card', '카드 제목, 설명, 진행률, 상태, 업무 링크, 담당자, 마감일, 체크리스트와 선행 업무를 변경합니다.', {
+  registerTool(server, 'mindnprogress_update_card', '카드 제목, 설명, 공유 지식, 진행률, 상태, 업무 링크, 담당자, 마감일, 체크리스트와 선행 업무를 변경합니다. description은 업무 요청과 배경, sharedKnowledge는 다른 카드가 재사용할 안정적인 결론에 사용하세요.', {
     mapId: z.string().min(1),
     nodeId: z.string().min(1),
     data: nodeDataSchema.partial(),
@@ -564,12 +690,13 @@ async function main() {
     if (nodeId === newParentId || descendantsOf(nodeId, map.edges).has(newParentId)) {
       throw new Error('자기 자신이나 하위 카드 아래로 이동할 수 없습니다.')
     }
-    map.edges = map.edges.filter((edge) => edge.target !== nodeId)
+    map.edges = map.edges.filter((edge) => isKnowledgeEdge(edge) || edge.target !== nodeId)
     map.edges.push({
       id: `edge-${newParentId}-${nodeId}`,
       source: newParentId,
       target: nodeId,
       type: 'bezier',
+      data: { relation: 'hierarchy' },
       markerEnd: { type: 'arrowclosed', width: 16, height: 16 },
     })
     return saveDocument(map, false, nodeId)
@@ -639,6 +766,11 @@ async function main() {
   }, async ({ mapId, ...body }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments`, {
     method: 'POST', aiCardId: body.nodeId, body: JSON.stringify(body),
   }))
+  registerTool(server, 'mindnprogress_update_comment', '기존 댓글 또는 답글의 본문을 제자리에서 수정합니다. 댓글 ID, 작성자, 생성 시각, 답글 관계, 반응과 해결 상태는 유지됩니다.', {
+    mapId: z.string().min(1), commentId: z.string().min(1), text: z.string().min(1).max(1000),
+  }, async ({ mapId, commentId, text }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments/${encodeURIComponent(commentId)}`, {
+    method: 'PATCH', body: JSON.stringify({ text }),
+  }))
   registerTool(server, 'mindnprogress_delete_comment', '댓글과 연결된 답글을 삭제합니다.', {
     mapId: z.string().min(1), commentId: z.string().min(1),
   }, async ({ mapId, commentId }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments/${encodeURIComponent(commentId)}`, { method: 'DELETE' }))
@@ -648,6 +780,20 @@ async function main() {
   registerTool(server, 'mindnprogress_toggle_comment_reaction', '댓글의 이모지 반응을 추가하거나 취소합니다.', {
     mapId: z.string().min(1), commentId: z.string().min(1), emoji: z.enum(['👍', '❤️', '🎉', '👀']),
   }, async ({ mapId, commentId, emoji }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments/${encodeURIComponent(commentId)}/reactions`, { method: 'POST', body: JSON.stringify({ emoji }) }))
+
+  registerTool(server, 'mindnprogress_get_ai_conversation_transcript', '카드에 연결된 AionUi 대화의 전체 내용을 AionUi 세션 목록의 "전체 복사"와 같은 텍스트 형식으로 조회합니다. 사용자·어시스턴트·시스템 메시지를 시간순으로 반환하며 도구 호출 메시지는 제외합니다.', {
+    mapId: z.string().min(1), cardId: z.string().min(1),
+  }, async ({ mapId, cardId }) => {
+    const map = await getDocument(mapId)
+    const card = map.nodes.find((node) => node.id === cardId)
+    if (!card) throw new Error('카드를 찾을 수 없습니다.')
+    const conversationId = String(card.data?.aiConversationId ?? '').trim()
+    if (!conversationId) throw new Error('카드에 연결된 AI 대화가 없습니다.')
+    return apiRequest(`/api/integrations/aionui/conversations/${encodeURIComponent(conversationId)}/transcript`, {
+      aiMapId: mapId,
+      aiCardId: cardId,
+    })
+  })
 
   registerTool(server, 'mindnprogress_list_notifications', '현재 AI 편집자의 알림을 조회합니다.', {}, async () =>
     apiRequest('/api/notifications'))

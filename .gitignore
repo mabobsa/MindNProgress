@@ -20,6 +20,7 @@ server/data/**
 .vscode/*
 !.vscode/extensions.json
 .idea
+.codex/
 .DS_Store
 *.suo
 *.ntvs*

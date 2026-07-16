@@ -1,6 +1,6 @@
 import { useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
 import type { Node } from '@xyflow/react'
-import { teamMembers, type MindNodeData } from '../types/mindMap'
+import type { MindNodeData, TeamMember } from '../types/mindMap'
 import { AssigneeTooltip } from './AssigneeTooltip'
 import { blockingNodes } from '../utils/dependencies'
 import './WorkViews.css'
@@ -17,6 +17,7 @@ type WorkViewProps = {
   onUpdate: (nodeId: string, patch: Partial<MindNodeData>) => void
   onOpenMindMap: () => void
   onContextMenu: (event: ReactMouseEvent, nodeId: string) => void
+  teamMembers: TeamMember[]
 }
 
 const columns: { id: WorkStatus; title: string; description: string }[] = [
@@ -29,7 +30,7 @@ function effectiveStatus(node: WorkNode): WorkStatus {
   return node.data.progress >= 100 ? 'done' : node.data.status
 }
 
-function assigneeFor(node: WorkNode) {
+function assigneeFor(node: WorkNode, teamMembers: TeamMember[]) {
   return teamMembers.find((member) => member.id === node.data.assigneeId)
 }
 
@@ -54,8 +55,8 @@ function EmptyWorkView({ onOpenMindMap }: { onOpenMindMap: () => void }) {
   )
 }
 
-function WorkCard({ node, blockedCount, selected, draggable, onSelect, onContextMenu }: { node: WorkNode; blockedCount: number; selected: boolean; draggable: boolean; onSelect: () => void; onContextMenu: (event: ReactMouseEvent) => void }) {
-  const assignee = assigneeFor(node)
+function WorkCard({ node, teamMembers, blockedCount, selected, draggable, onSelect, onContextMenu }: { node: WorkNode; teamMembers: TeamMember[]; blockedCount: number; selected: boolean; draggable: boolean; onSelect: () => void; onContextMenu: (event: ReactMouseEvent) => void }) {
+  const assignee = assigneeFor(node, teamMembers)
   const checklist = node.data.checklist ?? []
   const completed = checklist.filter((item) => item.done).length
 
@@ -88,7 +89,7 @@ function WorkCard({ node, blockedCount, selected, draggable, onSelect, onContext
 }
 
 export function KanbanView(props: WorkViewProps) {
-  const { nodes, mode, selectedId, onSelect, onUpdate, onOpenMindMap, onContextMenu } = props
+  const { nodes, mode, selectedId, onSelect, onUpdate, onOpenMindMap, onContextMenu, teamMembers } = props
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const workNodes = nodes.filter((node) => node.data.isWork)
 
@@ -158,7 +159,7 @@ export function KanbanView(props: WorkViewProps) {
                     }}
                     onDragEnd={() => setDraggingId(null)}
                   >
-                    <WorkCard node={node} blockedCount={blockingNodes(node, nodes).length} selected={selectedId === node.id} draggable={mode === 'editor'} onSelect={() => onSelect(node.id)} onContextMenu={(event) => onContextMenu(event, node.id)} />
+                    <WorkCard node={node} teamMembers={teamMembers} blockedCount={blockingNodes(node, nodes).length} selected={selectedId === node.id} draggable={mode === 'editor'} onSelect={() => onSelect(node.id)} onContextMenu={(event) => onContextMenu(event, node.id)} />
                   </div>
                 ))}
                 {columnNodes.length === 0 && <div className="empty-column">업무가 없습니다</div>}
@@ -171,7 +172,7 @@ export function KanbanView(props: WorkViewProps) {
   )
 }
 
-export function TimelineView({ nodes, selectedId, onSelect, onOpenMindMap, onContextMenu }: WorkViewProps) {
+export function TimelineView({ nodes, selectedId, onSelect, onOpenMindMap, onContextMenu, teamMembers }: WorkViewProps) {
   const workNodes = nodes.filter((node) => node.data.isWork)
   const sortedNodes = [...workNodes].sort((first, second) => (first.data.dueDate ?? '9999').localeCompare(second.data.dueDate ?? '9999'))
 
@@ -185,7 +186,7 @@ export function TimelineView({ nodes, selectedId, onSelect, onOpenMindMap, onCon
       </header>
       <div className="timeline-list">
         {sortedNodes.map((node) => {
-          const assignee = assigneeFor(node)
+          const assignee = assigneeFor(node, teamMembers)
           const status = effectiveStatus(node)
           const blockedCount = blockingNodes(node, nodes).length
           return (
@@ -212,7 +213,7 @@ export function TimelineView({ nodes, selectedId, onSelect, onOpenMindMap, onCon
   )
 }
 
-export function DashboardView({ nodes, onSelect, onOpenMindMap, onContextMenu }: WorkViewProps) {
+export function DashboardView({ nodes, onSelect, onOpenMindMap, onContextMenu, teamMembers }: WorkViewProps) {
   const workNodes = nodes.filter((node) => node.data.isWork)
   const metrics = useMemo(() => {
     const completed = workNodes.filter((node) => effectiveStatus(node) === 'done').length

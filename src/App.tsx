@@ -27,7 +27,7 @@ import { MentionText } from './components/MentionText'
 import { AdminEditorPanel } from './components/AdminEditorPanel'
 import { AiConversationDialog } from './components/AiConversationDialog'
 import { DashboardView, KanbanView, TimelineView } from './components/WorkViews'
-import { teamMembers, type ChecklistItem, type MindNodeData } from './types/mindMap'
+import type { ChecklistItem, MindNodeData, TeamMember } from './types/mindMap'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
 import { extractTextLinks } from './utils/textLinks'
 
@@ -146,6 +146,7 @@ type AuthUser = {
   email: string
   role: UserRole
   publicAccess?: boolean
+  active?: boolean
 }
 
 type MapSummary = {
@@ -156,6 +157,8 @@ type MapSummary = {
   version: number
   updatedAt: string | null
   updatedBy: AuthUser | null
+  createdAt: string | null
+  createdBy: AuthUser | null
   trashedAt?: string | null
   trashedBy?: AuthUser | null
 }
@@ -167,6 +170,10 @@ type MapDocument = {
   version: number
   nodes: MindMapNode[]
   edges: MindMapEdge[]
+  updatedAt: string | null
+  updatedBy: AuthUser | null
+  createdAt: string | null
+  createdBy: AuthUser | null
 }
 
 type MapRevisionSummary = {
@@ -178,6 +185,25 @@ type MapRevisionSummary = {
   archivedAt: string
   archivedBy: AuthUser
   reason: 'content' | 'rename' | 'color' | 'metadata' | 'history-restore' | string
+  mapUpdatedAt: string | null
+  mapUpdatedBy: AuthUser | null
+}
+
+type MapRevisionPage = {
+  revisions: MapRevisionSummary[]
+  hasMore: boolean
+  nextOffset: number | null
+}
+
+type DailyBackupSummary = {
+  date: string
+  mapId: string
+  title: string
+  color: DocumentColorId
+  nodeCount: number
+  backedUpAt: string
+  backedUpBy: AuthUser
+  reason: 'automatic' | 'scheduled' | 'history-backfill' | 'before-history-restore' | 'before-daily-restore' | string
   mapUpdatedAt: string | null
   mapUpdatedBy: AuthUser | null
 }
@@ -427,117 +453,22 @@ function useMapHistory(
   return { ...availability, undo, redo, resetHistory, beginTransaction, endTransaction }
 }
 
-const STORAGE_KEY = 'mindnprogress-demo-v1'
+const MAP_CACHE_KEY = 'mindnprogress-map-cache-v1'
+const ASSIGNEE_COLORS: TeamMember['color'][] = ['violet', 'blue', 'mint', 'orange']
 
-const initialNodes: MindMapNode[] = [
-  {
-    id: 'vision',
-    type: 'mind',
-    position: { x: 0, y: 80 },
-    data: {
-      label: 'Mind & Progress',
-      description: '아이디어가 실행으로 이어지는 공간',
-      progress: 42,
-      status: 'in-progress',
-      kind: 'root',
-    },
-  },
-  {
-    id: 'product',
-    type: 'mind',
-    position: { x: 320, y: -120 },
-    data: {
-      label: '제품 설계',
-      description: '핵심 사용자 경험 정의',
-      progress: 68,
-      status: 'in-progress',
-      kind: 'branch',
-    },
-  },
-  {
-    id: 'mindmap',
-    type: 'mind',
-    position: { x: 640, y: -220 },
-    data: {
-      label: '마인드맵 편집',
-      description: '노드 생성과 관계 연결',
-      progress: 80,
-      status: 'in-progress',
-      kind: 'task',
-      isWork: true,
-      taskUrl: 'https://reactflow.dev',
-    },
-  },
-  {
-    id: 'permission',
-    type: 'mind',
-    position: { x: 640, y: -40 },
-    data: {
-      label: '권한 모델',
-      description: '편집자와 뷰어 분리',
-      progress: 25,
-      status: 'planned',
-      kind: 'task',
-      isWork: true,
-      blockedBy: ['mindmap'],
-    },
-  },
-  {
-    id: 'execution',
-    type: 'mind',
-    position: { x: 320, y: 280 },
-    data: {
-      label: '업무 실행',
-      description: '생각을 실행 가능한 업무로 전환',
-      progress: 30,
-      status: 'planned',
-      kind: 'branch',
-    },
-  },
-  {
-    id: 'progress',
-    type: 'mind',
-    position: { x: 640, y: 210 },
-    data: {
-      label: '진행률 추적',
-      description: '노드별 상태와 완료율',
-      progress: 35,
-      status: 'in-progress',
-      kind: 'task',
-      isWork: true,
-      blockedBy: ['permission'],
-    },
-  },
-  {
-    id: 'dashboard',
-    type: 'mind',
-    position: { x: 640, y: 390 },
-    data: {
-      label: '대시보드',
-      description: '전체 흐름과 병목 확인',
-      progress: 0,
-      status: 'planned',
-      kind: 'task',
-      isWork: true,
-      blockedBy: ['progress'],
-    },
-  },
-]
+function assigneeInitials(name: string) {
+  const compact = name.replace(/\s/g, '')
+  return [...compact].slice(0, 2).join('') || '?'
+}
 
-const initialEdges: MindMapEdge[] = [
-  ['vision', 'product'],
-  ['product', 'mindmap'],
-  ['product', 'permission'],
-  ['vision', 'execution'],
-  ['execution', 'progress'],
-  ['execution', 'dashboard'],
-].map(([source, target], index) => ({
-  id: `edge-${index}`,
-  source,
-  target,
-  type: 'bezier',
-  markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-}))
+function assigneeColor(userId: string) {
+  const index = [...userId].reduce((sum, character) => sum + character.charCodeAt(0), 0) % ASSIGNEE_COLORS.length
+  return ASSIGNEE_COLORS[index]
+}
+
+function formatDocumentDate(value: string | null | undefined) {
+  return value ? new Date(value).toLocaleString('ko-KR') : '기록 없음'
+}
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const paths: Record<string, ReactNode> = {
@@ -545,13 +476,13 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
     plus: <path d="M12 5v14M5 12h14"/>,
     fit: <><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></>,
     trash: <><path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7V4h6v3"/></>,
+    restore: <><path d="M3 7v5h5"/><path d="M5.1 17a8 8 0 1 0 .3-10.3L3 9"/></>,
     chevron: <path d="m9 18 6-6-6-6"/>,
     'chevron-down': <path d="m6 9 6 6 6-6"/>,
     search: <><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></>,
     more: <><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></>,
     share: <><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.7 10.7 6.6-4.4M8.7 13.3l6.6 4.4"/></>,
     close: <path d="m6 6 12 12M18 6 6 18"/>,
-    reset: <><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></>,
     external: <><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></>,
     edit: <><path d="m4 20 4.2-1 10.5-10.5a2.1 2.1 0 0 0-3-3L5.2 16Z"/><path d="m14.5 6.5 3 3"/></>,
     check: <path d="m5 12 4 4L19 6"/>,
@@ -628,12 +559,12 @@ function CommentCard({ comment, isReply, mode, user, collaborators, readOnly = f
 }
 
 function storageKeyForMap(mapId: string) {
-  return `${STORAGE_KEY}:${mapId}`
+  return `${MAP_CACHE_KEY}:${mapId}`
 }
 
-function readSavedMap(mapId = 'product-roadmap') {
+function readSavedMap(mapId: string) {
   try {
-    const saved = localStorage.getItem(storageKeyForMap(mapId)) ?? localStorage.getItem(STORAGE_KEY)
+    const saved = localStorage.getItem(storageKeyForMap(mapId))
     if (!saved) return null
     return JSON.parse(saved) as { nodes: MindMapNode[]; edges: MindMapEdge[] }
   } catch {
@@ -684,9 +615,11 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) =>
   const formRef = useRef<HTMLFormElement>(null)
   const emailRef = useRef<HTMLInputElement>(null)
   const passwordRef = useRef<HTMLInputElement>(null)
+  const rememberMeRef = useRef<HTMLInputElement>(null)
   const loginButtonRef = useRef<HTMLButtonElement>(null)
   const [email, setEmail] = useState(() => localStorage.getItem(LAST_LOGIN_EMAIL_KEY) ?? '')
   const [password, setPassword] = useState('')
+  const [rememberMe, setRememberMe] = useState(false)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -714,7 +647,7 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) =>
     try {
       const result = await apiRequest<{ user: AuthUser }>('/api/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+        body: JSON.stringify({ email: loginEmail, password: loginPassword, rememberMe }),
       })
       localStorage.setItem(LAST_LOGIN_EMAIL_KEY, loginEmail.trim())
       onAuthenticated(result.user)
@@ -754,8 +687,15 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) =>
           </label>
           <label>
             <span>비밀번호</span>
-            <input ref={passwordRef} type="password" value={password} onBeforeInput={(event) => preventInsertedTab(event, () => loginButtonRef.current?.focus())} onChange={(event) => updateWithoutInsertedTab(event.target.value, setPassword, () => loginButtonRef.current?.focus())} autoComplete="current-password" autoFocus={Boolean(email)} required />
+            <input ref={passwordRef} type="password" value={password} onBeforeInput={(event) => preventInsertedTab(event, () => rememberMeRef.current?.focus())} onChange={(event) => updateWithoutInsertedTab(event.target.value, setPassword, () => rememberMeRef.current?.focus())} autoComplete="current-password" autoFocus={Boolean(email)} required />
           </label>
+          <div className="login-options">
+            <label className="login-remember">
+              <input ref={rememberMeRef} type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
+              <span>로그인 유지</span>
+            </label>
+            <small>이 PC에서 30일간 유지</small>
+          </div>
           {error && <div className="login-error" role="alert">{error}</div>}
           <button ref={loginButtonRef} className="login-submit" type="submit" disabled={submitting}>
             {submitting ? '확인 중…' : '로그인'}
@@ -861,9 +801,8 @@ function PasswordChangeDialog({ onClose }: { onClose: () => void }) {
 }
 
 function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
-  const saved = useMemo(readSavedMap, [])
-  const [nodes, setNodes, onNodesChange] = useNodesState<MindMapNode>(saved?.nodes ?? initialNodes)
-  const [edges, setEdges, onEdgesChange] = useEdgesState<MindMapEdge>(saved?.edges ?? initialEdges)
+  const [nodes, setNodes, onNodesChange] = useNodesState<MindMapNode>([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState<MindMapEdge>([])
   const { canUndo, canRedo, undo, redo, resetHistory, beginTransaction: beginHistoryTransaction, endTransaction: endHistoryTransaction } = useMapHistory(nodes, setNodes, edges, setEdges)
   const mode: AccessMode = user.role === 'viewer' ? 'viewer' : 'editor'
   const [adminOpen, setAdminOpen] = useState(false)
@@ -874,13 +813,21 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const [viewMode, setViewMode] = useState<ViewMode>('mindmap')
   const [documents, setDocuments] = useState<MapSummary[]>([])
   const [trashedDocuments, setTrashedDocuments] = useState<MapSummary[]>([])
+  const [selectedTrashIds, setSelectedTrashIds] = useState<Set<string>>(() => new Set())
+  const [trashDeleting, setTrashDeleting] = useState(false)
   const [trashOpen, setTrashOpen] = useState(false)
   const [activeMapId, setActiveMapId] = useState('')
   const [loadedMapId, setLoadedMapId] = useState<string | null>(null)
   const [mapReloadToken, setMapReloadToken] = useState(0)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyTab, setHistoryTab] = useState<'changes' | 'daily'>('changes')
   const [mapRevisions, setMapRevisions] = useState<MapRevisionSummary[]>([])
+  const [dailyBackups, setDailyBackups] = useState<DailyBackupSummary[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false)
+  const [historyHasMore, setHistoryHasMore] = useState(false)
+  const [historyNextOffset, setHistoryNextOffset] = useState<number | null>(null)
+  const [historyPaginationError, setHistoryPaginationError] = useState('')
   const [historyError, setHistoryError] = useState('')
   const [externalChange, setExternalChange] = useState<MapChangeEvent | null>(null)
   const [presenceClients, setPresenceClients] = useState<PresenceClient[]>([])
@@ -893,6 +840,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const [newComment, setNewComment] = useState('')
   const [replyTarget, setReplyTarget] = useState<NodeComment | null>(null)
   const [collaborators, setCollaborators] = useState<AuthUser[]>([])
+  const [assigneeUsers, setAssigneeUsers] = useState<AuthUser[]>([])
   const [notifications, setNotifications] = useState<UserNotification[]>([])
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
@@ -925,7 +873,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const skipChecklistCommit = useRef(false)
   const inspectorResizeStart = useRef({ pointerX: 0, width: 278 })
   const dropTargetIdRef = useRef<string | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>('vision')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [savedAt, setSavedAt] = useState('서버에서 불러오는 중…')
   const [saveError, setSaveError] = useState('')
   const dragSnapshot = useRef<DragSnapshot | null>(null)
@@ -939,6 +887,12 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const { fitView, screenToFlowPosition, setCenter, setViewport } = useReactFlow<MindMapNode, MindMapEdge>()
   const viewport = useViewport()
 
+  useEffect(() => {
+    Object.keys(localStorage)
+      .filter((key) => key === 'mindnprogress-demo-v1' || key.startsWith('mindnprogress-demo-v1:'))
+      .forEach((key) => localStorage.removeItem(key))
+  }, [])
+
   const selectedNode = nodes.find((node) => node.id === selectedId) ?? null
   const selectedPrerequisites = selectedNode ? prerequisiteNodes(selectedNode, nodes) : []
   const selectedBlockingIds = new Set(selectedNode ? blockingNodes(selectedNode, nodes).map((node) => node.id) : [])
@@ -951,6 +905,14 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     : []
   const unreadNotificationCount = notifications.filter((notification) => !notification.readAt).length
   const activeDocument = documents.find((document) => document.id === activeMapId) ?? null
+  const teamMembers = useMemo<TeamMember[]>(() => assigneeUsers.map((assignee) => ({
+    id: assignee.id,
+    name: assignee.name,
+    initials: assigneeInitials(assignee.name),
+    color: assigneeColor(assignee.id),
+    active: assignee.active !== false,
+  })), [assigneeUsers])
+  const selectableTeamMembers = teamMembers.filter((member) => member.active)
   const filteredDocuments = documents.filter((document) => document.title.toLowerCase().includes(searchTerm.trim().toLowerCase()))
   const nodeTypes = useMemo<NodeTypes>(() => ({ mind: MindNode }), [])
   const childrenById = useMemo(() => {
@@ -1026,7 +988,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     const assignee = teamMembers.find((member) => member.id === node.data.assigneeId)?.name ?? ''
     return [node.data.label, node.data.description, node.data.taskUrl ?? '', assignee]
       .some((value) => value.toLowerCase().includes(normalizedNodeSearch))
-  }).map((node) => node.id)), [filterMatchedNodeIds, nodes, normalizedNodeSearch])
+  }).map((node) => node.id)), [filterMatchedNodeIds, nodes, normalizedNodeSearch, teamMembers])
   const searchContextNodeIds = useMemo(() => {
     const visible = new Set(searchMatchedNodeIds)
     const stack = [...searchMatchedNodeIds]
@@ -1052,6 +1014,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
       hidden,
       data: {
         ...node.data,
+        assignee: teamMembers.find((member) => member.id === node.data.assigneeId),
         unresolvedDependencyCount: blockingNodes(node, nodes).length,
         commentCount: commentStats[node.id]?.total ?? 0,
         unresolvedCommentCount: commentStats[node.id]?.unresolved ?? 0,
@@ -1073,7 +1036,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
         filterActive && filterVisibleNodeIds.has(node.id) && !filterMatchedNodeIds.has(node.id) ? 'filter-context' : '',
       ].filter(Boolean).join(' '),
     }
-  }), [collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, descendantCounts, dropTargetId, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, nodes, normalizedNodeSearch, searchContextNodeIds, searchMatchedNodeIds])
+  }), [collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, descendantCounts, dropTargetId, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, nodes, normalizedNodeSearch, searchContextNodeIds, searchMatchedNodeIds, teamMembers])
   const visibleFlowNodeIds = useMemo(() => new Set(flowNodes.filter((node) => !node.hidden).map((node) => node.id)), [flowNodes])
   const flowEdges = useMemo(() => edges.map((edge) => ({ ...edge, hidden: !visibleFlowNodeIds.has(edge.source) || !visibleFlowNodeIds.has(edge.target) })), [edges, visibleFlowNodeIds])
 
@@ -1101,6 +1064,14 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   }, [assigneeFilter, nodeFilter, nodeSearchTerm])
 
   useEffect(() => {
+    const availableTrashIds = new Set(trashedDocuments.map((document) => document.id))
+    setSelectedTrashIds((current) => {
+      const next = new Set([...current].filter((mapId) => availableTrashIds.has(mapId)))
+      return next.size === current.size ? current : next
+    })
+  }, [trashedDocuments])
+
+  useEffect(() => {
     if (selectedId && !visibleFlowNodeIds.has(selectedId)) setSelectedId(null)
   }, [selectedId, visibleFlowNodeIds])
 
@@ -1121,37 +1092,35 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
           return
         }
 
-        if (mode === 'editor') {
-          const created = await apiRequest<{ map: MapDocument; summary: MapSummary }>('/api/maps', {
-            method: 'POST',
-            body: JSON.stringify({ title: '제품 로드맵', map: { nodes: initialNodes, edges: initialEdges } }),
-          })
-          if (!active) return
-          setDocuments([created.summary])
-          setActiveMapId(created.summary.id)
-        } else {
-          setSavedAt('생성된 문서 없음')
-        }
+        setDocuments([])
+        setActiveMapId('')
+        setNodes([])
+        setEdges([])
+        setSelectedId(null)
+        setSavedAt('생성된 문서 없음')
       })
       .catch((error) => {
         if (!active) return
         setSaveError(error instanceof Error ? error.message : '문서 목록을 불러오지 못했습니다.')
       })
     return () => { active = false }
-  }, [mode])
+  }, [mode, setEdges, setNodes])
 
   useEffect(() => {
     void Promise.all([
       apiRequest<{ notifications: UserNotification[] }>('/api/notifications'),
       apiRequest<{ users: AuthUser[] }>('/api/users'),
+      apiRequest<{ users: AuthUser[] }>('/api/assignees'),
     ])
-      .then(([notificationResult, userResult]) => {
+      .then(([notificationResult, userResult, assigneeResult]) => {
         setNotifications(notificationResult.notifications)
         setCollaborators(userResult.users)
+        setAssigneeUsers(assigneeResult.users)
       })
       .catch(() => {
         setNotifications([])
         setCollaborators([user])
+        setAssigneeUsers(user.role === 'editor' ? [{ ...user, active: true }] : [])
       })
   }, [user])
 
@@ -1247,7 +1216,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
             setActiveMapId(maps[0]?.id ?? '')
             return
           }
-          if (event.mapId !== activeMapId || !['content', 'history-restored'].includes(event.action)) return
+          if (event.mapId !== activeMapId || !['content', 'history-restored', 'daily-backup-restored'].includes(event.action)) return
           if (mode === 'viewer') setMapReloadToken((current) => current + 1)
           else setExternalChange(event)
         })().catch(() => undefined)
@@ -1716,22 +1685,14 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   useEffect(() => {
     setHistoryOpen(false)
     setMapRevisions([])
+    setHistoryHasMore(false)
+    setHistoryNextOffset(null)
+    setHistoryLoadingMore(false)
+    setHistoryPaginationError('')
     setExternalChange(null)
     setPresenceClients([])
     setLiveCursors({})
   }, [activeMapId])
-
-  const resetDemo = useCallback(() => {
-    setNodes(initialNodes)
-    setEdges(initialEdges)
-    setSelectedId('vision')
-    setCollapsedNodeIds(new Set())
-    setNodeSearchTerm('')
-    setNodeFilter('all')
-    setAssigneeFilter('all')
-    if (activeMapId) localStorage.removeItem(storageKeyForMap(activeMapId))
-    window.setTimeout(() => fitView({ padding: 0.2, duration: 500 }), 0)
-  }, [activeMapId, fitView, setEdges, setNodes])
 
   const createMap = async () => {
     const title = newMapTitle.trim()
@@ -1811,15 +1772,46 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const openMapHistory = async () => {
     if (!activeMapId) return
     setHistoryOpen(true)
+    setHistoryTab('changes')
     setHistoryLoading(true)
     setHistoryError('')
+    setHistoryPaginationError('')
+    setHistoryHasMore(false)
+    setHistoryNextOffset(null)
     try {
-      const result = await apiRequest<{ revisions: MapRevisionSummary[] }>(`/api/maps/${encodeURIComponent(activeMapId)}/history`)
-      setMapRevisions(result.revisions)
+      const [historyResult, backupResult] = await Promise.all([
+        apiRequest<MapRevisionPage>(`/api/maps/${encodeURIComponent(activeMapId)}/history`),
+        apiRequest<{ dailyBackups: DailyBackupSummary[] }>(`/api/maps/${encodeURIComponent(activeMapId)}/backups/daily`),
+      ])
+      setMapRevisions(historyResult.revisions)
+      setHistoryHasMore(historyResult.hasMore)
+      setHistoryNextOffset(historyResult.nextOffset)
+      setDailyBackups(backupResult.dailyBackups)
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : '변경 이력을 불러오지 못했습니다.')
     } finally {
       setHistoryLoading(false)
+    }
+  }
+
+  const loadMoreMapHistory = async () => {
+    if (!activeMapId || historyLoading || historyLoadingMore || !historyHasMore || historyNextOffset === null) return
+    setHistoryLoadingMore(true)
+    setHistoryPaginationError('')
+    try {
+      const result = await apiRequest<MapRevisionPage>(
+        `/api/maps/${encodeURIComponent(activeMapId)}/history?offset=${historyNextOffset}&limit=50`,
+      )
+      setMapRevisions((current) => {
+        const existingIds = new Set(current.map((revision) => revision.id))
+        return [...current, ...result.revisions.filter((revision) => !existingIds.has(revision.id))]
+      })
+      setHistoryHasMore(result.hasMore)
+      setHistoryNextOffset(result.nextOffset)
+    } catch (error) {
+      setHistoryPaginationError(error instanceof Error ? error.message : '이전 변경 이력을 더 불러오지 못했습니다.')
+    } finally {
+      setHistoryLoadingMore(false)
     }
   }
 
@@ -1830,7 +1822,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     setHistoryLoading(true)
     setHistoryError('')
     try {
-      const result = await apiRequest<{ map: MapDocument; summary: MapSummary; revisions: MapRevisionSummary[] }>(
+      const result = await apiRequest<{ map: MapDocument; summary: MapSummary; revisions: MapRevisionSummary[]; historyHasMore: boolean; historyNextOffset: number | null }>(
         `/api/maps/${encodeURIComponent(activeMapId)}/history/${encodeURIComponent(revision.id)}/restore`,
         { method: 'POST' },
       )
@@ -1841,12 +1833,48 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
       setSelectedId(result.map.nodes[0]?.id ?? null)
       setDocuments((current) => current.map((document) => document.id === result.summary.id ? result.summary : document))
       setMapRevisions(result.revisions)
+      setHistoryHasMore(result.historyHasMore)
+      setHistoryNextOffset(result.historyNextOffset)
+      setHistoryPaginationError('')
       setExternalChange(null)
       localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify({ nodes: result.map.nodes, edges: result.map.edges }))
       setSavedAt('이전 버전 복원됨')
       window.setTimeout(() => fitView({ padding: 0.2, duration: 400 }), 0)
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : '이전 버전을 복원하지 못했습니다.')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  const restoreDailyBackup = async (backup: DailyBackupSummary) => {
+    if (mode !== 'editor' || !activeMapId) return
+    const savedTime = backup.mapUpdatedAt ? new Date(backup.mapUpdatedAt).toLocaleString('ko-KR') : backup.date
+    if (!window.confirm(`${backup.date} 일일 백업(${savedTime})으로 복원할까요? 현재 상태도 복원 가능한 이력으로 보관됩니다.`)) return
+    setHistoryLoading(true)
+    setHistoryError('')
+    try {
+      const result = await apiRequest<{ map: MapDocument; summary: MapSummary; dailyBackups: DailyBackupSummary[]; revisions: MapRevisionSummary[]; historyHasMore: boolean; historyNextOffset: number | null }>(
+        `/api/maps/${encodeURIComponent(activeMapId)}/backups/daily/${encodeURIComponent(backup.date)}/restore`,
+        { method: 'POST' },
+      )
+      serverBaseline.current = structuredClone(result.map)
+      resetHistory(result.map.nodes, result.map.edges)
+      setNodes(result.map.nodes)
+      setEdges(result.map.edges)
+      setSelectedId(result.map.nodes[0]?.id ?? null)
+      setDocuments((current) => current.map((document) => document.id === result.summary.id ? result.summary : document))
+      setDailyBackups(result.dailyBackups)
+      setMapRevisions(result.revisions)
+      setHistoryHasMore(result.historyHasMore)
+      setHistoryNextOffset(result.historyNextOffset)
+      setHistoryPaginationError('')
+      setExternalChange(null)
+      localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify({ nodes: result.map.nodes, edges: result.map.edges }))
+      setSavedAt(`${backup.date} 일일 백업 복원됨`)
+      window.setTimeout(() => fitView({ padding: 0.2, duration: 400 }), 0)
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : '일일 백업을 복원하지 못했습니다.')
     } finally {
       setHistoryLoading(false)
     }
@@ -1940,11 +1968,40 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
       const result = await apiRequest<{ maps: MapSummary[]; trash: MapSummary[] }>(`/api/maps/${encodeURIComponent(mapId)}/restore`, { method: 'POST' })
       setDocuments(result.maps)
       setTrashedDocuments(result.trash)
+      setSelectedTrashIds((current) => {
+        const next = new Set(current)
+        next.delete(mapId)
+        return next
+      })
       setTrashOpen(false)
       setActiveMapId(mapId)
       setSavedAt('문서 복원됨')
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : '문서를 복원하지 못했습니다.')
+    }
+  }
+
+  const deleteTrashedDocuments = async (deleteAll = false) => {
+    if (mode !== 'editor' || trashDeleting) return
+    const mapIds = deleteAll ? trashedDocuments.map((document) => document.id) : [...selectedTrashIds]
+    if (mapIds.length === 0) return
+    const targetLabel = deleteAll ? `휴지통의 문서 ${mapIds.length}개를 모두` : `선택한 문서 ${mapIds.length}개를`
+    if (!window.confirm(`${targetLabel} 영구 삭제할까요?\n\n문서, 댓글, 변경 이력이 함께 삭제되며 이 작업은 되돌릴 수 없습니다.`)) return
+
+    setTrashDeleting(true)
+    setSaveError('')
+    try {
+      const result = await apiRequest<{ deletedIds: string[]; trash: MapSummary[] }>('/api/maps/trash', {
+        method: 'DELETE',
+        body: JSON.stringify(deleteAll ? { all: true } : { mapIds }),
+      })
+      setTrashedDocuments(result.trash)
+      setSelectedTrashIds(new Set())
+      setSavedAt(deleteAll ? '휴지통 비움' : `${result.deletedIds.length}개 문서 영구 삭제됨`)
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '휴지통 문서를 영구 삭제하지 못했습니다.')
+    } finally {
+      setTrashDeleting(false)
     }
   }
 
@@ -2420,11 +2477,56 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
             </>
           ) : (
             <section className="trash-list" aria-label="휴지통 문서">
-              <p>휴지통의 문서는 일반 목록과 저장 대상에서 제외됩니다.</p>
+              <p>휴지통의 문서는 일반 목록과 저장 대상에서 제외됩니다. 영구 삭제한 문서는 복원할 수 없습니다.</p>
+              {trashedDocuments.length > 0 && mode === 'editor' && (
+                <div className="trash-toolbar">
+                  <label className="trash-select-all">
+                    <input
+                      type="checkbox"
+                      checked={selectedTrashIds.size === trashedDocuments.length}
+                      onChange={(event) => setSelectedTrashIds(event.target.checked
+                        ? new Set(trashedDocuments.map((document) => document.id))
+                        : new Set())}
+                    />
+                    전체 선택
+                  </label>
+                  <button
+                    type="button"
+                    className="trash-delete-selected"
+                    disabled={selectedTrashIds.size === 0 || trashDeleting}
+                    onClick={() => { void deleteTrashedDocuments(false) }}
+                  >
+                    선택 삭제{selectedTrashIds.size > 0 ? ` (${selectedTrashIds.size})` : ''}
+                  </button>
+                  <button
+                    type="button"
+                    className="trash-empty-all"
+                    disabled={trashDeleting}
+                    onClick={() => { void deleteTrashedDocuments(true) }}
+                  >
+                    전체 비우기
+                  </button>
+                </div>
+              )}
               {trashedDocuments.map((document) => (
-                <div className="trash-item" key={document.id}>
+                <div className={`trash-item ${selectedTrashIds.has(document.id) ? 'selected' : ''}`} key={document.id}>
+                  {mode === 'editor' && (
+                    <input
+                      className="trash-item-select"
+                      type="checkbox"
+                      aria-label={`${document.title} 선택`}
+                      checked={selectedTrashIds.has(document.id)}
+                      disabled={trashDeleting}
+                      onChange={(event) => setSelectedTrashIds((current) => {
+                        const next = new Set(current)
+                        if (event.target.checked) next.add(document.id)
+                        else next.delete(document.id)
+                        return next
+                      })}
+                    />
+                  )}
                   <span><strong>{document.title}</strong><small>{document.nodeCount}개 항목 · {document.trashedAt ? new Date(document.trashedAt).toLocaleDateString('ko-KR') : ''}</small></span>
-                  {mode === 'editor' && <button onClick={() => { void restoreDocument(document.id) }} title="문서 복원"><Icon name="reset" size={14} />복원</button>}
+                  {mode === 'editor' && <button disabled={trashDeleting} onClick={() => { void restoreDocument(document.id) }} title="문서 복원"><Icon name="restore" size={14} />복원</button>}
                 </div>
               ))}
               {trashedDocuments.length === 0 && <div className="empty-map-list">휴지통이 비어 있습니다.</div>}
@@ -2508,7 +2610,6 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                 </button>
               )}
               {mode === 'editor' && <button onClick={deleteSelected} disabled={!selectedId} title="선택 삭제"><Icon name="trash" size={17} /></button>}
-              {mode === 'editor' && <button onClick={resetDemo} title="데모 초기화"><Icon name="reset" size={17} /></button>}
             </Panel>
             <Panel position="top-right" className="node-explorer">
               <label className="node-search-box">
@@ -2540,7 +2641,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
               <select value={assigneeFilter} onChange={(event) => setAssigneeFilter(event.target.value)} aria-label="담당자 필터" title="담당자 필터">
                 <option value="all">전체 담당자</option>
                 <option value="unassigned">담당자 미지정</option>
-                {teamMembers.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}
+                {teamMembers.map((member) => <option value={member.id} key={member.id}>{member.name}{member.active ? '' : ' (비활성)'}</option>)}
               </select>
               {filterActive && <button type="button" className="filter-reset" onClick={() => { setNodeFilter('all'); setAssigneeFilter('all') }}>초기화</button>}
             </Panel>
@@ -2576,6 +2677,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                 onUpdate={updateNode}
                 onOpenMindMap={() => setViewMode('mindmap')}
                 onContextMenu={openNodeContextMenu}
+                teamMembers={teamMembers}
               />
             )}
             {viewMode === 'timeline' && (
@@ -2587,6 +2689,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                 onUpdate={updateNode}
                 onOpenMindMap={() => setViewMode('mindmap')}
                 onContextMenu={openNodeContextMenu}
+                teamMembers={teamMembers}
               />
             )}
             {viewMode === 'dashboard' && (
@@ -2598,6 +2701,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                 onUpdate={updateNode}
                 onOpenMindMap={() => setViewMode('mindmap')}
                 onContextMenu={openNodeContextMenu}
+                teamMembers={teamMembers}
               />
             )}
           </section>
@@ -2660,6 +2764,11 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                       type="url"
                       value={selectedNode.data.taskUrl ?? ''}
                       onChange={(event) => updateNode(selectedNode.id, { taskUrl: event.target.value })}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter') return
+                        event.preventDefault()
+                        event.currentTarget.blur()
+                      }}
                       placeholder="https://example.com/task/123"
                       aria-label="업무 URL"
                     />
@@ -2771,7 +2880,10 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                           disabled={mode === 'viewer'}
                         >
                           <option value="">담당자 미지정</option>
-                          {teamMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                          {selectedNode.data.assigneeId && !selectableTeamMembers.some((member) => member.id === selectedNode.data.assigneeId) && (
+                            <option value={selectedNode.data.assigneeId} disabled>{teamMembers.find((member) => member.id === selectedNode.data.assigneeId)?.name ?? '알 수 없는 담당자'} (비활성)</option>
+                          )}
+                          {selectableTeamMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
                         </select>
                       </label>
                       <label>
@@ -2951,8 +3063,9 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                   </form>}
                 </section>
                 <div className="meta-card">
-                  <span>생성자</span><strong><span className="mini-avatar">YM</span>김용민</strong>
-                  <span>마지막 수정</span><strong>오늘</strong>
+                  <span>문서 생성자</span><strong><span className="mini-avatar">{assigneeInitials(activeDocument?.createdBy?.name ?? '?')}</span>{activeDocument?.createdBy?.name ?? '기록 없음'}</strong>
+                  <span>문서 생성</span><strong>{formatDocumentDate(activeDocument?.createdAt)}</strong>
+                  <span>마지막 수정</span><strong>{formatDocumentDate(activeDocument?.updatedAt)}</strong>
                 </div>
               </div>
               {mode === 'editor' && (
@@ -2974,18 +3087,22 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
         <div className="history-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) setHistoryOpen(false) }}>
           <section className="history-modal" role="dialog" aria-modal="true" aria-label="문서 변경 이력">
             <header>
-              <div><span>문서 버전</span><strong>변경 이력</strong></div>
+              <div><span>문서 보호</span><strong>백업과 변경 이력</strong></div>
               <button onClick={() => setHistoryOpen(false)} aria-label="변경 이력 닫기"><Icon name="close" size={16} /></button>
             </header>
+            <div className="history-tabs" role="tablist" aria-label="이력 종류">
+              <button className={historyTab === 'changes' ? 'active' : ''} role="tab" aria-selected={historyTab === 'changes'} onClick={() => setHistoryTab('changes')}>변경 이력 <strong>{mapRevisions.length}{historyHasMore ? '+' : ''}</strong></button>
+              <button className={historyTab === 'daily' ? 'active' : ''} role="tab" aria-selected={historyTab === 'daily'} onClick={() => setHistoryTab('daily')}>일일 백업 <strong>{dailyBackups.length}</strong></button>
+            </div>
             <div className="history-current">
               <span className="history-dot current" />
               <div><strong>현재 버전</strong><small>{activeDocument?.updatedAt ? new Date(activeDocument.updatedAt).toLocaleString('ko-KR') : '저장된 시간 없음'} · {activeDocument?.nodeCount ?? 0}개 항목</small></div>
               <span>사용 중</span>
             </div>
             <div className="history-list">
-              {historyLoading && <div className="history-message">변경 이력을 불러오는 중…</div>}
+              {historyLoading && <div className="history-message">{historyTab === 'changes' ? '변경 이력' : '일일 백업'}을 불러오는 중…</div>}
               {!historyLoading && historyError && <div className="history-message error">{historyError}</div>}
-              {!historyLoading && !historyError && mapRevisions.map((revision) => (
+              {!historyLoading && !historyError && historyTab === 'changes' && mapRevisions.map((revision) => (
                 <article className="history-item" key={revision.id}>
                   <span className="history-dot" />
                   <div>
@@ -2996,17 +3113,41 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                   {mode === 'editor' && <button disabled={historyLoading} onClick={() => { void restoreMapRevision(revision) }}>복원</button>}
                 </article>
               ))}
-              {!historyLoading && !historyError && mapRevisions.length === 0 && (
+              {!historyLoading && !historyError && historyTab === 'changes' && mapRevisions.length === 0 && (
                 <div className="history-message">아직 보관된 이전 버전이 없습니다.</div>
               )}
+              {!historyLoading && !historyError && historyTab === 'changes' && historyPaginationError && (
+                <div className="history-message error">{historyPaginationError}</div>
+              )}
+              {!historyLoading && !historyError && historyTab === 'changes' && historyHasMore && (
+                <button className="history-load-more" disabled={historyLoadingMore} onClick={() => { void loadMoreMapHistory() }}>
+                  {historyLoadingMore ? '불러오는 중…' : '더 보기'}
+                </button>
+              )}
+              {!historyLoading && !historyError && historyTab === 'daily' && dailyBackups.map((backup) => (
+                <article className="history-item daily" key={backup.date}>
+                  <span className="history-dot" />
+                  <div>
+                    <strong>{backup.date} 백업</strong>
+                    <small>문서 상태 {backup.mapUpdatedAt ? new Date(backup.mapUpdatedAt).toLocaleString('ko-KR') : '시간 기록 없음'}</small>
+                    <small>{backup.mapUpdatedBy?.name ?? backup.backedUpBy.name} · {backup.nodeCount}개 항목</small>
+                  </div>
+                  {mode === 'editor' && <button disabled={historyLoading} onClick={() => { void restoreDailyBackup(backup) }}>복원</button>}
+                </article>
+              ))}
+              {!historyLoading && !historyError && historyTab === 'daily' && dailyBackups.length === 0 && (
+                <div className="history-message">아직 생성된 일일 백업이 없습니다.</div>
+              )}
             </div>
-            <footer>{mode === 'editor' ? '복원 전 현재 상태도 이력에 자동 보관됩니다.' : '뷰어는 변경 이력을 확인할 수 있지만 복원할 수 없습니다.'}</footer>
+            <footer>{mode === 'editor' ? '일일 백업은 날짜별 최신 상태를 자동 보관하며, 복원 전 현재 상태도 이력에 저장됩니다.' : '뷰어는 변경 이력과 일일 백업을 확인할 수 있지만 복원할 수 없습니다.'}</footer>
           </section>
         </div>
       )}
       {aiDialogOpen && selectedNode && activeDocument && (
         <AiConversationDialog
+          key={activeDocument.id}
           documentId={activeDocument.id}
+          documentTitle={activeDocument.title}
           cardId={selectedNode.id}
           cardTitle={selectedNode.data.label}
           onClose={() => setAiDialogOpen(false)}

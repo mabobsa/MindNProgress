@@ -1,27 +1,37 @@
 import { createServer } from 'node:http'
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
-import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url))
 const projectDirectory = path.resolve(serverDirectory, '..')
-const dataDirectory = path.join(serverDirectory, 'data')
+const dataDirectory = path.resolve(String(process.env.MNP_DATA_DIR ?? '').trim() || path.join(serverDirectory, 'data'))
 const historyDirectory = path.join(dataDirectory, '_history')
+const dailyBackupDirectory = path.join(dataDirectory, '_daily-backups')
 const commentsDirectory = path.join(dataDirectory, '_comments')
 const notificationsDirectory = path.join(dataDirectory, '_notifications')
 const usersFile = path.join(dataDirectory, '_users.json')
+const sessionsFile = path.join(dataDirectory, '_sessions.json')
 const integrationTokenFile = path.join(dataDirectory, '_integration-token')
 const mapOrderFile = path.join(dataDirectory, '_map-order.json')
 const distDirectory = path.join(projectDirectory, 'dist')
 const port = Number(process.env.MNP_API_PORT ?? 4176)
 const host = process.env.MNP_API_HOST ?? '127.0.0.1'
-const aionUiBaseUrl = String(process.env.MNP_AIONUI_URL ?? 'http://127.0.0.1:5830').replace(/\/+$/, '')
+const configuredAionUiBaseUrl = String(process.env.MNP_AIONUI_URL ?? '').trim()
+const aionUiBaseUrls = (configuredAionUiBaseUrl
+  ? [configuredAionUiBaseUrl]
+  : ['http://127.0.0.1:1986', 'http://127.0.0.1:5830'])
+  .map((baseUrl) => baseUrl.replace(/\/+$/, ''))
+let activeAionUiBaseUrl = aionUiBaseUrls[0]
 const sessionDurationMs = 8 * 60 * 60 * 1000
+const rememberedSessionDurationMs = 30 * 24 * 60 * 60 * 1000
 const sessions = new Map()
+let sessionWriteQueue = Promise.resolve()
 const eventClients = new Map()
 const mapColors = ['violet', 'indigo', 'blue', 'cyan', 'teal', 'green', 'amber', 'orange', 'red', 'pink']
 const commentReactions = ['👍', '❤️', '🎉', '👀']
+const serverStartedAt = new Date().toISOString()
 
 function hashPassword(password, salt) {
   return scryptSync(password, salt, 64)
@@ -49,8 +59,8 @@ const seedAdmin = {
   email: bootstrapAdminEmail,
   role: 'admin',
   active: true,
-  createdAt: '2026-07-16T00:00:00.000Z',
-  updatedAt: '2026-07-16T00:00:00.000Z',
+  createdAt: serverStartedAt,
+  updatedAt: serverStartedAt,
   lastLoginAt: null,
   salt: bootstrapAdminSalt,
   passwordHash: hashPassword(bootstrapAdminPassword, bootstrapAdminSalt),
@@ -62,18 +72,14 @@ const seedPublicViewer = {
   role: 'viewer',
   active: true,
   systemManaged: true,
-  createdAt: '2026-07-16T00:00:00.000Z',
-  updatedAt: '2026-07-16T00:00:00.000Z',
+  createdAt: serverStartedAt,
+  updatedAt: serverStartedAt,
   lastLoginAt: null,
   salt: randomBytes(16).toString('hex'),
   passwordHash: randomBytes(64),
 }
 const seedUsers = [seedAdmin, seedPublicViewer]
 let users = seedUsers
-const assigneeUserIds = new Map([
-  ['kim', 'user-editor'],
-  ['viewer', 'user-viewer'],
-])
 const systemUser = { id: 'system', name: 'Mind & Progress', email: 'system@mind.local', role: 'viewer' }
 const integrationUser = {
   id: 'system-aionui-ai',
@@ -119,6 +125,22 @@ function sendJson(response, statusCode, body, headers = {}) {
 
 function requestClientId(request) {
   return String(request.headers['x-mnp-client'] ?? '').slice(0, 120) || null
+}
+
+async function replaceFileWithRetry(temporaryFile, targetFile) {
+  const retryableCodes = new Set(['EACCES', 'EBUSY', 'EEXIST', 'EPERM'])
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      await rename(temporaryFile, targetFile)
+      return
+    } catch (error) {
+      if (!retryableCodes.has(error?.code) || attempt === 5) {
+        await rm(temporaryFile, { force: true }).catch(() => undefined)
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 15 * (2 ** attempt)))
+    }
+  }
 }
 
 function broadcastEvent(payload, predicate = () => true) {
@@ -167,6 +189,10 @@ function parseCookies(request) {
   return cookies
 }
 
+function sessionTokenKey(token) {
+  return createHash('sha256').update(token).digest('hex')
+}
+
 function getCurrentUser(request) {
   const authorization = String(request.headers.authorization ?? '')
   const bearerToken = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : ''
@@ -178,10 +204,12 @@ function getCurrentUser(request) {
 
   const token = parseCookies(request).get('mnp_session')
   if (!token) return null
-  const session = sessions.get(token)
+  const tokenKey = sessionTokenKey(token)
+  const session = sessions.get(tokenKey)
   if (!session) return null
   if (session.expiresAt <= Date.now()) {
-    sessions.delete(token)
+    sessions.delete(tokenKey)
+    if (session.persistent) void persistSessions().catch((error) => console.error('[Session cleanup]', error))
     return null
   }
   return users.find((user) => user.id === session.userId && user.active !== false) ?? null
@@ -241,6 +269,26 @@ function normalizeMapEdges(map) {
   }
 }
 
+function normalizeMapAssignees(map) {
+  if (!map || !Array.isArray(map.nodes)) return map
+  const editorIds = new Set(users.filter((user) => user.role === 'editor').map((user) => user.id))
+  return {
+    ...map,
+    nodes: map.nodes.map((node) => {
+      const currentId = node.data?.assigneeId
+      if (!currentId) return node
+      const normalizedId = currentId === 'kim' ? 'user-editor' : currentId
+      if (!editorIds.has(normalizedId)) {
+        const data = { ...node.data }
+        delete data.assigneeId
+        return { ...node, data }
+      }
+      if (normalizedId !== currentId) return { ...node, data: { ...node.data, assigneeId: normalizedId } }
+      return node
+    }),
+  }
+}
+
 function isValidMapId(mapId) {
   return /^[a-z0-9][a-z0-9-]{0,79}$/.test(mapId)
 }
@@ -256,7 +304,6 @@ function normalizeTitle(title, fallback = '새 마인드맵') {
 }
 
 function defaultMapColor(mapId) {
-  if (mapId === 'product-roadmap') return 'violet'
   const colorIndex = [...mapId].reduce((sum, character) => sum + character.charCodeAt(0), 0) % mapColors.length
   return mapColors[colorIndex]
 }
@@ -274,6 +321,8 @@ function mapSummary(map) {
     version: map.version ?? 1,
     updatedAt: map.updatedAt ?? null,
     updatedBy: map.updatedBy ?? null,
+    createdAt: map.createdAt ?? map.updatedAt ?? null,
+    createdBy: map.createdBy ?? map.updatedBy ?? null,
     trashedAt: map.trashedAt ?? null,
     trashedBy: map.trashedBy ?? null,
   }
@@ -282,12 +331,14 @@ function mapSummary(map) {
 async function readMap(mapId) {
   try {
     const stored = JSON.parse(await readFile(mapFileForId(mapId), 'utf8'))
-    return normalizeMapEdges({
+    return normalizeMapAssignees(normalizeMapEdges({
       ...stored,
       id: mapId,
-      title: normalizeTitle(stored.title, mapId === 'product-roadmap' ? '제품 로드맵' : '새 마인드맵'),
+      title: normalizeTitle(stored.title, '새 마인드맵'),
+      createdAt: stored.createdAt ?? stored.updatedAt ?? null,
+      createdBy: stored.createdBy ?? stored.updatedBy ?? null,
       version: Number.isInteger(stored.version) && stored.version > 0 ? stored.version : 1,
-    })
+    }))
   } catch (error) {
     if (error?.code === 'ENOENT') return null
     throw error
@@ -316,8 +367,6 @@ async function listMaps({ trashedOnly = false } = {}) {
         if (secondIndex === undefined) return -1
         return firstIndex - secondIndex
       }
-      if (first.id === 'product-roadmap') return -1
-      if (second.id === 'product-roadmap') return 1
       return String(second.updatedAt ?? '').localeCompare(String(first.updatedAt ?? ''))
     })
 }
@@ -336,7 +385,7 @@ async function writeMapOrder(mapIds) {
   await mkdir(dataDirectory, { recursive: true })
   const temporaryFile = `${mapOrderFile}.${randomBytes(6).toString('hex')}.tmp`
   await writeFile(temporaryFile, `${JSON.stringify(mapIds, null, 2)}\n`, 'utf8')
-  await rename(temporaryFile, mapOrderFile)
+  await replaceFileWithRetry(temporaryFile, mapOrderFile)
 }
 
 async function writeStoredMap(mapId, payload) {
@@ -344,7 +393,7 @@ async function writeStoredMap(mapId, payload) {
   const mapFile = mapFileForId(mapId)
   const temporaryFile = `${mapFile}.${randomBytes(6).toString('hex')}.tmp`
   await writeFile(temporaryFile, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
-  await rename(temporaryFile, mapFile)
+  await replaceFileWithRetry(temporaryFile, mapFile)
 }
 
 async function migrateStoredMapEdges() {
@@ -368,6 +417,47 @@ async function migrateStoredMapEdges() {
   return { migratedDocuments, migratedEdges }
 }
 
+async function migrateStoredMapCreationMetadata() {
+  await mkdir(dataDirectory, { recursive: true })
+  const entries = await readdir(dataDirectory, { withFileTypes: true })
+  let migratedDocuments = 0
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.startsWith('_')) continue
+    const mapId = entry.name.slice(0, -5)
+    if (!isValidMapId(mapId)) continue
+    const stored = JSON.parse(await readFile(path.join(dataDirectory, entry.name), 'utf8'))
+    if (!isValidMap(stored) || stored.createdAt && stored.createdBy) continue
+
+    let earliestRevision = null
+    try {
+      const revisionDirectory = revisionDirectoryForMap(mapId)
+      const revisionEntries = await readdir(revisionDirectory, { withFileTypes: true })
+      for (const revisionEntry of revisionEntries) {
+        if (!revisionEntry.isFile() || !revisionEntry.name.endsWith('.json')) continue
+        const revision = JSON.parse(await readFile(path.join(revisionDirectory, revisionEntry.name), 'utf8'))
+        if (revision?.mapId !== mapId || !isValidMap(revision.map)) continue
+        if (!earliestRevision || String(revision.archivedAt).localeCompare(String(earliestRevision.archivedAt)) < 0) earliestRevision = revision
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+
+    const createdAt = earliestRevision?.map?.createdAt
+      ?? earliestRevision?.map?.updatedAt
+      ?? earliestRevision?.archivedAt
+      ?? stored.updatedAt
+      ?? serverStartedAt
+    const createdBy = earliestRevision?.map?.createdBy
+      ?? earliestRevision?.map?.updatedBy
+      ?? earliestRevision?.archivedBy
+      ?? stored.updatedBy
+      ?? systemUser
+    await writeStoredMap(mapId, { ...stored, createdAt, createdBy })
+    migratedDocuments += 1
+  }
+  return { migratedDocuments }
+}
+
 async function readStoredArray(filePath) {
   try {
     const value = JSON.parse(await readFile(filePath, 'utf8'))
@@ -382,7 +472,7 @@ async function writeStoredArray(filePath, value) {
   await mkdir(path.dirname(filePath), { recursive: true })
   const temporaryFile = `${filePath}.${randomBytes(5).toString('hex')}.tmp`
   await writeFile(temporaryFile, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
-  await rename(temporaryFile, filePath)
+  await replaceFileWithRetry(temporaryFile, filePath)
 }
 
 function serializedUser(user) {
@@ -394,6 +484,31 @@ function serializedUser(user) {
 
 async function persistUsers() {
   await writeStoredArray(usersFile, users.map(serializedUser))
+}
+
+function persistSessions() {
+  const now = Date.now()
+  const storedSessions = [...sessions.entries()]
+    .filter(([, session]) => session.persistent && session.expiresAt > now)
+    .map(([tokenHash, session]) => ({ tokenHash, userId: session.userId, expiresAt: session.expiresAt }))
+  sessionWriteQueue = sessionWriteQueue.catch(() => {}).then(() => writeStoredArray(sessionsFile, storedSessions))
+  return sessionWriteQueue
+}
+
+async function loadSessions() {
+  const now = Date.now()
+  const storedSessions = await readStoredArray(sessionsFile)
+  for (const session of storedSessions) {
+    if (!/^[a-f0-9]{64}$/.test(String(session?.tokenHash ?? ''))) continue
+    if (!Number.isFinite(session?.expiresAt) || session.expiresAt <= now) continue
+    if (!users.some((user) => user.id === session.userId && user.active !== false)) continue
+    sessions.set(session.tokenHash, {
+      userId: session.userId,
+      expiresAt: session.expiresAt,
+      persistent: true,
+    })
+  }
+  await persistSessions()
 }
 
 async function loadIntegrationToken() {
@@ -411,13 +526,23 @@ async function loadIntegrationToken() {
 }
 
 async function fetchAionUi(pathname) {
-  const response = await fetch(`${aionUiBaseUrl}${pathname}`, {
-    headers: { Accept: 'application/json' },
-    signal: AbortSignal.timeout(8_000),
-  })
-  const body = await response.json().catch(() => ({}))
-  if (!response.ok || body?.success === false) throw new Error(`AIONUI_REQUEST_FAILED:${response.status}`)
-  return body?.data ?? body
+  let lastError = null
+  const candidates = [activeAionUiBaseUrl, ...aionUiBaseUrls.filter((baseUrl) => baseUrl !== activeAionUiBaseUrl)]
+  for (const baseUrl of candidates) {
+    try {
+      const response = await fetch(`${baseUrl}${pathname}`, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(8_000),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.success === false) throw new Error(`AIONUI_REQUEST_FAILED:${response.status}`)
+      activeAionUiBaseUrl = baseUrl
+      return body?.data ?? body
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError ?? new Error('AIONUI_REQUEST_FAILED')
 }
 
 function normalizeAionUiOption(option) {
@@ -451,7 +576,7 @@ function normalizeAionUiAgent(agent, providers) {
   return {
     id: String(agent.id),
     name: String(agent.name ?? agent.id),
-    icon: typeof agent.icon === 'string' ? `${aionUiBaseUrl}${agent.icon}` : null,
+    icon: typeof agent.icon === 'string' ? `${activeAionUiBaseUrl}${agent.icon}` : null,
     backend: String(agent.backend ?? agent.agent_type ?? ''),
     status: String(agent.status ?? 'unknown'),
     models: availableModels.length > 0 ? availableModels : providerModels,
@@ -490,7 +615,6 @@ async function loadUsers() {
       passwordHash: Buffer.from(String(user.passwordHash ?? ''), 'hex'),
     }))
     .filter((user) => user.passwordHash.length === 64)
-    .filter((user) => !['editor@mind.local', 'viewer@mind.local'].includes(user.email.toLowerCase()))
   const adminCreated = !users.some((user) => user.role === 'admin')
   if (adminCreated) users.unshift(seedAdmin)
   if (!users.some((user) => user.id === 'user-public-viewer')) {
@@ -500,10 +624,16 @@ async function loadUsers() {
   return adminCreated
 }
 
-function invalidateUserSessions(userId, keepToken = null) {
-  for (const [token, session] of sessions) {
-    if (session.userId === userId && token !== keepToken) sessions.delete(token)
+async function invalidateUserSessions(userId, keepToken = null) {
+  const keepTokenKey = keepToken ? sessionTokenKey(keepToken) : null
+  let persistentSessionRemoved = false
+  for (const [tokenKey, session] of sessions) {
+    if (session.userId === userId && tokenKey !== keepTokenKey) {
+      sessions.delete(tokenKey)
+      persistentSessionRemoved ||= Boolean(session.persistent)
+    }
   }
+  if (persistentSessionRemoved) await persistSessions()
 }
 
 function commentFileForMap(mapId) {
@@ -535,11 +665,24 @@ function mentionedUsers(text) {
 }
 
 async function listNotifications(userId) {
-  const notifications = await readStoredArray(notificationFileForUser(userId))
+  let notifications
+  try {
+    notifications = await readStoredArray(notificationFileForUser(userId))
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error
+    console.warn(`[Notifications] 손상된 알림 파일을 빈 목록으로 처리합니다: ${userId}`)
+    notifications = []
+  }
   return notifications
     .filter((notification) => notification?.userId === userId)
     .sort((first, second) => String(second.createdAt).localeCompare(String(first.createdAt)))
     .slice(0, 200)
+}
+
+function reportRejectedSideEffects(results, label) {
+  for (const result of results) {
+    if (result.status === 'rejected') console.error(`[${label}]`, result.reason)
+  }
 }
 
 async function createNotification(user, payload) {
@@ -573,8 +716,7 @@ function dateSerial(dateValue) {
 }
 
 async function ensureScheduleNotifications(user) {
-  const assigneeIds = [...assigneeUserIds.entries()].filter(([, userId]) => userId === user.id).map(([assigneeId]) => assigneeId)
-  if (assigneeIds.length === 0) return
+  if (user.role !== 'editor' || user.active === false) return
   const today = seoulDateString()
   const todaySerial = dateSerial(today)
   const notifications = await listNotifications(user.id)
@@ -587,7 +729,7 @@ async function ensureScheduleNotifications(user) {
     for (const node of map.nodes) {
       const dueSerial = dateSerial(node.data?.dueDate)
       const completed = Number(node.data?.progress) >= 100 || node.data?.status === 'done'
-      if (!node.data?.isWork || !assigneeIds.includes(node.data.assigneeId) || completed || dueSerial === null || todaySerial === null) continue
+      if (!node.data?.isWork || node.data.assigneeId !== user.id || completed || dueSerial === null || todaySerial === null) continue
       const daysUntilDue = dueSerial - todaySerial
       if (daysUntilDue > 3) continue
       const timing = daysUntilDue < 0 ? 'overdue' : daysUntilDue === 0 ? 'today' : 'upcoming'
@@ -618,8 +760,7 @@ async function createWorkChangeNotifications(existing, map, actor) {
     const previous = previousNodes.get(node.id)
     const assigneeChanged = previous?.data?.assigneeId !== node.data.assigneeId
     const dueDateChanged = previous?.data?.dueDate !== node.data.dueDate
-    const assigneeUserId = assigneeUserIds.get(node.data.assigneeId)
-    const recipient = users.find((candidate) => candidate.id === assigneeUserId && candidate.active !== false)
+    const recipient = users.find((candidate) => candidate.id === node.data.assigneeId && candidate.role === 'editor' && candidate.active !== false)
     if (!recipient) continue
 
     if (assigneeChanged) {
@@ -655,6 +796,20 @@ function revisionDirectoryForMap(mapId) {
   return path.join(historyDirectory, mapId)
 }
 
+function isValidDailyBackupDate(date) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date)
+}
+
+function dailyBackupDirectoryForMap(mapId) {
+  if (!isValidMapId(mapId)) throw new Error('INVALID_MAP_ID')
+  return path.join(dailyBackupDirectory, mapId)
+}
+
+function dailyBackupFileForMap(mapId, date) {
+  if (!isValidDailyBackupDate(date)) throw new Error('INVALID_DAILY_BACKUP_DATE')
+  return path.join(dailyBackupDirectoryForMap(mapId), `${date}.json`)
+}
+
 function mapContentSignature(map) {
   return JSON.stringify({ title: map.title, color: map.color, nodes: map.nodes, edges: map.edges })
 }
@@ -678,14 +833,157 @@ async function archiveMapRevision(map, user, reason) {
       edges: map.edges,
       updatedAt: map.updatedAt ?? null,
       updatedBy: map.updatedBy ?? null,
+      createdAt: map.createdAt ?? map.updatedAt ?? null,
+      createdBy: map.createdBy ?? map.updatedBy ?? null,
       version: map.version ?? 1,
     },
   }
   const revisionFile = path.join(directory, `${revisionId}.json`)
   const temporaryFile = `${revisionFile}.${randomBytes(4).toString('hex')}.tmp`
   await writeFile(temporaryFile, `${JSON.stringify(revision, null, 2)}\n`, 'utf8')
-  await rename(temporaryFile, revisionFile)
+  await replaceFileWithRetry(temporaryFile, revisionFile)
   return revision
+}
+
+async function writeDailyBackup(map, user, reason = 'automatic', date = seoulDateString(), { overwrite = true } = {}) {
+  if (!map || map.trashedAt || !isValidMap(map) || !isValidDailyBackupDate(date)) return null
+  const directory = dailyBackupDirectoryForMap(map.id)
+  const backupFile = dailyBackupFileForMap(map.id, date)
+  if (!overwrite) {
+    try {
+      await stat(backupFile)
+      return null
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+  }
+  await mkdir(directory, { recursive: true })
+  const backup = {
+    date,
+    mapId: map.id,
+    backedUpAt: new Date().toISOString(),
+    backedUpBy: publicUser(user),
+    reason,
+    map: {
+      id: map.id,
+      title: map.title,
+      color: normalizeMapColor(map.color, defaultMapColor(map.id)),
+      nodes: map.nodes,
+      edges: map.edges,
+      updatedAt: map.updatedAt ?? null,
+      updatedBy: map.updatedBy ?? null,
+      createdAt: map.createdAt ?? map.updatedAt ?? null,
+      createdBy: map.createdBy ?? map.updatedBy ?? null,
+      version: map.version ?? 1,
+    },
+  }
+  const temporaryFile = `${backupFile}.${randomBytes(4).toString('hex')}.tmp`
+  await writeFile(temporaryFile, `${JSON.stringify(backup, null, 2)}\n`, 'utf8')
+  await replaceFileWithRetry(temporaryFile, backupFile)
+  return backup
+}
+
+function dailyBackupSummary(backup) {
+  return {
+    date: backup.date,
+    mapId: backup.mapId,
+    title: backup.map.title,
+    color: backup.map.color,
+    nodeCount: backup.map.nodes.length,
+    backedUpAt: backup.backedUpAt,
+    backedUpBy: backup.backedUpBy,
+    reason: backup.reason,
+    mapUpdatedAt: backup.map.updatedAt,
+    mapUpdatedBy: backup.map.updatedBy,
+  }
+}
+
+async function listDailyBackups(mapId) {
+  const directory = dailyBackupDirectoryForMap(mapId)
+  try {
+    const entries = await readdir(directory, { withFileTypes: true })
+    const backups = await Promise.all(entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && isValidDailyBackupDate(entry.name.slice(0, -5)))
+      .map(async (entry) => JSON.parse(await readFile(path.join(directory, entry.name), 'utf8'))))
+    return backups
+      .filter((backup) => backup?.mapId === mapId && isValidDailyBackupDate(backup.date) && isValidMap(backup.map))
+      .sort((first, second) => String(second.date).localeCompare(String(first.date)))
+      .map(dailyBackupSummary)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return []
+    throw error
+  }
+}
+
+async function readDailyBackup(mapId, date) {
+  if (!isValidDailyBackupDate(date)) return null
+  try {
+    const backup = JSON.parse(await readFile(dailyBackupFileForMap(mapId, date), 'utf8'))
+    return backup?.mapId === mapId && backup.date === date && isValidMap(backup.map)
+      ? { ...backup, map: normalizeMapAssignees(normalizeMapEdges(backup.map)) }
+      : null
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+async function ensureDailyBackups() {
+  const summaries = await listMaps()
+  let created = 0
+  for (const summary of summaries) {
+    const map = await readMap(summary.id)
+    if (!map || map.trashedAt) continue
+    const backup = await writeDailyBackup(map, systemUser, 'scheduled', seoulDateString(), { overwrite: false })
+    if (backup) created += 1
+  }
+  return created
+}
+
+async function backfillDailyBackupsFromHistory() {
+  const summaries = await listMaps()
+  let created = 0
+  for (const summary of summaries) {
+    const map = await readMap(summary.id)
+    if (!map || map.trashedAt) continue
+    const revisions = await readAllMapRevisions(map.id)
+    const latestByDate = new Map()
+    for (const revision of revisions) {
+      const snapshotAt = new Date(revision.map.updatedAt ?? revision.archivedAt)
+      if (!Number.isFinite(snapshotAt.getTime())) continue
+      const date = seoulDateString(snapshotAt)
+      const previous = latestByDate.get(date)
+      if (!previous || snapshotAt > previous.snapshotAt) latestByDate.set(date, { revision, snapshotAt })
+    }
+    const currentSnapshotAt = new Date(map.updatedAt ?? Date.now())
+    if (Number.isFinite(currentSnapshotAt.getTime())) {
+      const date = seoulDateString(currentSnapshotAt)
+      const previous = latestByDate.get(date)
+      if (!previous || currentSnapshotAt > previous.snapshotAt) latestByDate.set(date, {
+        revision: { map, archivedBy: map.updatedBy ?? systemUser },
+        snapshotAt: currentSnapshotAt,
+      })
+    }
+    for (const [date, { revision }] of latestByDate) {
+      const backup = await writeDailyBackup(revision.map, revision.archivedBy ?? systemUser, 'history-backfill', date, { overwrite: false })
+      if (backup) created += 1
+    }
+  }
+  return created
+}
+
+async function readAllMapRevisions(mapId) {
+  const directory = revisionDirectoryForMap(mapId)
+  try {
+    const entries = await readdir(directory, { withFileTypes: true })
+    const revisions = await Promise.all(entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && isValidRevisionId(entry.name.slice(0, -5)))
+      .map(async (entry) => JSON.parse(await readFile(path.join(directory, entry.name), 'utf8'))))
+    return revisions.filter((revision) => revision?.mapId === mapId && isValidMap(revision.map))
+  } catch (error) {
+    if (error?.code === 'ENOENT') return []
+    throw error
+  }
 }
 
 function revisionSummary(revision) {
@@ -703,20 +1001,26 @@ function revisionSummary(revision) {
   }
 }
 
-async function listMapRevisions(mapId) {
+async function listMapRevisions(mapId, { offset = 0, limit = 50 } = {}) {
   const directory = revisionDirectoryForMap(mapId)
   try {
     const entries = await readdir(directory, { withFileTypes: true })
     const revisions = await Promise.all(entries
       .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && isValidRevisionId(entry.name.slice(0, -5)))
       .map(async (entry) => JSON.parse(await readFile(path.join(directory, entry.name), 'utf8'))))
-    return revisions
+    const summaries = revisions
       .filter((revision) => revision?.mapId === mapId && isValidMap(revision.map))
       .sort((first, second) => String(second.archivedAt).localeCompare(String(first.archivedAt)))
-      .slice(0, 50)
       .map(revisionSummary)
+    const page = summaries.slice(offset, offset + limit)
+    const nextOffset = offset + page.length
+    return {
+      revisions: page,
+      hasMore: nextOffset < summaries.length,
+      nextOffset: nextOffset < summaries.length ? nextOffset : null,
+    }
   } catch (error) {
-    if (error?.code === 'ENOENT') return []
+    if (error?.code === 'ENOENT') return { revisions: [], hasMore: false, nextOffset: null }
     throw error
   }
 }
@@ -726,7 +1030,7 @@ async function readMapRevision(mapId, revisionId) {
   try {
     const revision = JSON.parse(await readFile(path.join(revisionDirectoryForMap(mapId), `${revisionId}.json`), 'utf8'))
     return revision?.mapId === mapId && isValidMap(revision.map)
-      ? { ...revision, map: normalizeMapEdges(revision.map) }
+      ? { ...revision, map: normalizeMapAssignees(normalizeMapEdges(revision.map)) }
       : null
   } catch (error) {
     if (error?.code === 'ENOENT') return null
@@ -737,13 +1041,17 @@ async function readMapRevision(mapId, revisionId) {
 async function saveMap(mapId, map, user, title, color, revisionReason = 'edit') {
   await mkdir(dataDirectory, { recursive: true })
   const existing = await readMap(mapId)
+  const now = new Date().toISOString()
+  const normalizedMap = normalizeMapAssignees(map)
   const payload = {
-    nodes: map.nodes,
-    edges: normalizeMapEdges(map).edges,
+    nodes: normalizedMap.nodes,
+    edges: normalizeMapEdges(normalizedMap).edges,
     id: mapId,
-    title: normalizeTitle(title, existing?.title ?? (mapId === 'product-roadmap' ? '제품 로드맵' : '새 마인드맵')),
+    title: normalizeTitle(title, existing?.title ?? '새 마인드맵'),
     color: normalizeMapColor(color, normalizeMapColor(existing?.color, defaultMapColor(mapId))),
-    updatedAt: new Date().toISOString(),
+    createdAt: existing?.createdAt ?? now,
+    createdBy: existing?.createdBy ?? publicUser(user),
+    updatedAt: now,
     updatedBy: publicUser(user),
     version: (existing?.version ?? 0) + 1,
   }
@@ -751,6 +1059,11 @@ async function saveMap(mapId, map, user, title, color, revisionReason = 'edit') 
     await archiveMapRevision(existing, user, revisionReason)
   }
   await writeStoredMap(mapId, payload)
+  try {
+    await writeDailyBackup(payload, user, 'automatic')
+  } catch (error) {
+    console.warn(`[Daily backup] ${mapId} 백업을 저장하지 못했습니다.`, error)
+  }
   return payload
 }
 
@@ -778,6 +1091,39 @@ async function restoreMap(mapId, user) {
   delete payload.trashedBy
   await writeStoredMap(mapId, payload)
   return payload
+}
+
+async function permanentlyDeleteTrashedMaps(mapIds) {
+  const uniqueMapIds = [...new Set(mapIds)]
+  const maps = await Promise.all(uniqueMapIds.map((mapId) => readMap(mapId)))
+  if (maps.some((map) => !map?.trashedAt)) return null
+
+  await Promise.all(uniqueMapIds.flatMap((mapId) => [
+    rm(mapFileForId(mapId), { force: true }),
+    rm(commentFileForMap(mapId), { force: true }),
+    rm(revisionDirectoryForMap(mapId), { recursive: true, force: true }),
+    rm(dailyBackupDirectoryForMap(mapId), { recursive: true, force: true }),
+  ]))
+
+  const deletedMapIds = new Set(uniqueMapIds)
+  const notificationEntries = await readdir(notificationsDirectory, { withFileTypes: true }).catch((error) => {
+    if (error?.code === 'ENOENT') return []
+    throw error
+  })
+  await Promise.all(notificationEntries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map(async (entry) => {
+      const filePath = path.join(notificationsDirectory, entry.name)
+      const notifications = await readStoredArray(filePath).catch(() => null)
+      if (!notifications) return
+      const remaining = notifications.filter((notification) => !deletedMapIds.has(notification.mapId))
+      if (remaining.length !== notifications.length) await writeStoredArray(filePath, remaining)
+    }))
+
+  const mapOrder = await readMapOrder()
+  const nextMapOrder = mapOrder.filter((mapId) => !deletedMapIds.has(mapId))
+  if (nextMapOrder.length !== mapOrder.length) await writeMapOrder(nextMapOrder)
+  return uniqueMapIds
 }
 
 const mimeTypes = {
@@ -817,9 +1163,22 @@ async function serveStatic(request, response, pathname) {
 
 integrationToken = await loadIntegrationToken()
 const adminBootstrapped = await loadUsers()
+await loadSessions()
+const metadataMigration = await migrateStoredMapCreationMetadata()
+if (metadataMigration.migratedDocuments > 0) {
+  console.log(`[Mind & Progress] 문서 ${metadataMigration.migratedDocuments}개에 생성자와 생성 시각을 복원했습니다.`)
+}
 const edgeMigration = await migrateStoredMapEdges()
 if (edgeMigration.migratedDocuments > 0) {
   console.log(`[Mind & Progress] 베지어 화살표로 문서 ${edgeMigration.migratedDocuments}개, 연결선 ${edgeMigration.migratedEdges}개를 변환했습니다.`)
+}
+const dailyBackupMigrationCount = await backfillDailyBackupsFromHistory()
+if (dailyBackupMigrationCount > 0) {
+  console.log(`[Mind & Progress] 기존 변경 이력에서 일일 백업 ${dailyBackupMigrationCount}개를 복원했습니다.`)
+}
+const initialDailyBackupCount = await ensureDailyBackups()
+if (initialDailyBackupCount > 0) {
+  console.log(`[Mind & Progress] 오늘의 일일 백업 ${initialDailyBackupCount}개를 생성했습니다.`)
 }
 if (adminBootstrapped) {
   console.log(`[Mind & Progress] 초기 관리자 이메일: ${bootstrapAdminEmail}`)
@@ -848,12 +1207,22 @@ const server = createServer(async (request, response) => {
       }
 
       const token = randomBytes(32).toString('base64url')
-      sessions.set(token, { userId: user.id, expiresAt: Date.now() + sessionDurationMs })
+      const rememberMe = body.rememberMe === true
+      const durationMs = rememberMe ? rememberedSessionDurationMs : sessionDurationMs
+      const expiresAt = Date.now() + durationMs
+      sessions.set(sessionTokenKey(token), { userId: user.id, expiresAt, persistent: rememberMe })
+      if (rememberMe) await persistSessions()
       user.lastLoginAt = new Date().toISOString()
       user.updatedAt = user.updatedAt ?? user.lastLoginAt
       await persistUsers()
-      return sendJson(response, 200, { user: publicUser(user) }, {
-        'Set-Cookie': `mnp_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${sessionDurationMs / 1000}`,
+      return sendJson(response, 200, { user: publicUser(user), rememberMe, expiresAt }, {
+        'Set-Cookie': [
+          `mnp_session=${token}`,
+          'Path=/',
+          'HttpOnly',
+          'SameSite=Strict',
+          ...(rememberMe ? [`Max-Age=${rememberedSessionDurationMs / 1000}`] : []),
+        ].join('; '),
       })
     }
 
@@ -861,7 +1230,7 @@ const server = createServer(async (request, response) => {
       const viewer = users.find((candidate) => candidate.id === 'user-public-viewer' && isPublicViewer(candidate) && candidate.active !== false)
       if (!viewer) return sendJson(response, 503, { error: '공개 뷰어 계정이 준비되지 않았습니다.' })
       const token = randomBytes(32).toString('base64url')
-      sessions.set(token, { userId: viewer.id, expiresAt: Date.now() + sessionDurationMs })
+      sessions.set(sessionTokenKey(token), { userId: viewer.id, expiresAt: Date.now() + sessionDurationMs, persistent: false })
       return sendJson(response, 200, { user: publicUser(viewer) }, {
         'Set-Cookie': `mnp_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${sessionDurationMs / 1000}`,
       })
@@ -876,6 +1245,12 @@ const server = createServer(async (request, response) => {
       const user = requireUser(request, response)
       if (!user) return
       return sendJson(response, 200, { users: users.filter((candidate) => candidate.active !== false && !isPublicViewer(candidate)).map(publicUser) })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/assignees') {
+      const user = requireUser(request, response)
+      if (!user) return
+      return sendJson(response, 200, { users: users.filter((candidate) => candidate.role === 'editor').map(accountUser) })
     }
 
     if (request.method === 'GET' && url.pathname === '/api/integrations/aionui/options') {
@@ -911,7 +1286,7 @@ const server = createServer(async (request, response) => {
           }))
         return sendJson(response, 200, {
           connected: true,
-          aionUiUrl: aionUiBaseUrl,
+          aionUiUrl: activeAionUiBaseUrl,
           protocol: 'aionui://conversation/new',
           agents: normalizedAgents,
           skills: normalizedSkills,
@@ -947,7 +1322,7 @@ const server = createServer(async (request, response) => {
       user.passwordHash = hashPassword(newPassword, user.salt)
       user.updatedAt = new Date().toISOString()
       const currentToken = parseCookies(request).get('mnp_session') ?? null
-      invalidateUserSessions(user.id, currentToken)
+      await invalidateUserSessions(user.id, currentToken)
       await persistUsers()
       return sendJson(response, 200, { ok: true })
     }
@@ -1005,7 +1380,7 @@ const server = createServer(async (request, response) => {
       editor.salt = randomBytes(16).toString('hex')
       editor.passwordHash = hashPassword(password, editor.salt)
       editor.updatedAt = new Date().toISOString()
-      invalidateUserSessions(editor.id)
+      await invalidateUserSessions(editor.id)
       await persistUsers()
       return sendJson(response, 200, { editor: accountUser(editor), temporaryPassword: password })
     }
@@ -1032,14 +1407,14 @@ const server = createServer(async (request, response) => {
         editor.email = email
         editor.active = active
         editor.updatedAt = new Date().toISOString()
-        if (!active) invalidateUserSessions(editor.id)
+        if (!active) await invalidateUserSessions(editor.id)
         await persistUsers()
         return sendJson(response, 200, { editor: accountUser(editor) })
       }
 
       if (request.method === 'DELETE') {
         users = users.filter((candidate) => candidate.id !== editor.id)
-        invalidateUserSessions(editor.id)
+        await invalidateUserSessions(editor.id)
         await persistUsers()
         return sendJson(response, 200, { deletedId: editor.id })
       }
@@ -1130,7 +1505,11 @@ const server = createServer(async (request, response) => {
 
     if (request.method === 'POST' && url.pathname === '/api/auth/logout') {
       const token = parseCookies(request).get('mnp_session')
-      if (token) sessions.delete(token)
+      if (token) {
+        const session = sessions.get(sessionTokenKey(token))
+        sessions.delete(sessionTokenKey(token))
+        if (session?.persistent) await persistSessions()
+      }
       return sendJson(response, 200, { ok: true }, {
         'Set-Cookie': 'mnp_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0',
       })
@@ -1147,6 +1526,40 @@ const server = createServer(async (request, response) => {
       if (!user) return
       if (!canEdit(user)) return sendJson(response, 403, { error: '뷰어는 휴지통을 볼 수 없습니다.' })
       return sendJson(response, 200, { maps: await listMaps({ trashedOnly: true }) })
+    }
+
+    if (request.method === 'DELETE' && url.pathname === '/api/maps/trash') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '뷰어는 휴지통 문서를 영구 삭제할 수 없습니다.' })
+      const body = await readJsonBody(request)
+      const trash = await listMaps({ trashedOnly: true })
+      const requestedIds = body.all === true
+        ? trash.map((map) => map.id)
+        : Array.isArray(body.mapIds) ? [...new Set(body.mapIds)] : []
+      if (requestedIds.length === 0) return sendJson(response, 400, { error: '영구 삭제할 휴지통 문서를 선택해 주세요.' })
+      if (requestedIds.some((mapId) => typeof mapId !== 'string' || !isValidMapId(mapId))) {
+        return sendJson(response, 400, { error: '올바르지 않은 문서 ID가 포함되어 있습니다.' })
+      }
+      const trashIds = new Set(trash.map((map) => map.id))
+      if (requestedIds.some((mapId) => !trashIds.has(mapId))) {
+        return sendJson(response, 404, { error: '휴지통에서 일부 문서를 찾을 수 없습니다. 목록을 새로고침해 주세요.' })
+      }
+      const deletedIds = await permanentlyDeleteTrashedMaps(requestedIds)
+      if (!deletedIds) return sendJson(response, 409, { error: '휴지통 상태가 변경되었습니다. 목록을 새로고침해 주세요.' })
+      broadcastEvent({
+        type: 'map-changed',
+        mapId: null,
+        action: body.all === true ? 'trash-emptied' : 'trash-deleted',
+        deletedIds,
+        sourceClientId: requestClientId(request),
+        updatedAt: new Date().toISOString(),
+        updatedBy: publicUser(user),
+      })
+      return sendJson(response, 200, {
+        deletedIds,
+        trash: await listMaps({ trashedOnly: true }),
+      })
     }
 
     if (request.method === 'POST' && url.pathname === '/api/maps') {
@@ -1274,13 +1687,14 @@ const server = createServer(async (request, response) => {
         }
       }
       await writeStoredArray(commentFileForMap(mapId), comments.filter((item) => !deletedIds.has(item.id)))
-      await Promise.all(users.map(async (recipient) => {
+      const notificationCleanupResults = await Promise.allSettled(users.map(async (recipient) => {
         const notifications = await listNotifications(recipient.id)
         const removedIds = notifications.filter((notification) => deletedIds.has(notification.commentId)).map((notification) => notification.id)
         if (removedIds.length === 0) return
         await writeStoredArray(notificationFileForUser(recipient.id), notifications.filter((notification) => !deletedIds.has(notification.commentId)))
         broadcastEvent({ type: 'notifications-removed', userId: recipient.id, notificationIds: removedIds }, (client) => client.user.id === recipient.id)
       }))
+      reportRejectedSideEffects(notificationCleanupResults, 'Comment notification cleanup')
       broadcastEvent({ type: 'comment-changed', mapId, nodeId: comment.nodeId, action: 'deleted', commentIds: [...deletedIds] })
       return sendJson(response, 200, { deletedIds: [...deletedIds] })
     }
@@ -1326,7 +1740,7 @@ const server = createServer(async (request, response) => {
         }
         await writeStoredArray(commentFileForMap(mapId), [...comments, comment])
         const mentionedIds = new Set(mentionedUsers(text).map((candidate) => candidate.id))
-        await Promise.all(users
+        const notificationResults = await Promise.allSettled(users
           .filter((recipient) => recipient.id !== user.id && recipient.active !== false && !isPublicViewer(recipient))
           .map((recipient) => createNotification(recipient, {
             type: mentionedIds.has(recipient.id) ? 'mention' : parent?.author.id === recipient.id ? 'reply' : 'comment',
@@ -1338,6 +1752,7 @@ const server = createServer(async (request, response) => {
             message: text.slice(0, 180),
             actor: publicUser(user),
           })))
+        reportRejectedSideEffects(notificationResults, 'Comment notification creation')
         broadcastEvent({ type: 'comment-changed', mapId, nodeId, action: 'created', comment })
         return sendJson(response, 201, { comment })
       }
@@ -1355,6 +1770,7 @@ const server = createServer(async (request, response) => {
       if (!current || current.trashedAt) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
       const revision = await readMapRevision(mapId, revisionId)
       if (!revision) return sendJson(response, 404, { error: '변경 이력을 찾을 수 없습니다.' })
+      await writeDailyBackup(current, user, 'before-history-restore')
       await archiveMapRevision(current, user, 'history-restore')
       const map = {
         id: mapId,
@@ -1369,11 +1785,65 @@ const server = createServer(async (request, response) => {
       }
       await writeStoredMap(mapId, map)
       broadcastMapChange(request, mapId, 'history-restored', user)
+      const historyPage = await listMapRevisions(mapId)
       return sendJson(response, 200, {
         map,
         summary: mapSummary(map),
-        revisions: await listMapRevisions(mapId),
+        revisions: historyPage.revisions,
+        historyHasMore: historyPage.hasMore,
+        historyNextOffset: historyPage.nextOffset,
       })
+    }
+
+    const dailyBackupRestoreRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/backups\/daily\/(\d{4}-\d{2}-\d{2})\/restore$/)
+    if (dailyBackupRestoreRoute && request.method === 'POST') {
+      const mapId = decodeURIComponent(dailyBackupRestoreRoute[1])
+      const date = dailyBackupRestoreRoute[2]
+      if (!isValidMapId(mapId) || !isValidDailyBackupDate(date)) return sendJson(response, 400, { error: '올바르지 않은 일일 백업 요청입니다.' })
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '뷰어는 일일 백업을 복원할 수 없습니다.' })
+      const current = await readMap(mapId)
+      if (!current || current.trashedAt) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
+      const backup = await readDailyBackup(mapId, date)
+      if (!backup) return sendJson(response, 404, { error: '일일 백업을 찾을 수 없습니다.' })
+      await writeDailyBackup(current, user, 'before-daily-restore')
+      await archiveMapRevision(current, user, 'daily-backup-restore')
+      const map = {
+        id: mapId,
+        title: normalizeTitle(backup.map.title, current.title),
+        color: normalizeMapColor(backup.map.color, current.color),
+        nodes: backup.map.nodes,
+        edges: backup.map.edges,
+        createdAt: current.createdAt ?? backup.map.createdAt ?? null,
+        createdBy: current.createdBy ?? backup.map.createdBy ?? null,
+        updatedAt: new Date().toISOString(),
+        updatedBy: publicUser(user),
+        version: (current.version ?? 1) + 1,
+        restoredFromDailyBackup: date,
+      }
+      await writeStoredMap(mapId, map)
+      broadcastMapChange(request, mapId, 'daily-backup-restored', user)
+      const historyPage = await listMapRevisions(mapId)
+      return sendJson(response, 200, {
+        map,
+        summary: mapSummary(map),
+        dailyBackups: await listDailyBackups(mapId),
+        revisions: historyPage.revisions,
+        historyHasMore: historyPage.hasMore,
+        historyNextOffset: historyPage.nextOffset,
+      })
+    }
+
+    const dailyBackupsRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/backups\/daily$/)
+    if (dailyBackupsRoute && request.method === 'GET') {
+      const mapId = decodeURIComponent(dailyBackupsRoute[1])
+      if (!isValidMapId(mapId)) return sendJson(response, 400, { error: '올바르지 않은 문서 ID입니다.' })
+      const user = requireUser(request, response)
+      if (!user) return
+      const map = await readMap(mapId)
+      if (!map || map.trashedAt) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
+      return sendJson(response, 200, { dailyBackups: await listDailyBackups(mapId) })
     }
 
     const historyRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/history$/)
@@ -1384,7 +1854,12 @@ const server = createServer(async (request, response) => {
       if (!user) return
       const map = await readMap(mapId)
       if (!map || map.trashedAt) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
-      return sendJson(response, 200, { revisions: await listMapRevisions(mapId) })
+      const offset = Number(url.searchParams.get('offset') ?? 0)
+      const limit = Number(url.searchParams.get('limit') ?? 50)
+      if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return sendJson(response, 400, { error: '변경 이력 조회 범위가 올바르지 않습니다.' })
+      }
+      return sendJson(response, 200, await listMapRevisions(mapId, { offset, limit }))
     }
 
     const restoreRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/restore$/)
@@ -1517,6 +1992,10 @@ setInterval(() => {
     }
   }
 }, 25_000).unref()
+
+setInterval(() => {
+  void ensureDailyBackups().catch((error) => console.warn('[Daily backup scheduler]', error))
+}, 60 * 60 * 1000).unref()
 
 server.listen(port, host, () => {
   console.log(`[Mind & Progress API] http://${host}:${port}`)

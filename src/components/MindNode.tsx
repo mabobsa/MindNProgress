@@ -1,5 +1,5 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
-import { teamMembers, type MindNodeData } from '../types/mindMap'
+import type { MindNodeData } from '../types/mindMap'
 import { AssigneeTooltip } from './AssigneeTooltip'
 import './MindNode.css'
 
@@ -14,7 +14,7 @@ const statusText: Record<MindNodeData['status'], string> = {
 export function MindNode({ data, selected, isConnectable }: NodeProps<MindNodeType>) {
   const isCompleted = data.progress >= 100
   const displayStatus = isCompleted ? 'done' : data.status
-  const assignee = teamMembers.find((member) => member.id === data.assigneeId)
+  const assignee = data.assignee
   const checklist = data.checklist ?? []
   const completedItems = checklist.filter((item) => item.done).length
   const isOverdue = Boolean(data.dueDate && !isCompleted && new Date(`${data.dueDate}T23:59:59`) < new Date())

@@ -172,12 +172,22 @@
 .empty-map-list { padding: 24px 12px; color: #aaa5b1; font-size: 9px; line-height: 1.5; text-align: center; }
 .trash-list { min-height: 0; flex: 1 1 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 8px 4px; }
 .trash-list > p { margin: 0 4px 12px; color: #aaa5b1; font-size: 8px; line-height: 1.5; }
+.trash-toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 0 0 9px; padding: 7px; border: 1px solid #ebe7ef; border-radius: 9px; background: #f8f6fa; }
+.trash-select-all { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; color: #716a78; font-size: 8px; font-weight: 650; cursor: pointer; }
+.trash-select-all input,
+.trash-item-select { width: 13px; height: 13px; margin: 0; accent-color: #6657d9; cursor: pointer; }
+.trash-toolbar button { padding: 6px 5px; border: 1px solid #e5d5d9; border-radius: 7px; background: white; font-size: 8px; font-weight: 700; cursor: pointer; }
+.trash-toolbar button:disabled { opacity: .42; cursor: default; }
+.trash-delete-selected { color: #b74e5b; }
+.trash-empty-all { color: #fff; border-color: #bc4c59 !important; background: #bc4c59 !important; }
 .trash-item { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; padding: 9px; border: 1px solid #ebe8ef; border-radius: 9px; background: #faf9fb; }
+.trash-item.selected { border-color: #cfc8ef; background: #f5f2fd; }
 .trash-item > span { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .trash-item strong { overflow: hidden; color: #4b4551; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .trash-item small { color: #aaa4af; font-size: 8px; }
 .trash-item > button { flex: 0 0 auto; display: flex; align-items: center; gap: 3px; padding: 6px; color: #6154c9; border: 1px solid #dcd7f2; border-radius: 7px; background: #f3f1fc; font-size: 8px; font-weight: 700; cursor: pointer; }
 .trash-item > button:hover { background: #eae6fb; }
+.trash-item > button:disabled { opacity: .45; cursor: default; }
 .sidebar-trash { width: 100%; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding: 9px 10px; color: #716b78; border: 0; border-radius: 8px; background: transparent; font-size: 9px; cursor: pointer; }
 .sidebar-trash > span { display: flex; align-items: center; gap: 7px; font-weight: 650; }
 .sidebar-trash > small { min-width: 18px; padding: 2px 5px; color: #8c8594; border-radius: 9px; background: #efedf2; font-size: 8px; text-align: center; }
@@ -376,6 +386,11 @@
 .history-modal > header strong { color: #37313e; font-size: 14px; }
 .history-modal > header button { display: grid; place-items: center; padding: 6px; color: #8e8795; border: 0; border-radius: 7px; background: transparent; cursor: pointer; }
 .history-modal > header button:hover { color: #5d50ca; background: #f1eff7; }
+.history-tabs { flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 12px 15px 0; padding: 4px; border-radius: 9px; background: #f1eff4; }
+.history-tabs > button { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 9px; color: #8b8491; border: 0; border-radius: 7px; background: transparent; font-size: 9px; font-weight: 700; cursor: pointer; }
+.history-tabs > button:hover { color: #6155c7; }
+.history-tabs > button.active { color: #5548be; background: white; box-shadow: 0 1px 4px rgba(39,31,54,.1); }
+.history-tabs > button strong { min-width: 18px; padding: 1px 5px; color: inherit; border-radius: 8px; background: rgba(102,87,217,.1); font-size: 7px; }
 .history-current { flex: 0 0 auto; display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 10px; margin: 13px 15px 8px; padding: 12px; border: 1px solid #dcd7f3; border-radius: 10px; background: #f7f5fd; }
 .history-current > div,
 .history-item > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -392,8 +407,12 @@
 .history-item > button { padding: 6px 9px; color: #5d50ca; border: 1px solid #dcd7f3; border-radius: 7px; background: #f5f3fc; font-size: 8px; font-weight: 700; cursor: pointer; }
 .history-item > button:hover:not(:disabled) { background: #ebe8fa; }
 .history-item > button:disabled { opacity: .5; cursor: default; }
+.history-item.daily .history-dot { border-color: #4fae91; box-shadow: 0 0 0 3px #e3f4ee; }
 .history-message { padding: 34px 14px; color: #9c96a3; font-size: 9px; text-align: center; }
 .history-message.error { color: #c45555; }
+.history-load-more { width: calc(100% - 24px); margin: 10px 12px 2px; padding: 8px 12px; color: #5d50ca; border: 1px solid #dcd7f3; border-radius: 8px; background: #f5f3fc; font-size: 9px; font-weight: 700; cursor: pointer; }
+.history-load-more:hover:not(:disabled) { background: #ebe8fa; }
+.history-load-more:disabled { opacity: .55; cursor: default; }
 .history-modal > footer { flex: 0 0 auto; padding: 11px 17px; color: #9d97a4; border-top: 1px solid #ece9f0; background: #faf9fb; font-size: 8px; }
 .password-modal { width: min(390px, calc(100vw - 48px)); }
 .password-form { display: flex; flex-direction: column; gap: 13px; padding: 18px; }
@@ -528,6 +547,11 @@
 .login-card > label span { color: #696270; font-size: 10px; font-weight: 700; }
 .login-card > label input { width: 100%; padding: 12px 13px; color: #38323f; border: 1px solid #e2dfe7; border-radius: 9px; outline: 0; background: white; font-size: 12px; }
 .login-card > label input:focus { border-color: #7768da; box-shadow: 0 0 0 3px rgba(102,87,217,.1); }
+.login-options { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -2px 0 17px; }
+.login-options small { color: #aaa4af; font-size: 8px; }
+.login-remember { display: inline-flex; align-items: center; gap: 7px; color: #696270; font-size: 9px; font-weight: 700; cursor: pointer; }
+.login-remember input { width: 15px; height: 15px; margin: 0; accent-color: #6253d4; cursor: pointer; }
+.login-remember input:focus-visible { outline: 2px solid rgba(98,83,212,.28); outline-offset: 2px; }
 .login-error { margin: -3px 0 14px; padding: 9px 11px; color: #b94d4d; border: 1px solid #f0d0d0; border-radius: 8px; background: #fff5f5; font-size: 10px; }
 .login-submit { width: 100%; padding: 12px; color: white; border: 0; border-radius: 9px; background: #6253d4; box-shadow: 0 7px 17px rgba(98,83,212,.23); font-size: 11px; font-weight: 750; cursor: pointer; }
 .login-submit:hover:not(:disabled) { background: #5648c6; }

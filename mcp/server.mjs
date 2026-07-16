@@ -517,8 +517,12 @@ async function main() {
   registerTool(server, 'mindnprogress_restore_document', '휴지통 문서를 복원합니다.', mapIdSchema, async ({ mapId }) =>
     apiRequest(`/api/maps/${encodeURIComponent(mapId)}/restore`, { method: 'POST' }))
 
-  registerTool(server, 'mindnprogress_list_history', '문서 변경 이력을 조회합니다.', mapIdSchema, async ({ mapId }) =>
-    apiRequest(`/api/maps/${encodeURIComponent(mapId)}/history`))
+  registerTool(server, 'mindnprogress_list_history', '문서 변경 이력을 최신순으로 조회합니다. 다음 이력이 있으면 nextOffset을 offset으로 전달해 이어서 조회하세요.', {
+    mapId: z.string().min(1),
+    offset: z.number().int().nonnegative().default(0),
+    limit: z.number().int().min(1).max(100).default(50),
+  }, async ({ mapId, offset, limit }) =>
+    apiRequest(`/api/maps/${encodeURIComponent(mapId)}/history?offset=${offset}&limit=${limit}`))
   registerTool(server, 'mindnprogress_restore_history', '선택한 변경 이력으로 문서를 복원합니다.', {
     mapId: z.string().min(1), revisionId: z.string().min(1),
   }, async ({ mapId, revisionId }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/history/${encodeURIComponent(revisionId)}/restore`, { method: 'POST' }))

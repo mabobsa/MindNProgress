@@ -24,11 +24,32 @@ type AionOptions = {
   skills: AionSkill[]
   mcpServers: AionMcpServer[]
 }
+type SavedRuntimeSelections = {
+  agentId?: string
+  modelId?: string
+  mode?: string
+  thoughtLevel?: string
+}
 
 const defaultWorkspace = 'C:\\Git\\MindNProgress'
+const runtimeSelectionsStorageKey = 'mindnprogress-ai-runtime-selections'
 
 function workspaceStorageKey(documentId: string) {
   return `mindnprogress-ai-workspace:${documentId}`
+}
+
+function readRuntimeSelections(): SavedRuntimeSelections {
+  try {
+    return JSON.parse(localStorage.getItem(runtimeSelectionsStorageKey) ?? '{}') as SavedRuntimeSelections
+  } catch {
+    return {}
+  }
+}
+
+function availableOptionId(options: RuntimeOption[], preferredId?: string, defaultId?: string) {
+  if (preferredId && options.some((option) => option.id === preferredId)) return preferredId
+  if (defaultId && options.some((option) => option.id === defaultId)) return defaultId
+  return options[0]?.id ?? ''
 }
 
 function encodeBase64Json(value: unknown) {
@@ -69,16 +90,17 @@ export function AiConversationDialog({ documentId, documentTitle, cardId, cardTi
       })
       .then((body) => {
         setOptions(body)
-        const initialAgent = body.agents.find((agent) => agent.models.length > 0) ?? body.agents[0]
+        const savedSelections = readRuntimeSelections()
+        const initialAgent = body.agents.find((agent) => agent.id === savedSelections.agentId && agent.models.length > 0)
+          ?? body.agents.find((agent) => agent.models.length > 0)
+          ?? body.agents[0]
         if (initialAgent) {
           setAgentId(initialAgent.id)
-          setModelId(initialAgent.defaultModelId || initialAgent.models[0]?.id || '')
-          setMode(initialAgent.defaultMode || initialAgent.modes[0]?.id || '')
-          setThoughtLevel(initialAgent.defaultThoughtLevel || initialAgent.thoughtLevels[0]?.id || '')
+          setModelId(availableOptionId(initialAgent.models, savedSelections.modelId, initialAgent.defaultModelId))
+          setMode(availableOptionId(initialAgent.modes, savedSelections.mode, initialAgent.defaultMode))
+          setThoughtLevel(availableOptionId(initialAgent.thoughtLevels, savedSelections.thoughtLevel, initialAgent.defaultThoughtLevel))
         }
-        setSelectedSkillIds(new Set(body.skills
-          .filter((skill) => skill.id === 'officecli' || skill.name === 'officecli')
-          .map((skill) => skill.id)))
+        setSelectedSkillIds(new Set())
         setSelectedMcpIds(new Set(body.mcpServers.filter((server) => server.required).map((server) => server.id)))
       })
       .catch((loadError) => {
@@ -89,15 +111,20 @@ export function AiConversationDialog({ documentId, documentTitle, cardId, cardTi
     return () => controller.abort()
   }, [])
 
+  useEffect(() => {
+    if (!options || !agentId) return
+    localStorage.setItem(runtimeSelectionsStorageKey, JSON.stringify({ agentId, modelId, mode, thoughtLevel }))
+  }, [agentId, mode, modelId, options, thoughtLevel])
+
   const selectedAgent = useMemo(() => options?.agents.find((agent) => agent.id === agentId) ?? null, [agentId, options])
   const selectedModel = selectedAgent?.models.find((model) => model.id === modelId)
 
   const changeAgent = (nextAgentId: string) => {
     setAgentId(nextAgentId)
     const nextAgent = options?.agents.find((agent) => agent.id === nextAgentId)
-    setModelId(nextAgent?.defaultModelId || nextAgent?.models[0]?.id || '')
-    setMode(nextAgent?.defaultMode || nextAgent?.modes[0]?.id || '')
-    setThoughtLevel(nextAgent?.defaultThoughtLevel || nextAgent?.thoughtLevels[0]?.id || '')
+    setModelId(nextAgent ? availableOptionId(nextAgent.models, undefined, nextAgent.defaultModelId) : '')
+    setMode(nextAgent ? availableOptionId(nextAgent.modes, undefined, nextAgent.defaultMode) : '')
+    setThoughtLevel(nextAgent ? availableOptionId(nextAgent.thoughtLevels, undefined, nextAgent.defaultThoughtLevel) : '')
   }
 
   const toggleSelection = (setter: Dispatch<SetStateAction<Set<string>>>, id: string) => {
@@ -131,11 +158,11 @@ export function AiConversationDialog({ documentId, documentTitle, cardId, cardTi
           cardId,
         }),
       })
-      const attribution = await attributionResponse.json().catch(() => ({})) as { attributionToken?: string; completionUrl?: string; error?: string }
-      if (!attributionResponse.ok || !attribution.attributionToken || !attribution.completionUrl) {
+      const attribution = await attributionResponse.json().catch(() => ({})) as { attributionToken?: string; completionUrl?: string; editorId?: string; error?: string }
+      if (!attributionResponse.ok || !attribution.attributionToken || !attribution.completionUrl || !attribution.editorId) {
         throw new Error(attribution.error ?? 'AI 작성자 정보를 준비하지 못했습니다.')
       }
-      const prompt = `# MindNProgress 작업 요청\n\n가장 먼저 MindNProgress MCP 도구 \`mindnprogress_get_context\`를 아래 값으로 한 번 호출하세요. \`attributionToken\`은 댓글과 변경 이력에 현재 AI 종류와 모델을 정확히 기록하기 위한 값이므로 생략하거나 변경하지 마세요. 이 도구가 MindNProgress의 제품 개념과 작성 규칙, 최신 문서 구조, 선택 카드 정보를 함께 제공합니다. 프롬프트에는 카드 스냅샷이 포함되어 있지 않으므로 반드시 MCP 조회 결과를 기준으로 답변하고 필요한 작업을 수행해야 합니다.\n\n- mapId: \`${documentId}\`\n- cardId: \`${cardId}\`\n- attributionToken: \`${attribution.attributionToken}\`\n\nMCP 조회 후 \`selection.taskLinks.startupInspection\`을 반드시 확인하세요. \`required\`가 true이면 실제 작업을 시작하기 전에 \`targets\`의 업무 링크를 모두 조사하여 업무 제목, 본문, 댓글, 첨부파일 목록과 관련 링크를 확인하세요. 상위 업무에 기획서나 첨부파일이 있다고 가정하지 말고, 본문이나 댓글에 요구사항만 간략하게 작성되어 있을 가능성도 고려해야 합니다. 선택 카드와 최상위 카드 링크가 모두 있으면 두 업무를 모두 조사하고 같은 URL은 한 번만 조회하세요. 조사 가능한 업무 링크를 확인하기 전에 사용자에게 파일 경로나 추가 설명을 먼저 요청하지 마세요. 업무 링크가 없거나 외부 업무 시스템을 조회할 도구가 없으면 그 사실을 알리고, 확인된 MindNProgress 카드 정보만으로 가능한 작업은 계속 진행하세요.\n\nMCP 도구를 사용할 수 없거나 해당 문서 또는 카드를 찾지 못하면 임의로 추측하지 말고 그 사실을 알려주세요. 새 문서에 여러 카드로 구성된 마인드맵을 만들 때는 \`mindnprogress_create_document\`와 \`mindnprogress_save_document\`를 연속 호출하지 말고, \`mindnprogress_create_mindmap\`을 한 번만 호출하세요.\n\n# 편집자 요청\n\n${request.trim()}`
+      const prompt = `# MindNProgress 작업 요청\n\n가장 먼저 MindNProgress MCP 도구 \`mindnprogress_get_context\`를 아래 값으로 한 번 호출하세요. \`editorId\`는 이 대화를 시작한 편집자 계정으로 MindNProgress를 조회하고 수정하기 위한 값이므로 이후 MCP 작업이 끝날 때까지 유지하세요. \`attributionToken\`은 댓글과 변경 이력에 현재 AI 종류와 모델을 정확히 기록하기 위한 보조 값입니다. 이 도구가 MindNProgress의 제품 개념과 작성 규칙, 최신 문서 구조, 선택 카드 정보를 함께 제공합니다. 프롬프트에는 카드 스냅샷이 포함되어 있지 않으므로 반드시 MCP 조회 결과를 기준으로 답변하고 필요한 작업을 수행해야 합니다.\n\n- mapId: \`${documentId}\`\n- cardId: \`${cardId}\`\n- editorId: \`${attribution.editorId}\`\n- attributionToken: \`${attribution.attributionToken}\`\n\nMCP 조회 후 \`selection.taskLinks.startupInspection\`을 반드시 확인하세요. \`required\`가 true이면 실제 작업을 시작하기 전에 \`targets\`의 업무 링크를 모두 조사하여 업무 제목, 본문, 댓글, 첨부파일 목록과 관련 링크를 확인하세요. 상위 업무에 기획서나 첨부파일이 있다고 가정하지 말고, 본문이나 댓글에 요구사항만 간략하게 작성되어 있을 가능성도 고려해야 합니다. 선택 카드와 최상위 카드 링크가 모두 있으면 두 업무를 모두 조사하고 같은 URL은 한 번만 조회하세요. 조사 가능한 업무 링크를 확인하기 전에 사용자에게 파일 경로나 추가 설명을 먼저 요청하지 마세요. 업무 링크가 없거나 외부 업무 시스템을 조회할 도구가 없으면 그 사실을 알리고, 확인된 MindNProgress 카드 정보만으로 가능한 작업은 계속 진행하세요.\n\nMindNProgress 문서나 카드의 접근 URL을 기록할 때는 localhost 또는 127.0.0.1 주소를 직접 만들지 말고, MCP 조회 결과의 \`document.accessUrl\`, \`selection.accessUrl\` 또는 \`access.cards[].accessUrl\` 값을 그대로 사용하세요.\n\nMCP 도구를 사용할 수 없거나 해당 문서 또는 카드를 찾지 못하면 임의로 추측하지 말고 그 사실을 알려주세요. 새 문서에 여러 카드로 구성된 마인드맵을 만들 때는 \`mindnprogress_create_document\`와 \`mindnprogress_save_document\`를 연속 호출하지 말고, \`mindnprogress_create_mindmap\`을 한 번만 호출하세요.\n\n# 편집자 요청\n\n${request.trim()}`
       const launchPayload = {
         agentId: selectedAgent.id,
         completionUrl: attribution.completionUrl,

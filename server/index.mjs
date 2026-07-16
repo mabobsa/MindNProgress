@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { networkInterfaces, tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -14,11 +14,14 @@ const commentsDirectory = path.join(dataDirectory, '_comments')
 const notificationsDirectory = path.join(dataDirectory, '_notifications')
 const usersFile = path.join(dataDirectory, '_users.json')
 const sessionsFile = path.join(dataDirectory, '_sessions.json')
+const aiAttributionsFile = path.join(dataDirectory, '_ai-attributions.json')
+const aiConversationAttributionsFile = path.join(dataDirectory, '_ai-conversation-attributions.json')
 const integrationTokenFile = path.join(dataDirectory, '_integration-token')
 const mapOrderFile = path.join(dataDirectory, '_map-order.json')
 const distDirectory = path.join(projectDirectory, 'dist')
 const port = Number(process.env.MNP_API_PORT ?? 4176)
 const host = process.env.MNP_API_HOST ?? '127.0.0.1'
+const webPort = Number(process.env.MNP_WEB_PORT ?? 4175)
 const configuredAionUiBaseUrl = String(process.env.MNP_AIONUI_URL ?? '').trim()
 const configuredAionUiBaseUrls = configuredAionUiBaseUrl ? [configuredAionUiBaseUrl.replace(/\/+$/, '')] : []
 const fallbackAionUiBaseUrls = ['http://127.0.0.1:1986', 'http://127.0.0.1:5830']
@@ -34,6 +37,37 @@ const eventClients = new Map()
 const mapColors = ['violet', 'indigo', 'blue', 'cyan', 'teal', 'green', 'amber', 'orange', 'red', 'pink']
 const commentReactions = ['👍', '❤️', '🎉', '👀']
 const serverStartedAt = new Date().toISOString()
+
+function detectedPublicIpv4() {
+  const virtualInterfacePattern = /(?:vethernet|wsl|docker|hyper-v|vmware|virtualbox|loopback|터널)/i
+  const candidates = Object.entries(networkInterfaces()).flatMap(([name, addresses]) =>
+    (addresses ?? [])
+      .filter((address) => (address.family === 'IPv4' || address.family === 4)
+        && !address.internal
+        && !address.address.startsWith('169.254.'))
+      .map((address) => ({ name, address: address.address })))
+  candidates.sort((first, second) => Number(virtualInterfacePattern.test(first.name)) - Number(virtualInterfacePattern.test(second.name)))
+  return candidates[0]?.address ?? '127.0.0.1'
+}
+
+function resolvePublicBaseUrl() {
+  const configured = String(process.env.MNP_PUBLIC_URL ?? '').trim()
+  if (configured) {
+    try {
+      const url = new URL(/^https?:\/\//i.test(configured) ? configured : `http://${configured}`)
+      if (url.protocol === 'http:' || url.protocol === 'https:') {
+        url.search = ''
+        url.hash = ''
+        return url.toString().replace(/\/+$/, '')
+      }
+    } catch {
+      console.warn('[Mind & Progress] MNP_PUBLIC_URL이 올바르지 않아 자동 감지 주소를 사용합니다.')
+    }
+  }
+  return `http://${detectedPublicIpv4()}:${webPort}`
+}
+
+const publicBaseUrl = resolvePublicBaseUrl()
 
 function hashPassword(password, salt) {
   return scryptSync(password, salt, 64)
@@ -91,9 +125,12 @@ const integrationUser = {
   active: true,
 }
 let integrationToken = ''
-const aiAttributionDurationMs = 8 * 60 * 60 * 1000
+const aiAttributionDurationMs = Math.max(50, Number(process.env.MNP_AI_ATTRIBUTION_DURATION_MS) || 8 * 60 * 60 * 1000)
 const aiAttributions = new Map()
+const aiConversationAttributions = new Map()
 const aiConversationLaunches = new Map()
+let aiAttributionWriteQueue = Promise.resolve()
+let aiConversationAttributionWriteQueue = Promise.resolve()
 
 function publicUser(user) {
   return { id: user.id, name: user.name, email: user.email, role: user.role, publicAccess: user.systemManaged === true }
@@ -198,17 +235,102 @@ function sessionTokenKey(token) {
   return createHash('sha256').update(token).digest('hex')
 }
 
+function integrationRequestScope(request) {
+  return {
+    mapId: String(request.headers['x-mnp-ai-map-id'] ?? '').trim().slice(0, 120),
+    cardId: String(request.headers['x-mnp-ai-card-id'] ?? '').trim().slice(0, 120),
+  }
+}
+
+function conversationAttributionKey(mapId, cardId) {
+  return `${mapId}:${cardId}`
+}
+
+function scopedAttribution(request) {
+  const now = Date.now()
+  const scope = integrationRequestScope(request)
+  if (!scope.mapId) return { attribution: null, match: null, scope }
+  const candidates = [...aiAttributions.values()]
+    .filter((candidate) => candidate.expiresAt > now && candidate.mapId === scope.mapId)
+    .sort((first, second) => Number(second.createdAt ?? 0) - Number(first.createdAt ?? 0))
+  const exact = scope.cardId ? candidates.find((candidate) => candidate.cardId === scope.cardId) : null
+  const conversation = scope.cardId
+    ? aiConversationAttributions.get(conversationAttributionKey(scope.mapId, scope.cardId)) ?? null
+    : null
+  if (exact) return { attribution: exact, match: 'card', scope }
+  if (conversation) return { attribution: conversation, match: 'conversation', scope }
+  if (!scope.cardId && candidates.length > 0) return { attribution: candidates[0], match: 'map', scope }
+  return { attribution: null, match: null, scope }
+}
+
+function attributionUser(attribution) {
+  const editor = users.find((candidate) => candidate.id === attribution.startedBy
+    && candidate.active !== false && canEdit(candidate))
+  return editor
+    ? { ...editor, name: attribution.authorName }
+    : { ...integrationUser, name: attribution.authorName }
+}
+
+function traceAttribution(request, source, user, scope, attributionToken = '') {
+  if (request.method === 'GET' && source === 'token') return
+  let pathname = String(request.url ?? '')
+  try { pathname = new URL(pathname, 'http://mindnprogress.local').pathname } catch { /* 원문 경로를 사용합니다. */ }
+  console.log('[AI attribution]', JSON.stringify({
+    source,
+    method: request.method,
+    path: pathname,
+    mapId: scope.mapId || null,
+    cardId: scope.cardId || null,
+    actorId: user?.id ?? null,
+    authorName: user?.name ?? null,
+    tokenHashPrefix: attributionToken ? sessionTokenKey(attributionToken).slice(0, 12) : null,
+  }))
+}
+
 function attributedIntegrationUser(request) {
+  const editorId = String(request.headers['x-mnp-ai-editor-id'] ?? '').trim()
+  const editor = editorId
+    ? users.find((candidate) => candidate.id === editorId && candidate.active !== false && canEdit(candidate))
+    : null
   const attributionToken = String(request.headers['x-mnp-ai-attribution'] ?? '').trim()
-  if (!attributionToken) return integrationUser
+  const scoped = scopedAttribution(request)
+  if (!attributionToken) {
+    if (scoped.attribution) {
+      const user = attributionUser(scoped.attribution)
+      traceAttribution(request, `${scoped.match}-scope-fallback`, user, scoped.scope)
+      return user
+    }
+    const user = editor ? { ...editor, name: `${editor.name}의 AI` } : integrationUser
+    traceAttribution(request, editor ? 'editor-fallback' : 'model-unspecified', user, scoped.scope)
+    return user
+  }
   const tokenKey = sessionTokenKey(attributionToken)
   const attribution = aiAttributions.get(tokenKey)
-  if (!attribution) return null
+  if (!attribution) {
+    if (scoped.attribution) {
+      const user = attributionUser(scoped.attribution)
+      traceAttribution(request, `unknown-token-${scoped.match}-scope-fallback`, user, scoped.scope, attributionToken)
+      return user
+    }
+    const user = editor ? { ...editor, name: `${editor.name}의 AI` } : null
+    traceAttribution(request, editor ? 'unknown-token-editor-fallback' : 'unknown-token', user, scoped.scope, attributionToken)
+    return user
+  }
   if (attribution.expiresAt <= Date.now()) {
     aiAttributions.delete(tokenKey)
-    return null
+    void persistAiAttributions().catch((error) => console.error('[AI attribution persistence]', error))
+    if (scoped.attribution) {
+      const user = attributionUser(scoped.attribution)
+      traceAttribution(request, `expired-token-${scoped.match}-scope-fallback`, user, scoped.scope, attributionToken)
+      return user
+    }
+    const user = editor ? { ...editor, name: `${editor.name}의 AI` } : null
+    traceAttribution(request, editor ? 'expired-token-editor-fallback' : 'expired-token', user, scoped.scope, attributionToken)
+    return user
   }
-  return { ...integrationUser, name: attribution.authorName }
+  const user = attributionUser(attribution)
+  traceAttribution(request, 'token', user, scoped.scope, attributionToken)
+  return user
 }
 
 function getCurrentUser(request) {
@@ -513,6 +635,50 @@ function persistSessions() {
   return sessionWriteQueue
 }
 
+function persistAiAttributions() {
+  const now = Date.now()
+  const storedAttributions = [...aiAttributions.entries()]
+    .filter(([, attribution]) => attribution.expiresAt > now)
+    .map(([tokenHash, attribution]) => ({ tokenHash, ...attribution }))
+  aiAttributionWriteQueue = aiAttributionWriteQueue.catch(() => {})
+    .then(() => writeStoredArray(aiAttributionsFile, storedAttributions))
+  return aiAttributionWriteQueue
+}
+
+function persistAiConversationAttributions() {
+  const storedAttributions = [...aiConversationAttributions.values()]
+    .sort((first, second) => String(first.mapId).localeCompare(String(second.mapId))
+      || String(first.cardId).localeCompare(String(second.cardId)))
+  aiConversationAttributionWriteQueue = aiConversationAttributionWriteQueue.catch(() => {})
+    .then(() => writeStoredArray(aiConversationAttributionsFile, storedAttributions))
+  return aiConversationAttributionWriteQueue
+}
+
+async function loadAiAttributions() {
+  const now = Date.now()
+  const storedAttributions = await readStoredArray(aiAttributionsFile)
+  for (const attribution of storedAttributions) {
+    if (!/^[a-f0-9]{64}$/.test(String(attribution?.tokenHash ?? ''))) continue
+    if (!Number.isFinite(attribution?.expiresAt) || attribution.expiresAt <= now) continue
+    if (!isValidMapId(attribution?.mapId) || typeof attribution?.cardId !== 'string') continue
+    if (typeof attribution?.authorName !== 'string' || !attribution.authorName.trim()) continue
+    const { tokenHash, ...value } = attribution
+    aiAttributions.set(tokenHash, value)
+  }
+  await persistAiAttributions()
+}
+
+async function loadAiConversationAttributions() {
+  const storedAttributions = await readStoredArray(aiConversationAttributionsFile)
+  for (const attribution of storedAttributions) {
+    if (!isValidMapId(attribution?.mapId) || typeof attribution?.cardId !== 'string' || !attribution.cardId) continue
+    if (typeof attribution?.conversationId !== 'string' || !attribution.conversationId) continue
+    if (typeof attribution?.authorName !== 'string' || !attribution.authorName.trim()) continue
+    aiConversationAttributions.set(conversationAttributionKey(attribution.mapId, attribution.cardId), attribution)
+  }
+  await persistAiConversationAttributions()
+}
+
 async function loadSessions() {
   const now = Date.now()
   const storedSessions = await readStoredArray(sessionsFile)
@@ -641,6 +807,193 @@ function normalizeAionUiAgent(agent, providers) {
     ),
     thoughtLevels: Array.isArray(thoughtOption?.options) ? thoughtOption.options.map(normalizeAionUiOption) : [],
     defaultThoughtLevel: String(thoughtOption?.currentValue ?? thoughtOption?.current_value ?? ''),
+  }
+}
+
+function cleanAionUiValue(value) {
+  return String(value ?? '').replace(/\[[0-9;]*m\]?/g, '').trim()
+}
+
+function normalizedIsoDate(value, fallback = new Date().toISOString()) {
+  const numericValue = typeof value === 'number' || /^\d+$/.test(String(value ?? '')) ? Number(value) : Number.NaN
+  const timestamp = Number.isFinite(numericValue)
+    ? (numericValue < 1_000_000_000_000 ? numericValue * 1000 : numericValue)
+    : Date.parse(String(value ?? ''))
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : fallback
+}
+
+async function repairUnspecifiedConversationComments(attribution, replaceableAuthorNames = []) {
+  const comments = await listComments(attribution.mapId)
+  const linkedAt = Date.parse(attribution.linkedAt)
+  const actor = publicUser(attributionUser(attribution))
+  const replaceableNames = new Set([integrationUser.name, ...replaceableAuthorNames].filter(Boolean))
+  const repaired = []
+  const nextComments = comments.map((comment) => {
+    const createdAt = Date.parse(comment.createdAt)
+    if (comment.nodeId !== attribution.cardId
+      || comment.author?.id !== integrationUser.id
+      || !replaceableNames.has(comment.author?.name)
+      || (Number.isFinite(linkedAt) && (!Number.isFinite(createdAt) || createdAt < linkedAt))) {
+      return comment
+    }
+    const next = { ...comment, author: actor }
+    repaired.push(next)
+    return next
+  })
+  if (repaired.length === 0) return 0
+  await writeStoredArray(commentFileForMap(attribution.mapId), nextComments)
+  for (const comment of repaired) {
+    broadcastEvent({ type: 'comment-changed', mapId: attribution.mapId, nodeId: attribution.cardId, action: 'updated', comment })
+  }
+  return repaired.length
+}
+
+async function repairUnspecifiedConversationNotifications(attribution) {
+  const linkedAt = Date.parse(attribution.linkedAt)
+  const attributableComments = new Map((await listComments(attribution.mapId, attribution.cardId))
+    .filter((comment) => {
+      const createdAt = Date.parse(comment.createdAt)
+      return comment.author?.name === attribution.authorName
+        && (!Number.isFinite(linkedAt) || (Number.isFinite(createdAt) && createdAt >= linkedAt))
+    })
+    .map((comment) => [comment.id, comment]))
+  if (attributableComments.size === 0) return 0
+
+  const notificationEntries = await readdir(notificationsDirectory, { withFileTypes: true }).catch((error) => {
+    if (error?.code === 'ENOENT') return []
+    throw error
+  })
+  let repairedCount = 0
+  for (const entry of notificationEntries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+    const filePath = path.join(notificationsDirectory, entry.name)
+    const notifications = await readStoredArray(filePath).catch((error) => {
+      console.warn('[AI conversation notification recovery]', JSON.stringify({ file: entry.name, error: error?.message ?? String(error) }))
+      return null
+    })
+    if (!notifications) continue
+    const repaired = []
+    const updated = notifications.map((notification) => {
+      const comment = attributableComments.get(notification.commentId)
+      if (!comment
+        || notification.mapId !== attribution.mapId
+        || notification.nodeId !== attribution.cardId
+        || notification.actor?.id !== integrationUser.id
+        || notification.actor?.name !== integrationUser.name) {
+        return notification
+      }
+      const next = { ...notification, actor: comment.author }
+      repaired.push(next)
+      return next
+    })
+    if (repaired.length === 0) continue
+    await writeStoredArray(filePath, updated)
+    repairedCount += repaired.length
+    for (const notification of repaired) broadcastNotification(notification)
+  }
+  return repairedCount
+}
+
+async function resolveConversationAttribution(mapId, cardId, conversationId, startedBy = null, fallback = null) {
+  const [conversation, agents, providers] = await Promise.all([
+    fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}`),
+    fetchAionUi('/api/agents/management'),
+    fetchAionUi('/api/providers'),
+  ])
+  if (!conversation || conversation.id !== conversationId) throw new Error('AIONUI_CONVERSATION_NOT_FOUND')
+
+  const normalizedAgents = (Array.isArray(agents) ? agents : [])
+    .filter((agent) => agent?.enabled !== false && agent?.installed === true)
+    .map((agent) => normalizeAionUiAgent(agent, Array.isArray(providers) ? providers.filter((item) => item?.enabled !== false) : []))
+  const agentId = cleanAionUiValue(conversation?.extra?.agent_id) || cleanAionUiValue(fallback?.agentId)
+  const modelId = cleanAionUiValue(conversation?.extra?.current_model_id) || cleanAionUiValue(fallback?.modelId)
+  const agent = normalizedAgents.find((candidate) => cleanAionUiValue(candidate.id) === agentId)
+  const model = agent?.models.find((candidate) => cleanAionUiValue(candidate.id) === modelId)
+  const agentName = cleanAionUiValue(agent?.name) || cleanAionUiValue(fallback?.agentName) || agentId
+  const modelName = cleanAionUiValue(model?.label) || cleanAionUiValue(fallback?.modelName) || modelId
+  if (!agentId || !modelId || !agentName || !modelName) throw new Error('AIONUI_ATTRIBUTION_NOT_FOUND')
+
+  let resolvedStartedBy = startedBy || fallback?.startedBy || null
+  const authorName = `${agentName}(${modelName})`
+  if (!resolvedStartedBy) {
+    const comments = await listComments(mapId)
+    const previousAuthor = [...comments].reverse().find((comment) => comment.nodeId === cardId
+      && comment.author?.name === authorName
+      && users.some((candidate) => candidate.id === comment.author.id && candidate.active !== false && canEdit(candidate)))
+    resolvedStartedBy = previousAuthor?.author.id ?? null
+  }
+
+  return {
+    mapId,
+    cardId,
+    conversationId,
+    authorName,
+    agentId,
+    agentName,
+    modelId,
+    modelName,
+    providerId: cleanAionUiValue(model?.providerId) || cleanAionUiValue(fallback?.providerId) || null,
+    startedBy: resolvedStartedBy,
+    linkedAt: normalizedIsoDate(conversation.created_at, fallback?.linkedAt),
+    refreshedAt: new Date().toISOString(),
+  }
+}
+
+async function refreshConversationAttribution(mapId, cardId, conversationId, startedBy = null, fallback = null) {
+  const attribution = await resolveConversationAttribution(mapId, cardId, conversationId, startedBy, fallback)
+  aiConversationAttributions.set(conversationAttributionKey(mapId, cardId), attribution)
+  await persistAiConversationAttributions()
+  const fallbackModelId = String(fallback?.modelId ?? '')
+  const malformedFallbackAuthor = (fallbackModelId.includes('[') || fallbackModelId.includes(']')) ? fallback?.authorName : null
+  const repairedComments = await repairUnspecifiedConversationComments(attribution, [malformedFallbackAuthor])
+  const repairedNotifications = await repairUnspecifiedConversationNotifications(attribution)
+  console.log('[AI conversation attribution]', JSON.stringify({
+    source: fallback ? 'conversation-linked' : 'conversation-recovered',
+    mapId,
+    cardId,
+    conversationId,
+    authorName: attribution.authorName,
+    repairedComments,
+    repairedNotifications,
+  }))
+  return { attribution, repairedComments, repairedNotifications }
+}
+
+async function recoverLinkedConversationAttributions() {
+  const summaries = await listMaps()
+  const targets = []
+  for (const summary of summaries) {
+    const map = await readMap(summary.id)
+    if (!map || map.trashedAt) continue
+    for (const node of map.nodes) {
+      const conversationId = cleanAionUiValue(node.data?.aiConversationId)
+      if (!conversationId) continue
+      const existing = aiConversationAttributions.get(conversationAttributionKey(map.id, node.id))
+      targets.push({ mapId: map.id, cardId: node.id, conversationId, existing })
+    }
+  }
+
+  let recovered = 0
+  let repairedComments = 0
+  let repairedNotifications = 0
+  for (const target of targets) {
+    try {
+      const result = await refreshConversationAttribution(
+        target.mapId,
+        target.cardId,
+        target.conversationId,
+        target.existing?.startedBy,
+        target.existing,
+      )
+      recovered += 1
+      repairedComments += result.repairedComments
+      repairedNotifications += result.repairedNotifications
+    } catch (error) {
+      console.warn('[AI conversation attribution recovery]', JSON.stringify({ ...target, error: error?.message ?? String(error) }))
+    }
+  }
+  if (targets.length > 0) {
+    console.log(`[AI conversation attribution] ${recovered}/${targets.length}개 대화 복원, 댓글 ${repairedComments}개·알림 ${repairedNotifications}개 보정`)
   }
 }
 
@@ -1208,6 +1561,8 @@ async function serveStatic(request, response, pathname) {
 integrationToken = await loadIntegrationToken()
 const adminBootstrapped = await loadUsers()
 await loadSessions()
+await loadAiAttributions()
+await loadAiConversationAttributions()
 const metadataMigration = await migrateStoredMapCreationMetadata()
 if (metadataMigration.migratedDocuments > 0) {
   console.log(`[Mind & Progress] 문서 ${metadataMigration.migratedDocuments}개에 생성자와 생성 시각을 복원했습니다.`)
@@ -1239,7 +1594,7 @@ const server = createServer(async (request, response) => {
 
   try {
     if (request.method === 'GET' && url.pathname === '/api/health') {
-      return sendJson(response, 200, { status: 'ok' })
+      return sendJson(response, 200, { status: 'ok', publicBaseUrl })
     }
 
     if (request.method === 'POST' && url.pathname === '/api/auth/login') {
@@ -1343,11 +1698,14 @@ const server = createServer(async (request, response) => {
         aiAttributions.set(sessionTokenKey(attributionToken), {
           authorName,
           agentId: agent.id,
+          agentName,
           modelId: model.id,
+          modelName,
           providerId: model.providerId ?? null,
           mapId,
           cardId,
           startedBy: user.id,
+          createdAt: Date.now(),
           expiresAt,
         })
         aiConversationLaunches.set(sessionTokenKey(completionToken), {
@@ -1358,7 +1716,12 @@ const server = createServer(async (request, response) => {
           expiresAt,
         })
         const completionUrl = `http://127.0.0.1:${port}/api/integrations/aionui/launches/${completionToken}/conversation`
-        return sendJson(response, 201, { attributionToken, completionUrl, authorName, expiresAt })
+        await persistAiAttributions()
+        console.log('[AI attribution]', JSON.stringify({
+          source: 'created', mapId, cardId, actorId: user.id, authorName,
+          tokenHashPrefix: sessionTokenKey(attributionToken).slice(0, 12),
+        }))
+        return sendJson(response, 201, { attributionToken, completionUrl, authorName, editorId: user.id, expiresAt })
       } catch (error) {
         console.error('[AionUi attribution]', error)
         return sendJson(response, 503, { error: 'AionUi에서 선택한 AI 정보를 확인할 수 없습니다.' })
@@ -1398,7 +1761,31 @@ const server = createServer(async (request, response) => {
           edges: map.edges,
         }, actor, map.title, map.color, 'content')
         const attribution = aiAttributions.get(launch.attributionKey)
-        if (attribution) attribution.conversationId = conversationId
+        if (attribution) {
+          attribution.conversationId = conversationId
+          await persistAiAttributions()
+          try {
+            await refreshConversationAttribution(launch.mapId, launch.cardId, conversationId, launch.startedBy, attribution)
+          } catch (error) {
+            const fallbackAttribution = {
+              mapId: launch.mapId,
+              cardId: launch.cardId,
+              conversationId,
+              authorName: attribution.authorName,
+              agentId: attribution.agentId,
+              agentName: attribution.agentName,
+              modelId: attribution.modelId,
+              modelName: attribution.modelName,
+              providerId: attribution.providerId ?? null,
+              startedBy: launch.startedBy,
+              linkedAt: normalizedIsoDate(conversation.created_at),
+              refreshedAt: new Date().toISOString(),
+            }
+            aiConversationAttributions.set(conversationAttributionKey(launch.mapId, launch.cardId), fallbackAttribution)
+            await persistAiConversationAttributions()
+            console.warn('[AI conversation attribution link]', error)
+          }
+        }
         aiConversationLaunches.delete(tokenKey)
         broadcastEvent({
           type: 'ai-conversation-linked',
@@ -1413,6 +1800,33 @@ const server = createServer(async (request, response) => {
       } catch (error) {
         console.error('[AionUi conversation completion]', error)
         return sendJson(response, 503, { error: '생성된 AionUi 대화를 확인하지 못했습니다.' })
+      }
+    }
+
+    const aionUiConversationAttributionRoute = url.pathname.match(/^\/api\/integrations\/aionui\/conversations\/([^/]+)\/attribution$/)
+    if (aionUiConversationAttributionRoute && request.method === 'POST') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 AI 대화 정보를 갱신할 수 있습니다.' })
+      const conversationId = decodeURIComponent(aionUiConversationAttributionRoute[1])
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(conversationId)) {
+        return sendJson(response, 400, { error: '올바르지 않은 AionUi 대화 ID입니다.' })
+      }
+      const body = await readJsonBody(request)
+      const mapId = String(body.mapId ?? '').trim().slice(0, 120)
+      const cardId = String(body.cardId ?? '').trim().slice(0, 120)
+      if (!isValidMapId(mapId) || !cardId) return sendJson(response, 400, { error: '문서와 카드 ID가 필요합니다.' })
+      const map = await readMap(mapId)
+      const card = map?.nodes.find((node) => node.id === cardId)
+      if (!map || map.trashedAt || !card || card.data?.aiConversationId !== conversationId) {
+        return sendJson(response, 404, { error: '연결된 AI 대화의 문서 또는 카드를 찾을 수 없습니다.' })
+      }
+      try {
+        const result = await refreshConversationAttribution(mapId, cardId, conversationId, user.id)
+        return sendJson(response, 200, result)
+      } catch (error) {
+        console.error('[AionUi conversation attribution refresh]', error)
+        return sendJson(response, 503, { error: 'AionUi에서 AI 종류와 모델을 확인하지 못했습니다.' })
       }
     }
 
@@ -2162,4 +2576,8 @@ setInterval(() => {
 
 server.listen(port, host, () => {
   console.log(`[Mind & Progress API] http://${host}:${port}`)
+  console.log(`[Mind & Progress Public] ${publicBaseUrl}`)
+  void recoverLinkedConversationAttributions().catch((error) => {
+    console.warn('[AI conversation attribution startup recovery]', error)
+  })
 })

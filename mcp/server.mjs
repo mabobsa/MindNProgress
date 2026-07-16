@@ -11,6 +11,9 @@ const dataDirectory = path.resolve(String(process.env.MNP_DATA_DIR ?? '').trim()
 const tokenFile = path.resolve(String(process.env.MNP_TOKEN_FILE ?? '').trim() || path.join(dataDirectory, '_integration-token'))
 const apiBaseUrl = String(process.env.MNP_API_URL ?? 'http://127.0.0.1:4176').replace(/\/+$/, '')
 let activeAttributionToken = ''
+let activeEditorId = ''
+let activeMapId = ''
+let activeCardId = ''
 const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. get_context의 selection.taskLinks.startupInspection.required가 true이면 실제 작업 전에 targets의 업무 본문, 댓글, 첨부파일 목록과 관련 링크를 조사하세요. 특정 자료가 있다고 가정하지 마세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
 const productGuide = {
   version: '1.0',
@@ -63,6 +66,7 @@ const productGuide = {
     'create_document 후 save_document를 연속 호출해 전체 구조를 만들지 않음',
     '기존 문서 변경은 최신 version을 기준으로 수행하고 버전 충돌 시 최신 상태를 다시 조회',
     '변경 후 mindnprogress_get_document로 저장 결과를 검증하고 실제 변경 내용을 요약',
+    '문서나 카드 접근 링크를 기록할 때 localhost나 127.0.0.1 주소를 만들지 말고 MCP 응답의 accessUrl을 사용',
     '삭제는 문서를 휴지통으로 이동하는 방식으로 처리',
     '비밀번호 변경이나 관리자 계정 관리는 MCP 범위에 포함하지 않음',
   ],
@@ -76,14 +80,21 @@ async function integrationToken() {
 
 async function apiRequest(pathname, init = {}) {
   const token = await integrationToken()
+  const { aiMapId, aiCardId, ...requestInit } = init
+  const pathnameMapId = pathname.match(/^\/api\/maps\/([^/?]+)/)?.[1]
+  const scopedMapId = String(aiMapId ?? (pathnameMapId ? decodeURIComponent(pathnameMapId) : '')).trim()
+  const scopedCardId = String(aiCardId ?? (scopedMapId && scopedMapId === activeMapId ? activeCardId : '')).trim()
   const response = await fetch(`${apiBaseUrl}${pathname}`, {
-    ...init,
+    ...requestInit,
     headers: {
       Accept: 'application/json',
       Authorization: `Bearer ${token}`,
       ...(activeAttributionToken ? { 'X-MNP-AI-Attribution': activeAttributionToken } : {}),
-      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init.headers,
+      ...(activeEditorId ? { 'X-MNP-AI-Editor-Id': activeEditorId } : {}),
+      ...(scopedMapId ? { 'X-MNP-AI-Map-Id': scopedMapId } : {}),
+      ...(scopedCardId ? { 'X-MNP-AI-Card-Id': scopedCardId } : {}),
+      ...(requestInit.body ? { 'Content-Type': 'application/json' } : {}),
+      ...requestInit.headers,
     },
     signal: AbortSignal.timeout(10_000),
   })
@@ -105,6 +116,14 @@ function toolResult(value) {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] }
 }
 
+function documentAccessUrl(publicBaseUrl, mapId) {
+  return `${String(publicBaseUrl).replace(/\/+$/, '')}/mindmap/${encodeURIComponent(mapId)}`
+}
+
+function cardAccessUrl(publicBaseUrl, mapId, cardId) {
+  return `${documentAccessUrl(publicBaseUrl, mapId)}/${encodeURIComponent(cardId)}`
+}
+
 function registerTool(server, name, description, schema, handler) {
   server.tool(name, description, schema, async (input) => {
     try {
@@ -122,9 +141,10 @@ async function getDocument(mapId) {
   return (await apiRequest(`/api/maps/${encodeURIComponent(mapId)}`)).map
 }
 
-async function saveDocument(map, force = false) {
+async function saveDocument(map, force = false, aiCardId = '') {
   return apiRequest(`/api/maps/${encodeURIComponent(map.id)}`, {
     method: 'PUT',
+    aiCardId,
     body: JSON.stringify({
       map: { nodes: map.nodes, edges: map.edges },
       baseVersion: map.version,
@@ -316,13 +336,18 @@ async function main() {
   registerTool(server, 'mindnprogress_get_context', 'MindNProgress의 제품 개념과 작성 규칙, 전체 최신 문서, 선택 카드와 최상위 카드의 업무 링크, 계층·의존성·댓글·담당자 정보를 한 번에 조회합니다. 대화를 시작한 뒤 다른 MindNProgress 도구보다 먼저 호출하세요.', {
     mapId: z.string().min(1).describe('현재 문서 ID'),
     cardId: z.string().min(1).describe('편집자가 선택한 카드 ID'),
+    editorId: z.string().min(1).max(120).optional().describe('AI 대화를 시작한 MindNProgress 편집자 계정 ID'),
     attributionToken: z.string().min(32).max(200).optional().describe('MindNProgress의 AI 대화 시작 화면에서 전달된 작성자 귀속 토큰'),
-  }, async ({ mapId, cardId, attributionToken }) => {
-    activeAttributionToken = attributionToken ?? ''
-    const [documentResult, commentsResult, usersResult] = await Promise.all([
+  }, async ({ mapId, cardId, editorId, attributionToken }) => {
+    activeMapId = mapId
+    activeCardId = cardId
+    if (editorId) activeEditorId = editorId
+    if (attributionToken) activeAttributionToken = attributionToken
+    const [documentResult, commentsResult, usersResult, health] = await Promise.all([
       apiRequest(`/api/maps/${encodeURIComponent(mapId)}`),
       apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments?nodeId=${encodeURIComponent(cardId)}`),
       apiRequest('/api/assignees'),
+      apiRequest('/api/health'),
     ])
     const map = documentResult.map
     const selectedCard = map.nodes.find((node) => node.id === cardId)
@@ -375,9 +400,11 @@ async function main() {
         updatedBy: map.updatedBy,
         nodes: map.nodes,
         edges: map.edges,
+        accessUrl: documentAccessUrl(health.publicBaseUrl, map.id),
       },
       selection: {
         card: selectedCard,
+        accessUrl: cardAccessUrl(health.publicBaseUrl, map.id, selectedCard.id),
         parents: relatedCards(parentIds, map.nodes),
         children: relatedCards(childIds, map.nodes),
         siblings: relatedCards(siblingIds, map.nodes),
@@ -405,8 +432,25 @@ async function main() {
     }
   })
 
-  registerTool(server, 'mindnprogress_get_document', '문서의 모든 카드와 연결 관계를 조회합니다.', mapIdSchema, async ({ mapId }) =>
-    apiRequest(`/api/maps/${encodeURIComponent(mapId)}`))
+  registerTool(server, 'mindnprogress_get_document', '문서의 모든 카드와 연결 관계 및 외부에서 접근 가능한 URL을 조회합니다.', mapIdSchema, async ({ mapId }) => {
+    const [documentResult, health] = await Promise.all([
+      apiRequest(`/api/maps/${encodeURIComponent(mapId)}`),
+      apiRequest('/api/health'),
+    ])
+    return {
+      ...documentResult,
+      access: {
+        publicBaseUrl: health.publicBaseUrl,
+        documentUrl: documentAccessUrl(health.publicBaseUrl, documentResult.map.id),
+        cards: documentResult.map.nodes.map((node) => ({
+          cardId: node.id,
+          label: node.data?.label ?? node.id,
+          accessUrl: cardAccessUrl(health.publicBaseUrl, documentResult.map.id, node.id),
+        })),
+        rule: '링크를 기록할 때 localhost나 127.0.0.1로 재작성하지 말고 accessUrl을 그대로 사용하세요.',
+      },
+    }
+  })
 
   registerTool(server, 'mindnprogress_create_mindmap', '새 문서와 완성된 계층형 마인드맵을 한 번에 원자적으로 생성합니다. 여러 카드를 만들 때는 create_document 후 save_document를 호출하지 말고 반드시 이 도구를 우선 사용하세요. 카드 위치와 연결선은 자동 배치됩니다.', {
     title: z.string().min(1).max(120),
@@ -491,7 +535,7 @@ async function main() {
       type: 'bezier',
       markerEnd: { type: 'arrowclosed', width: 16, height: 16 },
     })
-    return saveDocument(map)
+    return saveDocument(map, false, parentId ?? '')
   })
 
   registerTool(server, 'mindnprogress_update_card', '카드 제목, 설명, 진행률, 상태, 업무 링크, 담당자, 마감일, 체크리스트와 선행 업무를 변경합니다.', {
@@ -505,7 +549,7 @@ async function main() {
     if (!node) throw new Error('카드를 찾을 수 없습니다.')
     node.data = { ...node.data, ...data }
     if (position) node.position = position
-    return saveDocument(map)
+    return saveDocument(map, false, nodeId)
   })
 
   registerTool(server, 'mindnprogress_move_card', '카드와 모든 하위 카드를 유지한 채 다른 카드의 하위로 이동합니다.', {
@@ -528,7 +572,7 @@ async function main() {
       type: 'bezier',
       markerEnd: { type: 'arrowclosed', width: 16, height: 16 },
     })
-    return saveDocument(map)
+    return saveDocument(map, false, nodeId)
   })
 
   registerTool(server, 'mindnprogress_delete_card', '카드를 삭제합니다. 기본적으로 모든 하위 카드도 함께 삭제합니다.', {
@@ -544,7 +588,7 @@ async function main() {
     deletedIds.add(nodeId)
     map.nodes = map.nodes.filter((node) => !deletedIds.has(node.id))
     map.edges = map.edges.filter((edge) => !deletedIds.has(edge.source) && !deletedIds.has(edge.target))
-    return saveDocument(map)
+    return saveDocument(map, false, nodeId)
   })
 
   registerTool(server, 'mindnprogress_update_document_info', '문서 이름 또는 아이콘 색상을 변경합니다.', {
@@ -592,7 +636,9 @@ async function main() {
   }, async ({ mapId, nodeId }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments${nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : ''}`))
   registerTool(server, 'mindnprogress_add_comment', '카드에 댓글 또는 답글을 작성합니다.', {
     mapId: z.string().min(1), nodeId: z.string().min(1), text: z.string().min(1).max(1000), parentId: z.string().optional(),
-  }, async ({ mapId, ...body }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments`, { method: 'POST', body: JSON.stringify(body) }))
+  }, async ({ mapId, ...body }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments`, {
+    method: 'POST', aiCardId: body.nodeId, body: JSON.stringify(body),
+  }))
   registerTool(server, 'mindnprogress_delete_comment', '댓글과 연결된 답글을 삭제합니다.', {
     mapId: z.string().min(1), commentId: z.string().min(1),
   }, async ({ mapId, commentId }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments/${encodeURIComponent(commentId)}`, { method: 'DELETE' }))

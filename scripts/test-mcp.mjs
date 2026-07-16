@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer as createHttpServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
-import { access, mkdir, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -32,6 +32,9 @@ async function startMockAionUi({
   agentName = 'Claude Code',
   modelId = 'claude-test-model',
   modelName = 'Claude Test Model',
+  conversationId = 'conversation-test',
+  conversationCreatedAt = Date.parse('2026-07-20T00:00:00.000Z'),
+  conversationModelId = `${modelId}[1m]`,
 } = {}) {
   const server = createHttpServer((request, response) => {
     const send = (data) => {
@@ -55,6 +58,13 @@ async function startMockAionUi({
     if (request.url === '/api/providers') return send([])
     if (request.url === '/api/skills') return send([])
     if (request.url === '/api/mcp/servers') return send([])
+    if (request.url === `/api/conversations/${conversationId}`) {
+      return send({
+        id: conversationId,
+        created_at: conversationCreatedAt,
+        extra: { agent_id: agentId, current_model_id: conversationModelId, backend: 'claude' },
+      })
+    }
     response.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
     response.end(JSON.stringify({ success: false, error: 'not found' }))
   })
@@ -114,11 +124,13 @@ async function main() {
     MNP_API_HOST: '127.0.0.1',
     MNP_API_PORT: String(port),
     MNP_API_URL: apiBaseUrl,
+    MNP_PUBLIC_URL: 'https://mindnprogress.test',
     MNP_DATA_DIR: testDataDirectory,
     MNP_AIONUI_URL: '',
     MNP_AIONUI_DISCOVERY_FILE: aionUiDiscoveryFile,
     MNP_ADMIN_EMAIL: 'mcp-test-admin@mind.local',
     MNP_ADMIN_PASSWORD: 'McpTest!2026',
+    MNP_AI_ATTRIBUTION_DURATION_MS: '10000',
   }
   const serverLogs = []
   const apiServer = spawn(process.execPath, ['server/index.mjs'], {
@@ -186,6 +198,8 @@ async function main() {
 
     let documentResult = await invoke('mindnprogress_get_document', { mapId })
     assert.equal(documentResult.map.nodes.length, 4)
+    assert.equal(documentResult.access.documentUrl, `https://mindnprogress.test/mindmap/${mapId}`)
+    assert.equal(documentResult.access.cards.find((card) => card.cardId === 'task-a')?.accessUrl, `https://mindnprogress.test/mindmap/${mapId}/task-a`)
     const loginResponse = await fetch(`${apiBaseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -194,6 +208,20 @@ async function main() {
     assert.equal(loginResponse.status, 200)
     const sessionCookie = loginResponse.headers.get('set-cookie')?.split(';')[0]
     assert.ok(sessionCookie, '테스트 관리자 세션 쿠키가 없습니다.')
+    const integrationToken = (await readFile(path.join(testDataDirectory, '_integration-token'), 'utf8')).trim()
+    const unspecifiedCommentResponse = await fetch(`${apiBaseUrl}/api/maps/${encodeURIComponent(mapId)}/comments`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${integrationToken}`,
+        'Content-Type': 'application/json',
+        'X-MNP-AI-Map-Id': mapId,
+        'X-MNP-AI-Card-Id': 'task-a',
+      },
+      body: JSON.stringify({ nodeId: 'task-a', text: '대화 귀속 복구 전 모델 미지정 댓글' }),
+    })
+    assert.equal(unspecifiedCommentResponse.status, 201)
+    const unspecifiedComment = await unspecifiedCommentResponse.json()
+    assert.equal(unspecifiedComment.comment.author.name, 'AI(모델 미지정)')
     const attributionResponse = await fetch(`${apiBaseUrl}/api/integrations/aionui/attributions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: sessionCookie },
@@ -208,10 +236,72 @@ async function main() {
     const attribution = await attributionResponse.json()
     assert.equal(attribution.authorName, 'Claude Code(Claude Test Model)')
     assert.ok(attribution.attributionToken)
+    assert.equal(attribution.editorId, 'user-admin')
 
-    const context = await invoke('mindnprogress_get_context', { mapId, cardId: 'task-a', attributionToken: attribution.attributionToken })
+    const context = await invoke('mindnprogress_get_context', {
+      mapId,
+      cardId: 'task-a',
+      editorId: attribution.editorId,
+      attributionToken: attribution.attributionToken,
+    })
     assert.equal(context.selection.card.id, 'task-a')
     assert.equal(context.selection.taskLinks.available.length, 2)
+    assert.equal(context.selection.accessUrl, `https://mindnprogress.test/mindmap/${mapId}/task-a`)
+
+    const completionResponse = await fetch(attribution.completionUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversationId: 'conversation-test' }),
+    })
+    assert.equal(completionResponse.status, 200)
+    await access(path.join(testDataDirectory, '_ai-conversation-attributions.json'))
+    const repairedCommentsResponse = await fetch(`${apiBaseUrl}/api/maps/${encodeURIComponent(mapId)}/comments?nodeId=task-a`, {
+      headers: { Cookie: sessionCookie },
+    })
+    assert.equal(repairedCommentsResponse.status, 200)
+    const repairedComments = await repairedCommentsResponse.json()
+    assert.equal(
+      repairedComments.comments.find((comment) => comment.id === unspecifiedComment.comment.id)?.author.name,
+      'Claude Code(Claude Test Model)',
+    )
+    const repairedNotificationsResponse = await fetch(`${apiBaseUrl}/api/notifications`, {
+      headers: { Cookie: sessionCookie },
+    })
+    assert.equal(repairedNotificationsResponse.status, 200)
+    const repairedNotifications = await repairedNotificationsResponse.json()
+    assert.equal(
+      repairedNotifications.notifications.find((notification) => notification.commentId === unspecifiedComment.comment.id)?.actor.name,
+      'Claude Code(Claude Test Model)',
+    )
+    documentResult = await invoke('mindnprogress_get_document', { mapId })
+    assert.equal(documentResult.map.nodes.find((node) => node.id === 'task-a')?.data.aiConversationId, 'conversation-test')
+
+    const freshTransport = new StdioClientTransport({
+      command: process.execPath,
+      args: ['mcp/server.mjs'],
+      cwd: projectDirectory,
+      env: environment,
+      stderr: 'pipe',
+    })
+    const freshClient = new Client({ name: 'mindnprogress-attribution-reconnect', version: '1.0.0' })
+    await freshClient.connect(freshTransport)
+    try {
+      const reconnectedComment = parseToolResult('mindnprogress_add_comment', await freshClient.callTool({
+        name: 'mindnprogress_add_comment',
+        arguments: { mapId, nodeId: 'task-a', text: 'MCP 재연결 후 모델 귀속 검증' },
+      }))
+      assert.equal(reconnectedComment.comment.author.name, 'Claude Code(Claude Test Model)')
+    } finally {
+      await freshClient.close()
+    }
+
+    const idFallbackContext = await invoke('mindnprogress_get_context', {
+      mapId,
+      cardId: 'task-a',
+      editorId: attribution.editorId,
+      attributionToken: 'expired-attribution-token-00000000',
+    })
+    assert.equal(idFallbackContext.selection.card.id, 'task-a')
 
     await new Promise((resolve) => mockAionUi.server.close(resolve))
     mockAionUi = await startMockAionUi({
@@ -240,6 +330,15 @@ async function main() {
       edges: documentResult.map.edges,
     })
     assert.ok(saved.map.version > documentResult.map.version)
+    assert.equal(saved.map.updatedBy.id, attribution.editorId)
+    assert.equal(saved.map.updatedBy.name, 'Claude Code(Claude Test Model)')
+
+    await invoke('mindnprogress_get_context', {
+      mapId,
+      cardId: 'task-a',
+      editorId: attribution.editorId,
+      attributionToken: attribution.attributionToken,
+    })
 
     const history = await invoke('mindnprogress_list_history', { mapId, limit: 1 })
     assert.equal(history.revisions.length, 1)
@@ -286,6 +385,7 @@ async function main() {
     assert.deepEqual(reordered.maps.map((map) => map.id), [secondaryMapId, mapId])
 
     const notificationsPath = path.join(testDataDirectory, '_notifications')
+    await rm(notificationsPath, { recursive: true, force: true })
     await writeFile(notificationsPath, '알림 디렉터리 접근 실패 회귀 조건', 'utf8')
     const commentWithFailedNotification = await invoke('mindnprogress_add_comment', {
       mapId, nodeId: 'root', text: '알림 실패와 무관하게 한 번만 생성되어야 합니다.',
@@ -313,17 +413,17 @@ async function main() {
     const reacted = await invoke('mindnprogress_toggle_comment_reaction', {
       mapId, commentId: parentComment.comment.id, emoji: '👍',
     })
-    assert.ok(reacted.comment.reactions['👍'].includes('system-aionui-ai'))
+    assert.ok(reacted.comment.reactions['👍'].includes(attribution.editorId))
     commentList = await invoke('mindnprogress_list_comments', { mapId, nodeId: 'root' })
     assert.equal(commentList.comments.length, 2)
     const deletedThread = await invoke('mindnprogress_delete_comment', { mapId, commentId: parentComment.comment.id })
     assert.equal(deletedThread.deletedIds.length, 2)
 
     const integrationNotifications = [
-      { id: 'notification-regression-1', userId: 'system-aionui-ai', createdAt: '2026-07-17T00:00:00.000Z', readAt: null, message: '첫 알림' },
-      { id: 'notification-regression-2', userId: 'system-aionui-ai', createdAt: '2026-07-17T00:01:00.000Z', readAt: null, message: '둘째 알림' },
+      { id: 'notification-regression-1', userId: attribution.editorId, createdAt: '2026-07-17T00:00:00.000Z', readAt: null, message: '첫 알림' },
+      { id: 'notification-regression-2', userId: attribution.editorId, createdAt: '2026-07-17T00:01:00.000Z', readAt: null, message: '둘째 알림' },
     ]
-    await writeFile(path.join(notificationsPath, 'system-aionui-ai.json'), `${JSON.stringify(integrationNotifications, null, 2)}\n`, 'utf8')
+    await writeFile(path.join(notificationsPath, `${attribution.editorId}.json`), `${JSON.stringify(integrationNotifications, null, 2)}\n`, 'utf8')
     const notificationList = await invoke('mindnprogress_list_notifications')
     assert.equal(notificationList.notifications.length, 2)
     const readOne = await invoke('mindnprogress_mark_notification_read', { notificationId: 'notification-regression-1' })
@@ -401,6 +501,29 @@ async function main() {
 
     const afterRejectedOperations = await invoke('mindnprogress_get_document', { mapId })
     assert.equal(afterRejectedOperations.map.version, finalDocument.map.version)
+
+    const attributionExpiresAt = Number(attribution.expiresAt)
+    assert.ok(Number.isFinite(attributionExpiresAt), 'AI 귀속 만료 시각이 숫자가 아닙니다.')
+    const attributionExpiryDelay = Math.max(0, attributionExpiresAt - Date.now() + 100)
+    await new Promise((resolve) => setTimeout(resolve, attributionExpiryDelay))
+    const postExpiryTransport = new StdioClientTransport({
+      command: process.execPath,
+      args: ['mcp/server.mjs'],
+      cwd: projectDirectory,
+      env: environment,
+      stderr: 'pipe',
+    })
+    const postExpiryClient = new Client({ name: 'mindnprogress-persistent-attribution', version: '1.0.0' })
+    await postExpiryClient.connect(postExpiryTransport)
+    try {
+      const persistedComment = parseToolResult('mindnprogress_add_comment', await postExpiryClient.callTool({
+        name: 'mindnprogress_add_comment',
+        arguments: { mapId, nodeId: 'task-a', text: '단기 토큰 만료 후 장기 대화 귀속 검증' },
+      }))
+      assert.equal(persistedComment.comment.author.name, 'Claude Code(Claude Test Model)')
+    } finally {
+      await postExpiryClient.close()
+    }
 
     const uncalledTools = registeredToolNames.filter((name) => !calledTools.has(name))
     assert.deepEqual(uncalledTools, [], `호출되지 않은 MCP 도구: ${uncalledTools.join(', ')}`)

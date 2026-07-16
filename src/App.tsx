@@ -51,7 +51,23 @@ function synchronizeNodeSelection(nodes: MindMapNode[], selectedId: string | nul
 }
 const CLIENT_ID_KEY = 'mindnprogress-client-id'
 const LAST_LOGIN_EMAIL_KEY = 'mindnprogress-last-login-email'
-const CLIENT_ID = sessionStorage.getItem(CLIENT_ID_KEY) ?? crypto.randomUUID()
+
+function createClientId() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID()
+
+  const randomValues = new Uint32Array(4)
+  if (typeof globalThis.crypto?.getRandomValues === 'function') {
+    globalThis.crypto.getRandomValues(randomValues)
+  } else {
+    for (let index = 0; index < randomValues.length; index += 1) {
+      randomValues[index] = Math.floor(Math.random() * 0x1_0000_0000)
+    }
+  }
+  const suffix = [...randomValues].map((value) => value.toString(36)).join('-')
+  return `client-${Date.now().toString(36)}-${suffix}`
+}
+
+const CLIENT_ID = sessionStorage.getItem(CLIENT_ID_KEY) ?? createClientId()
 const COMMENT_REACTIONS = ['👍', '❤️', '🎉', '👀'] as const
 sessionStorage.setItem(CLIENT_ID_KEY, CLIENT_ID)
 
@@ -174,13 +190,15 @@ function decodePathSegment(segment: string | undefined) {
 
 function parseWorkspaceDeepLink(pathname: string): WorkspaceDeepLink | null {
   const segments = pathname.replace(/^\/+|\/+$/g, '').split('/')
-  const tab = decodePathSegment(segments[0])
+  const viewerEntry = decodePathSegment(segments[0])?.toLowerCase() === 'viewer'
+  const viewIndex = viewerEntry ? 1 : 0
+  const tab = decodePathSegment(segments[viewIndex]) ?? (viewerEntry ? 'mindmap' : null)
   const viewMode = tab ? VIEW_MODE_PATHS[tab.toLowerCase()] : undefined
   if (!viewMode) return null
   return {
     viewMode,
-    mapId: decodePathSegment(segments[1]),
-    nodeId: decodePathSegment(segments[2]),
+    mapId: decodePathSegment(segments[viewIndex + 1]),
+    nodeId: decodePathSegment(segments[viewIndex + 2]),
   }
 }
 
@@ -944,6 +962,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const [checklistTooltip, setChecklistTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
   const [nodeContextMenu, setNodeContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null)
   const [documentContextMenu, setDocumentContextMenu] = useState<{ x: number; y: number; mapId: string } | null>(null)
+  const [aiConversationContextMenu, setAiConversationContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [copiedNodeData, setCopiedNodeData] = useState<MindNodeData | null>(null)
   const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
   const [documentDropTargetId, setDocumentDropTargetId] = useState<string | null>(null)
@@ -1298,7 +1317,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         }
         if (event.type === 'notification') {
           setNotifications((current) => current.some((notification) => notification.id === event.notification.id)
-            ? current
+            ? current.map((notification) => notification.id === event.notification.id ? event.notification : notification)
             : [event.notification, ...current])
           return
         }
@@ -1501,8 +1520,37 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   }, [setNodes])
 
   const openAiConversation = (conversationId: string) => {
+    if (activeMapId && selectedId) {
+      void apiRequest(`/api/integrations/aionui/conversations/${encodeURIComponent(conversationId)}/attribution`, {
+        method: 'POST',
+        body: JSON.stringify({ mapId: activeMapId, cardId: selectedId }),
+        keepalive: true,
+      }).catch((error) => {
+        console.warn('[AI conversation attribution refresh]', error)
+      })
+    }
     const route = encodeURIComponent(`/conversation/${conversationId}`)
     window.location.href = `aionui://navigate?route=${route}`
+  }
+
+  const openAiConversationContextMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setNodeContextMenu(null)
+    setDocumentContextMenu(null)
+    setAiConversationContextMenu({
+      x: Math.min(event.clientX, window.innerWidth - 230),
+      y: Math.min(event.clientY, window.innerHeight - 110),
+    })
+  }
+
+  const startNewAiConversation = () => {
+    setAiConversationContextMenu(null)
+    setAiDialogOpen(true)
+  }
+
+  const showAiEditorOnlyAlert = () => {
+    window.alert('AI 대화 기능은 편집자만 사용할 수 있습니다.')
   }
 
   const applyChecklist = (items: ChecklistItem[]) => {
@@ -1675,6 +1723,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     event.stopPropagation()
     setNodeContextMenu(null)
     setDocumentContextMenu(null)
+    setAiConversationContextMenu(null)
     rightPanGesture.current = {
       startX: event.clientX,
       startY: event.clientY,
@@ -1697,6 +1746,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     event.preventDefault()
     event.stopPropagation()
     setDocumentContextMenu(null)
+    setAiConversationContextMenu(null)
     setSelectedId(nodeId)
     setNodeContextMenu({
       x: Math.min(event.clientX, window.innerWidth - 230),
@@ -1754,7 +1804,9 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const copyNode = useCallback((nodeId: string) => {
     const node = nodes.find((candidate) => candidate.id === nodeId)
     if (!node) return
-    setCopiedNodeData(structuredClone(node.data))
+    const copiedData = structuredClone(node.data)
+    delete copiedData.aiConversationId
+    setCopiedNodeData(copiedData)
     setNodeContextMenu(null)
   }, [nodes])
 
@@ -1769,6 +1821,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
       ...structuredClone(copiedNodeData),
       label: `${copiedNodeData.label} 복사본`,
       kind: 'task',
+      aiConversationId: undefined,
       blockedBy: undefined,
       unresolvedDependencyCount: undefined,
       checklist: copiedNodeData.checklist?.map((item, index) => ({
@@ -1803,6 +1856,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
       if (!target?.closest('.node-context-menu')) {
         setNodeContextMenu(null)
         setDocumentContextMenu(null)
+        setAiConversationContextMenu(null)
       }
       if (!target?.closest('.notification-center')) setNotificationsOpen(false)
     }
@@ -1810,6 +1864,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
       if (event.key === 'Escape') {
         setNodeContextMenu(null)
         setDocumentContextMenu(null)
+        setAiConversationContextMenu(null)
         setHistoryOpen(false)
         setNotificationsOpen(false)
       }
@@ -1825,9 +1880,11 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   useEffect(() => {
     setNodeContextMenu(null)
     setDocumentContextMenu(null)
+    setAiConversationContextMenu(null)
   }, [activeMapId, viewMode])
 
   useEffect(() => {
+    setAiConversationContextMenu(null)
     setNodeLinkCopyStatus('idle')
     if (nodeLinkCopyTimer.current !== null) window.clearTimeout(nodeLinkCopyTimer.current)
     return () => {
@@ -2163,6 +2220,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     event.preventDefault()
     event.stopPropagation()
     setNodeContextMenu(null)
+    setAiConversationContextMenu(null)
     setDocumentContextMenu({
       x: Math.min(event.clientX, window.innerWidth - 230),
       y: Math.max(8, Math.min(event.clientY, window.innerHeight - 335)),
@@ -2267,7 +2325,10 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     if (!activeMapId || !selectedId) return
     const path = [viewMode, activeMapId, selectedId].map((segment) => encodeURIComponent(segment)).join('/')
     try {
-      await copyTextToClipboard(`${window.location.origin}/${path}`)
+      const health = await apiRequest<{ publicBaseUrl: string }>('/api/health')
+      const publicBaseUrl = health.publicBaseUrl?.replace(/\/+$/, '')
+      if (!publicBaseUrl) throw new Error('공개 접근 주소를 확인하지 못했습니다.')
+      await copyTextToClipboard(`${publicBaseUrl}/${path}`)
       setNodeLinkCopyStatus('copied')
     } catch {
       setNodeLinkCopyStatus('failed')
@@ -2551,7 +2612,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
             <span className={`access-dot ${user.role}`} />
             {user.role === 'admin' ? '관리자' : mode === 'editor' ? '편집자' : '뷰어'}
           </div>
-          <button className="share-button"><Icon name="share" size={16} />공유</button>
+          <button className="share-button" onClick={() => window.alert('공유 기능은 현재 준비 중입니다.')}><Icon name="share" size={16} />공유</button>
           <div className="account-menu-wrap">
             <button className="user-menu" onClick={() => setAccountMenuOpen((current) => !current)} title={`${user.email} · 계정 메뉴`} aria-expanded={accountMenuOpen}>
               <span className="avatar">{user.name.replace(/\s/g, '').slice(0, 2)}</span>
@@ -2929,11 +2990,30 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                   >
                     <Icon name={nodeLinkCopyStatus === 'copied' ? 'check' : 'copy'} size={15} />
                   </button>
-                  {mode === 'editor' && (selectedNode.data.aiConversationId ? (
-                    <button className="ai-conversation-button" onClick={() => openAiConversation(selectedNode.data.aiConversationId as string)}><Icon name="sparkles" size={15} /><span>AI 대화 선택</span></button>
+                  {selectedNode.data.aiConversationId ? (
+                    <button
+                      className="ai-conversation-button"
+                      onClick={() => {
+                        if (mode === 'editor') void openAiConversation(selectedNode.data.aiConversationId as string)
+                        else showAiEditorOnlyAlert()
+                      }}
+                      onContextMenu={mode === 'editor' ? openAiConversationContextMenu : undefined}
+                      title={mode === 'editor' ? '좌클릭: 기존 대화 열기 · 우클릭: 새 대화 시작' : '편집자만 사용 가능'}
+                    >
+                      <Icon name="sparkles" size={15} /><span>AI 대화 선택</span>
+                    </button>
                   ) : (
-                    <button className="ai-conversation-button" onClick={() => setAiDialogOpen(true)}><Icon name="sparkles" size={15} /><span>AI 대화 시작</span></button>
-                  ))}
+                    <button
+                      className="ai-conversation-button"
+                      onClick={() => {
+                        if (mode === 'editor') setAiDialogOpen(true)
+                        else showAiEditorOnlyAlert()
+                      }}
+                      title={mode === 'editor' ? 'AI 대화 시작' : '편집자만 사용 가능'}
+                    >
+                      <Icon name="sparkles" size={15} /><span>AI 대화 시작</span>
+                    </button>
+                  )}
                   <button onClick={() => setSelectedId(null)} aria-label="닫기"><Icon name="close" size={17} /></button>
                 </div>
               </div>
@@ -3372,6 +3452,23 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
           <button className="danger" role="menuitem" onClick={() => { deleteNodeById(nodeContextMenu.nodeId); setNodeContextMenu(null) }}>
             <span className="context-icon"><Icon name="trash" size={15} /></span>
             <span><strong>삭제</strong><small>노드와 연결선 삭제</small></span>
+          </button>
+        </div>
+      )}
+      {aiConversationContextMenu && selectedNode && mode === 'editor' && (
+        <div
+          className="node-context-menu ai-conversation-context-menu"
+          style={{ left: aiConversationContextMenu.x, top: aiConversationContextMenu.y }}
+          onContextMenu={(event) => event.preventDefault()}
+          role="menu"
+        >
+          <div className="context-menu-title">
+            <span>AI 대화</span>
+            <strong>{selectedNode.data.label}</strong>
+          </div>
+          <button role="menuitem" onClick={startNewAiConversation}>
+            <span className="context-icon"><Icon name="sparkles" size={15} /></span>
+            <span><strong>AI 대화를 새로 시작</strong><small>현재 카드를 기준으로 옵션 선택</small></span>
           </button>
         </div>
       )}

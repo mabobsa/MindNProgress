@@ -1,0 +1,72 @@
+.mind-node {
+  position: relative;
+  width: 218px;
+  min-height: 112px;
+  padding: 14px 16px 13px;
+  color: #4d4755;
+  border: 1px solid #dfdce6;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .97);
+  box-shadow: 0 7px 18px rgba(54, 45, 85, .08);
+  transition: border-color .18s, box-shadow .18s;
+}
+
+.mind-node:hover { border-color: #c8c2dc; box-shadow: 0 9px 24px rgba(54, 45, 85, .12); }
+.mind-node.selected { border-color: #6b5bd7; box-shadow: 0 0 0 3px rgba(107, 91, 215, .13), 0 10px 26px rgba(54, 45, 85, .14); }
+.mind-node.root { color: white; border-color: #5a4bc9; background: linear-gradient(145deg, #7162df, #594ac8); box-shadow: 0 12px 28px rgba(83, 67, 190, .27); }
+.mind-node.root.selected { box-shadow: 0 0 0 4px rgba(107, 91, 215, .17), 0 13px 30px rgba(83, 67, 190, .3); }
+.mind-node.branch { border-left: 4px solid #7162da; }
+.mind-node.completed { border-color: #83cdb3; background: #f5fcf9; box-shadow: 0 8px 22px rgba(40, 139, 104, .13); }
+.mind-node.completed.branch { border-left-color: #43b78e; }
+.mind-node.completed.root { border-color: #319b75; background: linear-gradient(145deg, #50bd95, #319a75); box-shadow: 0 12px 28px rgba(40, 139, 104, .25); }
+.mind-node.completed.selected { border-color: #35a77f; box-shadow: 0 0 0 3px rgba(67, 183, 142, .16), 0 10px 26px rgba(40, 139, 104, .18); }
+.node-topline { display: flex; align-items: center; gap: 5px; color: #9a94a1; font-size: 8px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+.node-topline strong { margin-left: auto; color: #7568ce; font-size: 9px; }
+.node-comments-badge { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px; color: #8c8693; border-radius: 5px; background: #f0eef3; font-size: 7px; font-weight: 750; letter-spacing: 0; text-transform: none; white-space: nowrap; }
+.node-comments-badge > span { font-size: 7px; filter: grayscale(1); }
+.node-comments-badge.unresolved { color: #5d50ca; background: #eae7fb; }
+.node-comments-badge.unresolved > span { filter: none; }
+.mind-node.root .node-comments-badge { color: white; background: rgba(255,255,255,.15); }
+.mind-node.root .node-topline { color: rgba(255, 255, 255, .68); }
+.mind-node.root .node-topline strong { color: white; }
+.node-status { width: 6px; height: 6px; border-radius: 50%; background: #d0ccd4; }
+.node-status.in-progress { background: #8172df; }
+.node-status.done { background: #43b78e; }
+.mind-node.root .node-status { background: #bdb4ff; }
+.mind-node h3 { max-width: 185px; margin: 10px 0 4px; overflow: hidden; color: #332e3b; font-size: 13px; font-weight: 720; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.mind-node.root h3 { color: white; font-size: 14px; }
+.mind-node p { max-width: 185px; margin: 0; overflow: hidden; color: #9993a1; font-size: 9px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.mind-node.root p { color: rgba(255,255,255,.72); }
+.node-progress { height: 3px; margin-top: 12px; overflow: hidden; border-radius: 4px; background: #eeecf1; }
+.node-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #8274e1, #5f50cd); transition: width .25s ease; }
+.mind-node.completed .node-progress span { background: linear-gradient(90deg, #65cba6, #35a77f); }
+.mind-node.root .node-progress { background: rgba(255,255,255,.2); }
+.mind-node.root .node-progress span { background: white; }
+.node-work-meta { display: flex; align-items: center; gap: 6px; min-height: 18px; margin-top: 9px; padding-top: 8px; border-top: 1px solid #eeecf1; color: #8f8996; font-size: 8px; }
+.mind-node.root .node-work-meta { border-top-color: rgba(255,255,255,.17); color: rgba(255,255,255,.7); }
+.work-label { padding: 2px 5px; color: #6558c3; border-radius: 4px; background: #efecfc; font-size: 7px; font-weight: 750; }
+.mind-node.root .work-label { color: white; background: rgba(255,255,255,.16); }
+.node-assignee { width: 18px; height: 18px; display: grid; place-items: center; color: #5d50ca; border-radius: 50%; background: #eae7fc; font-size: 7px; font-weight: 800; }
+.node-assignee.mint { color: #27876f; background: #dcf5ed; }
+.node-assignee.orange { color: #a56827; background: #faead5; }
+.node-assignee.blue { color: #3d6da7; background: #e2edf9; }
+.mind-node.root .node-assignee { color: #5548bb; background: white; }
+.node-due { white-space: nowrap; }
+.node-due.overdue { color: #d25c5c; font-weight: 700; }
+.mind-node.root .node-due.overdue { color: #ffd1d1; }
+.node-blocked { margin-left: auto; padding: 2px 5px; color: #b34848; border: 1px solid #f0cccc; border-radius: 5px; background: #fff0f0; font-size: 7px; font-weight: 750; white-space: nowrap; }
+.mind-node.root .node-blocked { color: white; border-color: rgba(255,255,255,.24); background: rgba(255,255,255,.13); }
+.node-blocked + .node-checklist { margin-left: 0; }
+.node-checklist { margin-left: auto; white-space: nowrap; }
+.node-collapse-toggle { min-width: 22px; height: 22px; position: absolute; right: -11px; bottom: 10px; z-index: 4; display: flex; align-items: center; justify-content: center; gap: 2px; padding: 0 5px; color: #6255c4; border: 2px solid white; border-radius: 11px; background: #eae7fb; box-shadow: 0 3px 8px rgba(54,45,85,.18); font-size: 10px; font-weight: 800; cursor: pointer; }
+.node-collapse-toggle:hover { color: white; background: #6657d9; transform: scale(1.08); }
+.node-collapse-toggle.collapsed { color: white; background: #6657d9; }
+.node-collapse-toggle b { font-size: 6px; }
+.mind-node.root .node-collapse-toggle { color: #5548bd; background: white; }
+.mind-node.root .node-collapse-toggle:hover, .mind-node.root .node-collapse-toggle.collapsed { color: white; background: #493bb5; }
+.mind-node .react-flow__handle { width: 9px; height: 9px; border: 2px solid white; background: #8173dd; opacity: 0; transition: opacity .18s, transform .18s; }
+.mind-node:hover .react-flow__handle,
+.mind-node.selected .react-flow__handle { opacity: 1; }
+.mind-node .react-flow__handle:hover { transform: scale(1.35); }
+.react-flow__node.drop-target .mind-node { border-color: #35a77f; box-shadow: 0 0 0 4px rgba(67,183,142,.17), 0 12px 28px rgba(40,139,104,.2); transform: scale(1.025); }
+.react-flow__node.drop-target::after { content: '여기에 자식으로 이동'; position: absolute; left: 50%; bottom: -26px; z-index: 5; padding: 4px 7px; color: white; border-radius: 6px; background: #35a77f; box-shadow: 0 5px 12px rgba(40,139,104,.22); font-size: 8px; font-weight: 700; white-space: nowrap; transform: translateX(-50%); pointer-events: none; }

@@ -1,0 +1,60 @@
+.admin-account-overlay { position: fixed; inset: 56px 0 0; z-index: 1450; display: flex; justify-content: center; padding: 24px; background: rgba(35,29,48,.46); backdrop-filter: blur(4px); }
+.admin-account-panel { width: min(1040px, 100%); height: 100%; overflow: hidden; display: flex; flex-direction: column; border: 1px solid #ded9e8; border-radius: 16px; background: #f7f6fa; box-shadow: 0 24px 70px rgba(31,24,48,.28); }
+.admin-account-header { flex: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 20px 24px; color: white; background: linear-gradient(135deg, #5648c6, #7566df); }
+.admin-account-header > div > span { color: rgba(255,255,255,.65); font-size: 8px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+.admin-account-header h2 { margin: 5px 0 4px; font-size: 21px; letter-spacing: -.025em; }
+.admin-account-header p { margin: 0; color: rgba(255,255,255,.72); font-size: 9px; }
+.admin-account-header > button { width: 31px; height: 31px; display: grid; place-items: center; color: white; border: 1px solid rgba(255,255,255,.24); border-radius: 8px; background: rgba(255,255,255,.1); font-size: 19px; cursor: pointer; }
+.admin-account-header > button:hover { background: rgba(255,255,255,.2); }
+.admin-account-body { min-height: 0; flex: 1; overflow-y: auto; padding: 20px 24px 30px; }
+.admin-account-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
+.admin-account-metrics article { padding: 13px 15px; border: 1px solid #e5e1eb; border-radius: 10px; background: white; }
+.admin-account-metrics span { color: #918a98; font-size: 8px; }
+.admin-account-metrics strong { display: block; margin-top: 5px; color: #5549c0; font-size: 20px; }
+.editor-create-card, .editor-list-card { padding: 17px; border: 1px solid #e4e0e9; border-radius: 12px; background: white; box-shadow: 0 4px 15px rgba(47,39,69,.04); }
+.editor-list-card { margin-top: 12px; }
+.admin-section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 15px; margin-bottom: 13px; }
+.admin-section-heading > div { display: flex; flex-direction: column; gap: 2px; }
+.admin-section-heading > div > span { color: #7669ce; font-size: 7px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.admin-section-heading strong { color: #4c4653; font-size: 12px; }
+.admin-section-heading small { color: #9d97a4; font-size: 8px; }
+.editor-create-card form { display: grid; grid-template-columns: 1fr 1.25fr 1fr auto; align-items: end; gap: 8px; }
+.editor-create-card label { display: flex; flex-direction: column; gap: 5px; }
+.editor-create-card label span { color: #716a78; font-size: 8px; font-weight: 700; }
+.editor-create-card input, .editor-inline-edit input { min-width: 0; padding: 9px 10px; color: #3f3946; border: 1px solid #ddd9e3; border-radius: 8px; outline: 0; background: #fbfafc; font-size: 9px; }
+.editor-create-card input:focus, .editor-inline-edit input:focus { border-color: #7769d6; box-shadow: 0 0 0 2px rgba(103,88,207,.09); }
+.editor-create-card form > button { height: 34px; padding: 0 13px; color: white; border: 0; border-radius: 8px; background: #6354d1; font-size: 9px; font-weight: 750; cursor: pointer; }
+.editor-create-card form > button:disabled { opacity: .45; cursor: default; }
+.credential-notice { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 10px 12px; color: #4d4654; border: 1px solid #cfc8ef; border-radius: 10px; background: #f0edfc; }
+.credential-notice > span { min-width: 0; flex: 1; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 2px 10px; }
+.credential-notice strong { font-size: 9px; }
+.credential-notice code { width: fit-content; padding: 4px 7px; color: #4f42b7; border-radius: 5px; background: white; font-size: 10px; font-weight: 800; }
+.credential-notice small { grid-column: 1 / -1; color: #8d8795; font-size: 7px; }
+.credential-notice > button { padding: 6px 8px; color: white; border: 0; border-radius: 6px; background: #6657d9; font-size: 8px; font-weight: 700; cursor: pointer; }
+.credential-notice > .notice-close { color: #8d8795; background: transparent; font-size: 16px; }
+.admin-account-error { margin-top: 12px; padding: 9px 11px; color: #b64e4e; border: 1px solid #f0cece; border-radius: 8px; background: #fff4f4; font-size: 9px; }
+.editor-account-row { display: grid; grid-template-columns: 34px minmax(190px, 1fr) auto; align-items: center; gap: 11px; padding: 11px 8px; border-top: 1px solid #efedf1; }
+.editor-account-row:first-of-type { border-top: 0; }
+.editor-account-row.inactive { opacity: .65; background: #faf9fb; }
+.editor-account-avatar { width: 34px; height: 34px; display: grid; place-items: center; color: white; border-radius: 10px; background: linear-gradient(145deg, #7768db, #5548c3); font-size: 8px; font-weight: 800; }
+.editor-account-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.editor-account-info > span { display: flex; align-items: center; gap: 6px; }
+.editor-account-info strong { color: #4b4552; font-size: 10px; }
+.editor-account-info i { padding: 2px 5px; color: #a05d5d; border-radius: 5px; background: #f8e5e5; font-size: 6px; font-style: normal; font-weight: 750; }
+.editor-account-info i.active { color: #318165; background: #dff3eb; }
+.editor-account-info small { color: #77717d; font-size: 8px; }
+.editor-account-info time { color: #aaa4af; font-size: 7px; }
+.editor-account-actions { display: flex; align-items: center; gap: 4px; }
+.editor-account-actions button, .editor-inline-edit button { padding: 6px 7px; color: #6256be; border: 1px solid #ded9ef; border-radius: 6px; background: #f4f2fb; font-size: 7px; font-weight: 700; cursor: pointer; }
+.editor-account-actions button:hover, .editor-inline-edit button:hover { background: #eae6fa; }
+.editor-account-actions button.danger { color: #b65050; border-color: #efd2d2; background: #fff3f3; }
+.editor-inline-edit { min-width: 0; display: grid; grid-template-columns: .8fr 1.2fr auto auto; gap: 5px; }
+.editor-list-message { padding: 30px; color: #aaa4af; font-size: 9px; text-align: center; }
+
+@media (max-width: 900px) {
+  .admin-account-overlay { padding: 12px; }
+  .editor-create-card form { grid-template-columns: 1fr 1fr; }
+  .editor-account-row { grid-template-columns: 34px 1fr; }
+  .editor-account-actions { grid-column: 2; flex-wrap: wrap; }
+  .editor-inline-edit { grid-template-columns: 1fr 1fr; }
+}

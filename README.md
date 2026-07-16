@@ -56,6 +56,21 @@ npm run dev
 
 공개 읽기 전용 화면은 전용 시스템 계정으로 분리되어 문서와 댓글 조회 및 업무 링크 열기만 허용합니다. 댓글 작성·반응과 문서 변경은 서버에서도 차단합니다. 편집자는 로그인 후 우측 상단 사용자 이름을 눌러 `비밀번호 변경`을 선택할 수 있습니다.
 
+## AionUi 연동
+
+편집자가 카드를 선택하고 `AI 대화 시작`을 누르면 실행 중인 AionUi에서 AI 종류, 모델, 권한, 사고 수준, 스킬, MCP와 작업공간 옵션을 가져옵니다. 첫 메시지에는 문서 ID와 선택 카드 ID만 전달합니다. AI는 `mindnprogress_get_context`를 호출해 제품 개념과 작성 규칙, 최신 문서 구조와 선택 카드 정보를 함께 확인합니다. 응답은 AionUi에서만 처리합니다.
+
+기본 AionUi 주소는 `http://127.0.0.1:5830`입니다. 다른 주소를 사용하면 MindNProgress API 서버를 실행하기 전에 `MNP_AIONUI_URL` 환경변수로 지정합니다. AionUi에는 다음 로컬 MCP 서버를 등록하고 활성화해야 합니다.
+
+```text
+이름: MindNProgress
+전송 방식: stdio
+명령: node
+인수: C:\Git\MindNProgress\mcp\server.mjs
+```
+
+MCP는 `server/data/_integration-token`의 자동 생성 로컬 토큰으로 인증합니다. 이 파일은 Git에 포함되지 않습니다. 문서, 카드, 업무, 체크리스트, 관계, 댓글, 이력, 휴지통과 알림 도구를 제공하며 비밀번호 변경 도구는 제공하지 않습니다. MindNProgress 밖에서 시작한 AI는 문서 ID 없이 `mindnprogress_read_me_first`를 호출해 제품 개념과 권장 작업 순서를 확인할 수 있습니다. 여러 카드로 구성된 새 문서는 `mindnprogress_create_mindmap`으로 한 번에 생성해 중간 저장의 버전 충돌을 방지합니다.
+
 ## 제품 확장 방향
 
 1. 댓글 답글·멘션·해결·반응

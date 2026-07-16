@@ -25,6 +25,7 @@ import { MindNode } from './components/MindNode'
 import { LinkifiedText } from './components/LinkifiedText'
 import { MentionText } from './components/MentionText'
 import { AdminEditorPanel } from './components/AdminEditorPanel'
+import { AiConversationDialog } from './components/AiConversationDialog'
 import { DashboardView, KanbanView, TimelineView } from './components/WorkViews'
 import { teamMembers, type ChecklistItem, type MindNodeData } from './types/mindMap'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
@@ -269,6 +270,14 @@ type DragSnapshot = {
   rootId: string
   rootPosition: { x: number; y: number }
   descendantPositions: Map<string, { x: number; y: number }>
+}
+
+type RightPanGesture = {
+  startX: number
+  startY: number
+  viewport: { x: number; y: number; zoom: number }
+  moved: boolean
+  contextMenuSuppressed: boolean
 }
 
 type HistorySnapshot = {
@@ -553,6 +562,7 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
     paste: <><path d="M9 5h6M9 3h6v4H9z"/><path d="M9 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/><path d="M15 11v8M11 15h8"/></>,
     undo: <><path d="M9 7 4 12l5 5"/><path d="M5 12h8a6 6 0 0 1 6 6"/></>,
     redo: <><path d="m15 7 5 5-5 5"/><path d="M19 12h-8a6 6 0 0 0-6 6"/></>,
+    sparkles: <><path d="m12 3 1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4Z"/><path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7Z"/></>,
     history: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/><path d="M3 4v5h5"/></>,
     bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></>,
     comment: <><path d="M21 14a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/></>,
@@ -860,6 +870,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const closeAdminPanel = useCallback(() => setAdminOpen(false), [])
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false)
+  const [aiDialogOpen, setAiDialogOpen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('mindmap')
   const [documents, setDocuments] = useState<MapSummary[]>([])
   const [trashedDocuments, setTrashedDocuments] = useState<MapSummary[]>([])
@@ -905,6 +916,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
   const [documentDropTargetId, setDocumentDropTargetId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  const [rightPanning, setRightPanning] = useState(false)
   const [inspectorWidth, setInspectorWidth] = useState(() => {
     const savedWidth = Number(localStorage.getItem('mindnprogress-inspector-width'))
     return Number.isFinite(savedWidth) && savedWidth >= 240 ? savedWidth : 278
@@ -917,12 +929,14 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const [savedAt, setSavedAt] = useState('서버에서 불러오는 중…')
   const [saveError, setSaveError] = useState('')
   const dragSnapshot = useRef<DragSnapshot | null>(null)
+  const rightPanGesture = useRef<RightPanGesture | null>(null)
+  const suppressNodeContextMenuUntil = useRef(0)
   const serverBaseline = useRef<MapDocument | null>(null)
   const cursorSendAt = useRef(0)
   const pendingSelection = useRef<string | null>(null)
   const selectedIdRef = useRef<string | null>(selectedId)
   selectedIdRef.current = selectedId
-  const { fitView, screenToFlowPosition, setCenter } = useReactFlow<MindMapNode, MindMapEdge>()
+  const { fitView, screenToFlowPosition, setCenter, setViewport } = useReactFlow<MindMapNode, MindMapEdge>()
   const viewport = useViewport()
 
   const selectedNode = nodes.find((node) => node.id === selectedId) ?? null
@@ -1539,7 +1553,32 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     if (selectedId) deleteNodeById(selectedId)
   }, [deleteNodeById, selectedId])
 
+  const startNodeRightPan = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 2 || viewMode !== 'mindmap') return
+    const target = event.target as HTMLElement
+    if (!target.closest('.react-flow__node') || target.closest('button, input, textarea, select, a, [contenteditable="true"]')) return
+    event.preventDefault()
+    event.stopPropagation()
+    setNodeContextMenu(null)
+    setDocumentContextMenu(null)
+    rightPanGesture.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      viewport: { x: viewport.x, y: viewport.y, zoom: viewport.zoom },
+      moved: false,
+      contextMenuSuppressed: false,
+    }
+  }, [viewMode, viewport.x, viewport.y, viewport.zoom])
+
   const openNodeContextMenu = useCallback((event: ReactMouseEvent, nodeId: string) => {
+    const gesture = rightPanGesture.current
+    if (gesture?.moved || Date.now() < suppressNodeContextMenuUntil.current) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (gesture) gesture.contextMenuSuppressed = true
+      suppressNodeContextMenuUntil.current = 0
+      return
+    }
     if (mode !== 'editor') return
     event.preventDefault()
     event.stopPropagation()
@@ -1551,6 +1590,52 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
       nodeId,
     })
   }, [mode])
+
+  useEffect(() => {
+    const moveRightPan = (event: PointerEvent) => {
+      const gesture = rightPanGesture.current
+      if (!gesture || (event.buttons & 2) === 0) return
+      const deltaX = event.clientX - gesture.startX
+      const deltaY = event.clientY - gesture.startY
+      if (!gesture.moved && Math.hypot(deltaX, deltaY) < 5) return
+      if (!gesture.moved) {
+        gesture.moved = true
+        setRightPanning(true)
+      }
+      event.preventDefault()
+      void setViewport({
+        x: gesture.viewport.x + deltaX,
+        y: gesture.viewport.y + deltaY,
+        zoom: gesture.viewport.zoom,
+      }, { duration: 0 })
+    }
+
+    const completeRightPan = (suppressContextMenu: boolean) => {
+      const gesture = rightPanGesture.current
+      if (!gesture) return
+      if (suppressContextMenu && gesture.moved && !gesture.contextMenuSuppressed) {
+        suppressNodeContextMenuUntil.current = Date.now() + 400
+      }
+      rightPanGesture.current = null
+      setRightPanning(false)
+    }
+
+    const finishRightPan = (event: PointerEvent) => {
+      if (event.button === 2) completeRightPan(true)
+    }
+    const cancelRightPan = () => completeRightPan(false)
+
+    window.addEventListener('pointermove', moveRightPan, { passive: false })
+    window.addEventListener('pointerup', finishRightPan)
+    window.addEventListener('pointercancel', cancelRightPan)
+    window.addEventListener('blur', cancelRightPan)
+    return () => {
+      window.removeEventListener('pointermove', moveRightPan)
+      window.removeEventListener('pointerup', finishRightPan)
+      window.removeEventListener('pointercancel', cancelRightPan)
+      window.removeEventListener('blur', cancelRightPan)
+    }
+  }, [setViewport])
 
   const copyNode = useCallback((nodeId: string) => {
     const node = nodes.find((candidate) => candidate.id === nodeId)
@@ -2357,7 +2442,11 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
         </aside>
 
         {viewMode === 'mindmap' ? (
-        <section className="canvas-wrap" onPointerMove={shareCursorPosition}>
+        <section
+          className={`canvas-wrap ${rightPanning ? 'right-panning' : ''}`}
+          onPointerDownCapture={startNodeRightPan}
+          onPointerMove={shareCursorPosition}
+        >
           <ReactFlow<MindMapNode, MindMapEdge>
             nodes={flowNodes}
             edges={flowEdges}
@@ -2555,7 +2644,10 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
             <>
               <div className="inspector-header">
                 <div><span>선택한 항목</span><strong>세부 정보</strong></div>
-                <button onClick={() => setSelectedId(null)} aria-label="닫기"><Icon name="close" size={17} /></button>
+                <div className="inspector-header-actions">
+                  {mode === 'editor' && <button className="ai-conversation-button" onClick={() => setAiDialogOpen(true)}><Icon name="sparkles" size={15} /><span>AI 대화 시작</span></button>}
+                  <button onClick={() => setSelectedId(null)} aria-label="닫기"><Icon name="close" size={17} /></button>
+                </div>
               </div>
               <div className="inspector-content">
                 <div className="task-link-field">
@@ -2911,6 +3003,14 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
             <footer>{mode === 'editor' ? '복원 전 현재 상태도 이력에 자동 보관됩니다.' : '뷰어는 변경 이력을 확인할 수 있지만 복원할 수 없습니다.'}</footer>
           </section>
         </div>
+      )}
+      {aiDialogOpen && selectedNode && activeDocument && (
+        <AiConversationDialog
+          documentId={activeDocument.id}
+          cardId={selectedNode.id}
+          cardTitle={selectedNode.data.label}
+          onClose={() => setAiDialogOpen(false)}
+        />
       )}
       {checklistTooltip && (
         <div

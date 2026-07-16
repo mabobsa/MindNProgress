@@ -202,6 +202,7 @@
 .access-dot.viewer { background: #e1a14c; }
 
 .canvas-wrap { position: relative; min-width: 0; background: #f8f7fb; }
+.canvas-wrap.right-panning, .canvas-wrap.right-panning * { cursor: grabbing !important; user-select: none; }
 .live-cursors { position: absolute; inset: 0; z-index: 7; overflow: hidden; pointer-events: none; }
 .live-cursor { position: absolute; display: flex; align-items: flex-start; transform: translate(-2px, -2px); transition: left .07s linear, top .07s linear; }
 .live-cursor svg { flex: 0 0 auto; overflow: visible; fill: var(--cursor-color); stroke: white; stroke-width: 1.3; filter: drop-shadow(0 2px 3px rgba(37,30,52,.25)); }
@@ -259,6 +260,10 @@
 .inspector-header > div { display: flex; flex-direction: column; gap: 2px; }
 .inspector-header span { color: #aaa5b1; font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
 .inspector-header strong { color: #35303c; font-size: 13px; }
+.inspector-header .inspector-header-actions { display: flex; flex-direction: row; align-items: center; gap: 4px; }
+.inspector-header .ai-conversation-button { display: flex; align-items: center; gap: 5px; padding: 7px 8px; color: #5d50ca; border: 1px solid #dedaf3; background: #f5f3fd; }
+.inspector-header .ai-conversation-button:hover { border-color: #c8c1ef; background: #ece9fb; }
+.inspector-header .ai-conversation-button span { color: inherit; font-size: 9px; font-weight: 800; letter-spacing: 0; text-transform: none; white-space: nowrap; }
 .inspector-content { min-height: 0; flex: 1 1 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 20px; }
 .inspector-content label { display: flex; flex-direction: column; gap: 7px; margin-bottom: 17px; }
 .inspector-content label > span { color: #7d7784; font-size: 9px; font-weight: 700; }

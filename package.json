@@ -9,13 +9,16 @@
     "dev:server": "node --watch server/index.mjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "mcp": "node mcp/server.mjs",
     "preview": "vite preview",
     "start": "node server/index.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@xyflow/react": "^12.11.2",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",

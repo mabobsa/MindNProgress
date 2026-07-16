@@ -1,0 +1,35 @@
+.ai-dialog-backdrop { position: fixed; inset: 0; z-index: 1900; display: grid; place-items: center; padding: 24px; background: rgba(29, 25, 39, .42); backdrop-filter: blur(3px); }
+.ai-dialog { width: min(720px, calc(100vw - 40px)); max-height: min(820px, calc(100vh - 40px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #dfdbe7; border-radius: 18px; background: #fff; box-shadow: 0 28px 90px rgba(28, 22, 43, .32); }
+.ai-dialog > header { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; border-bottom: 1px solid #ece9f1; }
+.ai-dialog > header > div { min-width: 0; display: grid; gap: 2px; }
+.ai-dialog > header span { color: #7568d5; font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.ai-dialog > header strong { color: #302a38; font-size: 16px; }
+.ai-dialog > header small { overflow: hidden; color: #918a99; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.ai-dialog > header button { width: 32px; height: 32px; border: 0; border-radius: 9px; color: #7d7585; background: #f5f3f7; font-size: 20px; cursor: pointer; }
+.ai-dialog-content { min-height: 0; display: flex; flex-direction: column; gap: 16px; overflow: auto; padding: 20px; }
+.ai-dialog-content > label, .ai-dialog-grid label { display: grid; gap: 7px; color: #777080; font-size: 10px; font-weight: 700; }
+.ai-dialog-content textarea, .ai-dialog-content input, .ai-dialog-content select { width: 100%; padding: 10px 11px; border: 1px solid #ded9e7; border-radius: 9px; outline: 0; color: #37313e; background: #fbfafc; font: inherit; font-size: 11px; box-sizing: border-box; }
+.ai-dialog-content textarea:focus, .ai-dialog-content input:focus, .ai-dialog-content select:focus { border-color: #7568d5; box-shadow: 0 0 0 3px rgba(104, 88, 210, .1); }
+.ai-request textarea { line-height: 1.55; resize: vertical; }
+.ai-dialog-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.ai-dialog details { border: 1px solid #e7e3eb; border-radius: 11px; overflow: hidden; }
+.ai-dialog summary { display: flex; align-items: center; gap: 7px; padding: 11px 13px; color: #5d5665; background: #faf9fb; font-size: 11px; font-weight: 800; cursor: pointer; }
+.ai-dialog summary b { padding: 2px 6px; color: #6758d8; border-radius: 10px; background: #ece9fb; font-size: 9px; }
+.ai-capability-list { max-height: 190px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; overflow: auto; padding: 9px; }
+.ai-capability-list label { min-width: 0; display: flex; align-items: flex-start; gap: 8px; padding: 8px; border-radius: 8px; cursor: pointer; }
+.ai-capability-list label:hover { background: #f6f4fa; }
+.ai-capability-list input { width: 14px; height: 14px; margin: 2px 0 0; accent-color: #6758d8; }
+.ai-capability-list span { min-width: 0; display: grid; gap: 2px; }
+.ai-capability-list strong, .ai-capability-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-capability-list strong { color: #4d4655; font-size: 10px; }
+.ai-capability-list small { color: #9a939f; font-size: 8px; font-weight: 400; }
+.ai-dialog-message { min-height: 260px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 30px; color: #777080; font-size: 11px; text-align: center; }
+.ai-dialog-message.error strong { color: #b64e58; font-size: 14px; }
+.ai-dialog-message.error small { color: #9b949f; }
+.ai-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 20px; border-top: 1px solid #ece9f1; background: #faf9fb; }
+.ai-dialog > footer > span { color: #938c99; font-size: 9px; }
+.ai-dialog > footer > div { display: flex; gap: 8px; }
+.ai-dialog > footer button { padding: 9px 14px; border: 1px solid #ddd8e4; border-radius: 8px; color: #655e6c; background: #fff; font-size: 10px; font-weight: 700; cursor: pointer; }
+.ai-dialog > footer button.primary { color: #fff; border-color: #6758d8; background: #6758d8; }
+.ai-dialog > footer button:disabled { opacity: .45; cursor: not-allowed; }
+@media (max-width: 620px) { .ai-dialog-grid, .ai-capability-list { grid-template-columns: 1fr; } .ai-dialog > footer { align-items: stretch; flex-direction: column; } .ai-dialog > footer > div { justify-content: flex-end; } }

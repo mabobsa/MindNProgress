@@ -11,10 +11,12 @@ const historyDirectory = path.join(dataDirectory, '_history')
 const commentsDirectory = path.join(dataDirectory, '_comments')
 const notificationsDirectory = path.join(dataDirectory, '_notifications')
 const usersFile = path.join(dataDirectory, '_users.json')
+const integrationTokenFile = path.join(dataDirectory, '_integration-token')
 const mapOrderFile = path.join(dataDirectory, '_map-order.json')
 const distDirectory = path.join(projectDirectory, 'dist')
 const port = Number(process.env.MNP_API_PORT ?? 4176)
 const host = process.env.MNP_API_HOST ?? '127.0.0.1'
+const aionUiBaseUrl = String(process.env.MNP_AIONUI_URL ?? 'http://127.0.0.1:5830').replace(/\/+$/, '')
 const sessionDurationMs = 8 * 60 * 60 * 1000
 const sessions = new Map()
 const eventClients = new Map()
@@ -73,6 +75,14 @@ const assigneeUserIds = new Map([
   ['viewer', 'user-viewer'],
 ])
 const systemUser = { id: 'system', name: 'Mind & Progress', email: 'system@mind.local', role: 'viewer' }
+const integrationUser = {
+  id: 'system-aionui-ai',
+  name: 'AionUi AI',
+  email: 'aionui-ai@mind.invalid',
+  role: 'editor',
+  active: true,
+}
+let integrationToken = ''
 
 function publicUser(user) {
   return { id: user.id, name: user.name, email: user.email, role: user.role, publicAccess: user.systemManaged === true }
@@ -158,6 +168,14 @@ function parseCookies(request) {
 }
 
 function getCurrentUser(request) {
+  const authorization = String(request.headers.authorization ?? '')
+  const bearerToken = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : ''
+  if (bearerToken && integrationToken) {
+    const candidate = Buffer.from(bearerToken)
+    const expected = Buffer.from(integrationToken)
+    if (candidate.length === expected.length && timingSafeEqual(candidate, expected)) return integrationUser
+  }
+
   const token = parseCookies(request).get('mnp_session')
   if (!token) return null
   const session = sessions.get(token)
@@ -206,6 +224,23 @@ function isValidMap(map) {
     && map.edges.every((edge) => typeof edge?.id === 'string' && typeof edge?.source === 'string' && typeof edge?.target === 'string')
 }
 
+function normalizeMapEdges(map) {
+  if (!map || !Array.isArray(map.edges)) return map
+  return {
+    ...map,
+    edges: map.edges.map((edge) => ({
+      ...edge,
+      type: 'bezier',
+      markerEnd: {
+        ...edge.markerEnd,
+        type: 'arrowclosed',
+        width: 16,
+        height: 16,
+      },
+    })),
+  }
+}
+
 function isValidMapId(mapId) {
   return /^[a-z0-9][a-z0-9-]{0,79}$/.test(mapId)
 }
@@ -247,12 +282,12 @@ function mapSummary(map) {
 async function readMap(mapId) {
   try {
     const stored = JSON.parse(await readFile(mapFileForId(mapId), 'utf8'))
-    return {
+    return normalizeMapEdges({
       ...stored,
       id: mapId,
       title: normalizeTitle(stored.title, mapId === 'product-roadmap' ? '제품 로드맵' : '새 마인드맵'),
       version: Number.isInteger(stored.version) && stored.version > 0 ? stored.version : 1,
-    }
+    })
   } catch (error) {
     if (error?.code === 'ENOENT') return null
     throw error
@@ -312,6 +347,27 @@ async function writeStoredMap(mapId, payload) {
   await rename(temporaryFile, mapFile)
 }
 
+async function migrateStoredMapEdges() {
+  await mkdir(dataDirectory, { recursive: true })
+  const entries = await readdir(dataDirectory, { withFileTypes: true })
+  let migratedDocuments = 0
+  let migratedEdges = 0
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.startsWith('_')) continue
+    const mapId = entry.name.slice(0, -5)
+    if (!isValidMapId(mapId)) continue
+    const stored = JSON.parse(await readFile(path.join(dataDirectory, entry.name), 'utf8'))
+    if (!isValidMap(stored)) continue
+    const normalized = normalizeMapEdges(stored)
+    const changedEdges = stored.edges.filter((edge, index) => JSON.stringify(edge) !== JSON.stringify(normalized.edges[index])).length
+    if (changedEdges === 0) continue
+    await writeStoredMap(mapId, normalized)
+    migratedDocuments += 1
+    migratedEdges += changedEdges
+  }
+  return { migratedDocuments, migratedEdges }
+}
+
 async function readStoredArray(filePath) {
   try {
     const value = JSON.parse(await readFile(filePath, 'utf8'))
@@ -338,6 +394,85 @@ function serializedUser(user) {
 
 async function persistUsers() {
   await writeStoredArray(usersFile, users.map(serializedUser))
+}
+
+async function loadIntegrationToken() {
+  await mkdir(dataDirectory, { recursive: true })
+  try {
+    const stored = (await readFile(integrationTokenFile, 'utf8')).trim()
+    if (stored.length >= 32) return stored
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
+
+  const token = randomBytes(32).toString('base64url')
+  await writeFile(integrationTokenFile, `${token}\n`, { encoding: 'utf8', mode: 0o600 })
+  return token
+}
+
+async function fetchAionUi(pathname) {
+  const response = await fetch(`${aionUiBaseUrl}${pathname}`, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(8_000),
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok || body?.success === false) throw new Error(`AIONUI_REQUEST_FAILED:${response.status}`)
+  return body?.data ?? body
+}
+
+function normalizeAionUiOption(option) {
+  return {
+    id: String(option?.value ?? option?.id ?? ''),
+    label: String(option?.name ?? option?.label ?? option?.value ?? option?.id ?? ''),
+    description: typeof option?.description === 'string' ? option.description : '',
+  }
+}
+
+function normalizeAionUiAgent(agent, providers) {
+  const configOptions = Array.isArray(agent?.config_options?.config_options) ? agent.config_options.config_options : []
+  const modelOption = configOptions.find((option) => option.category === 'model')
+  const modeOption = configOptions.find((option) => option.category === 'mode')
+  const thoughtOption = configOptions.find((option) => option.category === 'thought_level')
+  const availableModels = Array.isArray(agent?.available_models?.available_models)
+    ? agent.available_models.available_models.map(normalizeAionUiOption)
+    : Array.isArray(modelOption?.options) ? modelOption.options.map(normalizeAionUiOption) : []
+  const availableModes = Array.isArray(agent?.available_modes?.available_modes)
+    ? agent.available_modes.available_modes.map(normalizeAionUiOption)
+    : Array.isArray(modeOption?.options) ? modeOption.options.map(normalizeAionUiOption) : []
+  const providerModels = agent?.agent_type === 'aionrs'
+    ? providers.flatMap((provider) => (Array.isArray(provider.models) ? provider.models : []).map((model) => ({
+        id: String(model),
+        label: String(model),
+        description: String(provider.name ?? ''),
+        providerId: String(provider.id),
+      })))
+    : []
+
+  return {
+    id: String(agent.id),
+    name: String(agent.name ?? agent.id),
+    icon: typeof agent.icon === 'string' ? `${aionUiBaseUrl}${agent.icon}` : null,
+    backend: String(agent.backend ?? agent.agent_type ?? ''),
+    status: String(agent.status ?? 'unknown'),
+    models: availableModels.length > 0 ? availableModels : providerModels,
+    defaultModelId: String(
+      agent?.available_models?.current_model_id
+      ?? modelOption?.currentValue
+      ?? modelOption?.current_value
+      ?? providerModels[0]?.id
+      ?? '',
+    ),
+    modes: availableModes,
+    defaultMode: String(
+      agent?.available_modes?.current_mode_id
+      ?? modeOption?.currentValue
+      ?? modeOption?.current_value
+      ?? availableModes[0]?.id
+      ?? '',
+    ),
+    thoughtLevels: Array.isArray(thoughtOption?.options) ? thoughtOption.options.map(normalizeAionUiOption) : [],
+    defaultThoughtLevel: String(thoughtOption?.currentValue ?? thoughtOption?.current_value ?? ''),
+  }
 }
 
 async function loadUsers() {
@@ -377,7 +512,7 @@ function commentFileForMap(mapId) {
 }
 
 function notificationFileForUser(userId) {
-  if (!users.some((user) => user.id === userId)) throw new Error('INVALID_USER_ID')
+  if (!users.some((user) => user.id === userId) && userId !== integrationUser.id) throw new Error('INVALID_USER_ID')
   return path.join(notificationsDirectory, `${userId}.json`)
 }
 
@@ -590,7 +725,9 @@ async function readMapRevision(mapId, revisionId) {
   if (!isValidRevisionId(revisionId)) return null
   try {
     const revision = JSON.parse(await readFile(path.join(revisionDirectoryForMap(mapId), `${revisionId}.json`), 'utf8'))
-    return revision?.mapId === mapId && isValidMap(revision.map) ? revision : null
+    return revision?.mapId === mapId && isValidMap(revision.map)
+      ? { ...revision, map: normalizeMapEdges(revision.map) }
+      : null
   } catch (error) {
     if (error?.code === 'ENOENT') return null
     throw error
@@ -602,7 +739,7 @@ async function saveMap(mapId, map, user, title, color, revisionReason = 'edit') 
   const existing = await readMap(mapId)
   const payload = {
     nodes: map.nodes,
-    edges: map.edges,
+    edges: normalizeMapEdges(map).edges,
     id: mapId,
     title: normalizeTitle(title, existing?.title ?? (mapId === 'product-roadmap' ? '제품 로드맵' : '새 마인드맵')),
     color: normalizeMapColor(color, normalizeMapColor(existing?.color, defaultMapColor(mapId))),
@@ -678,7 +815,12 @@ async function serveStatic(request, response, pathname) {
   }
 }
 
+integrationToken = await loadIntegrationToken()
 const adminBootstrapped = await loadUsers()
+const edgeMigration = await migrateStoredMapEdges()
+if (edgeMigration.migratedDocuments > 0) {
+  console.log(`[Mind & Progress] 베지어 화살표로 문서 ${edgeMigration.migratedDocuments}개, 연결선 ${edgeMigration.migratedEdges}개를 변환했습니다.`)
+}
 if (adminBootstrapped) {
   console.log(`[Mind & Progress] 초기 관리자 이메일: ${bootstrapAdminEmail}`)
   if (generatedAdminPassword) {
@@ -734,6 +876,54 @@ const server = createServer(async (request, response) => {
       const user = requireUser(request, response)
       if (!user) return
       return sendJson(response, 200, { users: users.filter((candidate) => candidate.active !== false && !isPublicViewer(candidate)).map(publicUser) })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/integrations/aionui/options') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 AI 대화를 시작할 수 있습니다.' })
+
+      try {
+        const [agents, providers, skills, mcpServers] = await Promise.all([
+          fetchAionUi('/api/agents/management'),
+          fetchAionUi('/api/providers'),
+          fetchAionUi('/api/skills'),
+          fetchAionUi('/api/mcp/servers'),
+        ])
+        const normalizedAgents = (Array.isArray(agents) ? agents : [])
+          .filter((agent) => agent?.enabled !== false && agent?.installed === true)
+          .map((agent) => normalizeAionUiAgent(agent, Array.isArray(providers) ? providers.filter((item) => item?.enabled !== false) : []))
+          .filter((agent) => agent.models.length > 0 || agent.backend === 'aionrs')
+        const normalizedSkills = (Array.isArray(skills) ? skills : []).map((skill) => ({
+          id: String(skill.name),
+          name: String(skill.name),
+          description: String(skill.description ?? ''),
+          autoInject: skill.is_auto_inject === true,
+        }))
+        const normalizedMcpServers = (Array.isArray(mcpServers) ? mcpServers : [])
+          .filter((server) => server?.enabled !== false)
+          .map((server) => ({
+            id: String(server.id),
+            name: String(server.name ?? server.id),
+            description: String(server.description ?? ''),
+            toolCount: Array.isArray(server.tools) ? server.tools.length : 0,
+            required: String(server.name ?? '').toLowerCase() === 'mindnprogress',
+          }))
+        return sendJson(response, 200, {
+          connected: true,
+          aionUiUrl: aionUiBaseUrl,
+          protocol: 'aionui://conversation/new',
+          agents: normalizedAgents,
+          skills: normalizedSkills,
+          mcpServers: normalizedMcpServers,
+        })
+      } catch (error) {
+        console.error('[AionUi integration]', error)
+        return sendJson(response, 503, {
+          error: 'AionUi에 연결할 수 없습니다. AionUi가 실행 중인지 확인해 주세요.',
+          connected: false,
+        })
+      }
     }
 
     if (request.method === 'POST' && url.pathname === '/api/account/password') {

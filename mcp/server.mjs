@@ -7,9 +7,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const tokenFile = path.join(projectDirectory, 'server', 'data', '_integration-token')
+const dataDirectory = path.resolve(String(process.env.MNP_DATA_DIR ?? '').trim() || path.join(projectDirectory, 'server', 'data'))
+const tokenFile = path.resolve(String(process.env.MNP_TOKEN_FILE ?? '').trim() || path.join(dataDirectory, '_integration-token'))
 const apiBaseUrl = String(process.env.MNP_API_URL ?? 'http://127.0.0.1:4176').replace(/\/+$/, '')
-const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
+const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. get_context의 selection.taskLinks.startupInspection.required가 true이면 실제 작업 전에 targets의 업무 본문, 댓글, 첨부파일 목록과 관련 링크를 조사하세요. 특정 자료가 있다고 가정하지 마세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
 const productGuide = {
   version: '1.0',
   product: {
@@ -34,6 +35,7 @@ const productGuide = {
       assigneeId: '담당자 사용자 ID. 담당자가 없으면 생략',
       dueDate: '마감일. 없는 업무는 생략',
       taskUrl: '관련 업무 링크. 링크가 없는 경우 생략',
+      taskUrlContext: 'AI 대화 문맥에서는 선택 카드와 해당 계층의 최상위 카드 링크를 별도로 제공하며, 하위 카드에 링크를 상속하거나 덮어쓰지 않음',
       checklist: '세부 실행 항목. 체크 상태에 따라 진행률을 계산할 수 있음',
       blockedBy: '현재 업무보다 먼저 완료되어야 하는 카드 ID 목록. 계층 관계를 표현하는 용도로 사용하지 않음',
     },
@@ -55,6 +57,7 @@ const productGuide = {
   ],
   operationRules: [
     '분석과 편집 전에 mindnprogress_get_context로 최신 버전과 제품 규칙을 확인',
+    'get_context의 startupInspection이 요구되면 실제 작업 전에 선택 카드와 최상위 카드의 업무 링크를 조사하되 특정 첨부나 자료가 있다고 가정하지 않음',
     '여러 카드로 새 문서를 만들 때 mindnprogress_create_mindmap을 한 번만 호출',
     'create_document 후 save_document를 연속 호출해 전체 구조를 만들지 않음',
     '기존 문서 변경은 최신 version을 기준으로 수행하고 버전 충돌 시 최신 상태를 다시 조회',
@@ -82,9 +85,18 @@ async function apiRequest(pathname, init = {}) {
     },
     signal: AbortSignal.timeout(10_000),
   })
-  const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(body.error ?? `MindNProgress 요청 실패 (${response.status})`)
-  return body
+  const responseText = await response.text()
+  let body = null
+  if (responseText) {
+    try {
+      body = JSON.parse(responseText)
+    } catch {
+      if (!response.ok) throw new Error(`MindNProgress 요청 실패 (${response.status})`)
+      return { ok: true, status: response.status }
+    }
+  }
+  if (!response.ok) throw new Error(body?.error ?? `MindNProgress 요청 실패 (${response.status})`)
+  return body ?? { ok: true, status: response.status }
 }
 
 function toolResult(value) {
@@ -167,7 +179,7 @@ const outlineCardSchema = z.object({
   description: z.string().max(5000).default(''),
   progress: z.number().min(0).max(100).default(0),
   status: z.enum(['planned', 'in-progress', 'done']).optional(),
-  kind: z.enum(['branch', 'task']).optional(),
+  kind: z.enum(['root', 'branch', 'task']).optional(),
   taskUrl: z.string().optional(),
   isWork: z.boolean().optional(),
   assigneeId: z.string().optional(),
@@ -188,6 +200,9 @@ function buildMapFromOutline(cards) {
 
   const roots = cards.filter((card) => !card.parentKey)
   if (roots.length !== 1) throw new Error('상위 카드가 없는 루트 카드는 정확히 하나여야 합니다.')
+  if (roots[0].kind && roots[0].kind !== 'root') throw new Error('상위 카드가 없는 카드는 kind=root이거나 kind를 생략해야 합니다.')
+  const nestedRoot = cards.find((card) => card.parentKey && card.kind === 'root')
+  if (nestedRoot) throw new Error(`하위 카드는 kind=root으로 지정할 수 없습니다: ${nestedRoot.key}`)
 
   const childrenByKey = new Map(cards.map((card) => [card.key, []]))
   cards.forEach((card) => {
@@ -296,14 +311,14 @@ async function main() {
     ],
   }))
 
-  registerTool(server, 'mindnprogress_get_context', 'MindNProgress의 제품 개념과 작성 규칙, 전체 최신 문서, 선택 카드의 계층·의존성·댓글·담당자 정보를 한 번에 조회합니다. 대화를 시작한 뒤 다른 MindNProgress 도구보다 먼저 호출하세요.', {
+  registerTool(server, 'mindnprogress_get_context', 'MindNProgress의 제품 개념과 작성 규칙, 전체 최신 문서, 선택 카드와 최상위 카드의 업무 링크, 계층·의존성·댓글·담당자 정보를 한 번에 조회합니다. 대화를 시작한 뒤 다른 MindNProgress 도구보다 먼저 호출하세요.', {
     mapId: z.string().min(1).describe('현재 문서 ID'),
     cardId: z.string().min(1).describe('편집자가 선택한 카드 ID'),
   }, async ({ mapId, cardId }) => {
     const [documentResult, commentsResult, usersResult] = await Promise.all([
       apiRequest(`/api/maps/${encodeURIComponent(mapId)}`),
       apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments?nodeId=${encodeURIComponent(cardId)}`),
-      apiRequest('/api/users'),
+      apiRequest('/api/assignees'),
     ])
     const map = documentResult.map
     const selectedCard = map.nodes.find((node) => node.id === cardId)
@@ -325,6 +340,25 @@ async function main() {
     const descendantIds = descendantsOf(cardId, map.edges)
     const blockedByIds = selectedCard.data?.blockedBy ?? []
     const blockingIds = map.nodes.filter((node) => (node.data?.blockedBy ?? []).includes(cardId)).map((node) => node.id)
+    const selectedHierarchyIds = new Set([cardId, ...ancestorIds])
+    const topLevelCard = map.nodes.find((node) => selectedHierarchyIds.has(node.id)
+      && node.data?.kind === 'root'
+      && !map.edges.some((edge) => edge.target === node.id))
+      ?? map.nodes.find((node) => selectedHierarchyIds.has(node.id)
+        && !map.edges.some((edge) => edge.target === node.id))
+      ?? selectedCard
+    const taskLinkFor = (card) => {
+      const url = typeof card?.data?.taskUrl === 'string' ? card.data.taskUrl.trim() : ''
+      return url ? { cardId: card.id, label: card.data?.label ?? card.id, url } : null
+    }
+    const selectedTaskLink = taskLinkFor(selectedCard)
+    const topLevelTaskLink = taskLinkFor(topLevelCard)
+    const availableTaskLinks = [
+      ...(selectedTaskLink ? [{ scope: selectedCard.id === topLevelCard.id ? 'selected-and-top-level' : 'selected-card', ...selectedTaskLink }] : []),
+      ...(topLevelTaskLink && topLevelCard.id !== selectedCard.id ? [{ scope: 'top-level-card', ...topLevelTaskLink }] : []),
+    ]
+    const startupInspectionTargets = availableTaskLinks.filter((link, index, links) =>
+      links.findIndex((candidate) => candidate.url === link.url) === index)
 
     return {
       guide: productGuide,
@@ -347,6 +381,19 @@ async function main() {
         descendants: relatedCards(descendantIds, map.nodes),
         blockedBy: relatedCards(blockedByIds, map.nodes),
         blocks: relatedCards(blockingIds, map.nodes),
+        taskLinks: {
+          selectedCard: selectedTaskLink,
+          topLevelCard: topLevelTaskLink,
+          available: availableTaskLinks,
+          startupInspection: {
+            required: startupInspectionTargets.length > 0,
+            targets: startupInspectionTargets,
+            checks: ['업무 제목과 본문', '댓글과 대화 내용', '첨부파일 목록', '본문과 댓글에 포함된 관련 링크'],
+            instruction: '선택 카드의 작업을 수행하기 전에 targets의 업무를 조사하여 배경, 목적, 요구사항, 제약과 관련 자료를 파악하세요. 기획서나 첨부파일이 있다고 가정하지 말고 본문에 간략한 요구사항만 있을 가능성도 고려하세요.',
+            fallback: 'targets가 없으면 MindNProgress 카드 정보로 진행합니다. 외부 업무 시스템 도구가 없거나 조회에 실패하면 임의로 추측하지 말고 조회하지 못한 대상과 원인을 알린 뒤, 확인된 카드 정보만으로 가능한 작업은 계속 진행하세요.',
+          },
+          rule: '선택 카드와 최상위 카드의 업무 링크를 독립적으로 유지합니다. 작업 시작 전에 startupInspection을 따르며, 두 링크가 모두 있으면 중복 URL을 제외하고 모두 조사합니다. 링크를 다른 카드 데이터에 상속하거나 복사하지 않습니다.',
+        },
         comments: commentsResult.comments ?? [],
       },
       teamMembers: usersResult.users ?? [],
@@ -516,6 +563,13 @@ async function main() {
     apiRequest('/api/maps/trash'))
   registerTool(server, 'mindnprogress_restore_document', '휴지통 문서를 복원합니다.', mapIdSchema, async ({ mapId }) =>
     apiRequest(`/api/maps/${encodeURIComponent(mapId)}/restore`, { method: 'POST' }))
+  registerTool(server, 'mindnprogress_delete_trashed_documents', '휴지통에서 선택한 문서를 영구 삭제합니다. 문서, 댓글, 변경 이력이 함께 삭제되며 복구할 수 없습니다.', {
+    mapIds: z.array(z.string().min(1)).min(1),
+    confirmPermanentDeletion: z.literal(true),
+  }, async ({ mapIds }) => apiRequest('/api/maps/trash', { method: 'DELETE', body: JSON.stringify({ mapIds }) }))
+  registerTool(server, 'mindnprogress_empty_trash', '휴지통의 모든 문서를 영구 삭제합니다. 문서, 댓글, 변경 이력이 함께 삭제되며 복구할 수 없습니다.', {
+    confirmPermanentDeletion: z.literal(true),
+  }, async () => apiRequest('/api/maps/trash', { method: 'DELETE', body: JSON.stringify({ all: true }) }))
 
   registerTool(server, 'mindnprogress_list_history', '문서 변경 이력을 최신순으로 조회합니다. 다음 이력이 있으면 nextOffset을 offset으로 전달해 이어서 조회하세요.', {
     mapId: z.string().min(1),
@@ -527,8 +581,8 @@ async function main() {
     mapId: z.string().min(1), revisionId: z.string().min(1),
   }, async ({ mapId, revisionId }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/history/${encodeURIComponent(revisionId)}/restore`, { method: 'POST' }))
 
-  registerTool(server, 'mindnprogress_list_users', '담당자로 지정할 수 있는 사용자 목록을 조회합니다.', {}, async () =>
-    apiRequest('/api/users'))
+  registerTool(server, 'mindnprogress_list_users', '담당자로 지정할 수 있는 편집자 계정 목록을 조회합니다. active=false인 계정은 기존 담당자 표시용이며 새 담당자로 지정하지 마세요.', {}, async () =>
+    apiRequest('/api/assignees'))
   registerTool(server, 'mindnprogress_list_comments', '문서 또는 특정 카드의 댓글과 답글을 조회합니다.', {
     mapId: z.string().min(1), nodeId: z.string().optional(),
   }, async ({ mapId, nodeId }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments${nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : ''}`))

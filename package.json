@@ -9,6 +9,7 @@
     "dev:server": "node --watch server/index.mjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test:mcp": "node scripts/test-mcp.mjs",
     "mcp": "node mcp/server.mjs",
     "preview": "vite preview",
     "start": "node server/index.mjs"

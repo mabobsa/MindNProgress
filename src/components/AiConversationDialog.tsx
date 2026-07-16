@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
+import type { KnowledgePolicy } from '../types/mindMap'
 import './AiConversationDialog.css'
 
 type RuntimeOption = { id: string; label: string; description: string; providerId?: string }
@@ -59,11 +60,12 @@ function encodeBase64Json(value: unknown) {
   return btoa(binary)
 }
 
-export function AiConversationDialog({ documentId, documentTitle, cardId, cardTitle, onClose }: {
+export function AiConversationDialog({ documentId, documentTitle, cardId, cardTitle, knowledgeSources, onClose }: {
   documentId: string
   documentTitle: string
   cardId: string
   cardTitle: string
+  knowledgeSources: { id: string; label: string; policy: KnowledgePolicy }[]
   onClose: () => void
 }) {
   const [options, setOptions] = useState<AionOptions | null>(null)
@@ -162,7 +164,10 @@ export function AiConversationDialog({ documentId, documentTitle, cardId, cardTi
       if (!attributionResponse.ok || !attribution.attributionToken || !attribution.completionUrl || !attribution.editorId) {
         throw new Error(attribution.error ?? 'AI 작성자 정보를 준비하지 못했습니다.')
       }
-      const prompt = `# MindNProgress 작업 요청\n\n가장 먼저 MindNProgress MCP 도구 \`mindnprogress_get_context\`를 아래 값으로 한 번 호출하세요. \`editorId\`는 이 대화를 시작한 편집자 계정으로 MindNProgress를 조회하고 수정하기 위한 값이므로 이후 MCP 작업이 끝날 때까지 유지하세요. \`attributionToken\`은 댓글과 변경 이력에 현재 AI 종류와 모델을 정확히 기록하기 위한 보조 값입니다. 이 도구가 MindNProgress의 제품 개념과 작성 규칙, 최신 문서 구조, 선택 카드 정보를 함께 제공합니다. 프롬프트에는 카드 스냅샷이 포함되어 있지 않으므로 반드시 MCP 조회 결과를 기준으로 답변하고 필요한 작업을 수행해야 합니다.\n\n- mapId: \`${documentId}\`\n- cardId: \`${cardId}\`\n- editorId: \`${attribution.editorId}\`\n- attributionToken: \`${attribution.attributionToken}\`\n\nMCP 조회 후 \`selection.taskLinks.startupInspection\`을 반드시 확인하세요. \`required\`가 true이면 실제 작업을 시작하기 전에 \`targets\`의 업무 링크를 모두 조사하여 업무 제목, 본문, 댓글, 첨부파일 목록과 관련 링크를 확인하세요. 상위 업무에 기획서나 첨부파일이 있다고 가정하지 말고, 본문이나 댓글에 요구사항만 간략하게 작성되어 있을 가능성도 고려해야 합니다. 선택 카드와 최상위 카드 링크가 모두 있으면 두 업무를 모두 조사하고 같은 URL은 한 번만 조회하세요. 조사 가능한 업무 링크를 확인하기 전에 사용자에게 파일 경로나 추가 설명을 먼저 요청하지 마세요. 업무 링크가 없거나 외부 업무 시스템을 조회할 도구가 없으면 그 사실을 알리고, 확인된 MindNProgress 카드 정보만으로 가능한 작업은 계속 진행하세요.\n\nMindNProgress 문서나 카드의 접근 URL을 기록할 때는 localhost 또는 127.0.0.1 주소를 직접 만들지 말고, MCP 조회 결과의 \`document.accessUrl\`, \`selection.accessUrl\` 또는 \`access.cards[].accessUrl\` 값을 그대로 사용하세요.\n\nMCP 도구를 사용할 수 없거나 해당 문서 또는 카드를 찾지 못하면 임의로 추측하지 말고 그 사실을 알려주세요. 새 문서에 여러 카드로 구성된 마인드맵을 만들 때는 \`mindnprogress_create_document\`와 \`mindnprogress_save_document\`를 연속 호출하지 말고, \`mindnprogress_create_mindmap\`을 한 번만 호출하세요.\n\n# 편집자 요청\n\n${request.trim()}`
+      const inspectionInstruction = knowledgeSources.length > 0
+        ? `MCP 조회 후 \`selection.taskLinks.startupInspection\`을 반드시 확인하세요. 이 카드에는 선행 지식선이 있으므로 \`mode\`는 \`knowledge-guided\`입니다. 먼저 \`selection.knowledgeSources.primary\`에 포함된 카드 설명, 완료 결과와 댓글을 이미 확보된 선행 지식으로 활용하고, \`targets\`가 있으면 해당 업무만 조사하세요. \`fallbackSources\`와 \`fallbackTargets\`는 주요 지식만으로 현재 작업의 요구사항이나 결과를 판단할 수 없을 때에만 확인하세요. 특히 최상위 업무와 원본 첨부파일을 처음부터 다시 조사하지 말고, 부족한 정보가 무엇인지 확인한 다음 필요한 범위만 선택적으로 조사하세요. 외부 업무 시스템을 조회할 도구가 없거나 조회에 실패하면 확인된 카드와 댓글 정보로 가능한 작업은 계속 진행하세요.`
+        : `MCP 조회 후 \`selection.taskLinks.startupInspection\`을 반드시 확인하세요. \`required\`가 true이면 실제 작업을 시작하기 전에 \`targets\`의 업무 링크를 모두 조사하여 업무 제목, 본문, 댓글, 첨부파일 목록과 관련 링크를 확인하세요. 상위 업무에 기획서나 첨부파일이 있다고 가정하지 말고, 본문이나 댓글에 요구사항만 간략하게 작성되어 있을 가능성도 고려해야 합니다. 선택 카드와 최상위 카드 링크가 모두 있으면 두 업무를 모두 조사하고 같은 URL은 한 번만 조회하세요. 조사 가능한 업무 링크를 확인하기 전에 사용자에게 파일 경로나 추가 설명을 먼저 요청하지 마세요. 업무 링크가 없거나 외부 업무 시스템을 조회할 도구가 없으면 그 사실을 알리고, 확인된 MindNProgress 카드 정보만으로 가능한 작업은 계속 진행하세요.`
+      const prompt = `# MindNProgress 작업 요청\n\n가장 먼저 MindNProgress MCP 도구 \`mindnprogress_get_context\`를 아래 값으로 한 번 호출하세요. \`editorId\`는 이 대화를 시작한 편집자 계정으로 MindNProgress를 조회하고 수정하기 위한 값이므로 이후 MCP 작업이 끝날 때까지 유지하세요. \`attributionToken\`은 댓글과 변경 이력에 현재 AI 종류와 모델을 정확히 기록하기 위한 보조 값입니다. 이 도구가 MindNProgress의 제품 개념과 작성 규칙, 최신 문서 구조, 선택 카드 정보를 함께 제공합니다. 프롬프트에는 카드 스냅샷이 포함되어 있지 않으므로 반드시 MCP 조회 결과를 기준으로 답변하고 필요한 작업을 수행해야 합니다.\n\n- mapId: \`${documentId}\`\n- cardId: \`${cardId}\`\n- editorId: \`${attribution.editorId}\`\n- attributionToken: \`${attribution.attributionToken}\`\n\n${inspectionInstruction}\n\nMindNProgress 문서나 카드의 접근 URL을 기록할 때는 localhost 또는 127.0.0.1 주소를 직접 만들지 말고, MCP 조회 결과의 \`document.accessUrl\`, \`selection.accessUrl\` 또는 \`access.cards[].accessUrl\` 값을 그대로 사용하세요.\n\nMCP 도구를 사용할 수 없거나 해당 문서 또는 카드를 찾지 못하면 임의로 추측하지 말고 그 사실을 알려주세요. 새 문서에 여러 카드로 구성된 마인드맵을 만들 때는 \`mindnprogress_create_document\`와 \`mindnprogress_save_document\`를 연속 호출하지 말고, \`mindnprogress_create_mindmap\`을 한 번만 호출하세요.\n\n# 편집자 요청\n\n${request.trim()}`
       const launchPayload = {
         agentId: selectedAgent.id,
         completionUrl: attribution.completionUrl,
@@ -199,6 +204,13 @@ export function AiConversationDialog({ documentId, documentTitle, cardId, cardTi
           <div className="ai-dialog-message error"><strong>연결할 수 없습니다.</strong><span>{error}</span><small>AionUi를 실행한 뒤 다시 시도해 주세요.</small></div>
         ) : options && (
           <div className="ai-dialog-content">
+            {knowledgeSources.length > 0 && (
+              <div className="ai-knowledge-notice">
+                <strong>선행 지식 {knowledgeSources.length}개를 먼저 사용합니다.</strong>
+                <span>{knowledgeSources.map((source) => `${source.label} · ${source.policy === 'reuse-first' ? '주요 지식' : '부족할 때 확인'}`).join(' / ')}</span>
+                <small>최상위 업무와 원본 자료는 선행 지식만으로 부족할 때만 선택적으로 확인합니다.</small>
+              </div>
+            )}
             <label className="ai-request"><span>AI에게 요청할 내용</span><textarea value={request} onChange={(event) => setRequest(event.target.value)} rows={4} maxLength={4000} autoFocus /></label>
             <div className="ai-dialog-grid">
               <label><span>AI 종류</span><select value={agentId} onChange={(event) => changeAgent(event.target.value)}>{options.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>

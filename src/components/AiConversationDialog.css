@@ -7,6 +7,10 @@
 .ai-dialog > header small { overflow: hidden; color: #918a99; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .ai-dialog > header button { width: 32px; height: 32px; border: 0; border-radius: 9px; color: #7d7585; background: #f5f3f7; font-size: 20px; cursor: pointer; }
 .ai-dialog-content { min-height: 0; display: flex; flex-direction: column; gap: 16px; overflow: auto; padding: 20px; }
+.ai-knowledge-notice { display: grid; gap: 4px; padding: 11px 13px; color: #397660; border: 1px solid #cce8dd; border-radius: 10px; background: #f1faf7; }
+.ai-knowledge-notice strong { font-size: 10px; }
+.ai-knowledge-notice span { overflow: hidden; font-size: 9px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.ai-knowledge-notice small { color: #739387; font-size: 8px; line-height: 1.45; }
 .ai-dialog-content > label, .ai-dialog-grid label { display: grid; gap: 7px; color: #777080; font-size: 10px; font-weight: 700; }
 .ai-dialog-content textarea, .ai-dialog-content input, .ai-dialog-content select { width: 100%; padding: 10px 11px; border: 1px solid #ded9e7; border-radius: 9px; outline: 0; color: #37313e; background: #fbfafc; font: inherit; font-size: 11px; box-sizing: border-box; }
 .ai-dialog-content textarea:focus, .ai-dialog-content input:focus, .ai-dialog-content select:focus { border-color: #7568d5; box-shadow: 0 0 0 3px rgba(104, 88, 210, .1); }

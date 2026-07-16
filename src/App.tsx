@@ -15,6 +15,7 @@ import {
   useViewport,
   type Connection,
   type Edge,
+  type EdgeTypes,
   type Node,
   type NodeTypes,
   type OnSelectionChangeParams,
@@ -22,13 +23,15 @@ import {
 import '@xyflow/react/dist/style.css'
 import './App.css'
 import { MindNode } from './components/MindNode'
+import { KnowledgeEdge } from './components/KnowledgeEdge'
 import { LinkifiedText } from './components/LinkifiedText'
 import { MentionText } from './components/MentionText'
 import { AdminEditorPanel } from './components/AdminEditorPanel'
 import { AiConversationDialog } from './components/AiConversationDialog'
 import { DashboardView, KanbanView, TimelineView } from './components/WorkViews'
-import type { ChecklistItem, MindNodeData, TeamMember } from './types/mindMap'
+import type { ChecklistItem, KnowledgePolicy, MindMapEdgeData, MindNodeData, TeamMember } from './types/mindMap'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
+import { createsKnowledgeCycle, isHierarchyEdge, isKnowledgeEdge, knowledgePolicyOf } from './utils/knowledgeEdges'
 import { extractTextLinks } from './utils/textLinks'
 
 const DOCUMENT_COLORS = [
@@ -43,12 +46,45 @@ const DOCUMENT_COLORS = [
   { id: 'red', label: '빨강', solid: '#d86161', halo: '#f8dddd' },
   { id: 'pink', label: '분홍', solid: '#cc62a0', halo: '#f6deeb' },
 ] as const
+
+const MINDMAP_GRID_SIZE = 24
+
+function snapMindMapPosition(position: { x: number; y: number }) {
+  return {
+    x: Math.round(position.x / MINDMAP_GRID_SIZE) * MINDMAP_GRID_SIZE,
+    y: Math.round(position.y / MINDMAP_GRID_SIZE) * MINDMAP_GRID_SIZE,
+  }
+}
+
+function isTextTruncated(element: HTMLElement) {
+  if (element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight) return true
+  const range = document.createRange()
+  range.selectNodeContents(element)
+  const textWidth = range.getBoundingClientRect().width
+  const elementWidth = element.getBoundingClientRect().width
+  return textWidth > elementWidth + 0.1
+}
+
+function rootStateOf(nodes: MindMapNode[], edges: MindMapEdge[]) {
+  const hierarchyTargets = new Set(edges.filter(isHierarchyEdge).map((edge) => edge.target))
+  const root = nodes.find((node) => node.data.kind === 'root' && !hierarchyTargets.has(node.id))
+    ?? nodes.find((node) => node.data.kind === 'root')
+    ?? nodes.find((node) => !hierarchyTargets.has(node.id))
+    ?? nodes[0]
+  const progress = Number(root?.data.progress)
+  return {
+    progress: Number.isFinite(progress) ? Math.round(Math.max(0, Math.min(100, progress))) : null,
+    status: root?.data.status ?? null,
+  }
+}
+
 function synchronizeNodeSelection(nodes: MindMapNode[], selectedId: string | null) {
   return nodes.map((node) => {
     const selected = node.id === selectedId
     return Boolean(node.selected) === selected ? node : { ...node, selected }
   })
 }
+
 const CLIENT_ID_KEY = 'mindnprogress-client-id'
 const LAST_LOGIN_EMAIL_KEY = 'mindnprogress-last-login-email'
 
@@ -156,11 +192,30 @@ function mergeMapContent(base: MapDocument, local: Pick<MapDocument, 'nodes' | '
 }
 
 type MindMapNode = Node<MindNodeData, 'mind'>
-type MindMapEdge = Edge
+type MindMapEdge = Edge<MindMapEdgeData>
 type AccessMode = 'editor' | 'viewer'
 type UserRole = 'admin' | AccessMode
 type ViewMode = 'mindmap' | 'kanban' | 'timeline' | 'dashboard'
 type NodeFilter = 'all' | 'work' | 'planned' | 'in-progress' | 'done' | 'blocked'
+type NodePasteMode = 'copy' | 'clone' | 'reference'
+
+type CopiedNodeItem = {
+  sourceNodeId: string
+  position: { x: number; y: number }
+  data: MindNodeData
+}
+
+type CopiedNodes = {
+  sourceMapId: string
+  nodes: CopiedNodeItem[]
+  edges: MindMapEdge[]
+}
+
+type ReferenceCommentTarget = {
+  localNodeId: string
+  mapId: string
+  nodeId: string
+}
 
 type WorkspaceDeepLink = {
   viewMode: ViewMode
@@ -246,6 +301,8 @@ type MapSummary = {
   title: string
   color: DocumentColorId
   nodeCount: number
+  rootProgress: number | null
+  rootStatus: MindNodeData['status'] | null
   version: number
   updatedAt: string | null
   updatedBy: AuthUser | null
@@ -397,6 +454,7 @@ type DragSnapshot = {
   rootId: string
   rootPosition: { x: number; y: number }
   descendantPositions: Map<string, { x: number; y: number }>
+  selectedPositions: Map<string, { x: number; y: number }>
 }
 
 type RightPanGesture = {
@@ -937,6 +995,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const [mergeNotice, setMergeNotice] = useState('')
   const [comments, setComments] = useState<NodeComment[]>([])
   const [commentStats, setCommentStats] = useState<NodeCommentStats>({})
+  const [referenceCommentStats, setReferenceCommentStats] = useState<NodeCommentStats>({})
   const [commentsLoading, setCommentsLoading] = useState(false)
   const [commentError, setCommentError] = useState('')
   const [newComment, setNewComment] = useState('')
@@ -958,12 +1017,15 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const [newChecklistText, setNewChecklistText] = useState('')
   const [dependencyCandidate, setDependencyCandidate] = useState('')
   const [dependencyError, setDependencyError] = useState('')
+  const [knowledgeCandidate, setKnowledgeCandidate] = useState('')
+  const [knowledgePolicy, setKnowledgePolicy] = useState<KnowledgePolicy>('reuse-first')
+  const [knowledgeError, setKnowledgeError] = useState('')
   const [editingChecklist, setEditingChecklist] = useState<{ id: string; text: string } | null>(null)
   const [checklistTooltip, setChecklistTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
   const [nodeContextMenu, setNodeContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null)
   const [documentContextMenu, setDocumentContextMenu] = useState<{ x: number; y: number; mapId: string } | null>(null)
   const [aiConversationContextMenu, setAiConversationContextMenu] = useState<{ x: number; y: number } | null>(null)
-  const [copiedNodeData, setCopiedNodeData] = useState<MindNodeData | null>(null)
+  const [copiedNodes, setCopiedNodes] = useState<CopiedNodes | null>(null)
   const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
   const [documentDropTargetId, setDocumentDropTargetId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
@@ -983,12 +1045,15 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const rightPanGesture = useRef<RightPanGesture | null>(null)
   const suppressNodeContextMenuUntil = useRef(0)
   const serverBaseline = useRef<MapDocument | null>(null)
+  const pastedNodeNotificationSuppressions = useRef<Map<string, Set<string>>>(new Map())
   const cursorSendAt = useRef(0)
   const nodeLinkCopyTimer = useRef<number | null>(null)
   const pendingSelection = useRef<string | null>(null)
   const pendingDeepLink = useRef(initialDeepLink)
   const lastLoadedMapId = useRef<string | null>(null)
   const selectedIdRef = useRef<string | null>(selectedId)
+  const selectedCommentTargetRef = useRef<{ mapId: string; nodeId: string } | null>(null)
+  const referenceCommentTargetsRef = useRef<ReferenceCommentTarget[]>([])
   selectedIdRef.current = selectedId
   const { fitView, screenToFlowPosition, setCenter, setViewport } = useReactFlow<MindMapNode, MindMapEdge>()
   const viewport = useViewport()
@@ -1000,6 +1065,18 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   }, [])
 
   const selectedNode = nodes.find((node) => node.id === selectedId) ?? null
+  const selectedCommentMapId = selectedNode?.data.reference?.mapId ?? activeMapId
+  const selectedCommentNodeId = selectedNode?.data.reference?.nodeId ?? selectedId
+  const referenceCommentTargets = nodes.flatMap<ReferenceCommentTarget>((node) => node.data.reference ? [{
+    localNodeId: node.id,
+    mapId: node.data.reference.mapId,
+    nodeId: node.data.reference.nodeId,
+  }] : []).sort((left, right) => left.localNodeId.localeCompare(right.localNodeId))
+  const referenceCommentTargetsKey = JSON.stringify(referenceCommentTargets)
+  referenceCommentTargetsRef.current = referenceCommentTargets
+  selectedCommentTargetRef.current = selectedCommentMapId && selectedCommentNodeId
+    ? { mapId: selectedCommentMapId, nodeId: selectedCommentNodeId }
+    : null
   const selectedPrerequisites = selectedNode ? prerequisiteNodes(selectedNode, nodes) : []
   const selectedBlockingIds = new Set(selectedNode ? blockingNodes(selectedNode, nodes).map((node) => node.id) : [])
   const selectedDependents = selectedNode ? dependentNodes(selectedNode.id, nodes) : []
@@ -1011,6 +1088,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     : []
   const unreadNotificationCount = notifications.filter((notification) => !notification.readAt).length
   const activeDocument = documents.find((document) => document.id === activeMapId) ?? null
+  const activeRootState = useMemo(() => rootStateOf(nodes, edges), [edges, nodes])
   const teamMembers = useMemo<TeamMember[]>(() => assigneeUsers.map((assignee) => ({
     id: assignee.id,
     name: assignee.name,
@@ -1021,16 +1099,27 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const selectableTeamMembers = teamMembers.filter((member) => member.active)
   const filteredDocuments = documents.filter((document) => document.title.toLowerCase().includes(searchTerm.trim().toLowerCase()))
   const nodeTypes = useMemo<NodeTypes>(() => ({ mind: MindNode }), [])
+  const edgeTypes = useMemo<EdgeTypes>(() => ({ 'knowledge-parallel': KnowledgeEdge }), [])
+  const hierarchyEdges = useMemo(() => edges.filter(isHierarchyEdge), [edges])
+  const knowledgeEdges = useMemo(() => edges.filter(isKnowledgeEdge), [edges])
+  const selectedKnowledgeEdges = useMemo(() => selectedNode
+    ? knowledgeEdges.filter((edge) => edge.target === selectedNode.id)
+    : [], [knowledgeEdges, selectedNode])
+  const availableKnowledgeSources = useMemo(() => selectedNode
+    ? nodes.filter((node) => node.id !== selectedNode.id
+      && !selectedKnowledgeEdges.some((edge) => edge.source === node.id)
+      && !createsKnowledgeCycle(node.id, selectedNode.id, knowledgeEdges))
+    : [], [knowledgeEdges, nodes, selectedKnowledgeEdges, selectedNode])
   const childrenById = useMemo(() => {
     const result = new Map<string, string[]>()
-    edges.forEach((edge) => result.set(edge.source, [...(result.get(edge.source) ?? []), edge.target]))
+    hierarchyEdges.forEach((edge) => result.set(edge.source, [...(result.get(edge.source) ?? []), edge.target]))
     return result
-  }, [edges])
+  }, [hierarchyEdges])
   const parentsById = useMemo(() => {
     const result = new Map<string, string[]>()
-    edges.forEach((edge) => result.set(edge.target, [...(result.get(edge.target) ?? []), edge.source]))
+    hierarchyEdges.forEach((edge) => result.set(edge.target, [...(result.get(edge.target) ?? []), edge.source]))
     return result
-  }, [edges])
+  }, [hierarchyEdges])
   const collapsibleNodeIds = useMemo(() => new Set(nodes.filter((node) => (childrenById.get(node.id)?.length ?? 0) > 0).map((node) => node.id)), [childrenById, nodes])
   const descendantCounts = useMemo(() => {
     const result = new Map<string, number>()
@@ -1122,8 +1211,8 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         ...node.data,
         assignee: teamMembers.find((member) => member.id === node.data.assigneeId),
         unresolvedDependencyCount: blockingNodes(node, nodes).length,
-        commentCount: commentStats[node.id]?.total ?? 0,
-        unresolvedCommentCount: commentStats[node.id]?.unresolved ?? 0,
+        commentCount: (node.data.reference ? referenceCommentStats[node.id] : commentStats[node.id])?.total ?? 0,
+        unresolvedCommentCount: (node.data.reference ? referenceCommentStats[node.id] : commentStats[node.id])?.unresolved ?? 0,
         hasChildren: collapsibleNodeIds.has(node.id),
         collapsed: collapsedNodeIds.has(node.id),
         hiddenDescendantCount: descendantCounts.get(node.id) ?? 0,
@@ -1142,9 +1231,35 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         filterActive && filterVisibleNodeIds.has(node.id) && !filterMatchedNodeIds.has(node.id) ? 'filter-context' : '',
       ].filter(Boolean).join(' '),
     }
-  }), [collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, descendantCounts, dropTargetId, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, nodes, normalizedNodeSearch, searchContextNodeIds, searchMatchedNodeIds, teamMembers])
+  }), [collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, descendantCounts, dropTargetId, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, nodes, normalizedNodeSearch, referenceCommentStats, searchContextNodeIds, searchMatchedNodeIds, teamMembers])
   const visibleFlowNodeIds = useMemo(() => new Set(flowNodes.filter((node) => !node.hidden).map((node) => node.id)), [flowNodes])
-  const flowEdges = useMemo(() => edges.map((edge) => ({ ...edge, hidden: !visibleFlowNodeIds.has(edge.source) || !visibleFlowNodeIds.has(edge.target) })), [edges, visibleFlowNodeIds])
+  const flowEdges = useMemo(() => {
+    const pairKey = (edge: MindMapEdge) => JSON.stringify([edge.source, edge.target])
+    const hierarchyPairs = new Set(edges.filter(isHierarchyEdge).map(pairKey))
+    return edges.map((edge) => {
+      const hidden = !visibleFlowNodeIds.has(edge.source) || !visibleFlowNodeIds.has(edge.target)
+      if (!isKnowledgeEdge(edge)) return { ...edge, hidden }
+      const primary = knowledgePolicyOf(edge) === 'reuse-first'
+      return {
+        ...edge,
+        type: 'knowledge-parallel',
+        hidden,
+        reconnectable: false,
+        data: {
+          ...edge.data,
+          parallelOffset: hierarchyPairs.has(pairKey(edge)) ? 18 : undefined,
+        },
+        className: `knowledge-edge ${primary ? 'reuse-first' : 'inspect-if-insufficient'}`,
+        label: primary ? '주요 지식' : '부족할 때 확인',
+        labelStyle: { fill: primary ? '#316d5a' : '#9a6a24', fontSize: 9, fontWeight: 700 },
+        labelBgStyle: { fill: primary ? '#e7f7f1' : '#fff5df', fillOpacity: .96 },
+        labelBgPadding: [5, 3] as [number, number],
+        labelBgBorderRadius: 5,
+        style: { stroke: primary ? '#43a684' : '#d59a3a', strokeWidth: 2.2, strokeDasharray: primary ? undefined : '6 5' },
+        markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: primary ? '#43a684' : '#d59a3a' },
+      }
+    })
+  }, [edges, visibleFlowNodeIds])
 
   const navigateNodeSearch = (direction: 1 | -1) => {
     if (nodeSearchMatches.length === 0) return
@@ -1255,21 +1370,58 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   }, [activeMapId])
 
   useEffect(() => {
+    const targets = JSON.parse(referenceCommentTargetsKey) as ReferenceCommentTarget[]
+    if (targets.length === 0) {
+      setReferenceCommentStats({})
+      return
+    }
+    let active = true
+    const mapIds = [...new Set(targets.map((target) => target.mapId))]
+    void Promise.all(mapIds.map(async (mapId) => {
+      try {
+        const result = await apiRequest<{ comments: NodeComment[] }>(`/api/maps/${encodeURIComponent(mapId)}/comments`)
+        return [mapId, buildCommentStats(result.comments)] as const
+      } catch {
+        return [mapId, {}] as const
+      }
+    })).then((results) => {
+      if (!active) return
+      const statsByMap = new Map<string, NodeCommentStats>(results)
+      setReferenceCommentStats(Object.fromEntries(targets.map((target) => [
+        target.localNodeId,
+        statsByMap.get(target.mapId)?.[target.nodeId] ?? { total: 0, unresolved: 0 },
+      ])))
+    })
+    return () => { active = false }
+  }, [referenceCommentTargetsKey])
+
+  useEffect(() => {
     setReplyTarget(null)
     setNewComment('')
-    if (!activeMapId || !selectedId) {
+    if (!selectedCommentMapId || !selectedCommentNodeId) {
       setComments([])
       return
     }
     let active = true
+    setComments([])
     setCommentsLoading(true)
     setCommentError('')
-    void apiRequest<{ comments: NodeComment[] }>(`/api/maps/${encodeURIComponent(activeMapId)}/comments?nodeId=${encodeURIComponent(selectedId)}`)
+    void apiRequest<{ comments: NodeComment[] }>(`/api/maps/${encodeURIComponent(selectedCommentMapId)}/comments?nodeId=${encodeURIComponent(selectedCommentNodeId)}`)
       .then((result) => { if (active) setComments(result.comments) })
       .catch((error) => { if (active) setCommentError(error instanceof Error ? error.message : '댓글을 불러오지 못했습니다.') })
       .finally(() => { if (active) setCommentsLoading(false) })
     return () => { active = false }
-  }, [activeMapId, selectedId])
+  }, [selectedCommentMapId, selectedCommentNodeId, selectedId])
+
+  useEffect(() => {
+    if (!selectedId || !selectedNode?.data.reference) return
+    const stats = buildCommentStats(comments)[selectedNode.data.reference.nodeId] ?? { total: 0, unresolved: 0 }
+    setReferenceCommentStats((current) => {
+      const previous = current[selectedId]
+      if (previous?.total === stats.total && previous.unresolved === stats.unresolved) return current
+      return { ...current, [selectedId]: stats }
+    })
+  }, [comments, selectedId, selectedNode?.data.reference])
 
   useEffect(() => {
     const eventSource = new EventSource(`/api/events?clientId=${encodeURIComponent(CLIENT_ID)}&mapId=${encodeURIComponent(activeMapId)}`)
@@ -1286,11 +1438,27 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
           return
         }
         if (event.type === 'comment-changed') {
-          if (event.mapId !== activeMapId) return
-          void apiRequest<{ comments: NodeComment[] }>(`/api/maps/${encodeURIComponent(activeMapId)}/comments`)
-            .then((result) => setCommentStats(buildCommentStats(result.comments)))
-            .catch(() => undefined)
-          if (event.nodeId !== selectedIdRef.current) return
+          if (event.mapId === activeMapId) {
+            void apiRequest<{ comments: NodeComment[] }>(`/api/maps/${encodeURIComponent(activeMapId)}/comments`)
+              .then((result) => setCommentStats(buildCommentStats(result.comments)))
+              .catch(() => undefined)
+          }
+          const referencedLocalNodeIds = referenceCommentTargetsRef.current
+            .filter((target) => target.mapId === event.mapId && target.nodeId === event.nodeId)
+            .map((target) => target.localNodeId)
+          if (referencedLocalNodeIds.length > 0) {
+            void apiRequest<{ comments: NodeComment[] }>(`/api/maps/${encodeURIComponent(event.mapId)}/comments?nodeId=${encodeURIComponent(event.nodeId)}`)
+              .then((result) => {
+                const stats = buildCommentStats(result.comments)[event.nodeId] ?? { total: 0, unresolved: 0 }
+                setReferenceCommentStats((current) => ({
+                  ...current,
+                  ...Object.fromEntries(referencedLocalNodeIds.map((localNodeId) => [localNodeId, stats])),
+                }))
+              })
+              .catch(() => undefined)
+          }
+          const commentTarget = selectedCommentTargetRef.current
+          if (!commentTarget || event.mapId !== commentTarget.mapId || event.nodeId !== commentTarget.nodeId) return
           if (event.action === 'created' && event.comment) {
             setComments((current) => current.some((comment) => comment.id === event.comment?.id) ? current : [...current, event.comment as NodeComment])
           } else if (event.action === 'updated' && event.comment) {
@@ -1412,7 +1580,6 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         setLoadedMapId(activeMapId)
         setExternalChange(null)
         setSavedAt(mode === 'editor' ? '서버와 동기화됨' : '읽기 전용')
-        window.setTimeout(() => fitView({ padding: 0.2, duration: 400 }), 0)
       })
       .catch((error) => {
         if (!active) return
@@ -1435,7 +1602,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         setSaveError(error instanceof Error ? error.message : '마인드맵을 불러오지 못했습니다.')
       })
     return () => { active = false }
-  }, [activeMapId, fitView, mapReloadToken, mode, resetHistory, setEdges, setNodes])
+  }, [activeMapId, mapReloadToken, mode, resetHistory, setEdges, setNodes])
 
   useEffect(() => {
     if (!activeMapId || loadedMapId !== activeMapId) return
@@ -1450,11 +1617,24 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
       setSaveError('')
       const savingMapId = activeMapId
       const localContent = { nodes, edges }
+      const suppressedNotificationNodeIds = [...(pastedNodeNotificationSuppressions.current.get(savingMapId) ?? [])]
+        .filter((nodeId) => localContent.nodes.some((node) => node.id === nodeId))
+      const clearPastedNodeNotificationSuppressions = () => {
+        const current = pastedNodeNotificationSuppressions.current.get(savingMapId)
+        if (!current) return
+        suppressedNotificationNodeIds.forEach((nodeId) => current.delete(nodeId))
+        if (current.size === 0) pastedNodeNotificationSuppressions.current.delete(savingMapId)
+      }
       void apiRequest<{ map: MapDocument; summary: MapSummary }>(`/api/maps/${encodeURIComponent(savingMapId)}`, {
         method: 'PUT',
-        body: JSON.stringify({ map: localContent, baseVersion: serverBaseline.current?.version }),
+        body: JSON.stringify({
+          map: localContent,
+          baseVersion: serverBaseline.current?.version,
+          suppressWorkNotificationNodeIds: suppressedNotificationNodeIds,
+        }),
       })
         .then(({ map, summary }) => {
+          clearPastedNodeNotificationSuppressions()
           serverBaseline.current = structuredClone(map)
           setDocuments((current) => current.map((document) => document.id === summary.id ? summary : document))
           setSavedAt('서버와 동기화됨')
@@ -1474,8 +1654,10 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                   map: { nodes: merged.nodes, edges: merged.edges },
                   baseVersion: remote.version,
                   force: true,
+                  suppressWorkNotificationNodeIds: suppressedNotificationNodeIds,
                 }),
               })
+              clearPastedNodeNotificationSuppressions()
               serverBaseline.current = structuredClone(result.map)
               setNodes(merged.nodes)
               setEdges(merged.edges)
@@ -1506,6 +1688,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
       setEdges((current) => addEdge({
         ...connection,
         type: 'bezier',
+        data: { relation: 'hierarchy' },
         markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
       }, current))
     },
@@ -1598,6 +1781,45 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     setDependencyError('')
   }
 
+  const addKnowledgeSource = () => {
+    if (!selectedNode || !knowledgeCandidate || mode !== 'editor') return
+    if (createsKnowledgeCycle(knowledgeCandidate, selectedNode.id, knowledgeEdges)) {
+      setKnowledgeError('순환 지식선은 추가할 수 없습니다.')
+      return
+    }
+    if (selectedKnowledgeEdges.some((edge) => edge.source === knowledgeCandidate)) {
+      setKnowledgeError('이미 연결된 선행 지식입니다.')
+      return
+    }
+    setEdges((current) => [...current, {
+      id: `knowledge-${knowledgeCandidate}-${selectedNode.id}-${Date.now()}`,
+      source: knowledgeCandidate,
+      target: selectedNode.id,
+      type: 'bezier',
+      reconnectable: false,
+      data: { relation: 'knowledge', knowledgePolicy },
+      markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
+    }])
+    setKnowledgeCandidate('')
+    setKnowledgeError('')
+    setSavedAt('저장 중…')
+  }
+
+  const updateKnowledgePolicy = (edgeId: string, policy: KnowledgePolicy) => {
+    if (mode !== 'editor') return
+    setEdges((current) => current.map((edge) => edge.id === edgeId
+      ? { ...edge, data: { ...edge.data, relation: 'knowledge', knowledgePolicy: policy } }
+      : edge))
+    setSavedAt('저장 중…')
+  }
+
+  const removeKnowledgeSource = (edgeId: string) => {
+    if (mode !== 'editor') return
+    setEdges((current) => current.filter((edge) => edge.id !== edgeId))
+    setKnowledgeError('')
+    setSavedAt('저장 중…')
+  }
+
   const commitChecklistEdit = () => {
     if (skipChecklistCommit.current) {
       skipChecklistCommit.current = false
@@ -1620,6 +1842,9 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     setChecklistTooltip(null)
     setDependencyCandidate('')
     setDependencyError('')
+    setKnowledgeCandidate('')
+    setKnowledgePolicy('reuse-first')
+    setKnowledgeError('')
     skipChecklistCommit.current = false
   }, [selectedId])
 
@@ -1630,7 +1855,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const addNode = useCallback((parentId?: string, position?: { x: number; y: number }) => {
     if (mode === 'viewer') return
     const parent = nodes.find((node) => node.id === parentId) ?? selectedNode
-    const childCount = parent ? edges.filter((edge) => edge.source === parent.id).length : 0
+    const childCount = parent ? hierarchyEdges.filter((edge) => edge.source === parent.id).length : 0
     const id = `node-${Date.now()}`
     const nextPosition = position ?? (parent
       ? { x: parent.position.x + 320, y: parent.position.y + childCount * 150 - 40 }
@@ -1654,11 +1879,12 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         source: parent.id,
         target: id,
         type: 'bezier',
+        data: { relation: 'hierarchy' },
         markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
       }])
     }
     setSelectedId(id)
-  }, [edges, mode, nodes, selectedNode, setEdges, setNodes])
+  }, [hierarchyEdges, mode, nodes, selectedNode, setEdges, setNodes])
 
   useEffect(() => {
     const handleInsert = (event: KeyboardEvent) => {
@@ -1673,6 +1899,21 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     window.addEventListener('keydown', handleInsert)
     return () => window.removeEventListener('keydown', handleInsert)
   }, [addNode, mode, selectedId])
+
+  useEffect(() => {
+    const handleFitViewShortcut = (event: KeyboardEvent) => {
+      if (event.key !== 'Home' || viewMode !== 'mindmap' || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
+      const target = event.target as HTMLElement | null
+      if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
+
+      event.preventDefault()
+      void fitView({ padding: 0.2, duration: 500 })
+    }
+
+    window.addEventListener('keydown', handleFitViewShortcut)
+    return () => window.removeEventListener('keydown', handleFitViewShortcut)
+  }, [fitView, viewMode])
 
   useEffect(() => {
     const handleHistoryShortcut = (event: KeyboardEvent) => {
@@ -1750,7 +1991,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     setSelectedId(nodeId)
     setNodeContextMenu({
       x: Math.min(event.clientX, window.innerWidth - 230),
-      y: Math.min(event.clientY, window.innerHeight - 190),
+      y: Math.min(event.clientY, window.innerHeight - 270),
       nodeId,
     })
   }, [mode])
@@ -1803,52 +2044,114 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
 
   const copyNode = useCallback((nodeId: string) => {
     const node = nodes.find((candidate) => candidate.id === nodeId)
-    if (!node) return
-    const copiedData = structuredClone(node.data)
-    delete copiedData.aiConversationId
-    setCopiedNodeData(copiedData)
+    if (!node || !activeMapId) return
+    const selectedNodes = nodes.filter((candidate) => candidate.selected)
+    const nodesToCopy = selectedNodes.some((candidate) => candidate.id === nodeId) ? selectedNodes : [node]
+    const copiedNodeIds = new Set(nodesToCopy.map((candidate) => candidate.id))
+    setCopiedNodes({
+      sourceMapId: activeMapId,
+      nodes: nodesToCopy.map((candidate) => {
+        const copiedData = structuredClone(candidate.data)
+        delete copiedData.aiConversationId
+        return {
+          sourceNodeId: candidate.id,
+          position: { ...candidate.position },
+          data: copiedData,
+        }
+      }),
+      edges: edges
+        .filter((edge) => copiedNodeIds.has(edge.source) && copiedNodeIds.has(edge.target))
+        .map((edge) => structuredClone(edge)),
+    })
     setNodeContextMenu(null)
-  }, [nodes])
+  }, [activeMapId, edges, nodes])
 
-  const pasteNodeAsChild = useCallback((parentId: string) => {
-    if (!copiedNodeData || mode !== 'editor') return
+  const pasteNodeAsChild = useCallback((parentId: string, pasteMode: NodePasteMode = 'copy') => {
+    if (!copiedNodes || copiedNodes.nodes.length === 0 || mode !== 'editor' || !activeMapId) return
     const parent = nodes.find((node) => node.id === parentId)
     if (!parent) return
-    const childCount = edges.filter((edge) => edge.source === parentId).length
+    const isCrossDocument = copiedNodes.sourceMapId !== activeMapId
+    if ((isCrossDocument && pasteMode === 'copy') || (!isCrossDocument && pasteMode !== 'copy')) return
+    const childCount = hierarchyEdges.filter((edge) => edge.source === parentId).length
     const timestamp = Date.now()
-    const id = `node-${timestamp}`
-    const pastedData: MindNodeData = {
-      ...structuredClone(copiedNodeData),
-      label: `${copiedNodeData.label} 복사본`,
-      kind: 'task',
-      aiConversationId: undefined,
-      blockedBy: undefined,
-      unresolvedDependencyCount: undefined,
-      checklist: copiedNodeData.checklist?.map((item, index) => ({
-        ...item,
-        id: `check-${timestamp}-${index}`,
-      })),
+    const sourceMinX = Math.min(...copiedNodes.nodes.map((item) => item.position.x))
+    const sourceMinY = Math.min(...copiedNodes.nodes.map((item) => item.position.y))
+    const targetOrigin = {
+      x: parent.position.x + 320,
+      y: parent.position.y + childCount * 150 - 40,
     }
-    const pastedNode: MindMapNode = {
-      id,
-      type: 'mind',
-      position: {
-        x: parent.position.x + 320,
-        y: parent.position.y + childCount * 150 - 40,
-      },
-      data: pastedData,
-    }
-    setNodes((current) => [...current, pastedNode])
-    setEdges((current) => [...current, {
-      id: `edge-${parentId}-${id}`,
-      source: parentId,
-      target: id,
-      type: 'bezier',
-      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-    }])
-    setSelectedId(id)
+    const nodeIdMap = new Map(copiedNodes.nodes.map((item, index) => [item.sourceNodeId, `node-${timestamp}-${index}`]))
+    const pastedNodes = copiedNodes.nodes.map((item, nodeIndex): MindMapNode => {
+      const copiedData = structuredClone(item.data)
+      const originalReference = copiedData.reference ?? {
+        mapId: copiedNodes.sourceMapId,
+        nodeId: item.sourceNodeId,
+      }
+      const baseLabel = copiedData.reference
+        ? copiedData.label.replace(/\s*\(ref\)\s*$/i, '').trim()
+        : copiedData.label
+      const label = pasteMode === 'copy'
+        ? `${copiedData.label} 복사본`
+        : pasteMode === 'reference'
+          ? `${baseLabel} (ref)`
+          : baseLabel
+      const remappedBlockedBy = (copiedData.blockedBy ?? [])
+        .flatMap((blockedById) => nodeIdMap.get(blockedById) ?? [])
+      return {
+        id: nodeIdMap.get(item.sourceNodeId) as string,
+        type: 'mind',
+        position: {
+          x: targetOrigin.x + item.position.x - sourceMinX,
+          y: targetOrigin.y + item.position.y - sourceMinY,
+        },
+        selected: true,
+        data: {
+          ...copiedData,
+          label,
+          kind: 'task',
+          aiConversationId: undefined,
+          reference: pasteMode === 'reference' ? originalReference : pasteMode === 'clone' ? undefined : copiedData.reference,
+          blockedBy: remappedBlockedBy.length > 0 ? remappedBlockedBy : undefined,
+          unresolvedDependencyCount: undefined,
+          checklist: copiedData.checklist?.map((checklistItem, checklistIndex) => ({
+            ...checklistItem,
+            id: `check-${timestamp}-${nodeIndex}-${checklistIndex}`,
+          })),
+        },
+      }
+    })
+    const copiedHierarchyTargets = new Set(copiedNodes.edges
+      .filter(isHierarchyEdge)
+      .map((edge) => edge.target))
+    const pastedInternalEdges = copiedNodes.edges.flatMap((edge, index) => {
+      const source = nodeIdMap.get(edge.source)
+      const target = nodeIdMap.get(edge.target)
+      if (!source || !target) return []
+      return [{
+        ...structuredClone(edge),
+        id: `edge-${timestamp}-internal-${index}`,
+        source,
+        target,
+      }]
+    })
+    const pastedRootEdges = copiedNodes.nodes
+      .filter((item) => !copiedHierarchyTargets.has(item.sourceNodeId))
+      .map((item, index): MindMapEdge => ({
+        id: `edge-${parentId}-${timestamp}-root-${index}`,
+        source: parentId,
+        target: nodeIdMap.get(item.sourceNodeId) as string,
+        type: 'bezier',
+        data: { relation: 'hierarchy' },
+        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+      }))
+    const suppressedNodeIds = pastedNodeNotificationSuppressions.current.get(activeMapId) ?? new Set<string>()
+    pastedNodes.forEach((pastedNode) => suppressedNodeIds.add(pastedNode.id))
+    pastedNodeNotificationSuppressions.current.set(activeMapId, suppressedNodeIds)
+    setNodes((current) => [...current.map((node) => node.selected ? { ...node, selected: false } : node), ...pastedNodes])
+    setEdges((current) => [...current, ...pastedInternalEdges, ...pastedRootEdges])
+    setSelectedId(pastedNodes[0].id)
     setNodeContextMenu(null)
-  }, [copiedNodeData, edges, mode, nodes, setEdges, setNodes])
+  }, [activeMapId, copiedNodes, hierarchyEdges, mode, nodes, setEdges, setNodes])
 
   useEffect(() => {
     const closeContextMenu = (event: PointerEvent) => {
@@ -2242,12 +2545,12 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
 
   const submitComment = async () => {
     const text = newComment.trim()
-    if (!activeMapId || !selectedId || !text) return
+    if (!selectedCommentMapId || !selectedCommentNodeId || !text) return
     setCommentError('')
     try {
-      const result = await apiRequest<{ comment: NodeComment }>(`/api/maps/${encodeURIComponent(activeMapId)}/comments`, {
+      const result = await apiRequest<{ comment: NodeComment }>(`/api/maps/${encodeURIComponent(selectedCommentMapId)}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ nodeId: selectedId, text, parentId: replyTarget?.id ?? null }),
+        body: JSON.stringify({ nodeId: selectedCommentNodeId, text, parentId: replyTarget?.id ?? null }),
       })
       setComments((current) => current.some((comment) => comment.id === result.comment.id) ? current : [...current, result.comment])
       setNewComment('')
@@ -2350,7 +2653,10 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   }
 
   const onSelectionChange = useCallback(({ nodes: selected }: OnSelectionChangeParams<MindMapNode, MindMapEdge>) => {
-    setSelectedId(selected[0]?.id ?? null)
+    const currentSelectedId = selectedIdRef.current
+    if (currentSelectedId && selected.some((node) => node.id === currentSelectedId)) return
+
+    setSelectedId(selected.at(-1)?.id ?? null)
   }, [])
 
   const onNodeClick = useCallback((_event: ReactMouseEvent, node: MindMapNode) => {
@@ -2368,7 +2674,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
       const parentId = pendingIds.shift()
       if (!parentId) continue
 
-      for (const edge of edges) {
+      for (const edge of hierarchyEdges) {
         if (edge.source !== parentId || descendantIds.has(edge.target) || edge.target === draggedNode.id) continue
         descendantIds.add(edge.target)
         pendingIds.push(edge.target)
@@ -2376,9 +2682,16 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     }
 
     const descendantPositions = new Map<string, { x: number; y: number }>()
+    const selectedPositions = new Map<string, { x: number; y: number }>()
+    const draggedNodeIsSelected = draggedNode.selected
+      || nodes.some((node) => node.id === draggedNode.id && node.selected)
+
     for (const node of nodes) {
       if (descendantIds.has(node.id)) {
         descendantPositions.set(node.id, { ...node.position })
+      }
+      if (draggedNodeIsSelected && node.selected && node.id !== draggedNode.id) {
+        selectedPositions.set(node.id, { ...node.position })
       }
     }
 
@@ -2386,22 +2699,25 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
       rootId: draggedNode.id,
       rootPosition: { ...draggedNode.position },
       descendantPositions,
+      selectedPositions,
     }
-  }, [beginHistoryTransaction, edges, nodes])
+  }, [beginHistoryTransaction, hierarchyEdges, nodes])
 
-  const onNodeDrag = useCallback((_event: MouseEvent | TouchEvent, draggedNode: MindMapNode) => {
+  const onNodeDrag = useCallback((event: MouseEvent | TouchEvent, draggedNode: MindMapNode) => {
     const snapshot = dragSnapshot.current
     if (!snapshot || snapshot.rootId !== draggedNode.id) return
 
-    const deltaX = draggedNode.position.x - snapshot.rootPosition.x
-    const deltaY = draggedNode.position.y - snapshot.rootPosition.y
+    const draggedPosition = event.altKey ? snapMindMapPosition(draggedNode.position) : draggedNode.position
+    const deltaX = draggedPosition.x - snapshot.rootPosition.x
+    const deltaY = draggedPosition.y - snapshot.rootPosition.y
 
     setNodes((current) => current.map((node) => {
       if (node.id === draggedNode.id) {
-        return { ...node, position: { ...draggedNode.position } }
+        return { ...node, position: { ...draggedPosition } }
       }
 
       const initialPosition = snapshot.descendantPositions.get(node.id)
+        ?? (event.altKey ? snapshot.selectedPositions.get(node.id) : undefined)
       if (!initialPosition) return node
 
       return {
@@ -2416,11 +2732,15 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     const draggedWidth = draggedNode.measured?.width ?? draggedNode.width ?? 218
     const draggedHeight = draggedNode.measured?.height ?? draggedNode.height ?? 112
     const center = {
-      x: draggedNode.position.x + draggedWidth / 2,
-      y: draggedNode.position.y + draggedHeight / 2,
+      x: draggedPosition.x + draggedWidth / 2,
+      y: draggedPosition.y + draggedHeight / 2,
     }
-    const currentParentId = edges.find((edge) => edge.target === draggedNode.id)?.source
-    const invalidTargetIds = new Set([draggedNode.id, ...snapshot.descendantPositions.keys()])
+    const currentParentId = hierarchyEdges.find((edge) => edge.target === draggedNode.id)?.source
+    const invalidTargetIds = new Set([
+      draggedNode.id,
+      ...snapshot.descendantPositions.keys(),
+      ...snapshot.selectedPositions.keys(),
+    ])
     const target = nodes
       .filter((node) => !invalidTargetIds.has(node.id) && node.id !== currentParentId && !node.hidden)
       .filter((node) => {
@@ -2444,57 +2764,74 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
       setDropTargetId(nextTargetId)
     }
     setSavedAt('저장 중…')
-  }, [edges, nodes, setNodes])
+  }, [hierarchyEdges, nodes, setNodes])
 
-  const onNodeDragStop = useCallback((_event: MouseEvent | TouchEvent, draggedNode: MindMapNode) => {
+  const onNodeDragStop = useCallback((event: MouseEvent | TouchEvent, draggedNode: MindMapNode) => {
     const snapshot = dragSnapshot.current
     const targetId = dropTargetIdRef.current
+    const draggedPosition = event.altKey ? snapMindMapPosition(draggedNode.position) : draggedNode.position
 
     if (snapshot && targetId) {
       const target = nodes.find((node) => node.id === targetId)
       if (target) {
-        const childCount = edges.filter((edge) => edge.source === targetId && edge.target !== draggedNode.id).length
-        const desiredPosition = {
+        const childCount = hierarchyEdges.filter((edge) => edge.source === targetId && edge.target !== draggedNode.id).length
+        const automaticPosition = {
           x: target.position.x + 320,
           y: target.position.y + childCount * 150 - 40,
         }
-        const snapDelta = {
-          x: desiredPosition.x - draggedNode.position.x,
-          y: desiredPosition.y - draggedNode.position.y,
+        const desiredPosition = event.altKey ? snapMindMapPosition(automaticPosition) : automaticPosition
+        const rootDelta = {
+          x: desiredPosition.x - snapshot.rootPosition.x,
+          y: desiredPosition.y - snapshot.rootPosition.y,
         }
         const descendantIds = new Set(snapshot.descendantPositions.keys())
 
         setNodes((current) => current.map((node) => {
           if (node.id === draggedNode.id) return { ...node, position: desiredPosition }
           if (!descendantIds.has(node.id)) return node
+          const initialPosition = snapshot.descendantPositions.get(node.id)
+          if (!initialPosition) return node
           return {
             ...node,
             position: {
-              x: node.position.x + snapDelta.x,
-              y: node.position.y + snapDelta.y,
+              x: initialPosition.x + rootDelta.x,
+              y: initialPosition.y + rootDelta.y,
             },
           }
         }))
         setEdges((current) => [
-          ...current.filter((edge) => edge.target !== draggedNode.id),
+          ...current.filter((edge) => !isHierarchyEdge(edge) || edge.target !== draggedNode.id),
           {
             id: `edge-${targetId}-${draggedNode.id}-${Date.now()}`,
             source: targetId,
             target: draggedNode.id,
             type: 'bezier',
+            data: { relation: 'hierarchy' },
             markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
           },
         ])
         setSelectedId(draggedNode.id)
         setSavedAt('부모 노드 변경됨')
       }
+    } else if (snapshot && event.altKey) {
+      const deltaX = draggedPosition.x - snapshot.rootPosition.x
+      const deltaY = draggedPosition.y - snapshot.rootPosition.y
+      setNodes((current) => current.map((node) => {
+        if (node.id === draggedNode.id) return { ...node, position: draggedPosition }
+        const initialPosition = snapshot.descendantPositions.get(node.id)
+          ?? snapshot.selectedPositions.get(node.id)
+        return initialPosition ? {
+          ...node,
+          position: { x: initialPosition.x + deltaX, y: initialPosition.y + deltaY },
+        } : node
+      }))
     }
 
     dragSnapshot.current = null
     dropTargetIdRef.current = null
     setDropTargetId(null)
     endHistoryTransaction()
-  }, [edges, endHistoryTransaction, nodes, setEdges, setNodes])
+  }, [endHistoryTransaction, hierarchyEdges, nodes, setEdges, setNodes])
 
   return (
     <div className={`app-shell ${resizingInspector ? 'resizing-inspector' : ''}`}>
@@ -2666,11 +3003,16 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                 </form>
               )}
               <nav className="map-list">
-                {filteredDocuments.map((document, index) => (
-                  <button
+                {filteredDocuments.map((document, index) => {
+                  const hasLoadedActiveDocument = document.id === activeMapId && loadedMapId === activeMapId
+                  const rootProgress = hasLoadedActiveDocument ? activeRootState.progress : document.rootProgress
+                  const rootStatus = hasLoadedActiveDocument ? activeRootState.status : document.rootStatus
+                  const nodeCount = hasLoadedActiveDocument ? nodes.length : document.nodeCount
+                  return (
+                    <button
                     key={document.id}
                     draggable={mode === 'editor'}
-                    className={`map-item ${document.id === activeMapId ? 'active' : ''} ${draggingDocumentId === document.id ? 'dragging' : ''} ${documentDropTargetId === document.id ? 'document-drop-target' : ''}`}
+                    className={`map-item ${document.id === activeMapId ? 'active' : ''} ${rootStatus === 'planned' ? 'root-planned' : ''} ${draggingDocumentId === document.id ? 'dragging' : ''} ${documentDropTargetId === document.id ? 'document-drop-target' : ''}`}
                     onClick={() => { setRenamingMap(false); setActiveMapId(document.id) }}
                     onContextMenu={(event) => openDocumentContextMenu(event, document.id)}
                     onDragStart={(event) => {
@@ -2697,11 +3039,19 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                     <span className="map-dot" style={documentColorStyle(document.color, index)} />
                     <span>
                       <strong>{document.title}</strong>
-                      <small>{document.id === activeMapId ? nodes.length : document.nodeCount}개 항목</small>
+                      <small>
+                        <span>{nodeCount}개 항목</span>
+                        {rootProgress !== null && (
+                          <span className={`map-root-progress ${rootProgress === 100 ? 'complete' : ''}`}>
+                            {rootProgress}%
+                          </span>
+                        )}
+                      </small>
                     </span>
                     {document.id === activeMapId && <Icon name="chevron" size={15} />}
                   </button>
-                ))}
+                  )
+                })}
                 {filteredDocuments.length === 0 && (
                   <div className="empty-map-list">{documents.length === 0 ? '생성된 마인드맵이 없습니다.' : '검색 결과가 없습니다.'}</div>
                 )}
@@ -2782,9 +3132,11 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
           onPointerMove={shareCursorPosition}
         >
           <ReactFlow<MindMapNode, MindMapEdge>
-            nodes={flowNodes}
-            edges={flowEdges}
+            key={activeMapId}
+            nodes={loadedMapId === activeMapId ? flowNodes : []}
+            edges={loadedMapId === activeMapId ? flowEdges : []}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
@@ -2804,6 +3156,8 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
             nodesDraggable={mode === 'editor'}
             nodesConnectable={mode === 'editor'}
             edgesReconnectable={mode === 'editor'}
+            nodeClickDistance={4}
+            nodeDragThreshold={4}
             panOnDrag={[0, 1, 2]}
             deleteKeyCode={mode === 'editor' ? ['Backspace', 'Delete'] : null}
             fitView
@@ -2813,7 +3167,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
             defaultEdgeOptions={{ style: { strokeWidth: 2, stroke: '#b8b5c7' } }}
             proOptions={{ hideAttribution: true }}
           >
-            <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} color="#d8d6df" />
+            <Background variant={BackgroundVariant.Dots} gap={MINDMAP_GRID_SIZE} size={1.2} color="#d8d6df" />
             <MiniMap
               className="mini-map"
               style={{ width: 160, height: 100 }}
@@ -2833,7 +3187,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                   <span className="tool-divider" />
                 </>
               )}
-              <button onClick={() => fitView({ padding: 0.2, duration: 500 })} title="전체 보기"><Icon name="fit" size={17} /></button>
+              <button onClick={() => fitView({ padding: 0.2, duration: 500 })} title="전체 보기 (Home)" aria-label="전체 보기 (Home)"><Icon name="fit" size={17} /></button>
               {collapsibleNodeIds.size > 0 && (
                 <button
                   onClick={() => setCollapsedNodeIds(collapsedNodeIds.size > 0 ? new Set() : new Set(collapsibleNodeIds))}
@@ -2879,7 +3233,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
               {filterActive && <button type="button" className="filter-reset" onClick={() => { setNodeFilter('all'); setAssigneeFilter('all') }}>초기화</button>}
             </Panel>
             <Panel position="bottom-right" className="hint-pill">
-              {mode === 'editor' ? '우클릭 드래그로 이동 · Insert로 하위 노드 추가' : '우클릭 드래그로 이동 · 읽기 전용'}
+              {mode === 'editor' ? 'Alt+드래그로 눈금 맞춤 · 우클릭 드래그로 이동 · Insert로 하위 노드 추가' : '우클릭 드래그로 이동 · 읽기 전용'}
             </Panel>
           </ReactFlow>
           <div className="live-cursors" aria-hidden="true">
@@ -3018,6 +3372,25 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                 </div>
               </div>
               <div className="inspector-content">
+                {selectedNode.data.reference && (
+                  <div className="task-link-field">
+                    <div className="field-heading">
+                      <span>참조 원본</span>
+                      <small>Ref</small>
+                    </div>
+                    <a
+                      className="task-link"
+                      href={`${mode === 'viewer' ? '/viewer' : ''}/mindmap/${encodeURIComponent(selectedNode.data.reference.mapId)}/${encodeURIComponent(selectedNode.data.reference.nodeId)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="원본 노드를 새 탭에서 열기"
+                    >
+                      <Icon name="external" size={15} />
+                      <span>{documents.find((document) => document.id === selectedNode.data.reference?.mapId)?.title ?? selectedNode.data.reference.mapId}: {selectedNode.data.label.replace(/\s*\(ref\)\s*$/i, '')}</span>
+                      <strong>원본 열기</strong>
+                    </a>
+                  </div>
+                )}
                 <div className="task-link-field">
                   <div className="field-heading">
                     <span>업무 링크</span>
@@ -3076,6 +3449,51 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                     <div className="description-rich-text"><LinkifiedText text={selectedNode.data.description} /></div>
                   )}
                 </label>
+                <section className="knowledge-block">
+                  <div className="knowledge-heading">
+                    <div><span>선행 지식</span><small>이 카드를 수행할 때 먼저 활용할 결과를 연결합니다.</small></div>
+                    <strong>{selectedKnowledgeEdges.length}</strong>
+                  </div>
+                  <div className="knowledge-list">
+                    {selectedKnowledgeEdges.map((edge) => {
+                      const source = nodes.find((node) => node.id === edge.source)
+                      if (!source) return null
+                      return (
+                        <div className={`knowledge-item ${knowledgePolicyOf(edge)}`} key={edge.id}>
+                          <div><strong>{source.data.label}</strong><small>{knowledgePolicyOf(edge) === 'reuse-first' ? '주요 지식 · 결과와 댓글을 먼저 활용' : '부족할 때 확인 · 원본 자료는 필요할 때만 조사'}</small></div>
+                          {mode === 'editor' && (
+                            <div className="knowledge-item-actions">
+                              <select
+                                value={knowledgePolicyOf(edge)}
+                                onChange={(event) => updateKnowledgePolicy(edge.id, event.target.value as KnowledgePolicy)}
+                                aria-label={`${source.data.label} 지식 사용 정책`}
+                              >
+                                <option value="reuse-first">주요 지식</option>
+                                <option value="inspect-if-insufficient">부족할 때 확인</option>
+                              </select>
+                              <button type="button" onClick={() => removeKnowledgeSource(edge.id)} aria-label={`${source.data.label} 지식선 제거`}><Icon name="close" size={11} /></button>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                    {selectedKnowledgeEdges.length === 0 && <div className="empty-knowledge">연결된 선행 지식이 없습니다. 기존 AI 시작 절차를 사용합니다.</div>}
+                  </div>
+                  {mode === 'editor' && (
+                    <form className="knowledge-add" onSubmit={(event) => { event.preventDefault(); addKnowledgeSource() }}>
+                      <select value={knowledgeCandidate} onChange={(event) => { setKnowledgeCandidate(event.target.value); setKnowledgeError('') }} aria-label="선행 지식 카드 선택">
+                        <option value="">지식 카드 선택</option>
+                        {availableKnowledgeSources.map((node) => <option key={node.id} value={node.id}>{node.data.label}</option>)}
+                      </select>
+                      <select value={knowledgePolicy} onChange={(event) => setKnowledgePolicy(event.target.value as KnowledgePolicy)} aria-label="지식 사용 정책 선택">
+                        <option value="reuse-first">주요 지식</option>
+                        <option value="inspect-if-insufficient">부족할 때 확인</option>
+                      </select>
+                      <button type="submit" disabled={!knowledgeCandidate}><Icon name="plus" size={13} />연결</button>
+                    </form>
+                  )}
+                  {knowledgeError && <em>{knowledgeError}</em>}
+                </section>
                 <label>
                   <span>상태</span>
                   <select
@@ -3239,7 +3657,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                                 <span
                                   className="checklist-text"
                                   onMouseEnter={(event) => {
-                                    if (event.currentTarget.scrollWidth > event.currentTarget.clientWidth) {
+                                    if (isTextTruncated(event.currentTarget)) {
                                       setChecklistTooltip({ text: item.text, x: event.clientX, y: event.clientY })
                                     }
                                   }}
@@ -3296,7 +3714,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                 </section>
                 <section className="node-comments">
                   <div className="node-comments-heading">
-                    <span><Icon name="comment" size={14} />댓글</span><strong>{comments.length}</strong>
+                    <span><Icon name="comment" size={14} />{selectedNode.data.reference ? '원본 댓글' : '댓글'}</span><strong>{comments.length}</strong>
                   </div>
                   <div className="comment-list">
                     {commentsLoading && <div className="comment-message">댓글을 불러오는 중…</div>}
@@ -3323,7 +3741,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                       <span>멘션</span>
                       {collaborators.filter((collaborator) => collaborator.id !== user.id).map((collaborator) => <button type="button" key={collaborator.id} onClick={() => insertMention(collaborator)}>@{collaborator.name}</button>)}
                     </div>
-                    <div><small>{newComment.length}/1000 · 편집자와 뷰어 모두 작성 가능</small><button type="submit" disabled={!newComment.trim()}><Icon name="send" size={13} />{replyTarget ? '답글' : '등록'}</button></div>
+                    <div><small>{newComment.length}/1000 · {selectedNode.data.reference ? '원본 노드에 등록' : '편집자와 뷰어 모두 작성 가능'}</small><button type="submit" disabled={!newComment.trim()}><Icon name="send" size={13} />{replyTarget ? '답글' : '등록'}</button></div>
                   </form>}
                 </section>
                 <div className="meta-card">
@@ -3414,6 +3832,10 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
           documentTitle={activeDocument.title}
           cardId={selectedNode.id}
           cardTitle={selectedNode.data.label}
+          knowledgeSources={selectedKnowledgeEdges.flatMap((edge) => {
+            const source = nodes.find((node) => node.id === edge.source)
+            return source ? [{ id: source.id, label: source.data.label, policy: knowledgePolicyOf(edge) }] : []
+          })}
           onClose={() => setAiDialogOpen(false)}
         />
       )}
@@ -3442,12 +3864,25 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
           </div>
           <button role="menuitem" onClick={() => copyNode(nodeContextMenu.nodeId)}>
             <span className="context-icon"><Icon name="copy" size={15} /></span>
-            <span><strong>복사</strong><small>노드 정보와 체크리스트 복사</small></span>
+            <span><strong>복사{nodes.some((node) => node.id === nodeContextMenu.nodeId && node.selected) && nodes.filter((node) => node.selected).length > 1 ? ` (${nodes.filter((node) => node.selected).length}개)` : ''}</strong><small>선택 노드와 내부 연결 관계 복사</small></span>
           </button>
-          <button role="menuitem" disabled={!copiedNodeData} onClick={() => pasteNodeAsChild(nodeContextMenu.nodeId)}>
-            <span className="context-icon"><Icon name="paste" size={15} /></span>
-            <span><strong>자식으로 붙여넣기</strong><small>{copiedNodeData ? `“${copiedNodeData.label}” 복사본 생성` : '먼저 노드를 복사해 주세요'}</small></span>
-          </button>
+          {copiedNodes && copiedNodes.sourceMapId !== activeMapId ? (
+            <>
+              <button role="menuitem" disabled={!copiedNodes} onClick={() => pasteNodeAsChild(nodeContextMenu.nodeId, 'clone')}>
+                <span className="context-icon"><Icon name="paste" size={15} /></span>
+                <span><strong>Clone으로 붙여넣기</strong><small>{copiedNodes.nodes.length === 1 ? `“${copiedNodes.nodes[0].data.reference ? copiedNodes.nodes[0].data.label.replace(/\s*\(ref\)\s*$/i, '') : copiedNodes.nodes[0].data.label}” 독립 복제` : `${copiedNodes.nodes.length}개 노드 독립 복제`}</small></span>
+              </button>
+              <button role="menuitem" disabled={!copiedNodes} onClick={() => pasteNodeAsChild(nodeContextMenu.nodeId, 'reference')}>
+                <span className="context-icon"><Icon name="share" size={15} /></span>
+                <span><strong>Ref로 붙여넣기</strong><small>{copiedNodes.nodes.length === 1 ? `“${copiedNodes.nodes[0].data.reference ? copiedNodes.nodes[0].data.label.replace(/\s*\(ref\)\s*$/i, '') : copiedNodes.nodes[0].data.label} (ref)” 원본 참조` : `${copiedNodes.nodes.length}개 노드 원본 참조`}</small></span>
+              </button>
+            </>
+          ) : (
+            <button role="menuitem" disabled={!copiedNodes} onClick={() => pasteNodeAsChild(nodeContextMenu.nodeId)}>
+              <span className="context-icon"><Icon name="paste" size={15} /></span>
+              <span><strong>자식으로 붙여넣기</strong><small>{copiedNodes ? copiedNodes.nodes.length === 1 ? `“${copiedNodes.nodes[0].data.label}” 복사본 생성` : `${copiedNodes.nodes.length}개 노드 복사본 생성` : '먼저 노드를 복사해 주세요'}</small></span>
+            </button>
+          )}
           <div className="context-divider" />
           <button className="danger" role="menuitem" onClick={() => { deleteNodeById(nodeContextMenu.nodeId); setNodeContextMenu(null) }}>
             <span className="context-icon"><Icon name="trash" size={15} /></span>

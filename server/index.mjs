@@ -452,12 +452,30 @@ function normalizeMapColor(color, fallback) {
   return mapColors.includes(color) ? color : fallback
 }
 
+function mapRootState(map) {
+  const hierarchyTargets = new Set((map.edges ?? [])
+    .filter((edge) => edge.data?.relation !== 'knowledge')
+    .map((edge) => edge.target))
+  const root = map.nodes.find((node) => node.data?.kind === 'root' && !hierarchyTargets.has(node.id))
+    ?? map.nodes.find((node) => node.data?.kind === 'root')
+    ?? map.nodes.find((node) => !hierarchyTargets.has(node.id))
+    ?? map.nodes[0]
+  const progress = Number(root?.data?.progress)
+  return {
+    progress: Number.isFinite(progress) ? Math.round(Math.max(0, Math.min(100, progress))) : null,
+    status: typeof root?.data?.status === 'string' ? root.data.status : null,
+  }
+}
+
 function mapSummary(map) {
+  const root = mapRootState(map)
   return {
     id: map.id,
     title: map.title,
     color: normalizeMapColor(map.color, defaultMapColor(map.id)),
     nodeCount: map.nodes.length,
+    rootProgress: root.progress,
+    rootStatus: root.status,
     version: map.version ?? 1,
     updatedAt: map.updatedAt ?? null,
     updatedBy: map.updatedBy ?? null,
@@ -1150,10 +1168,11 @@ async function ensureScheduleNotifications(user) {
   }
 }
 
-async function createWorkChangeNotifications(existing, map, actor) {
+async function createWorkChangeNotifications(existing, map, actor, suppressedNodeIds = new Set()) {
   const previousNodes = new Map((existing?.nodes ?? []).map((node) => [node.id, node]))
   for (const node of map.nodes) {
     if (!node.data?.isWork) continue
+    if (suppressedNodeIds.has(node.id)) continue
     const previous = previousNodes.get(node.id)
     const assigneeChanged = previous?.data?.assigneeId !== node.data.assigneeId
     const dueDateChanged = previous?.data?.dueDate !== node.data.dueDate
@@ -2490,8 +2509,13 @@ const server = createServer(async (request, response) => {
         }
         const contentChanged = !existing || JSON.stringify({ nodes: existing.nodes, edges: existing.edges }) !== JSON.stringify({ nodes: body.map.nodes, edges: body.map.edges })
         if (!contentChanged && existing) return sendJson(response, 200, { map: existing, summary: mapSummary(existing) })
+        const suppressedWorkNotificationNodeIds = new Set(
+          (Array.isArray(body.suppressWorkNotificationNodeIds) ? body.suppressWorkNotificationNodeIds : [])
+            .filter((nodeId) => typeof nodeId === 'string' && body.map.nodes.some((node) => node.id === nodeId))
+            .slice(0, 100),
+        )
         const map = await saveMap(mapId, body.map, user, undefined, undefined, 'content')
-        await createWorkChangeNotifications(existing, map, user)
+        await createWorkChangeNotifications(existing, map, user, suppressedWorkNotificationNodeIds)
         if (contentChanged) broadcastMapChange(request, mapId, 'content', user)
         return sendJson(response, 200, { map, summary: mapSummary(map) })
       }

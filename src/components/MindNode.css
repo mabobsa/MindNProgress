@@ -8,20 +8,28 @@
   border-radius: 12px;
   background: rgba(255, 255, 255, .97);
   box-shadow: 0 7px 18px rgba(54, 45, 85, .08);
-  transition: border-color .18s, box-shadow .18s;
+  transition: border-color .18s, background .18s, box-shadow .18s;
 }
 
 .mind-node:hover { border-color: #c8c2dc; box-shadow: 0 9px 24px rgba(54, 45, 85, .12); }
 .mind-node.selected { border-color: #6b5bd7; box-shadow: 0 0 0 3px rgba(107, 91, 215, .13), 0 10px 26px rgba(54, 45, 85, .14); }
 .mind-node.root { color: white; border-color: #5a4bc9; background: linear-gradient(145deg, #7162df, #594ac8); box-shadow: 0 12px 28px rgba(83, 67, 190, .27); }
 .mind-node.root.selected { box-shadow: 0 0 0 4px rgba(107, 91, 215, .17), 0 13px 30px rgba(83, 67, 190, .3); }
-.mind-node.branch { border-left: 4px solid #7162da; }
+.mind-node.branch { border-left-width: 4px; }
+.mind-node.branch.status-planned { border-left-color: #c9c5ce; }
+.mind-node.branch.status-in-progress { border-left-color: #7162da; background: linear-gradient(180deg, #fdfcff, #faf9ff); }
 .mind-node.completed { border-color: #83cdb3; background: #f5fcf9; box-shadow: 0 8px 22px rgba(40, 139, 104, .13); }
 .mind-node.completed.branch { border-left-color: #43b78e; }
 .mind-node.completed.root { border-color: #319b75; background: linear-gradient(145deg, #50bd95, #319a75); box-shadow: 0 12px 28px rgba(40, 139, 104, .25); }
 .mind-node.completed.selected { border-color: #35a77f; box-shadow: 0 0 0 3px rgba(67, 183, 142, .16), 0 10px 26px rgba(40, 139, 104, .18); }
-.node-topline { display: flex; align-items: center; gap: 5px; color: #9a94a1; font-size: 8px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+.node-topline { display: flex; align-items: center; gap: 5px; color: #9a94a1; font-size: 8px; font-weight: 650; letter-spacing: .04em; }
 .node-topline strong { margin-left: auto; color: #7568ce; font-size: 9px; }
+.node-status-badge { min-height: 18px; display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 999px; font-size: 8px; font-weight: 750; letter-spacing: 0; line-height: 1; white-space: nowrap; }
+.node-status-badge.planned { color: #77717d; background: #f0eff2; }
+.node-status-badge.in-progress { color: #5e50c8; background: #ece9fc; }
+.node-status-badge.done { color: #288563; background: #e3f5ee; }
+.node-status-icon { width: 8px; display: inline-flex; align-items: center; justify-content: center; font-size: 7px; line-height: 1; }
+.node-status-badge.in-progress .node-status-icon { font-size: 6px; }
 .node-comments-badge { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px; color: #8c8693; border-radius: 5px; background: #f0eef3; font-size: 7px; font-weight: 750; letter-spacing: 0; text-transform: none; white-space: nowrap; }
 .node-comments-badge > span { font-size: 7px; filter: grayscale(1); }
 .node-comments-badge.unresolved { color: #5d50ca; background: #eae7fb; }
@@ -29,16 +37,17 @@
 .mind-node.root .node-comments-badge { color: white; background: rgba(255,255,255,.15); }
 .mind-node.root .node-topline { color: rgba(255, 255, 255, .68); }
 .mind-node.root .node-topline strong { color: white; }
-.node-status { width: 6px; height: 6px; border-radius: 50%; background: #d0ccd4; }
-.node-status.in-progress { background: #8172df; }
-.node-status.done { background: #43b78e; }
-.mind-node.root .node-status { background: #bdb4ff; }
+.mind-node.root .node-status-badge { color: white; background: rgba(255,255,255,.13); }
+.mind-node.root .node-status-badge.planned { border: 1px solid rgba(255,255,255,.24); background: transparent; }
+.mind-node.root .node-status-badge.in-progress { background: rgba(255,255,255,.22); }
+.mind-node.root .node-status-badge.done { background: rgba(255,255,255,.2); }
 .mind-node h3 { max-width: 185px; margin: 10px 0 4px; overflow: hidden; color: #332e3b; font-size: 13px; font-weight: 720; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
 .mind-node.root h3 { color: white; font-size: 14px; }
 .mind-node p { max-width: 185px; margin: 0; overflow: hidden; color: #9993a1; font-size: 9px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .mind-node.root p { color: rgba(255,255,255,.72); }
 .node-progress { height: 3px; margin-top: 12px; overflow: hidden; border-radius: 4px; background: #eeecf1; }
 .node-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #8274e1, #5f50cd); transition: width .25s ease; }
+.mind-node.status-planned .node-progress span { background: #c5c1ca; }
 .mind-node.completed .node-progress span { background: linear-gradient(90deg, #65cba6, #35a77f); }
 .mind-node.root .node-progress { background: rgba(255,255,255,.2); }
 .mind-node.root .node-progress span { background: white; }
@@ -64,9 +73,8 @@
 .node-collapse-toggle b { font-size: 6px; }
 .mind-node.root .node-collapse-toggle { color: #5548bd; background: white; }
 .mind-node.root .node-collapse-toggle:hover, .mind-node.root .node-collapse-toggle.collapsed { color: white; background: #493bb5; }
-.mind-node .react-flow__handle { width: 9px; height: 9px; border: 2px solid white; background: #8173dd; opacity: 0; transition: opacity .18s, transform .18s; }
-.mind-node:hover .react-flow__handle,
-.mind-node.selected .react-flow__handle { opacity: 1; }
+.mind-node .react-flow__handle { width: 9px; height: 9px; border: 2px solid white; background: #8173dd; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; }
+.mind-node.selected .react-flow__handle { opacity: 1; pointer-events: auto; }
 .mind-node .react-flow__handle:hover { transform: scale(1.35); }
 .react-flow__node.drop-target .mind-node { border-color: #35a77f; box-shadow: 0 0 0 4px rgba(67,183,142,.17), 0 12px 28px rgba(40,139,104,.2); transform: scale(1.025); }
 .react-flow__node.drop-target::after { content: '여기에 자식으로 이동'; position: absolute; left: 50%; bottom: -26px; z-index: 5; padding: 4px 7px; color: white; border-radius: 6px; background: #35a77f; box-shadow: 0 5px 12px rgba(40,139,104,.22); font-size: 8px; font-weight: 700; white-space: nowrap; transform: translateX(-50%); pointer-events: none; }

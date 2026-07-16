@@ -11,6 +11,12 @@ const statusText: Record<MindNodeData['status'], string> = {
   done: '완료',
 }
 
+const statusIcon: Record<MindNodeData['status'], string> = {
+  planned: '○',
+  'in-progress': '▶',
+  done: '✓',
+}
+
 export function MindNode({ data, selected, isConnectable }: NodeProps<MindNodeType>) {
   const isCompleted = data.progress >= 100
   const displayStatus = isCompleted ? 'done' : data.status
@@ -23,7 +29,7 @@ export function MindNode({ data, selected, isConnectable }: NodeProps<MindNodeTy
     : ''
 
   return (
-    <article className={`mind-node ${data.kind} ${isCompleted ? 'completed' : ''} ${selected ? 'selected' : ''}`}>
+    <article className={`mind-node ${data.kind} status-${displayStatus} ${isCompleted ? 'completed' : ''} ${selected ? 'selected' : ''}`}>
       <Handle type="target" position={Position.Left} isConnectable={isConnectable} />
       {data.hasChildren && (
         <button
@@ -40,8 +46,10 @@ export function MindNode({ data, selected, isConnectable }: NodeProps<MindNodeTy
         </button>
       )}
       <div className="node-topline">
-        <span className={`node-status ${displayStatus}`} />
-        <span>{statusText[displayStatus]}</span>
+        <span className={`node-status-badge ${displayStatus}`}>
+          <span className="node-status-icon" aria-hidden="true">{statusIcon[displayStatus]}</span>
+          <span>{statusText[displayStatus]}</span>
+        </span>
         {Boolean(data.commentCount) && (
           <span className={`node-comments-badge ${data.unresolvedCommentCount ? 'unresolved' : ''}`} title={`댓글 ${data.commentCount}개 · 미해결 스레드 ${data.unresolvedCommentCount ?? 0}개`}>
             <span aria-hidden="true">💬</span>{data.commentCount}

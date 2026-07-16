@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -19,11 +20,12 @@ const distDirectory = path.join(projectDirectory, 'dist')
 const port = Number(process.env.MNP_API_PORT ?? 4176)
 const host = process.env.MNP_API_HOST ?? '127.0.0.1'
 const configuredAionUiBaseUrl = String(process.env.MNP_AIONUI_URL ?? '').trim()
-const aionUiBaseUrls = (configuredAionUiBaseUrl
-  ? [configuredAionUiBaseUrl]
-  : ['http://127.0.0.1:1986', 'http://127.0.0.1:5830'])
-  .map((baseUrl) => baseUrl.replace(/\/+$/, ''))
-let activeAionUiBaseUrl = aionUiBaseUrls[0]
+const configuredAionUiBaseUrls = configuredAionUiBaseUrl ? [configuredAionUiBaseUrl.replace(/\/+$/, '')] : []
+const fallbackAionUiBaseUrls = ['http://127.0.0.1:1986', 'http://127.0.0.1:5830']
+const aionUiDiscoveryFile = path.resolve(
+  String(process.env.MNP_AIONUI_DISCOVERY_FILE ?? '').trim() || path.join(tmpdir(), 'aionui-backend.json'),
+)
+let activeAionUiBaseUrl = configuredAionUiBaseUrls[0] ?? fallbackAionUiBaseUrls[0]
 const sessionDurationMs = 8 * 60 * 60 * 1000
 const rememberedSessionDurationMs = 30 * 24 * 60 * 60 * 1000
 const sessions = new Map()
@@ -83,12 +85,15 @@ let users = seedUsers
 const systemUser = { id: 'system', name: 'Mind & Progress', email: 'system@mind.local', role: 'viewer' }
 const integrationUser = {
   id: 'system-aionui-ai',
-  name: 'AionUi AI',
+  name: 'AI(모델 미지정)',
   email: 'aionui-ai@mind.invalid',
   role: 'editor',
   active: true,
 }
 let integrationToken = ''
+const aiAttributionDurationMs = 8 * 60 * 60 * 1000
+const aiAttributions = new Map()
+const aiConversationLaunches = new Map()
 
 function publicUser(user) {
   return { id: user.id, name: user.name, email: user.email, role: user.role, publicAccess: user.systemManaged === true }
@@ -193,13 +198,26 @@ function sessionTokenKey(token) {
   return createHash('sha256').update(token).digest('hex')
 }
 
+function attributedIntegrationUser(request) {
+  const attributionToken = String(request.headers['x-mnp-ai-attribution'] ?? '').trim()
+  if (!attributionToken) return integrationUser
+  const tokenKey = sessionTokenKey(attributionToken)
+  const attribution = aiAttributions.get(tokenKey)
+  if (!attribution) return null
+  if (attribution.expiresAt <= Date.now()) {
+    aiAttributions.delete(tokenKey)
+    return null
+  }
+  return { ...integrationUser, name: attribution.authorName }
+}
+
 function getCurrentUser(request) {
   const authorization = String(request.headers.authorization ?? '')
   const bearerToken = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : ''
   if (bearerToken && integrationToken) {
     const candidate = Buffer.from(bearerToken)
     const expected = Buffer.from(integrationToken)
-    if (candidate.length === expected.length && timingSafeEqual(candidate, expected)) return integrationUser
+    if (candidate.length === expected.length && timingSafeEqual(candidate, expected)) return attributedIntegrationUser(request)
   }
 
   const token = parseCookies(request).get('mnp_session')
@@ -525,9 +543,35 @@ async function loadIntegrationToken() {
   return token
 }
 
+async function discoverAionUiBaseUrl() {
+  try {
+    const record = JSON.parse(await readFile(aionUiDiscoveryFile, 'utf8'))
+    const port = Number(record?.port)
+    if (record?.schemaVersion !== 1 || record?.host !== '127.0.0.1' || !Number.isInteger(port) || port < 1 || port > 65_535) {
+      return null
+    }
+    return `http://127.0.0.1:${port}`
+  } catch (error) {
+    if (error?.code !== 'ENOENT' && error instanceof SyntaxError === false) {
+      console.warn('[AionUi discovery]', error)
+    }
+    return null
+  }
+}
+
+async function aionUiCandidateBaseUrls() {
+  const discoveredBaseUrl = await discoverAionUiBaseUrl()
+  return [...new Set([
+    ...configuredAionUiBaseUrls,
+    discoveredBaseUrl,
+    activeAionUiBaseUrl,
+    ...fallbackAionUiBaseUrls,
+  ].filter(Boolean))]
+}
+
 async function fetchAionUi(pathname) {
   let lastError = null
-  const candidates = [activeAionUiBaseUrl, ...aionUiBaseUrls.filter((baseUrl) => baseUrl !== activeAionUiBaseUrl)]
+  const candidates = await aionUiCandidateBaseUrls()
   for (const baseUrl of candidates) {
     try {
       const response = await fetch(`${baseUrl}${pathname}`, {
@@ -1251,6 +1295,125 @@ const server = createServer(async (request, response) => {
       const user = requireUser(request, response)
       if (!user) return
       return sendJson(response, 200, { users: users.filter((candidate) => candidate.role === 'editor').map(accountUser) })
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/integrations/aionui/attributions') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 AI 대화를 시작할 수 있습니다.' })
+      const body = await readJsonBody(request)
+      const agentId = String(body.agentId ?? '').trim().slice(0, 120)
+      const modelId = String(body.modelId ?? '').trim().slice(0, 240)
+      const providerId = String(body.providerId ?? '').trim().slice(0, 120)
+      const mapId = String(body.mapId ?? '').trim().slice(0, 120)
+      const cardId = String(body.cardId ?? '').trim().slice(0, 120)
+      if (!agentId || !modelId || !isValidMapId(mapId) || !cardId) {
+        return sendJson(response, 400, { error: 'AI 종류, 모델, 문서와 카드를 모두 지정해 주세요.' })
+      }
+      const map = await readMap(mapId)
+      if (!map || map.trashedAt || !map.nodes.some((node) => node.id === cardId)) {
+        return sendJson(response, 404, { error: 'AI 대화를 시작할 문서 또는 카드를 찾을 수 없습니다.' })
+      }
+
+      try {
+        const [agents, providers] = await Promise.all([
+          fetchAionUi('/api/agents/management'),
+          fetchAionUi('/api/providers'),
+        ])
+        const normalizedAgents = (Array.isArray(agents) ? agents : [])
+          .filter((agent) => agent?.enabled !== false && agent?.installed === true)
+          .map((agent) => normalizeAionUiAgent(agent, Array.isArray(providers) ? providers.filter((item) => item?.enabled !== false) : []))
+        const agent = normalizedAgents.find((candidate) => candidate.id === agentId)
+        const model = agent?.models.find((candidate) => candidate.id === modelId
+          && (!providerId || !candidate.providerId || candidate.providerId === providerId))
+        if (!agent || !model) return sendJson(response, 400, { error: '선택한 AI 종류 또는 모델을 AionUi에서 확인할 수 없습니다.' })
+
+        const agentName = agent.name.replace(/\s+/g, ' ').trim().slice(0, 80) || agent.id
+        const modelName = model.label.replace(/\s+/g, ' ').trim().slice(0, 120) || model.id
+        const authorName = `${agentName}(${modelName})`
+        const attributionToken = randomBytes(32).toString('base64url')
+        const completionToken = randomBytes(32).toString('base64url')
+        const expiresAt = Date.now() + aiAttributionDurationMs
+        for (const [tokenKey, attribution] of aiAttributions) {
+          if (attribution.expiresAt <= Date.now()) aiAttributions.delete(tokenKey)
+        }
+        for (const [tokenKey, launch] of aiConversationLaunches) {
+          if (launch.expiresAt <= Date.now()) aiConversationLaunches.delete(tokenKey)
+        }
+        aiAttributions.set(sessionTokenKey(attributionToken), {
+          authorName,
+          agentId: agent.id,
+          modelId: model.id,
+          providerId: model.providerId ?? null,
+          mapId,
+          cardId,
+          startedBy: user.id,
+          expiresAt,
+        })
+        aiConversationLaunches.set(sessionTokenKey(completionToken), {
+          attributionKey: sessionTokenKey(attributionToken),
+          mapId,
+          cardId,
+          startedBy: user.id,
+          expiresAt,
+        })
+        const completionUrl = `http://127.0.0.1:${port}/api/integrations/aionui/launches/${completionToken}/conversation`
+        return sendJson(response, 201, { attributionToken, completionUrl, authorName, expiresAt })
+      } catch (error) {
+        console.error('[AionUi attribution]', error)
+        return sendJson(response, 503, { error: 'AionUi에서 선택한 AI 정보를 확인할 수 없습니다.' })
+      }
+    }
+
+    const aionUiLaunchCompletionRoute = url.pathname.match(/^\/api\/integrations\/aionui\/launches\/([^/]+)\/conversation$/)
+    if (aionUiLaunchCompletionRoute && request.method === 'POST') {
+      const tokenKey = sessionTokenKey(decodeURIComponent(aionUiLaunchCompletionRoute[1]))
+      const launch = aiConversationLaunches.get(tokenKey)
+      if (!launch || launch.expiresAt <= Date.now()) {
+        aiConversationLaunches.delete(tokenKey)
+        return sendJson(response, 404, { error: 'AI 대화 시작 정보를 찾을 수 없습니다.' })
+      }
+      const body = await readJsonBody(request)
+      const conversationId = String(body.conversationId ?? '').trim()
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(conversationId)) {
+        return sendJson(response, 400, { error: '올바르지 않은 AionUi 대화 ID입니다.' })
+      }
+
+      try {
+        const conversation = await fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}`)
+        if (!conversation || conversation.id !== conversationId) {
+          return sendJson(response, 409, { error: '생성된 AionUi 대화를 확인할 수 없습니다.' })
+        }
+        const map = await readMap(launch.mapId)
+        const targetNode = map?.nodes.find((node) => node.id === launch.cardId)
+        if (!map || map.trashedAt || !targetNode) {
+          aiConversationLaunches.delete(tokenKey)
+          return sendJson(response, 404, { error: 'AI 대화를 연결할 문서 또는 카드를 찾을 수 없습니다.' })
+        }
+        const actor = users.find((candidate) => candidate.id === launch.startedBy) ?? integrationUser
+        const updatedMap = await saveMap(launch.mapId, {
+          nodes: map.nodes.map((node) => node.id === launch.cardId
+            ? { ...node, data: { ...node.data, aiConversationId: conversationId } }
+            : node),
+          edges: map.edges,
+        }, actor, map.title, map.color, 'content')
+        const attribution = aiAttributions.get(launch.attributionKey)
+        if (attribution) attribution.conversationId = conversationId
+        aiConversationLaunches.delete(tokenKey)
+        broadcastEvent({
+          type: 'ai-conversation-linked',
+          mapId: launch.mapId,
+          nodeId: launch.cardId,
+          conversationId,
+          sourceClientId: null,
+          updatedAt: updatedMap.updatedAt,
+          updatedBy: publicUser(actor),
+        })
+        return sendJson(response, 200, { conversationId })
+      } catch (error) {
+        console.error('[AionUi conversation completion]', error)
+        return sendJson(response, 503, { error: '생성된 AionUi 대화를 확인하지 못했습니다.' })
+      }
     }
 
     if (request.method === 'GET' && url.pathname === '/api/integrations/aionui/options') {

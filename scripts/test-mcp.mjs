@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { createServer } from 'node:net'
+import { createServer as createHttpServer } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
 import { access, mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,7 +17,7 @@ if (!testDataDirectory.startsWith(expectedPrefix) || path.basename(testDataDirec
 
 function availablePort() {
   return new Promise((resolve, reject) => {
-    const probe = createServer()
+    const probe = createNetServer()
     probe.once('error', reject)
     probe.listen(0, '127.0.0.1', () => {
       const address = probe.address()
@@ -24,6 +25,57 @@ function availablePort() {
       probe.close((error) => error ? reject(error) : resolve(port))
     })
   })
+}
+
+async function startMockAionUi({
+  agentId = 'agent-claude-test',
+  agentName = 'Claude Code',
+  modelId = 'claude-test-model',
+  modelName = 'Claude Test Model',
+} = {}) {
+  const server = createHttpServer((request, response) => {
+    const send = (data) => {
+      response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ success: true, data }))
+    }
+    if (request.url === '/api/agents/management') {
+      return send([{
+        id: agentId,
+        name: agentName,
+        agent_type: 'acp',
+        backend: 'claude',
+        installed: true,
+        enabled: true,
+        available_models: {
+          current_model_id: modelId,
+          available_models: [{ value: modelId, name: modelName }],
+        },
+      }])
+    }
+    if (request.url === '/api/providers') return send([])
+    if (request.url === '/api/skills') return send([])
+    if (request.url === '/api/mcp/servers') return send([])
+    response.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
+    response.end(JSON.stringify({ success: false, error: 'not found' }))
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  assert.ok(typeof address === 'object' && address, '가짜 AionUi 포트를 할당하지 못했습니다.')
+  return { server, baseUrl: `http://127.0.0.1:${address.port}` }
+}
+
+async function publishMockAionUiDiscovery(discoveryFile, mockAionUi) {
+  const port = Number(new URL(mockAionUi.baseUrl).port)
+  await writeFile(discoveryFile, `${JSON.stringify({
+    schemaVersion: 1,
+    host: '127.0.0.1',
+    port,
+    pid: process.pid,
+    updatedAt: new Date().toISOString(),
+  })}\n`, 'utf8')
 }
 
 async function waitForServer(baseUrl, child, logs) {
@@ -54,12 +106,17 @@ async function main() {
   const port = await availablePort()
   assert.ok(port, '테스트 포트를 할당하지 못했습니다.')
   const apiBaseUrl = `http://127.0.0.1:${port}`
+  let mockAionUi = await startMockAionUi()
+  const aionUiDiscoveryFile = path.join(testDataDirectory, '_aionui-backend.json')
+  await publishMockAionUiDiscovery(aionUiDiscoveryFile, mockAionUi)
   const environment = {
     ...process.env,
     MNP_API_HOST: '127.0.0.1',
     MNP_API_PORT: String(port),
     MNP_API_URL: apiBaseUrl,
     MNP_DATA_DIR: testDataDirectory,
+    MNP_AIONUI_URL: '',
+    MNP_AIONUI_DISCOVERY_FILE: aionUiDiscoveryFile,
     MNP_ADMIN_EMAIL: 'mcp-test-admin@mind.local',
     MNP_ADMIN_PASSWORD: 'McpTest!2026',
   }
@@ -129,9 +186,48 @@ async function main() {
 
     let documentResult = await invoke('mindnprogress_get_document', { mapId })
     assert.equal(documentResult.map.nodes.length, 4)
-    const context = await invoke('mindnprogress_get_context', { mapId, cardId: 'task-a' })
+    const loginResponse = await fetch(`${apiBaseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'mcp-test-admin@mind.local', password: 'McpTest!2026' }),
+    })
+    assert.equal(loginResponse.status, 200)
+    const sessionCookie = loginResponse.headers.get('set-cookie')?.split(';')[0]
+    assert.ok(sessionCookie, '테스트 관리자 세션 쿠키가 없습니다.')
+    const attributionResponse = await fetch(`${apiBaseUrl}/api/integrations/aionui/attributions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: sessionCookie },
+      body: JSON.stringify({
+        agentId: 'agent-claude-test',
+        modelId: 'claude-test-model',
+        mapId,
+        cardId: 'task-a',
+      }),
+    })
+    assert.equal(attributionResponse.status, 201)
+    const attribution = await attributionResponse.json()
+    assert.equal(attribution.authorName, 'Claude Code(Claude Test Model)')
+    assert.ok(attribution.attributionToken)
+
+    const context = await invoke('mindnprogress_get_context', { mapId, cardId: 'task-a', attributionToken: attribution.attributionToken })
     assert.equal(context.selection.card.id, 'task-a')
     assert.equal(context.selection.taskLinks.available.length, 2)
+
+    await new Promise((resolve) => mockAionUi.server.close(resolve))
+    mockAionUi = await startMockAionUi({
+      agentId: 'agent-codex-restarted',
+      agentName: 'Codex',
+      modelId: 'gpt-restarted',
+      modelName: 'GPT Restarted',
+    })
+    await publishMockAionUiDiscovery(aionUiDiscoveryFile, mockAionUi)
+    const restartedOptionsResponse = await fetch(`${apiBaseUrl}/api/integrations/aionui/options`, {
+      headers: { Cookie: sessionCookie },
+    })
+    assert.equal(restartedOptionsResponse.status, 200)
+    const restartedOptions = await restartedOptionsResponse.json()
+    assert.equal(restartedOptions.aionUiUrl, mockAionUi.baseUrl)
+    assert.equal(restartedOptions.agents[0].id, 'agent-codex-restarted')
 
     const users = await invoke('mindnprogress_list_users')
     assert.ok(Array.isArray(users.users))
@@ -194,6 +290,7 @@ async function main() {
     const commentWithFailedNotification = await invoke('mindnprogress_add_comment', {
       mapId, nodeId: 'root', text: '알림 실패와 무관하게 한 번만 생성되어야 합니다.',
     })
+    assert.equal(commentWithFailedNotification.comment.author.name, 'Claude Code(Claude Test Model)')
     let commentList = await invoke('mindnprogress_list_comments', { mapId, nodeId: 'root' })
     assert.equal(commentList.comments.filter((comment) => comment.id === commentWithFailedNotification.comment.id).length, 1)
     const deletedWithFailedNotification = await invoke('mindnprogress_delete_comment', {
@@ -322,6 +419,7 @@ async function main() {
       apiServer.kill()
       await new Promise((resolve) => apiServer.once('exit', resolve))
     }
+    await new Promise((resolve) => mockAionUi.server.close(resolve))
     await rm(testDataDirectory, { recursive: true, force: true })
   }
 }

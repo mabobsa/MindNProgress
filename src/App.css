@@ -271,6 +271,8 @@
 .inspector-header span { color: #aaa5b1; font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
 .inspector-header strong { color: #35303c; font-size: 13px; }
 .inspector-header .inspector-header-actions { display: flex; flex-direction: row; align-items: center; gap: 4px; }
+.inspector-header .node-link-copy-button.copied { color: #2f9b76; background: #eaf8f2; }
+.inspector-header .node-link-copy-button.failed { color: #c55353; background: #fceeee; }
 .inspector-header .ai-conversation-button { display: flex; align-items: center; gap: 5px; padding: 7px 8px; color: #5d50ca; border: 1px solid #dedaf3; background: #f5f3fd; }
 .inspector-header .ai-conversation-button:hover { border-color: #c8c1ef; background: #ece9fb; }
 .inspector-header .ai-conversation-button span { color: inherit; font-size: 9px; font-weight: 800; letter-spacing: 0; text-transform: none; white-space: nowrap; }

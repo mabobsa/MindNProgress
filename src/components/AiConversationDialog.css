@@ -26,6 +26,7 @@
 .ai-dialog-message { min-height: 260px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 30px; color: #777080; font-size: 11px; text-align: center; }
 .ai-dialog-message.error strong { color: #b64e58; font-size: 14px; }
 .ai-dialog-message.error small { color: #9b949f; }
+.ai-launch-error { padding: 9px 11px; color: #a94750; border: 1px solid #efcdd1; border-radius: 8px; background: #fff3f4; font-size: 9px; line-height: 1.45; }
 .ai-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 20px; border-top: 1px solid #ece9f1; background: #faf9fb; }
 .ai-dialog > footer > span { color: #938c99; font-size: 9px; }
 .ai-dialog > footer > div { display: flex; gap: 8px; }

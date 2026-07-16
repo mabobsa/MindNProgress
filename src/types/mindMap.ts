@@ -19,6 +19,7 @@ export type MindNodeData = {
   status: 'planned' | 'in-progress' | 'done'
   kind: 'root' | 'branch' | 'task'
   taskUrl?: string
+  aiConversationId?: string
   isWork?: boolean
   assigneeId?: string
   assignee?: TeamMember

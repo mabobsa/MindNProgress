@@ -43,6 +43,12 @@ const DOCUMENT_COLORS = [
   { id: 'red', label: '빨강', solid: '#d86161', halo: '#f8dddd' },
   { id: 'pink', label: '분홍', solid: '#cc62a0', halo: '#f6deeb' },
 ] as const
+function synchronizeNodeSelection(nodes: MindMapNode[], selectedId: string | null) {
+  return nodes.map((node) => {
+    const selected = node.id === selectedId
+    return Boolean(node.selected) === selected ? node : { ...node, selected }
+  })
+}
 const CLIENT_ID_KEY = 'mindnprogress-client-id'
 const LAST_LOGIN_EMAIL_KEY = 'mindnprogress-last-login-email'
 const CLIENT_ID = sessionStorage.getItem(CLIENT_ID_KEY) ?? crypto.randomUUID()
@@ -139,6 +145,74 @@ type AccessMode = 'editor' | 'viewer'
 type UserRole = 'admin' | AccessMode
 type ViewMode = 'mindmap' | 'kanban' | 'timeline' | 'dashboard'
 type NodeFilter = 'all' | 'work' | 'planned' | 'in-progress' | 'done' | 'blocked'
+
+type WorkspaceDeepLink = {
+  viewMode: ViewMode
+  mapId: string | null
+  nodeId: string | null
+}
+
+const VIEW_MODE_PATHS: Record<string, ViewMode> = {
+  mindmap: 'mindmap',
+  kanban: 'kanban',
+  timeline: 'timeline',
+  dashboard: 'dashboard',
+  '마인드맵': 'mindmap',
+  '칸반': 'kanban',
+  '타임라인': 'timeline',
+  '대시보드': 'dashboard',
+}
+
+function decodePathSegment(segment: string | undefined) {
+  if (!segment) return null
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return null
+  }
+}
+
+function parseWorkspaceDeepLink(pathname: string): WorkspaceDeepLink | null {
+  const segments = pathname.replace(/^\/+|\/+$/g, '').split('/')
+  const tab = decodePathSegment(segments[0])
+  const viewMode = tab ? VIEW_MODE_PATHS[tab.toLowerCase()] : undefined
+  if (!viewMode) return null
+  return {
+    viewMode,
+    mapId: decodePathSegment(segments[1]),
+    nodeId: decodePathSegment(segments[2]),
+  }
+}
+
+function canSelectNodeInView(node: MindMapNode, viewMode: ViewMode) {
+  return viewMode === 'mindmap' || Boolean(node.data.isWork)
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      // 권한이 제한된 브라우저에서는 선택 영역 복사 방식으로 다시 시도합니다.
+    }
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } finally {
+    textarea.remove()
+  }
+  if (!copied) throw new Error('클립보드 복사를 지원하지 않는 브라우저입니다.')
+}
 
 type AuthUser = {
   id: string
@@ -264,6 +338,15 @@ type CommentChangeEvent = {
   action: 'created' | 'updated' | 'deleted'
   comment?: NodeComment
   commentIds?: string[]
+}
+type AiConversationLinkedEvent = {
+  type: 'ai-conversation-linked'
+  mapId: string
+  nodeId: string
+  conversationId: string
+  sourceClientId: null
+  updatedAt: string
+  updatedBy: AuthUser
 }
 type NotificationEvent = { type: 'notification'; notification: UserNotification }
 type NotificationsReadEvent = { type: 'notifications-read'; userId: string; notificationId: string | null; readAt: string }
@@ -700,7 +783,7 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) =>
           <button ref={loginButtonRef} className="login-submit" type="submit" disabled={submitting}>
             {submitting ? '확인 중…' : '로그인'}
           </button>
-          <a className="viewer-entry-link" href="/viewer"><Icon name="external" size={13} /><span>읽기 전용으로 바로 보기</span></a>
+          <a className="viewer-entry-link" href="/mindmap/"><Icon name="external" size={13} /><span>읽기 전용으로 바로 보기</span></a>
         </form>
       </section>
     </main>
@@ -800,7 +883,7 @@ function PasswordChangeDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
-function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
+function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogout: () => void; initialDeepLink: WorkspaceDeepLink | null }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<MindMapNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<MindMapEdge>([])
   const { canUndo, canRedo, undo, redo, resetHistory, beginTransaction: beginHistoryTransaction, endTransaction: endHistoryTransaction } = useMapHistory(nodes, setNodes, edges, setEdges)
@@ -810,7 +893,8 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false)
   const [aiDialogOpen, setAiDialogOpen] = useState(false)
-  const [viewMode, setViewMode] = useState<ViewMode>('mindmap')
+  const [nodeLinkCopyStatus, setNodeLinkCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [viewMode, setViewMode] = useState<ViewMode>(initialDeepLink?.viewMode ?? 'mindmap')
   const [documents, setDocuments] = useState<MapSummary[]>([])
   const [trashedDocuments, setTrashedDocuments] = useState<MapSummary[]>([])
   const [selectedTrashIds, setSelectedTrashIds] = useState<Set<string>>(() => new Set())
@@ -881,7 +965,10 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const suppressNodeContextMenuUntil = useRef(0)
   const serverBaseline = useRef<MapDocument | null>(null)
   const cursorSendAt = useRef(0)
+  const nodeLinkCopyTimer = useRef<number | null>(null)
   const pendingSelection = useRef<string | null>(null)
+  const pendingDeepLink = useRef(initialDeepLink)
+  const lastLoadedMapId = useRef<string | null>(null)
   const selectedIdRef = useRef<string | null>(selectedId)
   selectedIdRef.current = selectedId
   const { fitView, screenToFlowPosition, setCenter, setViewport } = useReactFlow<MindMapNode, MindMapEdge>()
@@ -1088,7 +1175,19 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
         setTrashedDocuments(trash)
         if (maps.length > 0) {
           setDocuments(maps)
-          setActiveMapId(maps[0].id)
+          const deepLink = pendingDeepLink.current
+          const requestedDocument = deepLink?.mapId
+            ? maps.find((map) => map.id === deepLink.mapId) ?? null
+            : null
+          const targetDocument = requestedDocument ?? maps[0]
+          if (deepLink) {
+            pendingDeepLink.current = {
+              ...deepLink,
+              mapId: targetDocument.id,
+              nodeId: requestedDocument ? deepLink.nodeId : null,
+            }
+          }
+          setActiveMapId(targetDocument.id)
           return
         }
 
@@ -1157,7 +1256,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     const eventSource = new EventSource(`/api/events?clientId=${encodeURIComponent(CLIENT_ID)}&mapId=${encodeURIComponent(activeMapId)}`)
     eventSource.onmessage = (message) => {
       try {
-        const event = JSON.parse(message.data) as MapChangeEvent | PresenceEvent | CursorEvent | CommentChangeEvent | NotificationEvent | NotificationsReadEvent | NotificationsRemovedEvent | { type: 'connected' }
+        const event = JSON.parse(message.data) as MapChangeEvent | PresenceEvent | CursorEvent | CommentChangeEvent | AiConversationLinkedEvent | NotificationEvent | NotificationsReadEvent | NotificationsRemovedEvent | { type: 'connected' }
         if (event.type === 'presence') {
           if (event.mapId === activeMapId) setPresenceClients(event.clients)
           return
@@ -1180,6 +1279,21 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
           } else if (event.action === 'deleted' && event.commentIds) {
             setComments((current) => current.filter((comment) => !event.commentIds?.includes(comment.id)))
           }
+          return
+        }
+        if (event.type === 'ai-conversation-linked') {
+          if (event.mapId !== activeMapId) return
+          setNodes((current) => current.map((node) => node.id === event.nodeId
+            ? { ...node, data: { ...node.data, aiConversationId: event.conversationId } }
+            : node))
+          void apiRequest<{ map: MapDocument }>(`/api/maps/${encodeURIComponent(activeMapId)}`)
+            .then(({ map }) => {
+              serverBaseline.current = structuredClone(map)
+              setDocuments((current) => current.map((document) => document.id === map.id
+                ? { ...document, version: map.version, updatedAt: map.updatedAt, updatedBy: map.updatedBy }
+                : document))
+            })
+            .catch(() => undefined)
           return
         }
         if (event.type === 'notification') {
@@ -1225,7 +1339,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
       }
     }
     return () => eventSource.close()
-  }, [activeMapId, mode, user.id])
+  }, [activeMapId, mode, setNodes, user.id])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1245,14 +1359,33 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     void apiRequest<{ map: MapDocument }>(`/api/maps/${encodeURIComponent(activeMapId)}`)
       .then(({ map }) => {
         if (!active) return
+        const deepLink = pendingDeepLink.current
+        const deepLinkTargetsMap = deepLink?.mapId === map.id
+        const requestedNode = deepLink?.mapId === map.id && deepLink.nodeId
+          ? map.nodes.find((node) => node.id === deepLink.nodeId) ?? null
+          : null
+        const deepLinkedNodeId = requestedNode && deepLink && canSelectNodeInView(requestedNode, deepLink.viewMode)
+          ? requestedNode.id
+          : null
+        const retainedNodeId = lastLoadedMapId.current === map.id ? selectedIdRef.current : null
+        const requestedNodeId = pendingSelection.current ?? retainedNodeId
+        const nextSelectedId = deepLinkTargetsMap
+          ? deepLinkedNodeId
+          : requestedNodeId && map.nodes.some((node) => node.id === requestedNodeId)
+            ? requestedNodeId
+            : map.nodes[0]?.id ?? null
+        const loadedNodes = synchronizeNodeSelection(map.nodes, nextSelectedId)
         serverBaseline.current = structuredClone(map)
-        resetHistory(map.nodes, map.edges)
-        setNodes(map.nodes)
+        resetHistory(loadedNodes, map.edges)
+        setNodes(loadedNodes)
         setEdges(map.edges)
-        const requestedNodeId = pendingSelection.current
-        setSelectedId(requestedNodeId && map.nodes.some((node) => node.id === requestedNodeId) ? requestedNodeId : map.nodes[0]?.id ?? null)
+        setSelectedId(nextSelectedId)
+        if (deepLinkTargetsMap) {
+          pendingDeepLink.current = null
+        }
         pendingSelection.current = null
-        localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify({ nodes: map.nodes, edges: map.edges }))
+        lastLoadedMapId.current = map.id
+        localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify({ nodes: loadedNodes, edges: map.edges }))
         setDocuments((current) => current.map((document) => document.id === map.id
           ? { ...document, title: map.title, color: map.color, nodeCount: map.nodes.length }
           : document))
@@ -1266,10 +1399,17 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
         if (!active) return
         const localMap = readSavedMap(activeMapId)
         if (localMap) {
+          const retainedNodeId = lastLoadedMapId.current === activeMapId ? selectedIdRef.current : null
+          const nextSelectedId = retainedNodeId && localMap.nodes.some((node) => node.id === retainedNodeId)
+            ? retainedNodeId
+            : localMap.nodes[0]?.id ?? null
+          const loadedNodes = synchronizeNodeSelection(localMap.nodes, nextSelectedId)
           serverBaseline.current = null
-          resetHistory(localMap.nodes, localMap.edges)
-          setNodes(localMap.nodes)
+          resetHistory(loadedNodes, localMap.edges)
+          setNodes(loadedNodes)
           setEdges(localMap.edges)
+          setSelectedId(nextSelectedId)
+          lastLoadedMapId.current = activeMapId
           setLoadedMapId(activeMapId)
           setSavedAt('로컬 백업 사용 중')
         }
@@ -1359,6 +1499,11 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     )))
     setSavedAt('저장 중…')
   }, [setNodes])
+
+  const openAiConversation = (conversationId: string) => {
+    const route = encodeURIComponent(`/conversation/${conversationId}`)
+    window.location.href = `aionui://navigate?route=${route}`
+  }
 
   const applyChecklist = (items: ChecklistItem[]) => {
     if (!selectedNode) return
@@ -1681,6 +1826,14 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     setNodeContextMenu(null)
     setDocumentContextMenu(null)
   }, [activeMapId, viewMode])
+
+  useEffect(() => {
+    setNodeLinkCopyStatus('idle')
+    if (nodeLinkCopyTimer.current !== null) window.clearTimeout(nodeLinkCopyTimer.current)
+    return () => {
+      if (nodeLinkCopyTimer.current !== null) window.clearTimeout(nodeLinkCopyTimer.current)
+    }
+  }, [activeMapId, selectedId, viewMode])
 
   useEffect(() => {
     setHistoryOpen(false)
@@ -2110,6 +2263,19 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     else setActiveMapId(notification.mapId)
   }
 
+  const copySelectedNodeLink = async () => {
+    if (!activeMapId || !selectedId) return
+    const path = [viewMode, activeMapId, selectedId].map((segment) => encodeURIComponent(segment)).join('/')
+    try {
+      await copyTextToClipboard(`${window.location.origin}/${path}`)
+      setNodeLinkCopyStatus('copied')
+    } catch {
+      setNodeLinkCopyStatus('failed')
+    }
+    if (nodeLinkCopyTimer.current !== null) window.clearTimeout(nodeLinkCopyTimer.current)
+    nodeLinkCopyTimer.current = window.setTimeout(() => setNodeLinkCopyStatus('idle'), 1_800)
+  }
+
   const markAllNotificationsRead = async () => {
     const readAt = new Date().toISOString()
     setNotifications((current) => current.map((notification) => ({ ...notification, readAt: notification.readAt ?? readAt })))
@@ -2124,6 +2290,10 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
 
   const onSelectionChange = useCallback(({ nodes: selected }: OnSelectionChangeParams<MindMapNode, MindMapEdge>) => {
     setSelectedId(selected[0]?.id ?? null)
+  }, [])
+
+  const onNodeClick = useCallback((_event: ReactMouseEvent, node: MindMapNode) => {
+    setSelectedId(node.id)
   }, [])
 
   const onNodeDragStart = useCallback((_event: MouseEvent | TouchEvent, draggedNode: MindMapNode) => {
@@ -2304,6 +2474,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
               key={id}
               className={viewMode === id ? 'active' : ''}
               onClick={() => {
+                if (id !== 'mindmap' && selectedNode && !selectedNode.data.isWork) setSelectedId(null)
                 setViewMode(id)
                 if (id === 'mindmap') window.setTimeout(() => fitView({ padding: 0.2, duration: 400 }), 0)
               }}
@@ -2560,6 +2731,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
             onNodeDragStart={onNodeDragStart}
             onNodeDrag={onNodeDrag}
             onNodeDragStop={onNodeDragStop}
+            onNodeClick={onNodeClick}
             onSelectionChange={onSelectionChange}
             onPaneClick={() => { setSelectedId(null); setNodeContextMenu(null) }}
             onPaneContextMenu={(event) => event.preventDefault()}
@@ -2749,7 +2921,19 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
               <div className="inspector-header">
                 <div><span>선택한 항목</span><strong>세부 정보</strong></div>
                 <div className="inspector-header-actions">
-                  {mode === 'editor' && <button className="ai-conversation-button" onClick={() => setAiDialogOpen(true)}><Icon name="sparkles" size={15} /><span>AI 대화 시작</span></button>}
+                  <button
+                    className={`node-link-copy-button ${nodeLinkCopyStatus}`}
+                    onClick={() => { void copySelectedNodeLink() }}
+                    aria-label={nodeLinkCopyStatus === 'copied' ? '노드 링크 복사됨' : nodeLinkCopyStatus === 'failed' ? '노드 링크 복사 실패' : '노드 링크 복사'}
+                    title={nodeLinkCopyStatus === 'copied' ? '링크가 복사되었습니다' : nodeLinkCopyStatus === 'failed' ? '링크를 복사하지 못했습니다' : '현재 탭의 노드 링크 복사'}
+                  >
+                    <Icon name={nodeLinkCopyStatus === 'copied' ? 'check' : 'copy'} size={15} />
+                  </button>
+                  {mode === 'editor' && (selectedNode.data.aiConversationId ? (
+                    <button className="ai-conversation-button" onClick={() => openAiConversation(selectedNode.data.aiConversationId as string)}><Icon name="sparkles" size={15} /><span>AI 대화 선택</span></button>
+                  ) : (
+                    <button className="ai-conversation-button" onClick={() => setAiDialogOpen(true)}><Icon name="sparkles" size={15} /><span>AI 대화 시작</span></button>
+                  ))}
                   <button onClick={() => setSelectedId(null)} aria-label="닫기"><Icon name="close" size={17} /></button>
                 </div>
               </div>
@@ -3245,23 +3429,29 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
 }
 
 function App() {
-  const viewerEntry = window.location.pathname.replace(/\/+$/, '') === '/viewer'
+  const deepLink = parseWorkspaceDeepLink(window.location.pathname)
+  const deepLinkEntry = deepLink !== null
   const [user, setUser] = useState<AuthUser | null>(null)
   const [checkingSession, setCheckingSession] = useState(true)
 
   useEffect(() => {
-    void apiRequest<{ user: AuthUser | null }>(viewerEntry ? '/api/auth/viewer-access' : '/api/auth/me', viewerEntry ? { method: 'POST' } : undefined)
-      .then((result) => setUser(result.user))
+    void apiRequest<{ user: AuthUser | null }>('/api/auth/me')
+      .then(async (result) => {
+        if (result.user || !deepLinkEntry) return result.user
+        const viewerResult = await apiRequest<{ user: AuthUser }>('/api/auth/viewer-access', { method: 'POST' })
+        return viewerResult.user
+      })
+      .then((authenticatedUser) => setUser(authenticatedUser))
       .catch(() => setUser(null))
       .finally(() => setCheckingSession(false))
-  }, [viewerEntry])
+  }, [deepLinkEntry])
 
   const logout = async () => {
     try {
       await apiRequest('/api/auth/logout', { method: 'POST' })
     } finally {
       setUser(null)
-      if (viewerEntry) window.location.replace('/')
+      if (deepLinkEntry) window.location.replace('/')
     }
   }
 
@@ -3269,7 +3459,7 @@ function App() {
     return (
       <div className="session-loading">
         <div className="login-brand"><Icon name="map" size={27} /></div>
-        <span>{viewerEntry ? '읽기 전용 화면으로 연결 중…' : '워크스페이스 확인 중…'}</span>
+        <span>{deepLinkEntry ? '공유 화면으로 연결 중…' : '워크스페이스 확인 중…'}</span>
       </div>
     )
   }
@@ -3278,7 +3468,7 @@ function App() {
 
   return (
     <ReactFlowProvider>
-      <Workspace user={user} onLogout={() => { void logout() }} />
+      <Workspace user={user} onLogout={() => { void logout() }} initialDeepLink={deepLink} />
     </ReactFlowProvider>
   )
 }

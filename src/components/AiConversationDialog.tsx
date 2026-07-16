@@ -47,7 +47,9 @@ export function AiConversationDialog({ documentId, documentTitle, cardId, cardTi
 }) {
   const [options, setOptions] = useState<AionOptions | null>(null)
   const [loading, setLoading] = useState(true)
+  const [launching, setLaunching] = useState(false)
   const [error, setError] = useState('')
+  const [launchError, setLaunchError] = useState('')
   const [request, setRequest] = useState('이 카드의 내용을 검토하고 다음에 수행할 작업을 제안해 주세요.')
   const [agentId, setAgentId] = useState('')
   const [modelId, setModelId] = useState('')
@@ -112,26 +114,51 @@ export function AiConversationDialog({ documentId, documentTitle, cardId, cardTi
     localStorage.setItem(workspaceStorageKey(documentId), value)
   }
 
-  const launch = () => {
+  const launch = async () => {
     if (!options || !selectedAgent || !modelId || !request.trim()) return
-    const prompt = `# MindNProgress 작업 요청\n\n가장 먼저 MindNProgress MCP 도구 \`mindnprogress_get_context\`를 아래 ID로 한 번 호출하세요. 이 도구가 MindNProgress의 제품 개념과 작성 규칙, 최신 문서 구조, 선택 카드 정보를 함께 제공합니다. 프롬프트에는 카드 스냅샷이 포함되어 있지 않으므로 반드시 MCP 조회 결과를 기준으로 답변하고 필요한 작업을 수행해야 합니다.\n\n- documentId: \`${documentId}\`\n- cardId: \`${cardId}\`\n\nMCP 조회 후 \`selection.taskLinks.startupInspection\`을 반드시 확인하세요. \`required\`가 true이면 실제 작업을 시작하기 전에 \`targets\`의 업무 링크를 모두 조사하여 업무 제목, 본문, 댓글, 첨부파일 목록과 관련 링크를 확인하세요. 상위 업무에 기획서나 첨부파일이 있다고 가정하지 말고, 본문이나 댓글에 요구사항만 간략하게 작성되어 있을 가능성도 고려해야 합니다. 선택 카드와 최상위 카드 링크가 모두 있으면 두 업무를 모두 조사하고 같은 URL은 한 번만 조회하세요. 조사 가능한 업무 링크를 확인하기 전에 사용자에게 파일 경로나 추가 설명을 먼저 요청하지 마세요. 업무 링크가 없거나 외부 업무 시스템을 조회할 도구가 없으면 그 사실을 알리고, 확인된 MindNProgress 카드 정보만으로 가능한 작업은 계속 진행하세요.\n\nMCP 도구를 사용할 수 없거나 해당 문서 또는 카드를 찾지 못하면 임의로 추측하지 말고 그 사실을 알려주세요. 새 문서에 여러 카드로 구성된 마인드맵을 만들 때는 \`mindnprogress_create_document\`와 \`mindnprogress_save_document\`를 연속 호출하지 말고, \`mindnprogress_create_mindmap\`을 한 번만 호출하세요.\n\n# 편집자 요청\n\n${request.trim()}`
-    const launchPayload = {
-      agentId: selectedAgent.id,
-      title: `${documentTitle}: ${cardTitle}`.replace(/\s+/g, ' ').trim().slice(0, 120),
-      prompt,
-      modelId,
-      providerId: selectedModel?.providerId,
-      mode: mode || undefined,
-      thoughtLevel: thoughtLevel || undefined,
-      enabledSkillIds: options.skills.filter((skill) => !skill.autoInject && selectedSkillIds.has(skill.id)).map((skill) => skill.id),
-      disabledBuiltinSkillIds: options.skills.filter((skill) => skill.autoInject && !selectedSkillIds.has(skill.id)).map((skill) => skill.id),
-      mcpIds: options.mcpServers.filter((server) => server.required || selectedMcpIds.has(server.id)).map((server) => server.id),
-      workspace: workspace.trim() || undefined,
-      autoSend: true,
+    setLaunching(true)
+    setLaunchError('')
+    try {
+      const attributionResponse = await fetch('/api/integrations/aionui/attributions', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agentId: selectedAgent.id,
+          modelId,
+          providerId: selectedModel?.providerId,
+          mapId: documentId,
+          cardId,
+        }),
+      })
+      const attribution = await attributionResponse.json().catch(() => ({})) as { attributionToken?: string; completionUrl?: string; error?: string }
+      if (!attributionResponse.ok || !attribution.attributionToken || !attribution.completionUrl) {
+        throw new Error(attribution.error ?? 'AI 작성자 정보를 준비하지 못했습니다.')
+      }
+      const prompt = `# MindNProgress 작업 요청\n\n가장 먼저 MindNProgress MCP 도구 \`mindnprogress_get_context\`를 아래 값으로 한 번 호출하세요. \`attributionToken\`은 댓글과 변경 이력에 현재 AI 종류와 모델을 정확히 기록하기 위한 값이므로 생략하거나 변경하지 마세요. 이 도구가 MindNProgress의 제품 개념과 작성 규칙, 최신 문서 구조, 선택 카드 정보를 함께 제공합니다. 프롬프트에는 카드 스냅샷이 포함되어 있지 않으므로 반드시 MCP 조회 결과를 기준으로 답변하고 필요한 작업을 수행해야 합니다.\n\n- mapId: \`${documentId}\`\n- cardId: \`${cardId}\`\n- attributionToken: \`${attribution.attributionToken}\`\n\nMCP 조회 후 \`selection.taskLinks.startupInspection\`을 반드시 확인하세요. \`required\`가 true이면 실제 작업을 시작하기 전에 \`targets\`의 업무 링크를 모두 조사하여 업무 제목, 본문, 댓글, 첨부파일 목록과 관련 링크를 확인하세요. 상위 업무에 기획서나 첨부파일이 있다고 가정하지 말고, 본문이나 댓글에 요구사항만 간략하게 작성되어 있을 가능성도 고려해야 합니다. 선택 카드와 최상위 카드 링크가 모두 있으면 두 업무를 모두 조사하고 같은 URL은 한 번만 조회하세요. 조사 가능한 업무 링크를 확인하기 전에 사용자에게 파일 경로나 추가 설명을 먼저 요청하지 마세요. 업무 링크가 없거나 외부 업무 시스템을 조회할 도구가 없으면 그 사실을 알리고, 확인된 MindNProgress 카드 정보만으로 가능한 작업은 계속 진행하세요.\n\nMCP 도구를 사용할 수 없거나 해당 문서 또는 카드를 찾지 못하면 임의로 추측하지 말고 그 사실을 알려주세요. 새 문서에 여러 카드로 구성된 마인드맵을 만들 때는 \`mindnprogress_create_document\`와 \`mindnprogress_save_document\`를 연속 호출하지 말고, \`mindnprogress_create_mindmap\`을 한 번만 호출하세요.\n\n# 편집자 요청\n\n${request.trim()}`
+      const launchPayload = {
+        agentId: selectedAgent.id,
+        completionUrl: attribution.completionUrl,
+        title: `${documentTitle}: ${cardTitle}`.replace(/\s+/g, ' ').trim().slice(0, 120),
+        prompt,
+        modelId,
+        providerId: selectedModel?.providerId,
+        mode: mode || undefined,
+        thoughtLevel: thoughtLevel || undefined,
+        enabledSkillIds: options.skills.filter((skill) => !skill.autoInject && selectedSkillIds.has(skill.id)).map((skill) => skill.id),
+        disabledBuiltinSkillIds: options.skills.filter((skill) => skill.autoInject && !selectedSkillIds.has(skill.id)).map((skill) => skill.id),
+        mcpIds: options.mcpServers.filter((server) => server.required || selectedMcpIds.has(server.id)).map((server) => server.id),
+        workspace: workspace.trim() || undefined,
+        autoSend: true,
+      }
+      const data = encodeURIComponent(encodeBase64Json({ payload: JSON.stringify(launchPayload) }))
+      window.location.href = `${options.protocol}?v=1&data=${data}`
+      onClose()
+    } catch (launchFailure) {
+      setLaunchError(launchFailure instanceof Error ? launchFailure.message : 'AI 대화를 시작하지 못했습니다.')
+    } finally {
+      setLaunching(false)
     }
-    const data = encodeURIComponent(encodeBase64Json({ payload: JSON.stringify(launchPayload) }))
-    window.location.href = `${options.protocol}?v=1&data=${data}`
-    onClose()
   }
 
   return (
@@ -161,9 +188,10 @@ export function AiConversationDialog({ documentId, documentTitle, cardId, cardTi
               <summary>MCP 도구 <b>{options.mcpServers.filter((server) => server.required || selectedMcpIds.has(server.id)).length}</b></summary>
               <div className="ai-capability-list">{options.mcpServers.map((server) => <label key={server.id} title={server.description}><input type="checkbox" checked={server.required || selectedMcpIds.has(server.id)} disabled={server.required} onChange={() => toggleSelection(setSelectedMcpIds, server.id)} /><span><strong>{server.name}{server.required ? ' · 필수' : ''}</strong><small>{server.toolCount > 0 ? `${server.toolCount}개 도구` : server.description || '도구 정보 없음'}</small></span></label>)}</div>
             </details>
+            {launchError && <div className="ai-launch-error" role="alert">{launchError}</div>}
           </div>
         )}
-        <footer><span>응답은 AionUi에서만 처리됩니다.</span><div><button type="button" onClick={onClose}>취소</button><button type="button" className="primary" onClick={launch} disabled={loading || Boolean(error) || !selectedAgent || !modelId || !request.trim()}>AionUi에서 시작</button></div></footer>
+        <footer><span>응답은 AionUi에서만 처리됩니다.</span><div><button type="button" onClick={onClose}>취소</button><button type="button" className="primary" onClick={() => { void launch() }} disabled={loading || launching || Boolean(error) || !selectedAgent || !modelId || !request.trim()}>{launching ? '준비 중…' : 'AionUi에서 시작'}</button></div></footer>
       </section>
     </div>
   )

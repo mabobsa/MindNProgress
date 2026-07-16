@@ -8,6 +8,7 @@ import './WorkViews.css'
 type WorkNode = Node<MindNodeData, 'mind'>
 type AccessMode = 'editor' | 'viewer'
 type WorkStatus = MindNodeData['status']
+type DashboardMetric = 'all' | 'done' | 'in-progress' | 'overdue' | 'blocked'
 
 type WorkViewProps = {
   nodes: WorkNode[]
@@ -213,7 +214,8 @@ export function TimelineView({ nodes, selectedId, onSelect, onOpenMindMap, onCon
   )
 }
 
-export function DashboardView({ nodes, onSelect, onOpenMindMap, onContextMenu, teamMembers }: WorkViewProps) {
+export function DashboardView({ nodes, selectedId, onSelect, onOpenMindMap, onContextMenu, teamMembers }: WorkViewProps) {
+  const [selectedMetric, setSelectedMetric] = useState<DashboardMetric | null>(null)
   const workNodes = nodes.filter((node) => node.data.isWork)
   const metrics = useMemo(() => {
     const completed = workNodes.filter((node) => effectiveStatus(node) === 'done').length
@@ -231,6 +233,23 @@ export function DashboardView({ nodes, onSelect, onOpenMindMap, onContextMenu, t
     .filter((node) => effectiveStatus(node) !== 'done')
     .sort((first, second) => (first.data.dueDate ?? '9999').localeCompare(second.data.dueDate ?? '9999'))
     .slice(0, 5)
+  const metricCards: { id: DashboardMetric; label: string; value: number; description: string; className?: string }[] = [
+    { id: 'all', label: '전체 업무', value: workNodes.length, description: '현재 문서 기준' },
+    { id: 'done', label: '완료', value: metrics.completed, description: `${Math.round(metrics.completed / workNodes.length * 100)}% 완료`, className: 'green' },
+    { id: 'in-progress', label: '진행 중', value: metrics.inProgress, description: '실행 중인 업무', className: 'violet' },
+    { id: 'overdue', label: '기한 초과', value: metrics.overdue, description: '확인이 필요합니다', className: metrics.overdue ? 'red' : undefined },
+    { id: 'blocked', label: '차단됨', value: metrics.blocked, description: '선행 업무 대기', className: metrics.blocked ? 'blocked-metric' : undefined },
+  ]
+  const selectedMetricCard = metricCards.find((metric) => metric.id === selectedMetric) ?? null
+  const selectedMetricNodes = selectedMetric === 'done'
+    ? workNodes.filter((node) => effectiveStatus(node) === 'done')
+    : selectedMetric === 'in-progress'
+      ? workNodes.filter((node) => effectiveStatus(node) === 'in-progress')
+      : selectedMetric === 'overdue'
+        ? workNodes.filter(isOverdue)
+        : selectedMetric === 'blocked'
+          ? workNodes.filter((node) => blockingNodes(node, nodes).length > 0)
+          : selectedMetric === 'all' ? workNodes : []
 
   return (
     <div className="dashboard-view">
@@ -239,11 +258,17 @@ export function DashboardView({ nodes, onSelect, onOpenMindMap, onContextMenu, t
         <strong>실시간 집계</strong>
       </header>
       <div className="metric-grid">
-        <article><span>전체 업무</span><strong>{workNodes.length}</strong><small>현재 문서 기준</small></article>
-        <article className="green"><span>완료</span><strong>{metrics.completed}</strong><small>{Math.round(metrics.completed / workNodes.length * 100)}% 완료</small></article>
-        <article className="violet"><span>진행 중</span><strong>{metrics.inProgress}</strong><small>실행 중인 업무</small></article>
-        <article className={metrics.overdue ? 'red' : ''}><span>기한 초과</span><strong>{metrics.overdue}</strong><small>확인이 필요합니다</small></article>
-        <article className={metrics.blocked ? 'blocked-metric' : ''}><span>차단됨</span><strong>{metrics.blocked}</strong><small>선행 업무 대기</small></article>
+        {metricCards.map((metric) => (
+          <button
+            type="button"
+            className={`metric-card ${metric.className ?? ''} ${selectedMetric === metric.id ? 'selected' : ''}`}
+            key={metric.id}
+            onClick={() => setSelectedMetric((current) => current === metric.id ? null : metric.id)}
+            aria-pressed={selectedMetric === metric.id}
+          >
+            <span>{metric.label}</span><strong>{metric.value}</strong><small>{metric.description}</small>
+          </button>
+        ))}
       </div>
       <div className="dashboard-panels">
         <section className="progress-overview">
@@ -278,6 +303,30 @@ export function DashboardView({ nodes, onSelect, onOpenMindMap, onContextMenu, t
           </div>
         </section>
       </div>
+      {selectedMetricCard && (
+        <section className="dashboard-metric-results">
+          <div className="dashboard-metric-results-heading">
+            <div><span>선택한 지표</span><strong>{selectedMetricCard.label} 업무 목록</strong></div>
+            <small>{selectedMetricNodes.length}개 업무</small>
+          </div>
+          {selectedMetricNodes.length > 0 ? (
+            <div className="dashboard-work-list">
+              {selectedMetricNodes.map((node) => (
+                <WorkCard
+                  key={node.id}
+                  node={node}
+                  teamMembers={teamMembers}
+                  blockedCount={blockingNodes(node, nodes).length}
+                  selected={selectedId === node.id}
+                  draggable={false}
+                  onSelect={() => onSelect(node.id)}
+                  onContextMenu={(event) => onContextMenu(event, node.id)}
+                />
+              ))}
+            </div>
+          ) : <div className="dashboard-work-list-empty">해당하는 업무가 없습니다.</div>}
+        </section>
+      )}
     </div>
   )
 }

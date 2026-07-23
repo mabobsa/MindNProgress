@@ -23,6 +23,12 @@ export function MindNode({ data, selected, isConnectable }: NodeProps<MindNodeTy
   const assignee = data.assignee
   const checklist = data.checklist ?? []
   const completedItems = checklist.filter((item) => item.done).length
+  const waitingItems = (data.waitingItems ?? []).filter((item) => item.label.trim())
+  const waitingTitle = waitingItems.map((item) => [
+    item.label,
+    item.note,
+    item.resumeCondition ? `재개 조건: ${item.resumeCondition}` : '',
+  ].filter(Boolean).join(' · ')).join('\n')
   const isOverdue = Boolean(data.dueDate && !isCompleted && new Date(`${data.dueDate}T23:59:59`) < new Date())
   const formattedDueDate = data.dueDate
     ? data.dueDate.split('-').slice(1).map(Number).join('.')
@@ -31,6 +37,17 @@ export function MindNode({ data, selected, isConnectable }: NodeProps<MindNodeTy
   return (
     <article className={`mind-node ${data.kind} status-${displayStatus} ${isCompleted ? 'completed' : ''} ${selected ? 'selected' : ''}`}>
       <Handle type="target" position={Position.Left} isConnectable={isConnectable} />
+      {waitingItems.length > 0 && (
+        <button
+          type="button"
+          className="node-waiting nodrag nopan"
+          title={`${waitingTitle}\n대기 항목 세부 정보 열기`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => data.onOpenWaitingItems?.()}
+        >
+          <span className="node-waiting-text">⏸️ {waitingItems.length === 1 ? `${waitingItems[0].label} 대기` : `대기 ${waitingItems.length}건`}</span>
+        </button>
+      )}
       {data.hasChildren && (
         <button
           type="button"

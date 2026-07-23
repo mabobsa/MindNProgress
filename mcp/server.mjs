@@ -10,13 +10,15 @@ const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url
 const dataDirectory = path.resolve(String(process.env.MNP_DATA_DIR ?? '').trim() || path.join(projectDirectory, 'server', 'data'))
 const tokenFile = path.resolve(String(process.env.MNP_TOKEN_FILE ?? '').trim() || path.join(dataDirectory, '_integration-token'))
 const apiBaseUrl = String(process.env.MNP_API_URL ?? 'http://127.0.0.1:4176').replace(/\/+$/, '')
+const contextSchemaVersion = '2.0'
+const contextCommentLimit = 20
 let activeAttributionToken = ''
 let activeEditorId = ''
 let activeMapId = ''
 let activeCardId = ''
-const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. get_context의 selection.taskLinks.startupInspection을 따르세요. mode가 knowledge-guided이면 primary 선행 지식의 sharedKnowledge를 먼저 재사용하고 설명과 댓글로 보완하며, fallbackSources와 fallbackTargets는 정보가 부족할 때만 선택적으로 조사합니다. mode가 default이고 required가 true이면 targets의 업무 본문, 댓글, 첨부파일 목록과 관련 링크를 조사하세요. 진행 과정과 결과는 댓글에 기록하고, 다른 카드나 후속 세션이 재사용할 안정적인 사실·결정·제약은 카드의 sharedKnowledge에 요약하세요. 특정 자료가 있다고 가정하지 마세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
+const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. get_context의 selection.taskLinks.startupInspection을 따르세요. mode가 knowledge-guided이면 primary 선행 지식의 sharedKnowledge를 먼저 재사용하고 설명과 댓글로 보완하며, fallbackSources와 fallbackTargets는 정보가 부족할 때만 선택적으로 조사합니다. mode가 default이고 required가 true이면 targets의 업무 본문, 댓글, 첨부파일 목록과 관련 링크를 조사하세요. 진행 과정과 결과는 댓글에 기록하고, 다른 카드나 후속 세션이 재사용할 안정적인 사실·결정·제약은 카드의 sharedKnowledge에 요약하세요. 외부 전달물이나 결정 대기는 waitingItems로 기록하고 제목에 대기 문구를 붙이지 마세요. 대기를 등록할 때는 [차단], 해제할 때는 [진행] 댓글로 이유와 재개 상태를 기록하세요. 특정 자료가 있다고 가정하지 마세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
 const productGuide = {
-  version: '1.1',
+  version: '1.2',
   product: {
     name: 'MindNProgress',
     purpose: '아이디어를 계층형 마인드맵으로 구조화하고 실행 업무의 진행 상황을 같은 문서에서 관리하는 웹 서비스',
@@ -48,6 +50,7 @@ const productGuide = {
       taskUrlContext: 'AI 대화 문맥에서는 선택 카드와 해당 계층의 최상위 카드 링크를 별도로 제공하며, 하위 카드에 링크를 상속하거나 덮어쓰지 않음',
       checklist: '세부 실행 항목. 체크 상태에 따라 진행률을 계산할 수 있음',
       blockedBy: '현재 업무보다 먼저 완료되어야 하는 카드 ID 목록. 계층 관계를 표현하는 용도로 사용하지 않음',
+      waitingItems: '서버·아트·기획 등 외부 전달물이나 결정 대기 목록. label은 자유 입력하며 note, resumeCondition, since를 함께 기록할 수 있음. 상태와 진행률에는 영향을 주지 않음',
     },
   },
   views: {
@@ -65,6 +68,7 @@ const productGuide = {
     '다른 카드나 후속 세션이 재사용할 내용은 sharedKnowledge에 요약하고 진행 과정은 댓글에 기록',
     'sharedKnowledge를 수정할 때 기존 description의 사용자 요청과 배경을 임의로 덮어쓰지 않음',
     '존재하지 않는 담당자, 불필요한 업무 링크와 임의의 선행 관계를 만들지 않음',
+    '문서 내부 선행 업무는 blockedBy, 외부 전달물·결정 대기는 waitingItems로 구분하고 제목에 “(서버 대기)” 같은 문구를 붙이지 않음',
     '진행률이 100이면 status=done, 완료가 아니면 progress를 100 미만으로 유지',
   ],
   operationRules: [
@@ -76,6 +80,7 @@ const productGuide = {
     '기존 문서 변경은 최신 version을 기준으로 수행하고 버전 충돌 시 최신 상태를 다시 조회',
     '변경 후 mindnprogress_get_document로 저장 결과를 검증하고 실제 변경 내용을 요약',
     '의미 있는 진행·차단·완료는 댓글로 기록하고, 재사용할 결론은 sharedKnowledge에도 반영',
+    'waitingItems를 등록할 때는 [차단] 댓글에 대기 이유와 재개 조건을, 해제할 때는 [진행] 댓글에 해제 사실과 다음 단계를 기록',
     '문서나 카드 접근 링크를 기록할 때 localhost나 127.0.0.1 주소를 만들지 말고 MCP 응답의 accessUrl을 사용',
     '삭제는 문서를 휴지통으로 이동하는 방식으로 처리',
     '비밀번호 변경이나 관리자 계정 관리는 MCP 범위에 포함하지 않음',
@@ -122,8 +127,8 @@ async function apiRequest(pathname, init = {}) {
   return body ?? { ok: true, status: response.status }
 }
 
-function toolResult(value) {
-  return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] }
+function toolResult(value, compact = false) {
+  return { content: [{ type: 'text', text: JSON.stringify(value, null, compact ? 0 : 2) }] }
 }
 
 function documentAccessUrl(publicBaseUrl, mapId) {
@@ -134,10 +139,10 @@ function cardAccessUrl(publicBaseUrl, mapId, cardId) {
   return `${documentAccessUrl(publicBaseUrl, mapId)}/${encodeURIComponent(cardId)}`
 }
 
-function registerTool(server, name, description, schema, handler) {
+function registerTool(server, name, description, schema, handler, options = {}) {
   server.tool(name, description, schema, async (input) => {
     try {
-      return toolResult(await handler(input))
+      return toolResult(await handler(input), options.compactResult === true)
     } catch (error) {
       return {
         content: [{ type: 'text', text: error instanceof Error ? error.message : '요청을 처리하지 못했습니다.' }],
@@ -198,12 +203,129 @@ function relatedCards(ids, nodes) {
     progress: node.data?.progress ?? 0,
     isWork: Boolean(node.data?.isWork),
     sharedKnowledge: node.data?.sharedKnowledge ?? '',
+    waitingItems: Array.isArray(node.data?.waitingItems) ? node.data.waitingItems : [],
   }))
+}
+
+function compactCard(node) {
+  return {
+    id: node.id,
+    label: node.data?.label ?? node.id,
+    kind: node.data?.kind,
+    status: node.data?.progress >= 100 ? 'done' : node.data?.status,
+    progress: node.data?.progress ?? 0,
+    isWork: Boolean(node.data?.isWork),
+    waitingItems: Array.isArray(node.data?.waitingItems)
+      ? node.data.waitingItems.map(({ id, label, resumeCondition, since }) => ({ id, label, resumeCondition, since }))
+      : [],
+  }
+}
+
+function compactRelatedCards(ids, nodes) {
+  const idSet = new Set(ids)
+  return nodes.filter((node) => idSet.has(node.id)).map(compactCard)
+}
+
+function contentCard(node) {
+  return {
+    id: node.id,
+    type: node.type ?? 'mind',
+    data: node.data ?? {},
+  }
+}
+
+function focusedDocument(map, publicBaseUrl) {
+  const hierarchyEdges = map.edges.filter(isHierarchyEdge)
+  const knowledgeEdges = map.edges.filter(isKnowledgeEdge)
+  return {
+    id: map.id,
+    title: map.title,
+    color: map.color,
+    version: map.version,
+    updatedAt: map.updatedAt,
+    updatedBy: map.updatedBy,
+    accessUrl: documentAccessUrl(publicBaseUrl, map.id),
+    stats: {
+      cardCount: map.nodes.length,
+      hierarchyEdgeCount: hierarchyEdges.length,
+      knowledgeEdgeCount: knowledgeEdges.length,
+    },
+    outline: map.nodes.map((node) => {
+      const parentId = hierarchyEdges.find((edge) => edge.target === node.id)?.source ?? null
+      return {
+        ...compactCard(node),
+        parentId,
+        childCount: hierarchyEdges.filter((edge) => edge.source === node.id).length,
+        blockedByIds: Array.isArray(node.data?.blockedBy) ? node.data.blockedBy : [],
+      }
+    }),
+    knowledgeLinks: knowledgeEdges.map((edge) => ({
+      sourceId: edge.source,
+      targetId: edge.target,
+      policy: knowledgePolicyOf(edge),
+    })),
+  }
+}
+
+function paginateComments(comments, { offset = 0, limit = 50, order = 'desc' } = {}) {
+  const ordered = order === 'asc' ? comments : [...comments].reverse()
+  const items = ordered.slice(offset, offset + limit)
+  const nextOffset = offset + items.length
+  return {
+    items,
+    page: {
+      total: comments.length,
+      offset,
+      limit,
+      order,
+      hasMore: nextOffset < comments.length,
+      nextOffset: nextOffset < comments.length ? nextOffset : null,
+    },
+  }
+}
+
+function focusedCommentWindow(comments, mapId, nodeId) {
+  const items = comments.slice(-contextCommentLimit)
+  const hasMore = comments.length > items.length
+  return {
+    comments: items,
+    commentsPage: {
+      total: comments.length,
+      included: items.length,
+      order: 'asc',
+      hasMore,
+      tool: 'mindnprogress_list_comments',
+      nextToolArguments: hasMore ? {
+        mapId,
+        nodeId,
+        offset: items.length,
+        limit: 50,
+        order: 'desc',
+      } : null,
+    },
+  }
+}
+
+function compactTeamMember(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    active: user.active !== false,
+  }
 }
 
 const mapIdSchema = { mapId: z.string().min(1).describe('문서 ID') }
 const documentColor = z.enum(['violet', 'indigo', 'blue', 'cyan', 'teal', 'green', 'amber', 'orange', 'red', 'pink'])
 const outlineKey = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/, '카드 key는 영문, 숫자, 밑줄, 하이픈만 사용할 수 있습니다.')
+const waitingItemSchema = z.object({
+  id: z.string().min(1).max(120).optional(),
+  label: z.string().min(1).max(120),
+  note: z.string().max(1000).optional(),
+  resumeCondition: z.string().max(500).optional(),
+  since: z.string().datetime().optional(),
+})
 const nodeDataSchema = z.object({
   label: z.string().min(1),
   description: z.string().default(''),
@@ -217,6 +339,7 @@ const nodeDataSchema = z.object({
   dueDate: z.string().optional(),
   checklist: z.array(z.object({ id: z.string(), text: z.string(), done: z.boolean() })).optional(),
   blockedBy: z.array(z.string()).optional(),
+  waitingItems: z.array(waitingItemSchema).max(20).optional(),
 }).passthrough()
 
 const outlineCardSchema = z.object({
@@ -237,7 +360,18 @@ const outlineCardSchema = z.object({
     done: z.boolean().default(false),
   })).max(50).optional(),
   blockedBy: z.array(outlineKey).optional().describe('선행 카드 key 목록'),
+  waitingItems: z.array(waitingItemSchema.omit({ id: true })).max(20).optional().describe('외부 전달물이나 결정을 기다리는 자유 입력 대기 목록'),
 })
+
+function normalizeWaitingItems(items) {
+  if (!Array.isArray(items)) return items
+  const now = new Date().toISOString()
+  return items.map((item) => ({
+    ...item,
+    id: item.id || `wait-${randomBytes(8).toString('hex')}`,
+    since: item.since || now,
+  }))
+}
 
 function buildMapFromOutline(cards) {
   const cardsByKey = new Map()
@@ -314,6 +448,7 @@ function buildMapFromOutline(cards) {
           checklist: card.checklist.map((item, index) => ({ id: `check-${card.key}-${index + 1}`, ...item })),
         } : {}),
         ...(card.blockedBy?.length ? { blockedBy: card.blockedBy } : {}),
+        ...(card.waitingItems?.length && status !== 'done' ? { waitingItems: normalizeWaitingItems(card.waitingItems) } : {}),
       },
     }
   })
@@ -358,17 +493,19 @@ async function main() {
       '업무로 추적할 task만 isWork=true로 설정',
       'description은 업무 요청과 완료 조건, sharedKnowledge는 다른 카드가 재사용할 안정적인 결론에 사용',
       '진행 과정과 완료 사실은 댓글에 기록하고 재사용할 결과는 sharedKnowledge에도 요약',
+      '외부 전달물이나 결정 대기는 waitingItems에 기록하고 카드 제목에는 대기 문구를 추가하지 않음',
       '업무 링크, 담당자와 마감일은 실제 값이 있을 때만 지정',
       '비밀번호 변경과 관리자 계정 관리는 MCP에서 지원하지 않음',
     ],
   }))
 
-  registerTool(server, 'mindnprogress_get_context', 'MindNProgress의 제품 개념과 작성 규칙, 전체 최신 문서, 선택 카드와 최상위 카드의 업무 링크, 계층·의존성·댓글·담당자 정보를 한 번에 조회합니다. 대화를 시작한 뒤 다른 MindNProgress 도구보다 먼저 호출하세요.', {
+  registerTool(server, 'mindnprogress_get_context', 'MindNProgress의 제품 개념과 작성 규칙, 최신 문서 개요, 선택 카드와 업무 링크, 계층·의존성·댓글·담당자 정보를 한 번에 조회합니다. focused는 작업 관련 원문과 문서 개요를, full은 전체 문서 원문을 반환합니다. 대화를 시작한 뒤 다른 MindNProgress 도구보다 먼저 호출하세요.', {
     mapId: z.string().min(1).describe('현재 문서 ID'),
     cardId: z.string().min(1).describe('편집자가 선택한 카드 ID'),
     editorId: z.string().min(1).max(120).optional().describe('AI 대화를 시작한 MindNProgress 편집자 계정 ID'),
     attributionToken: z.string().min(32).max(200).optional().describe('MindNProgress의 AI 대화 시작 화면에서 전달된 작성자 귀속 토큰'),
-  }, async ({ mapId, cardId, editorId, attributionToken }) => {
+    detailLevel: z.enum(['focused', 'full']).default('focused').describe('focused는 선택 카드와 주요 지식 원문 및 문서 개요, full은 현재의 전체 문서 원문을 반환'),
+  }, async ({ mapId, cardId, editorId, attributionToken, detailLevel }) => {
     activeMapId = mapId
     activeCardId = cardId
     if (editorId) activeEditorId = editorId
@@ -509,9 +646,55 @@ async function main() {
       fallback: 'targets가 없으면 MindNProgress 카드 정보로 진행합니다. 외부 업무 시스템 도구가 없거나 조회에 실패하면 임의로 추측하지 말고 조회하지 못한 대상과 원인을 알린 뒤, 확인된 카드 정보만으로 가능한 작업은 계속 진행하세요.',
     }
 
+    const selectedComments = allComments.filter((comment) => comment.nodeId === cardId)
+    const focusedSelectedComments = focusedCommentWindow(selectedComments, mapId, cardId)
+    const focusedPrimaryKnowledge = primaryKnowledge.map((source) => ({
+      policy: source.policy,
+      card: contentCard(source.card),
+      accessUrl: source.accessUrl,
+      ...focusedCommentWindow(source.comments, mapId, source.card.id),
+      taskLink: source.taskLink,
+      detailTool: 'mindnprogress_get_card',
+      detailToolArguments: { mapId, cardId: source.card.id },
+    }))
+    const focusedFallbackKnowledge = fallbackKnowledge.map((source) => ({
+      policy: source.policy,
+      card: compactCard(source.card),
+      accessUrl: source.accessUrl,
+      comments: [],
+      commentsPage: {
+        total: source.comments.length,
+        included: 0,
+        order: 'asc',
+        hasMore: source.comments.length > 0,
+        tool: 'mindnprogress_list_comments',
+        nextToolArguments: source.comments.length > 0
+          ? { mapId, nodeId: source.card.id, offset: 0, limit: 50, order: 'desc' }
+          : null,
+      },
+      taskLink: source.taskLink,
+      detailTool: 'mindnprogress_get_card',
+      detailToolArguments: { mapId, cardId: source.card.id },
+    }))
+    const taskLinks = {
+      selectedCard: selectedTaskLink,
+      topLevelCard: topLevelTaskLink,
+      available: availableTaskLinks,
+      startupInspection,
+      rule: hasKnowledgeGuidance
+        ? '지식선이 있으므로 현재 카드의 직접 업무와 선행 지식을 우선합니다. 최상위 업무와 지식 원본 링크는 부족할 때만 선택적으로 조사하며 링크를 다른 카드 데이터에 상속하거나 복사하지 않습니다.'
+        : '선택 카드와 최상위 카드의 업무 링크를 독립적으로 유지합니다. 작업 시작 전에 startupInspection을 따르며, 두 링크가 모두 있으면 중복 URL을 제외하고 모두 조사합니다. 링크를 다른 카드 데이터에 상속하거나 복사하지 않습니다.',
+    }
+    const knowledgeRule = hasKnowledgeGuidance
+      ? 'primary의 sharedKnowledge를 먼저 사용하고 설명과 댓글로 보완합니다. fallback 및 각 source의 taskLink는 현재 작업에 필요한 정보가 부족할 때만 확인합니다.'
+      : '들어오는 지식선이 없어 기본 업무 조사 절차를 사용합니다.'
+    const full = detailLevel === 'full'
+
     return {
+      contextSchemaVersion,
+      detailLevel,
       guide: productGuide,
-      document: {
+      document: full ? {
         id: map.id,
         title: map.title,
         color: map.color,
@@ -521,40 +704,35 @@ async function main() {
         nodes: map.nodes,
         edges: map.edges,
         accessUrl: documentAccessUrl(health.publicBaseUrl, map.id),
-      },
+      } : focusedDocument(map, health.publicBaseUrl),
       selection: {
-        card: selectedCard,
+        card: full ? selectedCard : contentCard(selectedCard),
         accessUrl: cardAccessUrl(health.publicBaseUrl, map.id, selectedCard.id),
-        parents: relatedCards(parentIds, map.nodes),
-        children: relatedCards(childIds, map.nodes),
-        siblings: relatedCards(siblingIds, map.nodes),
-        ancestors: relatedCards(ancestorIds, map.nodes),
-        descendants: relatedCards(descendantIds, map.nodes),
-        blockedBy: relatedCards(blockedByIds, map.nodes),
-        blocks: relatedCards(blockingIds, map.nodes),
-        knowledgeSources: {
+        parents: full ? relatedCards(parentIds, map.nodes) : compactRelatedCards(parentIds, map.nodes),
+        children: full ? relatedCards(childIds, map.nodes) : compactRelatedCards(childIds, map.nodes),
+        siblings: full ? relatedCards(siblingIds, map.nodes) : compactRelatedCards(siblingIds, map.nodes),
+        ancestors: full ? relatedCards(ancestorIds, map.nodes) : compactRelatedCards(ancestorIds, map.nodes),
+        descendants: full ? relatedCards(descendantIds, map.nodes) : compactRelatedCards(descendantIds, map.nodes),
+        blockedBy: full ? relatedCards(blockedByIds, map.nodes) : compactRelatedCards(blockedByIds, map.nodes),
+        blocks: full ? relatedCards(blockingIds, map.nodes) : compactRelatedCards(blockingIds, map.nodes),
+        knowledgeSources: full ? {
           primary: primaryKnowledge,
           fallback: fallbackKnowledge,
           all: incomingKnowledge,
-          rule: hasKnowledgeGuidance
-            ? 'primary의 sharedKnowledge를 먼저 사용하고 설명과 댓글로 보완합니다. fallback 및 각 source의 taskLink는 현재 작업에 필요한 정보가 부족할 때만 확인합니다.'
-            : '들어오는 지식선이 없어 기본 업무 조사 절차를 사용합니다.',
+          rule: knowledgeRule,
+        } : {
+          primary: focusedPrimaryKnowledge,
+          fallback: focusedFallbackKnowledge,
+          rule: knowledgeRule,
         },
-        taskLinks: {
-          selectedCard: selectedTaskLink,
-          topLevelCard: topLevelTaskLink,
-          available: availableTaskLinks,
-          startupInspection,
-          rule: hasKnowledgeGuidance
-            ? '지식선이 있으므로 현재 카드의 직접 업무와 선행 지식을 우선합니다. 최상위 업무와 지식 원본 링크는 부족할 때만 선택적으로 조사하며 링크를 다른 카드 데이터에 상속하거나 복사하지 않습니다.'
-            : '선택 카드와 최상위 카드의 업무 링크를 독립적으로 유지합니다. 작업 시작 전에 startupInspection을 따르며, 두 링크가 모두 있으면 중복 URL을 제외하고 모두 조사합니다. 링크를 다른 카드 데이터에 상속하거나 복사하지 않습니다.',
-        },
-        comments: allComments.filter((comment) => comment.nodeId === cardId),
+        taskLinks,
+        comments: full ? selectedComments : focusedSelectedComments.comments,
+        ...(full ? {} : { commentsPage: focusedSelectedComments.commentsPage }),
       },
-      teamMembers: usersResult.users ?? [],
-      nextStep: '사용자 요청을 수행한 뒤 의미 있는 진행과 결과는 댓글에 기록하고, 재사용할 결론은 sharedKnowledge에 요약한 다음 mindnprogress_get_document로 결과를 다시 확인하세요.',
+      teamMembers: full ? (usersResult.users ?? []) : (usersResult.users ?? []).map(compactTeamMember),
+      nextStep: '사용자 요청을 수행한 뒤 의미 있는 진행과 결과는 댓글에 기록하고, 재사용할 결론은 sharedKnowledge에 요약한 다음 mindnprogress_get_document로 결과를 다시 확인하세요. 외부 전달물이나 결정 때문에 멈추면 제목을 바꾸지 말고 waitingItems와 [차단] 댓글을 추가하며, 재개할 때 해당 항목을 제거하고 [진행] 댓글을 남기세요.',
     }
-  })
+  }, { compactResult: true })
 
   registerTool(server, 'mindnprogress_get_document', '문서의 모든 카드와 연결 관계 및 외부에서 접근 가능한 URL을 조회합니다.', mapIdSchema, async ({ mapId }) => {
     const [documentResult, health] = await Promise.all([
@@ -573,6 +751,40 @@ async function main() {
         })),
         rule: '링크를 기록할 때 localhost나 127.0.0.1로 재작성하지 말고 accessUrl을 그대로 사용하세요.',
       },
+    }
+  }, { compactResult: true })
+
+  registerTool(server, 'mindnprogress_get_card', '한 카드의 설명, 공유 지식, 업무 필드와 댓글을 선택적으로 조회합니다. get_context의 fallback 카드 또는 간략 개요에서 원문이 필요할 때 사용하세요.', {
+    mapId: z.string().min(1),
+    cardId: z.string().min(1),
+    commentOffset: z.number().int().nonnegative().default(0),
+    commentLimit: z.number().int().min(1).max(100).default(20),
+    commentOrder: z.enum(['asc', 'desc']).default('desc'),
+  }, async ({ mapId, cardId, commentOffset, commentLimit, commentOrder }) => {
+    const [documentResult, commentsResult, health] = await Promise.all([
+      apiRequest(`/api/maps/${encodeURIComponent(mapId)}`),
+      apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments?nodeId=${encodeURIComponent(cardId)}`),
+      apiRequest('/api/health'),
+    ])
+    const card = documentResult.map.nodes.find((node) => node.id === cardId)
+    if (!card) throw new Error(`카드를 찾을 수 없습니다: ${cardId}`)
+    const commentPage = paginateComments(commentsResult.comments ?? [], {
+      offset: commentOffset,
+      limit: commentLimit,
+      order: commentOrder,
+    })
+    return {
+      document: {
+        id: documentResult.map.id,
+        title: documentResult.map.title,
+        version: documentResult.map.version,
+        updatedAt: documentResult.map.updatedAt,
+        updatedBy: documentResult.map.updatedBy,
+      },
+      card: contentCard(card),
+      accessUrl: cardAccessUrl(health.publicBaseUrl, documentResult.map.id, card.id),
+      comments: commentPage.items,
+      commentsPage: commentPage.page,
     }
   })
 
@@ -632,7 +844,7 @@ async function main() {
     body: JSON.stringify({ map: { nodes, edges }, baseVersion, force }),
   }))
 
-  registerTool(server, 'mindnprogress_add_card', '문서에 새 카드 또는 하위 카드를 추가합니다.', {
+  registerTool(server, 'mindnprogress_add_card', '문서에 새 카드 또는 하위 카드를 추가합니다. 외부 전달물이나 결정 대기는 제목이 아니라 waitingItems로 기록합니다.', {
     mapId: z.string().min(1),
     parentId: z.string().optional(),
     data: nodeDataSchema,
@@ -650,7 +862,10 @@ async function main() {
         x: (parent?.position?.x ?? 0) + (parent ? 300 : 0),
         y: (parent?.position?.y ?? 0) + siblingCount * 150,
       },
-      data,
+      data: {
+        ...data,
+        waitingItems: data.status === 'done' || data.progress >= 100 ? [] : normalizeWaitingItems(data.waitingItems),
+      },
     }
     map.nodes.push(node)
     if (parentId) map.edges.push({
@@ -664,7 +879,7 @@ async function main() {
     return saveDocument(map, false, parentId ?? '')
   })
 
-  registerTool(server, 'mindnprogress_update_card', '카드 제목, 설명, 공유 지식, 진행률, 상태, 업무 링크, 담당자, 마감일, 체크리스트와 선행 업무를 변경합니다. description은 업무 요청과 배경, sharedKnowledge는 다른 카드가 재사용할 안정적인 결론에 사용하세요.', {
+  registerTool(server, 'mindnprogress_update_card', '카드 제목, 설명, 공유 지식, 진행률, 상태, 업무 링크, 담당자, 마감일, 체크리스트, 선행 업무와 대기 항목을 변경합니다. description은 업무 요청과 배경, sharedKnowledge는 다른 카드가 재사용할 안정적인 결론에 사용하세요. 외부 대기는 waitingItems로 기록하고 제목을 바꾸지 마세요.', {
     mapId: z.string().min(1),
     nodeId: z.string().min(1),
     data: nodeDataSchema.partial(),
@@ -673,7 +888,14 @@ async function main() {
     const map = await getDocument(mapId)
     const node = map.nodes.find((item) => item.id === nodeId)
     if (!node) throw new Error('카드를 찾을 수 없습니다.')
-    node.data = { ...node.data, ...data }
+    const nextData = {
+      ...node.data,
+      ...data,
+      ...(data.waitingItems === undefined ? {} : { waitingItems: normalizeWaitingItems(data.waitingItems) }),
+    }
+    node.data = nextData.status === 'done' || nextData.progress >= 100
+      ? { ...nextData, waitingItems: [] }
+      : nextData
     if (position) node.position = position
     return saveDocument(map, false, nodeId)
   })
@@ -758,9 +980,21 @@ async function main() {
 
   registerTool(server, 'mindnprogress_list_users', '담당자로 지정할 수 있는 편집자 계정 목록을 조회합니다. active=false인 계정은 기존 담당자 표시용이며 새 담당자로 지정하지 마세요.', {}, async () =>
     apiRequest('/api/assignees'))
-  registerTool(server, 'mindnprogress_list_comments', '문서 또는 특정 카드의 댓글과 답글을 조회합니다.', {
-    mapId: z.string().min(1), nodeId: z.string().optional(),
-  }, async ({ mapId, nodeId }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments${nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : ''}`))
+  registerTool(server, 'mindnprogress_list_comments', '문서 또는 특정 카드의 댓글과 답글을 페이지 단위로 조회합니다. 다음 댓글이 있으면 nextOffset을 offset으로 전달하세요.', {
+    mapId: z.string().min(1),
+    nodeId: z.string().optional(),
+    offset: z.number().int().nonnegative().default(0),
+    limit: z.number().int().min(1).max(100).default(50),
+    order: z.enum(['asc', 'desc']).default('desc'),
+  }, async ({ mapId, nodeId, offset, limit, order }) => {
+    const query = new URLSearchParams({
+      offset: String(offset),
+      limit: String(limit),
+      order,
+    })
+    if (nodeId) query.set('nodeId', nodeId)
+    return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments?${query}`)
+  })
   registerTool(server, 'mindnprogress_add_comment', '카드에 댓글 또는 답글을 작성합니다.', {
     mapId: z.string().min(1), nodeId: z.string().min(1), text: z.string().min(1).max(1000), parentId: z.string().optional(),
   }, async ({ mapId, ...body }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments`, {

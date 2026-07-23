@@ -176,6 +176,7 @@
 .map-root-progress { color: #6657d9; font-weight: 750; }
 .map-root-progress::before { content: '·'; margin-right: 5px; color: #bbb6c1; }
 .map-root-progress.complete { color: #329572; }
+.map-waiting-indicator { display: inline-flex; align-items: center; font-size: 10px; line-height: 1; }
 .map-item .icon { color: #8c8694; }
 .empty-map-list { padding: 24px 12px; color: #aaa5b1; font-size: 9px; line-height: 1.5; text-align: center; }
 .trash-list { min-height: 0; flex: 1 1 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 8px 4px; }
@@ -391,6 +392,28 @@
 .knowledge-block > em { display: block; margin-top: 5px; color: #c45555; font-size: 7px; font-style: normal; }
 .dependent-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .dependent-tags > span { max-width: 100%; overflow: hidden; padding: 4px 6px; color: #6154c6; border-radius: 6px; background: #eeebfa; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.waiting-block { margin-top: 18px; scroll-margin-top: 14px; }
+.waiting-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.waiting-heading > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.waiting-heading span { color: #70664f; font-size: 9px; font-weight: 700; }
+.waiting-heading small { color: #a09784; font-size: 7px; line-height: 1.45; }
+.waiting-heading > strong { flex: 0 0 auto; padding: 2px 6px; color: #99928a; border-radius: 8px; background: #f0eeeb; font-size: 8px; }
+.waiting-heading > strong.active { color: #93651c; background: #f8edce; }
+.waiting-items { display: flex; flex-direction: column; gap: 6px; }
+.waiting-item { display: flex; flex-direction: column; gap: 5px; padding: 8px; border: 1px solid #eadbb9; border-radius: 8px; background: #fffcf4; }
+.waiting-item-heading { display: grid; grid-template-columns: 15px minmax(0, 1fr) 20px; align-items: center; gap: 5px; }
+.waiting-item-heading > span { color: #ad7a1f; font-size: 9px; }
+.waiting-item input { min-width: 0; padding: 6px 7px !important; color: #5c5548 !important; border-color: #e7dcc5 !important; background: white !important; font-size: 8px !important; }
+.waiting-item-heading input { color: #5a4b31 !important; font-weight: 700; }
+.waiting-item-heading button { display: grid; place-items: center; padding: 3px; color: #aaa198; border: 0; border-radius: 5px; background: transparent; cursor: pointer; }
+.waiting-item-heading button:hover { color: #c45858; background: #fff0f0; }
+.waiting-item > small { color: #aaa18f; font-size: 7px; }
+.empty-waiting { padding: 11px 8px; color: #aaa5a0; border: 1px dashed #ddd8ce; border-radius: 8px; font-size: 8px; text-align: center; }
+.waiting-add { display: grid; grid-template-columns: 1fr 30px; gap: 5px; margin-top: 7px; }
+.waiting-add input { min-width: 0; padding: 7px 8px !important; font-size: 8px !important; }
+.waiting-add button { display: grid; place-items: center; padding: 0; color: white; border: 0; border-radius: 7px; background: #b6842f; cursor: pointer; }
+.waiting-add button:disabled { opacity: .4; cursor: default; }
+.waiting-help { display: block; margin-top: 7px; color: #aaa294; font-size: 7px; line-height: 1.45; }
 .checklist-block { margin-top: 18px; }
 .checklist-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: #7d7784; font-size: 9px; font-weight: 700; }
 .checklist-heading strong { min-width: 28px; padding: 2px 6px; color: #5d50ca; border-radius: 8px; background: #e9e5fb; font-size: 8px; text-align: center; }

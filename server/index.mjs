@@ -392,7 +392,22 @@ function isValidMap(map) {
     typeof node?.id === 'string'
     && node.id.length <= 120
     && (node.data?.sharedKnowledge === undefined
-      || (typeof node.data.sharedKnowledge === 'string' && node.data.sharedKnowledge.length <= 10_000)))
+      || (typeof node.data.sharedKnowledge === 'string' && node.data.sharedKnowledge.length <= 10_000))
+    && (node.data?.waitingItems === undefined
+      || (Array.isArray(node.data.waitingItems)
+        && node.data.waitingItems.length <= 20
+        && node.data.waitingItems.every((item) =>
+          typeof item?.id === 'string'
+          && item.id.length > 0
+          && item.id.length <= 120
+          && typeof item.label === 'string'
+          && item.label.trim().length > 0
+          && item.label.length <= 120
+          && (item.note === undefined || (typeof item.note === 'string' && item.note.length <= 1000))
+          && (item.resumeCondition === undefined || (typeof item.resumeCondition === 'string' && item.resumeCondition.length <= 500))
+          && typeof item.since === 'string'
+          && item.since.length <= 40
+          && Number.isFinite(Date.parse(item.since))))))
     && map.edges.every((edge) => typeof edge?.id === 'string' && typeof edge?.source === 'string' && typeof edge?.target === 'string')
 }
 
@@ -506,6 +521,11 @@ function mapRootState(map) {
 
 function mapSummary(map) {
   const root = mapRootState(map)
+  const waitingCount = map.nodes.reduce((count, node) => count + (
+    Array.isArray(node.data?.waitingItems)
+      ? node.data.waitingItems.filter((item) => typeof item?.label === 'string' && item.label.trim()).length
+      : 0
+  ), 0)
   return {
     id: map.id,
     title: map.title,
@@ -513,6 +533,7 @@ function mapSummary(map) {
     nodeCount: map.nodes.length,
     rootProgress: root.progress,
     rootStatus: root.status,
+    waitingCount,
     version: map.version ?? 1,
     updatedAt: map.updatedAt ?? null,
     updatedBy: map.updatedBy ?? null,
@@ -2462,7 +2483,24 @@ const server = createServer(async (request, response) => {
 
       if (request.method === 'GET') {
         const nodeId = String(url.searchParams.get('nodeId') ?? '').slice(0, 120)
-        return sendJson(response, 200, { comments: await listComments(mapId, nodeId || undefined) })
+        const comments = await listComments(mapId, nodeId || undefined)
+        const limitValue = url.searchParams.get('limit')
+        if (limitValue === null) return sendJson(response, 200, { comments })
+        const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') ?? '0', 10) || 0)
+        const limit = Math.min(100, Math.max(1, Number.parseInt(limitValue, 10) || 50))
+        const order = url.searchParams.get('order') === 'asc' ? 'asc' : 'desc'
+        const ordered = order === 'asc' ? comments : [...comments].reverse()
+        const page = ordered.slice(offset, offset + limit)
+        const nextOffset = offset + page.length
+        return sendJson(response, 200, {
+          comments: page,
+          total: comments.length,
+          offset,
+          limit,
+          order,
+          hasMore: nextOffset < comments.length,
+          nextOffset: nextOffset < comments.length ? nextOffset : null,
+        })
       }
 
       if (request.method === 'POST') {

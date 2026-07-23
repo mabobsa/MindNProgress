@@ -29,7 +29,7 @@ import { MentionText } from './components/MentionText'
 import { AdminEditorPanel } from './components/AdminEditorPanel'
 import { AiConversationDialog } from './components/AiConversationDialog'
 import { DashboardView, KanbanView, TimelineView } from './components/WorkViews'
-import type { ChecklistItem, KnowledgePolicy, MindMapEdgeData, MindNodeData, TeamMember } from './types/mindMap'
+import type { ChecklistItem, KnowledgePolicy, MindMapEdgeData, MindNodeData, TeamMember, WaitingItem } from './types/mindMap'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
 import { createsKnowledgeCycle, isHierarchyEdge, isKnowledgeEdge, knowledgePolicyOf } from './utils/knowledgeEdges'
 import { extractTextLinks } from './utils/textLinks'
@@ -303,6 +303,7 @@ type MapSummary = {
   nodeCount: number
   rootProgress: number | null
   rootStatus: MindNodeData['status'] | null
+  waitingCount: number
   version: number
   updatedAt: string | null
   updatedBy: AuthUser | null
@@ -1015,6 +1016,8 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const [renamingMap, setRenamingMap] = useState(false)
   const [renameTitle, setRenameTitle] = useState('')
   const [newChecklistText, setNewChecklistText] = useState('')
+  const [newWaitingLabel, setNewWaitingLabel] = useState('')
+  const [waitingLabelDrafts, setWaitingLabelDrafts] = useState<Record<string, string>>({})
   const [dependencyCandidate, setDependencyCandidate] = useState('')
   const [dependencyError, setDependencyError] = useState('')
   const [knowledgeCandidate, setKnowledgeCandidate] = useState('')
@@ -1036,6 +1039,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   })
   const [resizingInspector, setResizingInspector] = useState(false)
   const skipChecklistCommit = useRef(false)
+  const waitingBlockRef = useRef<HTMLDivElement | null>(null)
   const inspectorResizeStart = useRef({ pointerX: 0, width: 278 })
   const dropTargetIdRef = useRef<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -1088,6 +1092,16 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
       && !createsDependencyCycle(selectedNode.id, node.id, nodes))
     : []
   const unreadNotificationCount = notifications.filter((notification) => !notification.readAt).length
+
+  const openWaitingItems = useCallback((nodeId: string) => {
+    setSelectedId(nodeId)
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        waitingBlockRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
+    })
+  }, [])
+
   const activeDocument = documents.find((document) => document.id === activeMapId) ?? null
   const activeRootState = useMemo(() => rootStateOf(nodes, edges), [edges, nodes])
   const teamMembers = useMemo<TeamMember[]>(() => assigneeUsers.map((assignee) => ({
@@ -1223,6 +1237,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
           else next.add(node.id)
           return next
         }),
+        onOpenWaitingItems: () => openWaitingItems(node.id),
       },
       className: [
         node.className,
@@ -1232,7 +1247,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         filterActive && filterVisibleNodeIds.has(node.id) && !filterMatchedNodeIds.has(node.id) ? 'filter-context' : '',
       ].filter(Boolean).join(' '),
     }
-  }), [collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, descendantCounts, dropTargetId, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, nodes, normalizedNodeSearch, referenceCommentStats, searchContextNodeIds, searchMatchedNodeIds, teamMembers])
+  }), [collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, descendantCounts, dropTargetId, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, nodes, normalizedNodeSearch, openWaitingItems, referenceCommentStats, searchContextNodeIds, searchMatchedNodeIds, teamMembers])
   const visibleFlowNodeIds = useMemo(() => new Set(flowNodes.filter((node) => !node.hidden).map((node) => node.id)), [flowNodes])
   const flowEdges = useMemo(() => {
     const pairKey = (edge: MindMapEdge) => JSON.stringify([edge.source, edge.target])
@@ -1697,8 +1712,12 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   )
 
   const updateNode = useCallback((id: string, patch: Partial<MindNodeData>) => {
+    const completesWork = patch.status === 'done' || (patch.progress ?? -1) >= 100
+    const normalizedPatch = completesWork && patch.waitingItems === undefined
+      ? { ...patch, waitingItems: [] }
+      : patch
     setNodes((current) => current.map((node) => (
-      node.id === id ? { ...node, data: { ...node.data, ...patch } } : node
+      node.id === id ? { ...node, data: { ...node.data, ...normalizedPatch } } : node
     )))
     setSavedAt('저장 중…')
   }, [setNodes])
@@ -1783,6 +1802,37 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     setNewChecklistText('')
   }
 
+  const updateWaitingItems = (items: WaitingItem[]) => {
+    if (!selectedNode || mode !== 'editor') return
+    updateNode(selectedNode.id, { waitingItems: items })
+  }
+
+  const addWaitingItem = () => {
+    const label = newWaitingLabel.trim()
+    if (!selectedNode || !label || mode !== 'editor') return
+    updateWaitingItems([
+      ...(selectedNode.data.waitingItems ?? []),
+      {
+        id: `wait-${crypto.randomUUID()}`,
+        label,
+        since: new Date().toISOString(),
+      },
+    ])
+    setNewWaitingLabel('')
+  }
+
+  const commitWaitingLabel = (item: WaitingItem) => {
+    const label = (waitingLabelDrafts[item.id] ?? item.label).trim()
+    updateWaitingItems(label
+      ? (selectedNode?.data.waitingItems ?? []).map((current) => current.id === item.id ? { ...current, label } : current)
+      : (selectedNode?.data.waitingItems ?? []).filter((current) => current.id !== item.id))
+    setWaitingLabelDrafts((current) => {
+      const next = { ...current }
+      delete next[item.id]
+      return next
+    })
+  }
+
   const addDependency = () => {
     if (!selectedNode || !dependencyCandidate || mode !== 'editor') return
     if (createsDependencyCycle(selectedNode.id, dependencyCandidate, nodes)) {
@@ -1859,6 +1909,8 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
 
   useEffect(() => {
     setNewChecklistText('')
+    setNewWaitingLabel('')
+    setWaitingLabelDrafts({})
     setEditingChecklist(null)
     setChecklistTooltip(null)
     setDependencyCandidate('')
@@ -2138,6 +2190,10 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
           checklist: copiedData.checklist?.map((checklistItem, checklistIndex) => ({
             ...checklistItem,
             id: `check-${timestamp}-${nodeIndex}-${checklistIndex}`,
+          })),
+          waitingItems: copiedData.waitingItems?.map((waitingItem, waitingIndex) => ({
+            ...waitingItem,
+            id: `wait-${timestamp}-${nodeIndex}-${waitingIndex}`,
           })),
         },
       }
@@ -2458,6 +2514,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
           progress: 100,
           status: 'done' as const,
           checklist: node.data.checklist?.map((item) => ({ ...item, done: true })),
+          waitingItems: [],
         },
       }))
       const result = await apiRequest<{ map: MapDocument; summary: MapSummary }>(`/api/maps/${encodeURIComponent(mapId)}`, {
@@ -3031,6 +3088,9 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                   const rootProgress = hasLoadedActiveDocument ? activeRootState.progress : document.rootProgress
                   const rootStatus = hasLoadedActiveDocument ? activeRootState.status : document.rootStatus
                   const nodeCount = hasLoadedActiveDocument ? nodes.length : document.nodeCount
+                  const waitingCount = hasLoadedActiveDocument
+                    ? nodes.reduce((count, node) => count + (node.data.waitingItems ?? []).filter((item) => item.label.trim()).length, 0)
+                    : document.waitingCount
                   return (
                     <button
                     key={document.id}
@@ -3068,6 +3128,9 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                           <span className={`map-root-progress ${rootProgress === 100 ? 'complete' : ''}`}>
                             {rootProgress}%
                           </span>
+                        )}
+                        {waitingCount > 0 && (
+                          <span className="map-waiting-indicator" title={`대기 항목 ${waitingCount}건`} aria-label={`대기 항목 ${waitingCount}건`}>⏸️</span>
                         )}
                       </small>
                     </span>
@@ -3453,7 +3516,16 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                 </div>
                 <label>
                   <span>제목</span>
-                  <input value={selectedNode.data.label} onChange={(event) => updateNode(selectedNode.id, { label: event.target.value })} readOnly={mode === 'viewer'} />
+                  <input
+                    value={selectedNode.data.label}
+                    onChange={(event) => updateNode(selectedNode.id, { label: event.target.value })}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+                      event.preventDefault()
+                      event.currentTarget.blur()
+                    }}
+                    readOnly={mode === 'viewer'}
+                  />
                 </label>
                 <label className="description-field">
                   <span>업무 설명</span>
@@ -3673,6 +3745,86 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                             <div className="dependent-tags">{selectedDependents.map((node) => <span key={node.id}>{node.data.label}</span>)}</div>
                           </div>
                         )}
+                      </div>
+
+                      <div className="waiting-block" ref={waitingBlockRef}>
+                        <div className="waiting-heading">
+                          <div>
+                            <span>대기 항목</span>
+                            <small>외부 전달물이나 결정처럼 이 문서의 선행 업무로 표현할 수 없는 대기를 기록합니다.</small>
+                          </div>
+                          <strong className={(selectedNode.data.waitingItems ?? []).length > 0 ? 'active' : ''}>
+                            {(selectedNode.data.waitingItems ?? []).length > 0 ? `${selectedNode.data.waitingItems?.length}건` : '없음'}
+                          </strong>
+                        </div>
+                        <div className="waiting-items">
+                          {(selectedNode.data.waitingItems ?? []).map((item) => (
+                            <div className="waiting-item" key={item.id}>
+                              <div className="waiting-item-heading">
+                                <span aria-hidden="true">⏸️</span>
+                                <input
+                                  value={waitingLabelDrafts[item.id] ?? item.label}
+                                  onChange={(event) => setWaitingLabelDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
+                                  onBlur={() => commitWaitingLabel(item)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                                      event.preventDefault()
+                                      event.currentTarget.blur()
+                                    }
+                                  }}
+                                  placeholder="무엇을 기다리고 있나요?"
+                                  maxLength={120}
+                                  readOnly={mode === 'viewer'}
+                                  aria-label="대기 항목 이름"
+                                />
+                                {mode === 'editor' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => updateWaitingItems((selectedNode.data.waitingItems ?? []).filter((current) => current.id !== item.id))}
+                                    aria-label={`${item.label || '대기 항목'} 삭제`}
+                                  >
+                                    <Icon name="close" size={11} />
+                                  </button>
+                                )}
+                              </div>
+                              <input
+                                value={item.note ?? ''}
+                                onChange={(event) => updateWaitingItems((selectedNode.data.waitingItems ?? []).map((current) => (
+                                  current.id === item.id ? { ...current, note: event.target.value || undefined } : current
+                                )))}
+                                placeholder="메모 (선택)"
+                                maxLength={1000}
+                                readOnly={mode === 'viewer'}
+                                aria-label={`${item.label} 대기 메모`}
+                              />
+                              <input
+                                value={item.resumeCondition ?? ''}
+                                onChange={(event) => updateWaitingItems((selectedNode.data.waitingItems ?? []).map((current) => (
+                                  current.id === item.id ? { ...current, resumeCondition: event.target.value || undefined } : current
+                                )))}
+                                placeholder="재개 조건 (선택)"
+                                maxLength={500}
+                                readOnly={mode === 'viewer'}
+                                aria-label={`${item.label} 재개 조건`}
+                              />
+                              <small>{new Date(item.since).toLocaleString('ko-KR')}부터 대기</small>
+                            </div>
+                          ))}
+                          {(selectedNode.data.waitingItems ?? []).length === 0 && <div className="empty-waiting">현재 대기 중인 항목이 없습니다.</div>}
+                        </div>
+                        {mode === 'editor' && (
+                          <form className="waiting-add" onSubmit={(event) => { event.preventDefault(); addWaitingItem() }}>
+                            <input
+                              value={newWaitingLabel}
+                              onChange={(event) => setNewWaitingLabel(event.target.value)}
+                              placeholder="예: 서버 API 완료, 캐릭터 아트 전달"
+                              maxLength={120}
+                              disabled={selectedNode.data.progress >= 100}
+                            />
+                            <button type="submit" disabled={!newWaitingLabel.trim() || selectedNode.data.progress >= 100}><Icon name="plus" size={13} /></button>
+                          </form>
+                        )}
+                        <small className="waiting-help">대기 항목은 상태와 진행률을 바꾸지 않으며, 업무를 완료하면 자동으로 정리됩니다. 문서 내부 선행 업무는 위의 업무 의존성을 사용하세요.</small>
                       </div>
 
                       <div className="checklist-block">

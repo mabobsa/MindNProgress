@@ -174,7 +174,7 @@ async function main() {
     await client.connect(transport)
     const listedTools = await client.listTools()
     const registeredToolNames = listedTools.tools.map((tool) => tool.name).sort()
-    assert.equal(registeredToolNames.length, 31, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
+    assert.equal(registeredToolNames.length, 32, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
 
     const invoke = async (name, args = {}) => {
       calledTools.set(name, (calledTools.get(name) ?? 0) + 1)
@@ -198,8 +198,18 @@ async function main() {
       cards: [
         { key: 'root', label: '전체 회귀', kind: 'root', description: '루트 업무 https://example.com/root', taskUrl: 'https://example.com/root' },
         { key: 'branch-a', parentKey: 'root', label: '기능 A', kind: 'branch', sharedKnowledge: '기능 A의 재사용 가능한 결정과 결과' },
-        { key: 'branch-b', parentKey: 'root', label: '기능 B', kind: 'branch' },
-        { key: 'task-a', parentKey: 'branch-a', label: '업무 A', kind: 'task', isWork: true, status: 'in-progress', progress: 30, taskUrl: 'https://example.com/task-a' },
+        { key: 'branch-b', parentKey: 'root', label: '기능 B', kind: 'branch', sharedKnowledge: '현재 선택과 무관한 장문 지식 '.repeat(300) },
+        {
+          key: 'task-a',
+          parentKey: 'branch-a',
+          label: '업무 A',
+          kind: 'task',
+          isWork: true,
+          status: 'in-progress',
+          progress: 30,
+          taskUrl: 'https://example.com/task-a',
+          waitingItems: [{ label: '서버 API 완료', note: '응답 형식 확정 필요', resumeCondition: '개발 서버 배포' }],
+        },
       ],
     })
     const mapId = createdMindmap.document.id
@@ -213,10 +223,15 @@ async function main() {
 
     const documents = await invoke('mindnprogress_list_documents')
     assert.deepEqual(documents.maps.map((map) => map.id).sort(), [mapId, secondaryMapId].sort())
+    assert.equal(documents.maps.find((map) => map.id === mapId)?.waitingCount, 1)
 
     let documentResult = await invoke('mindnprogress_get_document', { mapId })
     assert.equal(documentResult.map.nodes.length, 4)
     assert.equal(documentResult.map.nodes.find((node) => node.id === 'branch-a')?.data.sharedKnowledge, '기능 A의 재사용 가능한 결정과 결과')
+    const createdWaitingItem = documentResult.map.nodes.find((node) => node.id === 'task-a')?.data.waitingItems?.[0]
+    assert.equal(createdWaitingItem?.label, '서버 API 완료')
+    assert.ok(createdWaitingItem?.id)
+    assert.ok(createdWaitingItem?.since)
     assert.equal(documentResult.access.documentUrl, `https://mindnprogress.test/mindmap/${mapId}`)
     assert.equal(documentResult.access.cards.find((card) => card.cardId === 'task-a')?.accessUrl, `https://mindnprogress.test/mindmap/${mapId}/task-a`)
     const loginResponse = await fetch(`${apiBaseUrl}/api/auth/login`, {
@@ -263,13 +278,38 @@ async function main() {
       editorId: attribution.editorId,
       attributionToken: attribution.attributionToken,
     })
+    assert.equal(context.contextSchemaVersion, '2.0')
+    assert.equal(context.detailLevel, 'focused')
+    assert.equal(context.document.nodes, undefined)
+    assert.equal(context.document.outline.length, 4)
+    assert.equal(context.document.outline.find((card) => card.id === 'task-a')?.parentId, 'branch-a')
+    assert.equal(context.document.outline.find((card) => card.id === 'task-a')?.waitingItems[0].resumeCondition, '개발 서버 배포')
     assert.equal(context.selection.card.id, 'task-a')
+    assert.equal(context.selection.card.data.waitingItems[0].note, '응답 형식 확정 필요')
+    assert.equal(context.selection.card.position, undefined)
     assert.equal(context.selection.taskLinks.available.length, 2)
     assert.equal(context.selection.taskLinks.startupInspection.mode, 'default')
     assert.equal(context.selection.taskLinks.startupInspection.conversationInspection.mode, 'not-applicable')
     assert.deepEqual(context.selection.taskLinks.startupInspection.conversationInspection.sources, [])
-    assert.equal(context.selection.knowledgeSources.all.length, 0)
+    assert.equal(context.selection.knowledgeSources.all, undefined)
     assert.equal(context.selection.accessUrl, `https://mindnprogress.test/mindmap/${mapId}/task-a`)
+    assert.equal(context.selection.commentsPage.total, 1)
+    assert.equal(context.selection.commentsPage.hasMore, false)
+    assert.ok(context.teamMembers.every((member) => member.lastLoginAt === undefined))
+
+    const fullContext = await invoke('mindnprogress_get_context', {
+      mapId,
+      cardId: 'task-a',
+      editorId: attribution.editorId,
+      attributionToken: attribution.attributionToken,
+      detailLevel: 'full',
+    })
+    assert.equal(fullContext.detailLevel, 'full')
+    assert.equal(fullContext.document.nodes.length, 4)
+    assert.equal(fullContext.document.outline, undefined)
+    assert.equal(fullContext.selection.knowledgeSources.all.length, 0)
+    assert.ok(JSON.stringify(context).length < JSON.stringify(fullContext).length)
+    assert.ok(JSON.stringify(context).length < 25_000, 'focused 컨텍스트가 크기 회귀 기준을 초과했습니다.')
 
     const completionResponse = await fetch(attribution.completionUrl, {
       method: 'POST',
@@ -405,6 +445,10 @@ async function main() {
     assert.deepEqual(knowledgeContext.selection.knowledgeSources.fallback.map((source) => source.card.id), ['root'])
     assert.equal(knowledgeContext.selection.knowledgeSources.primary[0].card.data.sharedKnowledge, '기능 A의 재사용 가능한 결정과 결과')
     assert.equal(knowledgeContext.selection.knowledgeSources.primary[0].comments[0].id, knowledgeComment.comment.id)
+    assert.equal(knowledgeContext.selection.knowledgeSources.primary[0].commentsPage.total, 1)
+    assert.equal(knowledgeContext.selection.knowledgeSources.fallback[0].card.data, undefined)
+    assert.deepEqual(knowledgeContext.selection.knowledgeSources.fallback[0].detailToolArguments, { mapId, cardId: 'root' })
+    assert.equal(knowledgeContext.selection.knowledgeSources.all, undefined)
     assert.deepEqual(knowledgeContext.selection.taskLinks.startupInspection.targets.map((target) => target.url), ['https://example.com/task-a'])
     assert.deepEqual(knowledgeContext.selection.taskLinks.startupInspection.fallbackTargets.map((target) => target.url), ['https://example.com/root'])
     assert.deepEqual(knowledgeContext.selection.taskLinks.startupInspection.conversationInspection, {
@@ -427,6 +471,31 @@ async function main() {
       evidenceRule: '대화 내용은 보조 근거로 취급합니다. 실제 코드와 산출물로 검증하고, 대화 전문을 댓글이나 sharedKnowledge에 복사하지 말며, 검증된 재사용 가능 결론만 sharedKnowledge에 요약하세요.',
     })
 
+    const cardDetail = await invoke('mindnprogress_get_card', {
+      mapId,
+      cardId: 'task-a',
+      commentLimit: 1,
+      commentOrder: 'desc',
+    })
+    assert.equal(cardDetail.card.id, 'task-a')
+    assert.equal(cardDetail.card.position, undefined)
+    assert.equal(cardDetail.comments.length, 1)
+    assert.ok(cardDetail.commentsPage.total >= 2)
+    assert.equal(cardDetail.commentsPage.hasMore, true)
+    assert.equal(cardDetail.accessUrl, `https://mindnprogress.test/mindmap/${mapId}/task-a`)
+
+    const commentPage = await invoke('mindnprogress_list_comments', {
+      mapId,
+      nodeId: 'task-a',
+      offset: 0,
+      limit: 1,
+      order: 'desc',
+    })
+    assert.equal(commentPage.comments.length, 1)
+    assert.ok(commentPage.total >= 2)
+    assert.equal(commentPage.hasMore, true)
+    assert.equal(commentPage.nextOffset, 1)
+
     const history = await invoke('mindnprogress_list_history', { mapId, limit: 1 })
     assert.equal(history.revisions.length, 1)
     assert.equal(history.hasMore, true)
@@ -446,6 +515,23 @@ async function main() {
     assert.ok(addedCard)
     assert.equal(addedCard.data.sharedKnowledge, '')
 
+    const waitingCardResult = await invoke('mindnprogress_update_card', {
+      mapId,
+      nodeId: addedCard.id,
+      data: {
+        kind: 'task',
+        isWork: true,
+        status: 'in-progress',
+        progress: 40,
+        waitingItems: [{ label: '캐릭터 아트 전달', resumeCondition: '최종 PNG 수령' }],
+      },
+    })
+    const waitingCard = waitingCardResult.map.nodes.find((node) => node.id === addedCard.id)
+    assert.equal(waitingCard.data.label, '추가 카드')
+    assert.equal(waitingCard.data.waitingItems[0].label, '캐릭터 아트 전달')
+    assert.ok(waitingCard.data.waitingItems[0].id)
+    assert.ok(waitingCard.data.waitingItems[0].since)
+
     const updatedCardResult = await invoke('mindnprogress_update_card', {
       mapId,
       nodeId: addedCard.id,
@@ -457,6 +543,7 @@ async function main() {
     })
     const updatedCard = updatedCardResult.map.nodes.find((node) => node.id === addedCard.id)
     assert.equal(updatedCard.data.progress, 100)
+    assert.deepEqual(updatedCard.data.waitingItems, [])
     assert.equal(updatedCard.data.sharedKnowledge, '후속 카드가 재사용할 완료 결과')
     assert.equal(updatedCard.data.sharedKnowledgeUpdatedBy.name, 'Claude Code(Claude Test Model)')
     assert.ok(updatedCard.data.sharedKnowledgeUpdatedAt)

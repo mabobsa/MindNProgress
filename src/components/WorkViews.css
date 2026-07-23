@@ -30,6 +30,7 @@
 .work-card-top { display: flex; align-items: center; gap: 6px; }
 .work-chip { padding: 2px 5px; color: #6255c2; border-radius: 4px; background: #efecfc; font-size: 7px; font-weight: 750; }
 .blocked-chip, .blocked-badge { padding: 2px 5px; color: #b34848; border: 1px solid #f0cccc; border-radius: 4px; background: #fff0f0; font-size: 7px; font-weight: 750; white-space: nowrap; }
+.waiting-chip, .waiting-badge { max-width: 120px; overflow: hidden; padding: 2px 5px; color: #9a6a1d; border: 1px solid #ecd9ae; border-radius: 4px; background: #fff9e9; font-size: 7px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .work-card-top strong { margin-left: auto; color: #7569c9; font-size: 8px; }
 .work-card h3 { margin: 9px 0 4px; overflow: hidden; color: #3b3542; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .work-card p { margin: 0; overflow: hidden; color: #9e98a4; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
@@ -64,6 +65,7 @@
 .timeline-content > div:first-child { display: flex; align-items: center; gap: 7px; }
 .timeline-content > div:first-child span { padding: 2px 5px; color: #6c5fc8; border-radius: 4px; background: #f0edfb; font-size: 7px; }
 .timeline-content > div:first-child .blocked-badge { color: #b34848; border: 1px solid #f0cccc; background: #fff0f0; }
+.timeline-content > div:first-child .waiting-badge { color: #9a6a1d; border: 1px solid #ecd9ae; background: #fff9e9; }
 .timeline-content > div:first-child strong { overflow: hidden; color: #453f4b; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-content p { margin: 5px 0 8px; overflow: hidden; color: #a09aa6; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-progress { height: 3px; overflow: hidden; border-radius: 3px; background: #eeecf1; }
@@ -71,7 +73,7 @@
 .timeline-meta { min-width: 38px; display: flex; flex-direction: column; align-items: center; gap: 5px; }
 .timeline-meta > strong { color: #7e7786; font-size: 8px; }
 
-.metric-grid { display: grid; grid-template-columns: repeat(5, minmax(105px, 1fr)); gap: 10px; margin-bottom: 13px; }
+.metric-grid { display: grid; grid-template-columns: repeat(6, minmax(105px, 1fr)); gap: 10px; margin-bottom: 13px; }
 .metric-card { min-width: 0; padding: 15px; color: inherit; border: 1px solid #e6e3ea; border-radius: 11px; outline: 0; background: white; box-shadow: 0 4px 14px rgba(54,45,85,.04); text-align: left; cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .15s; }
 .metric-card:hover { border-color: #cbc5e6; box-shadow: 0 7px 18px rgba(54,45,85,.08); transform: translateY(-1px); }
 .metric-card:focus-visible { box-shadow: 0 0 0 3px rgba(103,88,210,.16); }
@@ -85,6 +87,9 @@
 .metric-card.blocked-metric { border-color: #efd2cc; background: #fff9f7; }
 .metric-card.blocked-metric.selected { border-color: #c96b62; }
 .metric-card.blocked-metric > strong { color: #c24f46; }
+.metric-card.waiting-metric { border-color: #ead9b4; background: #fffbf1; }
+.metric-card.waiting-metric.selected { border-color: #c69b45; }
+.metric-card.waiting-metric > strong { color: #ad7a1f; }
 .dashboard-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding-bottom: 25px; }
 .dashboard-panels > section { padding: 16px; border: 1px solid #e6e3ea; border-radius: 11px; background: white; box-shadow: 0 4px 14px rgba(54,45,85,.04); }
 .progress-overview { grid-row: span 2; }

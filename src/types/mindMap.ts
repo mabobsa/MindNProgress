@@ -4,6 +4,14 @@ export type ChecklistItem = {
   done: boolean
 }
 
+export type WaitingItem = {
+  id: string
+  label: string
+  note?: string
+  resumeCondition?: string
+  since: string
+}
+
 export type TeamMember = {
   id: string
   name: string
@@ -46,6 +54,7 @@ export type MindNodeData = {
   dueDate?: string
   checklist?: ChecklistItem[]
   blockedBy?: string[]
+  waitingItems?: WaitingItem[]
   unresolvedDependencyCount?: number
   commentCount?: number
   unresolvedCommentCount?: number
@@ -53,4 +62,5 @@ export type MindNodeData = {
   collapsed?: boolean
   hiddenDescendantCount?: number
   onToggleCollapse?: () => void
+  onOpenWaitingItems?: () => void
 }

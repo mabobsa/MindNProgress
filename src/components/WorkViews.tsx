@@ -8,7 +8,7 @@ import './WorkViews.css'
 type WorkNode = Node<MindNodeData, 'mind'>
 type AccessMode = 'editor' | 'viewer'
 type WorkStatus = MindNodeData['status']
-type DashboardMetric = 'all' | 'done' | 'in-progress' | 'overdue' | 'blocked'
+type DashboardMetric = 'all' | 'done' | 'in-progress' | 'overdue' | 'blocked' | 'waiting'
 
 type WorkViewProps = {
   nodes: WorkNode[]
@@ -45,6 +45,23 @@ function isOverdue(node: WorkNode) {
   return Boolean(node.data.dueDate && effectiveStatus(node) !== 'done' && new Date(`${node.data.dueDate}T23:59:59`) < new Date())
 }
 
+function waitingItemsFor(node: WorkNode) {
+  return (node.data.waitingItems ?? []).filter((item) => item.label.trim())
+}
+
+function waitingSummary(node: WorkNode) {
+  const waitingItems = waitingItemsFor(node)
+  return waitingItems.length === 1 ? `${waitingItems[0].label} 대기` : `대기 ${waitingItems.length}건`
+}
+
+function waitingTitle(node: WorkNode) {
+  return waitingItemsFor(node).map((item) => [
+    item.label,
+    item.note,
+    item.resumeCondition ? `재개 조건: ${item.resumeCondition}` : '',
+  ].filter(Boolean).join(' · ')).join('\n')
+}
+
 function EmptyWorkView({ onOpenMindMap }: { onOpenMindMap: () => void }) {
   return (
     <div className="work-view-empty">
@@ -60,6 +77,7 @@ function WorkCard({ node, teamMembers, blockedCount, selected, draggable, onSele
   const assignee = assigneeFor(node, teamMembers)
   const checklist = node.data.checklist ?? []
   const completed = checklist.filter((item) => item.done).length
+  const waitingCount = waitingItemsFor(node).length
 
   return (
     <article
@@ -74,6 +92,7 @@ function WorkCard({ node, teamMembers, blockedCount, selected, draggable, onSele
       <div className="work-card-top">
         <span className="work-chip">업무</span>
         {blockedCount > 0 && <span className="blocked-chip">차단됨 {blockedCount}</span>}
+        {waitingCount > 0 && <span className="waiting-chip" title={waitingTitle(node)}>⏸️ {waitingSummary(node)}</span>}
         <strong>{node.data.progress}%</strong>
       </div>
       <h3>{node.data.label}</h3>
@@ -190,6 +209,7 @@ export function TimelineView({ nodes, selectedId, onSelect, onOpenMindMap, onCon
           const assignee = assigneeFor(node, teamMembers)
           const status = effectiveStatus(node)
           const blockedCount = blockingNodes(node, nodes).length
+          const waitingCount = waitingItemsFor(node).length
           return (
             <button className={`timeline-item ${status} ${blockedCount > 0 ? 'blocked' : ''} ${selectedId === node.id ? 'selected' : ''}`} key={node.id} onClick={() => onSelect(node.id)} onContextMenu={(event) => onContextMenu(event, node.id)}>
               <div className={`timeline-date ${isOverdue(node) ? 'overdue' : ''}`}>
@@ -198,7 +218,7 @@ export function TimelineView({ nodes, selectedId, onSelect, onOpenMindMap, onCon
               </div>
               <span className="timeline-dot" />
               <div className="timeline-content">
-                <div><span>{status === 'done' ? '완료' : status === 'in-progress' ? '진행 중' : '예정'}</span>{blockedCount > 0 && <span className="blocked-badge">차단됨 {blockedCount}</span>}<strong>{node.data.label}</strong></div>
+                <div><span>{status === 'done' ? '완료' : status === 'in-progress' ? '진행 중' : '예정'}</span>{blockedCount > 0 && <span className="blocked-badge">차단됨 {blockedCount}</span>}{waitingCount > 0 && <span className="waiting-badge" title={waitingTitle(node)}>⏸️ {waitingSummary(node)}</span>}<strong>{node.data.label}</strong></div>
                 <p>{node.data.description}</p>
                 <div className="timeline-progress"><span style={{ width: `${node.data.progress}%` }} /></div>
               </div>
@@ -223,8 +243,9 @@ export function DashboardView({ nodes, selectedId, onSelect, onOpenMindMap, onCo
     const planned = workNodes.filter((node) => effectiveStatus(node) === 'planned').length
     const overdue = workNodes.filter(isOverdue).length
     const blocked = workNodes.filter((node) => blockingNodes(node, nodes).length > 0).length
+    const waiting = workNodes.filter((node) => waitingItemsFor(node).length > 0).length
     const average = workNodes.length ? Math.round(workNodes.reduce((sum, node) => sum + node.data.progress, 0) / workNodes.length) : 0
-    return { completed, inProgress, planned, overdue, blocked, average }
+    return { completed, inProgress, planned, overdue, blocked, waiting, average }
   }, [nodes, workNodes])
 
   if (workNodes.length === 0) return <EmptyWorkView onOpenMindMap={onOpenMindMap} />
@@ -239,6 +260,7 @@ export function DashboardView({ nodes, selectedId, onSelect, onOpenMindMap, onCo
     { id: 'in-progress', label: '진행 중', value: metrics.inProgress, description: '실행 중인 업무', className: 'violet' },
     { id: 'overdue', label: '기한 초과', value: metrics.overdue, description: '확인이 필요합니다', className: metrics.overdue ? 'red' : undefined },
     { id: 'blocked', label: '차단됨', value: metrics.blocked, description: '선행 업무 대기', className: metrics.blocked ? 'blocked-metric' : undefined },
+    { id: 'waiting', label: '대기 중', value: metrics.waiting, description: '외부 전달·결정 대기', className: metrics.waiting ? 'waiting-metric' : undefined },
   ]
   const selectedMetricCard = metricCards.find((metric) => metric.id === selectedMetric) ?? null
   const selectedMetricNodes = selectedMetric === 'done'
@@ -249,6 +271,8 @@ export function DashboardView({ nodes, selectedId, onSelect, onOpenMindMap, onCo
         ? workNodes.filter(isOverdue)
         : selectedMetric === 'blocked'
           ? workNodes.filter((node) => blockingNodes(node, nodes).length > 0)
+          : selectedMetric === 'waiting'
+            ? workNodes.filter((node) => waitingItemsFor(node).length > 0)
           : selectedMetric === 'all' ? workNodes : []
 
   return (

@@ -29,6 +29,7 @@ const productGuide = {
   },
   dataModel: {
     document: '하나의 마인드맵. 제목, 아이콘 색상, 버전, 카드(nodes), 계층선과 지식선(edges)을 가짐',
+    documentLayout: '좌측 목록에서 개별 문서와 1단계 그룹을 섞어 배치하는 구조. 그룹 안에는 문서 ID와 순서를 저장하며 그룹 중첩은 지원하지 않음',
     hierarchy: 'data.relation이 knowledge가 아닌 edge에서 source가 상위 카드이고 target이 하위 카드임. 루트 카드는 문서당 하나를 권장',
     knowledgeLine: 'data.relation=knowledge인 edge는 source 카드의 결과를 target 카드가 선행 지식으로 사용함. knowledgePolicy는 reuse-first 또는 inspect-if-insufficient',
     cardContent: {
@@ -76,6 +77,7 @@ const productGuide = {
     'get_context의 startupInspection.mode가 knowledge-guided이면 주요 선행 지식을 먼저 활용하고 fallback은 정보가 부족할 때만 조사',
     'startupInspection.mode가 default이고 조사가 요구되면 실제 작업 전에 선택 카드와 최상위 카드의 업무 링크를 조사하되 특정 첨부나 자료가 있다고 가정하지 않음',
     '여러 카드로 새 문서를 만들 때 mindnprogress_create_mindmap을 한 번만 호출',
+    '문서 그룹이나 혼합 순서를 변경할 때 먼저 전체 문서와 documentLayout을 조회하고 모든 활성 문서를 정확히 한 번 유지',
     'create_document 후 save_document를 연속 호출해 전체 구조를 만들지 않음',
     '기존 문서 변경은 최신 version을 기준으로 수행하고 버전 충돌 시 최신 상태를 다시 조회',
     '변경 후 mindnprogress_get_document로 저장 결과를 검증하고 실제 변경 내용을 요약',
@@ -326,6 +328,18 @@ const waitingItemSchema = z.object({
   resumeCondition: z.string().max(500).optional(),
   since: z.string().datetime().optional(),
 })
+const documentLayoutSchema = z.object({
+  version: z.literal(1),
+  items: z.array(z.discriminatedUnion('type', [
+    z.object({ type: z.literal('map'), id: z.string().min(1) }),
+    z.object({ type: z.literal('group'), id: z.string().regex(/^group-[a-zA-Z0-9_-]{1,100}$/) }),
+  ])).max(1100),
+  groups: z.array(z.object({
+    id: z.string().regex(/^group-[a-zA-Z0-9_-]{1,100}$/),
+    name: z.string().min(1).max(80),
+    mapIds: z.array(z.string().min(1)).max(1000),
+  })).max(100),
+})
 const nodeDataSchema = z.object({
   label: z.string().min(1),
   description: z.string().default(''),
@@ -466,7 +480,7 @@ function buildMapFromOutline(cards) {
 async function main() {
   const server = new McpServer({ name: 'MindNProgress', version: '1.0.0' }, { instructions: serverInstructions })
 
-  registerTool(server, 'mindnprogress_list_documents', '활성 문서 목록과 버전, 완료 현황을 조회합니다.', {}, async () =>
+  registerTool(server, 'mindnprogress_list_documents', '활성 문서 목록과 버전, 완료 현황 및 좌측 목록의 문서 그룹·혼합 순서를 조회합니다.', {}, async () =>
     apiRequest('/api/maps'))
 
   registerTool(server, 'mindnprogress_read_me_first', 'MindNProgress를 처음 사용하거나 MindNProgress 밖에서 대화를 시작했다면 가장 먼저 읽어야 하는 제품 가이드입니다. 문서 ID 없이 호출할 수 있으며 마인드맵 작성 규칙과 안전한 도구 사용 순서를 알려줍니다.', {}, async () => ({
@@ -953,6 +967,13 @@ async function main() {
   registerTool(server, 'mindnprogress_reorder_documents', '좌측 보드의 문서 순서를 변경합니다.', {
     mapIds: z.array(z.string()).min(1),
   }, async ({ mapIds }) => apiRequest('/api/maps/order', { method: 'PATCH', body: JSON.stringify({ mapIds }) }))
+
+  registerTool(server, 'mindnprogress_save_document_layout', '좌측 목록의 그룹, 그룹 안 문서 순서, 그룹과 개별 문서가 섞인 최상위 순서를 저장합니다. 먼저 mindnprogress_list_documents로 현재 documentLayout과 전체 문서 ID를 확인하고, 모든 활성 문서를 정확히 한 번 포함하세요.', {
+    documentLayout: documentLayoutSchema,
+  }, async ({ documentLayout }) => apiRequest('/api/maps/layout', {
+    method: 'PATCH',
+    body: JSON.stringify({ documentLayout }),
+  }))
 
   registerTool(server, 'mindnprogress_move_document_to_trash', '문서를 휴지통으로 이동합니다.', mapIdSchema, async ({ mapId }) =>
     apiRequest(`/api/maps/${encodeURIComponent(mapId)}`, { method: 'DELETE' }))

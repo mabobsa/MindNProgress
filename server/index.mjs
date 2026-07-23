@@ -573,7 +573,8 @@ async function listMaps({ trashedOnly = false } = {}) {
   if (trashedOnly) {
     return summaries.sort((first, second) => String(second.trashedAt ?? '').localeCompare(String(first.trashedAt ?? '')))
   }
-  const savedOrder = await readMapOrder()
+  const documentLayout = await readDocumentLayout(summaries.map((map) => map.id))
+  const savedOrder = flattenDocumentLayout(documentLayout)
   const orderIndex = new Map(savedOrder.map((mapId, index) => [mapId, index]))
   return summaries.sort((first, second) => {
       const firstIndex = orderIndex.get(first.id)
@@ -587,21 +588,129 @@ async function listMaps({ trashedOnly = false } = {}) {
     })
 }
 
-async function readMapOrder() {
+function defaultDocumentLayout(mapIds) {
+  return {
+    version: 1,
+    items: mapIds.map((id) => ({ type: 'map', id })),
+    groups: [],
+  }
+}
+
+function isValidDocumentGroupId(groupId) {
+  return typeof groupId === 'string' && /^group-[a-zA-Z0-9_-]{1,100}$/.test(groupId)
+}
+
+function normalizeDocumentLayout(value, mapIds) {
+  const existingMapIds = new Set(mapIds)
+  if (Array.isArray(value)) {
+    const orderedIds = [...new Set(value.filter((mapId) => typeof mapId === 'string' && existingMapIds.has(mapId)))]
+    return defaultDocumentLayout([...orderedIds, ...mapIds.filter((mapId) => !orderedIds.includes(mapId))])
+  }
+  if (!value || typeof value !== 'object') return defaultDocumentLayout(mapIds)
+
+  const usedMapIds = new Set()
+  const groups = []
+  const groupsById = new Map()
+  for (const candidate of Array.isArray(value.groups) ? value.groups : []) {
+    const id = candidate?.id
+    const name = typeof candidate?.name === 'string' ? candidate.name.trim() : ''
+    if (!isValidDocumentGroupId(id) || !name || name.length > 80 || groupsById.has(id)) continue
+    const group = {
+      id,
+      name,
+      mapIds: [...new Set((Array.isArray(candidate.mapIds) ? candidate.mapIds : [])
+        .filter((mapId) => typeof mapId === 'string' && existingMapIds.has(mapId) && !usedMapIds.has(mapId)))],
+    }
+    group.mapIds.forEach((mapId) => usedMapIds.add(mapId))
+    groups.push(group)
+    groupsById.set(id, group)
+  }
+
+  const items = []
+  const usedGroupIds = new Set()
+  for (const candidate of Array.isArray(value.items) ? value.items : []) {
+    if (candidate?.type === 'group' && groupsById.has(candidate.id) && !usedGroupIds.has(candidate.id)) {
+      items.push({ type: 'group', id: candidate.id })
+      usedGroupIds.add(candidate.id)
+    } else if (candidate?.type === 'map'
+      && existingMapIds.has(candidate.id)
+      && !usedMapIds.has(candidate.id)) {
+      items.push({ type: 'map', id: candidate.id })
+      usedMapIds.add(candidate.id)
+    }
+  }
+
+  groups.forEach((group) => {
+    if (!usedGroupIds.has(group.id)) items.push({ type: 'group', id: group.id })
+  })
+  mapIds.forEach((mapId) => {
+    if (!usedMapIds.has(mapId)) items.push({ type: 'map', id: mapId })
+  })
+  return { version: 1, items, groups }
+}
+
+function flattenDocumentLayout(layout) {
+  const groupsById = new Map(layout.groups.map((group) => [group.id, group]))
+  return layout.items.flatMap((item) => item.type === 'map'
+    ? [item.id]
+    : groupsById.get(item.id)?.mapIds ?? [])
+}
+
+function isCompleteDocumentLayout(layout, mapIds) {
+  if (!layout || layout.version !== 1 || !Array.isArray(layout.items) || !Array.isArray(layout.groups)) return false
+  if (layout.groups.length > 100 || layout.items.length > mapIds.length + layout.groups.length) return false
+  const groupIds = new Set()
+  const assignedMapIds = new Set()
+  for (const group of layout.groups) {
+    if (!isValidDocumentGroupId(group?.id)
+      || groupIds.has(group.id)
+      || typeof group.name !== 'string'
+      || !group.name.trim()
+      || group.name.trim().length > 80
+      || !Array.isArray(group.mapIds)) return false
+    groupIds.add(group.id)
+    for (const mapId of group.mapIds) {
+      if (typeof mapId !== 'string' || assignedMapIds.has(mapId)) return false
+      assignedMapIds.add(mapId)
+    }
+  }
+  const listedGroupIds = new Set()
+  for (const item of layout.items) {
+    if (item?.type === 'group') {
+      if (!groupIds.has(item.id) || listedGroupIds.has(item.id)) return false
+      listedGroupIds.add(item.id)
+    } else if (item?.type === 'map') {
+      if (typeof item.id !== 'string' || assignedMapIds.has(item.id)) return false
+      assignedMapIds.add(item.id)
+    } else {
+      return false
+    }
+  }
+  return listedGroupIds.size === groupIds.size
+    && assignedMapIds.size === mapIds.length
+    && mapIds.every((mapId) => assignedMapIds.has(mapId))
+}
+
+async function readDocumentLayout(mapIds) {
   try {
-    const order = JSON.parse(await readFile(mapOrderFile, 'utf8'))
-    return Array.isArray(order) ? order.filter((mapId) => typeof mapId === 'string' && isValidMapId(mapId)) : []
+    return normalizeDocumentLayout(JSON.parse(await readFile(mapOrderFile, 'utf8')), mapIds)
   } catch (error) {
-    if (error?.code === 'ENOENT') return []
+    if (error?.code === 'ENOENT') return defaultDocumentLayout(mapIds)
     throw error
   }
 }
 
-async function writeMapOrder(mapIds) {
+async function writeDocumentLayout(layout) {
   await mkdir(dataDirectory, { recursive: true })
   const temporaryFile = `${mapOrderFile}.${randomBytes(6).toString('hex')}.tmp`
-  await writeFile(temporaryFile, `${JSON.stringify(mapIds, null, 2)}\n`, 'utf8')
+  await writeFile(temporaryFile, `${JSON.stringify(layout, null, 2)}\n`, 'utf8')
   await replaceFileWithRetry(temporaryFile, mapOrderFile)
+}
+
+async function reconcileDocumentLayout(mapIds) {
+  const layout = await readDocumentLayout(mapIds)
+  await writeDocumentLayout(layout)
+  return layout
 }
 
 async function writeStoredMap(mapId, payload) {
@@ -1635,9 +1744,8 @@ async function permanentlyDeleteTrashedMaps(mapIds) {
       if (remaining.length !== notifications.length) await writeStoredArray(filePath, remaining)
     }))
 
-  const mapOrder = await readMapOrder()
-  const nextMapOrder = mapOrder.filter((mapId) => !deletedMapIds.has(mapId))
-  if (nextMapOrder.length !== mapOrder.length) await writeMapOrder(nextMapOrder)
+  const remainingMaps = await listMaps()
+  await reconcileDocumentLayout(remainingMaps.map((map) => map.id))
   return uniqueMapIds
 }
 
@@ -2263,7 +2371,11 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/maps') {
       const user = requireUser(request, response)
       if (!user) return
-      return sendJson(response, 200, { maps: await listMaps() })
+      const maps = await listMaps()
+      return sendJson(response, 200, {
+        maps,
+        documentLayout: await readDocumentLayout(maps.map((map) => map.id)),
+      })
     }
 
     if (request.method === 'GET' && url.pathname === '/api/maps/trash') {
@@ -2318,9 +2430,33 @@ const server = createServer(async (request, response) => {
       if (body.color !== undefined && !mapColors.includes(body.color)) return sendJson(response, 400, { error: '올바르지 않은 문서 색상입니다.' })
       const mapId = `map-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
       const map = await saveMap(mapId, body.map, user, body.title, body.color)
-      await writeMapOrder((await listMaps()).map((item) => item.id))
+      const maps = await listMaps()
+      const documentLayout = await reconcileDocumentLayout(maps.map((item) => item.id))
       broadcastMapChange(request, mapId, 'created', user)
-      return sendJson(response, 201, { map, summary: mapSummary(map) })
+      return sendJson(response, 201, { map, summary: mapSummary(map), documentLayout })
+    }
+
+    if (request.method === 'PATCH' && url.pathname === '/api/maps/layout') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '뷰어는 문서 그룹과 순서를 변경할 수 없습니다.' })
+      const body = await readJsonBody(request)
+      const maps = await listMaps()
+      const mapIds = maps.map((map) => map.id)
+      if (!isCompleteDocumentLayout(body.documentLayout, mapIds)) {
+        return sendJson(response, 400, { error: '문서 그룹과 순서 데이터가 올바르지 않습니다.' })
+      }
+      const documentLayout = normalizeDocumentLayout(body.documentLayout, mapIds)
+      await writeDocumentLayout(documentLayout)
+      broadcastEvent({
+        type: 'map-changed',
+        mapId: null,
+        action: 'layout',
+        sourceClientId: requestClientId(request),
+        updatedAt: new Date().toISOString(),
+        updatedBy: publicUser(user),
+      })
+      return sendJson(response, 200, { maps: await listMaps(), documentLayout })
     }
 
     if (request.method === 'PATCH' && url.pathname === '/api/maps/order') {
@@ -2333,7 +2469,28 @@ const server = createServer(async (request, response) => {
       const hasSameMaps = requestedIds.length === existingIds.length
         && requestedIds.every((mapId) => typeof mapId === 'string' && existingIds.includes(mapId))
       if (!hasSameMaps) return sendJson(response, 400, { error: '문서 순서 데이터가 올바르지 않습니다.' })
-      await writeMapOrder(requestedIds)
+      const orderIndex = new Map(requestedIds.map((mapId, index) => [mapId, index]))
+      const currentLayout = await readDocumentLayout(existingIds)
+      const groups = currentLayout.groups.map((group) => ({
+        ...group,
+        mapIds: [...group.mapIds].sort((first, second) => orderIndex.get(first) - orderIndex.get(second)),
+      }))
+      const groupsById = new Map(groups.map((group) => [group.id, group]))
+      const documentLayout = {
+        version: 1,
+        groups,
+        items: currentLayout.items
+          .map((item, index) => ({
+            item,
+            index,
+            order: item.type === 'map'
+              ? orderIndex.get(item.id)
+              : Math.min(...(groupsById.get(item.id)?.mapIds ?? []).map((mapId) => orderIndex.get(mapId)), Number.MAX_SAFE_INTEGER),
+          }))
+          .sort((first, second) => first.order - second.order || first.index - second.index)
+          .map(({ item }) => item),
+      }
+      await writeDocumentLayout(documentLayout)
       broadcastEvent({
         type: 'map-changed',
         mapId: null,
@@ -2342,7 +2499,7 @@ const server = createServer(async (request, response) => {
         updatedAt: new Date().toISOString(),
         updatedBy: publicUser(user),
       })
-      return sendJson(response, 200, { maps: await listMaps() })
+      return sendJson(response, 200, { maps: await listMaps(), documentLayout })
     }
 
     const commentReactionRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/comments\/([^/]+)\/reactions$/)
@@ -2662,12 +2819,13 @@ const server = createServer(async (request, response) => {
       const map = await restoreMap(mapId, user)
       if (!map) return sendJson(response, 404, { error: '휴지통에서 문서를 찾을 수 없습니다.' })
       const maps = await listMaps()
-      await writeMapOrder(maps.map((item) => item.id))
+      const documentLayout = await reconcileDocumentLayout(maps.map((item) => item.id))
       broadcastMapChange(request, mapId, 'trash-restored', user)
       return sendJson(response, 200, {
         map,
         summary: mapSummary(map),
         maps,
+        documentLayout,
         trash: await listMaps({ trashedOnly: true }),
       })
     }
@@ -2755,11 +2913,13 @@ const server = createServer(async (request, response) => {
         if (maps.length <= 1) return sendJson(response, 409, { error: '마지막 문서는 휴지통으로 이동할 수 없습니다.' })
         const map = await trashMap(mapId, user)
         if (!map) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
-        await writeMapOrder(maps.filter((item) => item.id !== mapId).map((item) => item.id))
+        const remainingMaps = maps.filter((item) => item.id !== mapId)
+        const documentLayout = await reconcileDocumentLayout(remainingMaps.map((item) => item.id))
         broadcastMapChange(request, mapId, 'trashed', user)
         return sendJson(response, 200, {
           trashedId: mapId,
           maps: await listMaps(),
+          documentLayout,
           trash: await listMaps({ trashedOnly: true }),
         })
       }

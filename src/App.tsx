@@ -313,6 +313,30 @@ type MapSummary = {
   trashedBy?: AuthUser | null
 }
 
+type DocumentGroup = {
+  id: string
+  name: string
+  mapIds: string[]
+}
+
+type DocumentLayoutItem = {
+  type: 'map' | 'group'
+  id: string
+}
+
+type DocumentLayout = {
+  version: 1
+  items: DocumentLayoutItem[]
+  groups: DocumentGroup[]
+}
+
+type DocumentLibraryResponse = {
+  maps: MapSummary[]
+  documentLayout: DocumentLayout
+}
+
+const EMPTY_DOCUMENT_LAYOUT: DocumentLayout = { version: 1, items: [], groups: [] }
+
 type MapDocument = {
   id: string
   title: string
@@ -633,6 +657,7 @@ function formatDocumentDate(value: string | null | undefined) {
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const paths: Record<string, ReactNode> = {
     map: <><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="m7 7.2 2.8 2.7M14.2 10l3.1-3.2M14.5 13.5l2.8 3.5"/></>,
+    folder: <path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>,
     plus: <path d="M12 5v14M5 12h14"/>,
     fit: <><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></>,
     trash: <><path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7V4h6v3"/></>,
@@ -973,6 +998,15 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const [nodeLinkCopyStatus, setNodeLinkCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [viewMode, setViewMode] = useState<ViewMode>(initialDeepLink?.viewMode ?? 'mindmap')
   const [documents, setDocuments] = useState<MapSummary[]>([])
+  const [documentLayout, setDocumentLayout] = useState<DocumentLayout>(EMPTY_DOCUMENT_LAYOUT)
+  const [collapsedDocumentGroupIds, setCollapsedDocumentGroupIds] = useState<Set<string>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(`mindnprogress-collapsed-document-groups:${user.id}`) ?? '[]')
+      return new Set(Array.isArray(saved) ? saved.filter((groupId) => typeof groupId === 'string') : [])
+    } catch {
+      return new Set()
+    }
+  })
   const [trashedDocuments, setTrashedDocuments] = useState<MapSummary[]>([])
   const [selectedTrashIds, setSelectedTrashIds] = useState<Set<string>>(() => new Set())
   const [trashDeleting, setTrashDeleting] = useState(false)
@@ -1012,7 +1046,9 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const [assigneeFilter, setAssigneeFilter] = useState('all')
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(() => new Set())
   const [creatingMap, setCreatingMap] = useState(false)
+  const [creatingGroup, setCreatingGroup] = useState(false)
   const [newMapTitle, setNewMapTitle] = useState('')
+  const [newGroupName, setNewGroupName] = useState('')
   const [renamingMap, setRenamingMap] = useState(false)
   const [renameTitle, setRenameTitle] = useState('')
   const [newChecklistText, setNewChecklistText] = useState('')
@@ -1029,17 +1065,23 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   const [documentContextMenu, setDocumentContextMenu] = useState<{ x: number; y: number; mapId: string } | null>(null)
   const [aiConversationContextMenu, setAiConversationContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [copiedNodes, setCopiedNodes] = useState<CopiedNodes | null>(null)
-  const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
+  const [draggingLibraryItem, setDraggingLibraryItem] = useState<DocumentLayoutItem | null>(null)
   const [documentDropTargetId, setDocumentDropTargetId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [rightPanning, setRightPanning] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const savedWidth = Number(localStorage.getItem('mindnprogress-sidebar-width'))
+    return Number.isFinite(savedWidth) ? Math.min(420, Math.max(190, savedWidth)) : 226
+  })
   const [inspectorWidth, setInspectorWidth] = useState(() => {
     const savedWidth = Number(localStorage.getItem('mindnprogress-inspector-width'))
-    return Number.isFinite(savedWidth) && savedWidth >= 240 ? savedWidth : 278
+    return Number.isFinite(savedWidth) ? Math.min(520, Math.max(240, savedWidth)) : 278
   })
+  const [resizingSidebar, setResizingSidebar] = useState(false)
   const [resizingInspector, setResizingInspector] = useState(false)
   const skipChecklistCommit = useRef(false)
   const waitingBlockRef = useRef<HTMLDivElement | null>(null)
+  const sidebarResizeStart = useRef({ pointerX: 0, width: 226 })
   const inspectorResizeStart = useRef({ pointerX: 0, width: 278 })
   const dropTargetIdRef = useRef<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -1112,7 +1154,13 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     active: assignee.active !== false,
   })), [assigneeUsers])
   const selectableTeamMembers = teamMembers.filter((member) => member.active)
-  const filteredDocuments = documents.filter((document) => document.title.toLowerCase().includes(searchTerm.trim().toLowerCase()))
+  const normalizedDocumentSearch = searchTerm.trim().toLowerCase()
+  const filteredDocuments = documents.filter((document) => document.title.toLowerCase().includes(normalizedDocumentSearch))
+  const documentsById = useMemo(() => new Map(documents.map((document) => [document.id, document])), [documents])
+  const effectiveDocumentLayout = useMemo<DocumentLayout>(() => documentLayout.items.length > 0 || documents.length === 0
+    ? documentLayout
+    : { version: 1, items: documents.map((document) => ({ type: 'map', id: document.id })), groups: [] },
+  [documentLayout, documents])
   const nodeTypes = useMemo<NodeTypes>(() => ({ mind: MindNode }), [])
   const edgeTypes = useMemo<EdgeTypes>(() => ({ 'knowledge-parallel': KnowledgeEdge }), [])
   const hierarchyEdges = useMemo(() => edges.filter(isHierarchyEdge), [edges])
@@ -1309,20 +1357,39 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   }, [trashedDocuments])
 
   useEffect(() => {
+    localStorage.setItem(
+      `mindnprogress-collapsed-document-groups:${user.id}`,
+      JSON.stringify([...collapsedDocumentGroupIds]),
+    )
+  }, [collapsedDocumentGroupIds, user.id])
+
+  useEffect(() => {
+    const activeGroup = documentLayout.groups.find((group) => group.mapIds.includes(activeMapId))
+    if (!activeGroup) return
+    setCollapsedDocumentGroupIds((current) => {
+      if (!current.has(activeGroup.id)) return current
+      const next = new Set(current)
+      next.delete(activeGroup.id)
+      return next
+    })
+  }, [activeMapId, documentLayout.groups])
+
+  useEffect(() => {
     if (selectedId && !visibleFlowNodeIds.has(selectedId)) setSelectedId(null)
   }, [selectedId, visibleFlowNodeIds])
 
   useEffect(() => {
     let active = true
     void Promise.all([
-      apiRequest<{ maps: MapSummary[] }>('/api/maps'),
+      apiRequest<DocumentLibraryResponse>('/api/maps'),
       mode === 'editor'
         ? apiRequest<{ maps: MapSummary[] }>('/api/maps/trash')
         : Promise.resolve({ maps: [] as MapSummary[] }),
     ])
-      .then(async ([{ maps }, { maps: trash }]) => {
+      .then(async ([{ maps, documentLayout: loadedDocumentLayout }, { maps: trash }]) => {
         if (!active) return
         setTrashedDocuments(trash)
+        setDocumentLayout(loadedDocumentLayout)
         if (maps.length > 0) {
           setDocuments(maps)
           const deepLink = pendingDeepLink.current
@@ -1342,6 +1409,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         }
 
         setDocuments([])
+        setDocumentLayout(EMPTY_DOCUMENT_LAYOUT)
         setActiveMapId('')
         setNodes([])
         setEdges([])
@@ -1520,17 +1588,18 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         }
         if (event.type !== 'map-changed' || event.sourceClientId === CLIENT_ID) return
         void (async () => {
-          const [{ maps }, trashResult] = await Promise.all([
-            apiRequest<{ maps: MapSummary[] }>('/api/maps'),
+          const [library, trashResult] = await Promise.all([
+            apiRequest<DocumentLibraryResponse>('/api/maps'),
             mode === 'editor'
               ? apiRequest<{ maps: MapSummary[] }>('/api/maps/trash')
               : Promise.resolve({ maps: [] as MapSummary[] }),
           ])
-          setDocuments(maps)
+          setDocuments(library.maps)
+          setDocumentLayout(library.documentLayout)
           if (mode === 'editor') setTrashedDocuments(trashResult.maps)
 
           if (event.action === 'trashed' && event.mapId === activeMapId) {
-            setActiveMapId(maps[0]?.id ?? '')
+            setActiveMapId(library.maps[0]?.id ?? '')
             return
           }
           if (event.mapId !== activeMapId || !['content', 'history-restored', 'daily-backup-restored'].includes(event.action)) return
@@ -1922,6 +1991,10 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
   }, [selectedId])
 
   useEffect(() => {
+    localStorage.setItem('mindnprogress-sidebar-width', String(sidebarWidth))
+  }, [sidebarWidth])
+
+  useEffect(() => {
     localStorage.setItem('mindnprogress-inspector-width', String(inspectorWidth))
   }, [inspectorWidth])
 
@@ -2308,11 +2381,12 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
 
     setSaveError('')
     try {
-      const created = await apiRequest<{ map: MapDocument; summary: MapSummary }>('/api/maps', {
+      const created = await apiRequest<{ map: MapDocument; summary: MapSummary; documentLayout: DocumentLayout }>('/api/maps', {
         method: 'POST',
         body: JSON.stringify({ title, map }),
       })
       setDocuments((current) => [...current, created.summary])
+      setDocumentLayout(created.documentLayout)
       setCreatingMap(false)
       setNewMapTitle('')
       setActiveMapId(created.summary.id)
@@ -2472,29 +2546,109 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     }
   }
 
-  const reorderDocuments = async (draggedId: string, targetId: string) => {
-    if (mode !== 'editor' || draggedId === targetId) return
-    const previous = documents
-    const draggedIndex = previous.findIndex((document) => document.id === draggedId)
-    const targetIndex = previous.findIndex((document) => document.id === targetId)
-    if (draggedIndex < 0 || targetIndex < 0) return
-    const reordered = [...previous]
-    const [dragged] = reordered.splice(draggedIndex, 1)
-    reordered.splice(targetIndex, 0, dragged)
-    setDocuments(reordered)
+  const saveDocumentLayout = async (nextLayout: DocumentLayout, successMessage: string) => {
+    if (mode !== 'editor') return
+    const previousLayout = documentLayout
+    setDocumentLayout(nextLayout)
     setSaveError('')
-
     try {
-      const result = await apiRequest<{ maps: MapSummary[] }>('/api/maps/order', {
+      const result = await apiRequest<DocumentLibraryResponse>('/api/maps/layout', {
         method: 'PATCH',
-        body: JSON.stringify({ mapIds: reordered.map((document) => document.id) }),
+        body: JSON.stringify({ documentLayout: nextLayout }),
       })
       setDocuments(result.maps)
-      setSavedAt('문서 순서 저장됨')
+      setDocumentLayout(result.documentLayout)
+      setSavedAt(successMessage)
     } catch (error) {
-      setDocuments(previous)
-      setSaveError(error instanceof Error ? error.message : '문서 순서를 저장하지 못했습니다.')
+      setDocumentLayout(previousLayout)
+      setSaveError(error instanceof Error ? error.message : '문서 그룹과 순서를 저장하지 못했습니다.')
     }
+  }
+
+  const moveLibraryItem = (dragged: DocumentLayoutItem, destination: { type: 'top'; target?: DocumentLayoutItem } | { type: 'group'; groupId: string; targetMapId?: string }) => {
+    if (mode !== 'editor') return
+    if (dragged.type === 'group' && destination.type === 'group') return
+    if (destination.type === 'top' && destination.target?.type === dragged.type && destination.target.id === dragged.id) return
+    if (dragged.type === 'map' && destination.type === 'group' && destination.targetMapId === dragged.id) return
+    const nextLayout = structuredClone(documentLayout)
+
+    if (dragged.type === 'group') {
+      if (destination.type !== 'top') return
+      const currentIndex = nextLayout.items.findIndex((item) => item.type === 'group' && item.id === dragged.id)
+      if (currentIndex < 0) return
+      const [item] = nextLayout.items.splice(currentIndex, 1)
+      const targetIndex = destination.target
+        ? nextLayout.items.findIndex((candidate) => candidate.type === destination.target?.type && candidate.id === destination.target.id)
+        : nextLayout.items.length
+      nextLayout.items.splice(targetIndex < 0 ? nextLayout.items.length : targetIndex, 0, item)
+    } else {
+      nextLayout.items = nextLayout.items.filter((item) => !(item.type === 'map' && item.id === dragged.id))
+      nextLayout.groups = nextLayout.groups.map((group) => ({
+        ...group,
+        mapIds: group.mapIds.filter((mapId) => mapId !== dragged.id),
+      }))
+      if (destination.type === 'group') {
+        const group = nextLayout.groups.find((candidate) => candidate.id === destination.groupId)
+        if (!group) return
+        const targetIndex = destination.targetMapId ? group.mapIds.indexOf(destination.targetMapId) : group.mapIds.length
+        group.mapIds.splice(targetIndex < 0 ? group.mapIds.length : targetIndex, 0, dragged.id)
+      } else {
+        const item: DocumentLayoutItem = { type: 'map', id: dragged.id }
+        const targetIndex = destination.target
+          ? nextLayout.items.findIndex((candidate) => candidate.type === destination.target?.type && candidate.id === destination.target.id)
+          : nextLayout.items.length
+        nextLayout.items.splice(targetIndex < 0 ? nextLayout.items.length : targetIndex, 0, item)
+      }
+    }
+
+    setDraggingLibraryItem(null)
+    setDocumentDropTargetId(null)
+    void saveDocumentLayout(nextLayout, dragged.type === 'group' ? '그룹 순서 저장됨' : '문서 위치 저장됨')
+  }
+
+  const createDocumentGroup = () => {
+    const name = newGroupName.trim()
+    if (!name || mode !== 'editor') return
+    const group: DocumentGroup = {
+      id: `group-${crypto.randomUUID()}`,
+      name,
+      mapIds: [],
+    }
+    const nextLayout: DocumentLayout = {
+      ...documentLayout,
+      items: [...documentLayout.items, { type: 'group', id: group.id }],
+      groups: [...documentLayout.groups, group],
+    }
+    setCreatingGroup(false)
+    setNewGroupName('')
+    void saveDocumentLayout(nextLayout, '문서 그룹 생성됨')
+  }
+
+  const renameDocumentGroup = (group: DocumentGroup) => {
+    if (mode !== 'editor') return
+    const name = window.prompt('그룹 이름을 입력하세요.', group.name)?.trim()
+    if (!name || name === group.name) return
+    void saveDocumentLayout({
+      ...documentLayout,
+      groups: documentLayout.groups.map((candidate) => candidate.id === group.id ? { ...candidate, name } : candidate),
+    }, '문서 그룹 이름 변경됨')
+  }
+
+  const deleteDocumentGroup = (group: DocumentGroup) => {
+    if (mode !== 'editor' || !window.confirm(`“${group.name}” 그룹을 삭제할까요?\n그룹 안의 문서는 삭제되지 않고 현재 위치에 개별 문서로 배치됩니다.`)) return
+    const groupIndex = documentLayout.items.findIndex((item) => item.type === 'group' && item.id === group.id)
+    const items = documentLayout.items.filter((item) => !(item.type === 'group' && item.id === group.id))
+    items.splice(Math.max(0, groupIndex), 0, ...group.mapIds.map((id): DocumentLayoutItem => ({ type: 'map', id })))
+    setCollapsedDocumentGroupIds((current) => {
+      const next = new Set(current)
+      next.delete(group.id)
+      return next
+    })
+    void saveDocumentLayout({
+      version: 1,
+      items,
+      groups: documentLayout.groups.filter((candidate) => candidate.id !== group.id),
+    }, '문서 그룹 삭제됨')
   }
 
   const completeDocument = async (mapId: string) => {
@@ -2541,8 +2695,9 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     setSaveError('')
 
     try {
-      const result = await apiRequest<{ trashedId: string; maps: MapSummary[]; trash: MapSummary[] }>(`/api/maps/${encodeURIComponent(mapId)}`, { method: 'DELETE' })
+      const result = await apiRequest<{ trashedId: string; maps: MapSummary[]; documentLayout: DocumentLayout; trash: MapSummary[] }>(`/api/maps/${encodeURIComponent(mapId)}`, { method: 'DELETE' })
       setDocuments(result.maps)
+      setDocumentLayout(result.documentLayout)
       setTrashedDocuments(result.trash)
       if (mapId === activeMapId) {
         setLoadedMapId(null)
@@ -2558,8 +2713,9 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     if (mode !== 'editor') return
     setSaveError('')
     try {
-      const result = await apiRequest<{ maps: MapSummary[]; trash: MapSummary[] }>(`/api/maps/${encodeURIComponent(mapId)}/restore`, { method: 'POST' })
+      const result = await apiRequest<{ maps: MapSummary[]; documentLayout: DocumentLayout; trash: MapSummary[] }>(`/api/maps/${encodeURIComponent(mapId)}/restore`, { method: 'POST' })
       setDocuments(result.maps)
+      setDocumentLayout(result.documentLayout)
       setTrashedDocuments(result.trash)
       setSelectedTrashIds((current) => {
         const next = new Set(current)
@@ -2913,8 +3069,69 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
     endHistoryTransaction()
   }, [endHistoryTransaction, hierarchyEdges, nodes, setEdges, setNodes])
 
+  const renderDocumentListItem = (document: MapSummary, location: { type: 'top'; item: DocumentLayoutItem } | { type: 'group'; groupId: string }) => {
+    const hasLoadedActiveDocument = document.id === activeMapId && loadedMapId === activeMapId
+    const rootProgress = hasLoadedActiveDocument ? activeRootState.progress : document.rootProgress
+    const rootStatus = hasLoadedActiveDocument ? activeRootState.status : document.rootStatus
+    const nodeCount = hasLoadedActiveDocument ? nodes.length : document.nodeCount
+    const waitingCount = hasLoadedActiveDocument
+      ? nodes.reduce((count, node) => count + (node.data.waitingItems ?? []).filter((item) => item.label.trim()).length, 0)
+      : document.waitingCount
+    const dropKey = location.type === 'top' ? `top-map:${document.id}` : `group-map:${location.groupId}:${document.id}`
+
+    return (
+      <button
+        key={document.id}
+        draggable={mode === 'editor' && !normalizedDocumentSearch}
+        className={`map-item ${location.type === 'group' ? 'group-document' : ''} ${document.id === activeMapId ? 'active' : ''} ${rootStatus === 'planned' ? 'root-planned' : ''} ${draggingLibraryItem?.type === 'map' && draggingLibraryItem.id === document.id ? 'dragging' : ''} ${documentDropTargetId === dropKey ? 'document-drop-target' : ''}`}
+        onClick={() => { setRenamingMap(false); setActiveMapId(document.id) }}
+        onContextMenu={(event) => openDocumentContextMenu(event, document.id)}
+        onDragStart={(event) => {
+          if (mode !== 'editor' || normalizedDocumentSearch) return
+          const item: DocumentLayoutItem = { type: 'map', id: document.id }
+          event.dataTransfer.effectAllowed = 'move'
+          event.dataTransfer.setData('application/x-mindnprogress-library', JSON.stringify(item))
+          setDraggingLibraryItem(item)
+        }}
+        onDragOver={(event) => {
+          if (mode !== 'editor' || !draggingLibraryItem || draggingLibraryItem.type !== 'map' || normalizedDocumentSearch) return
+          event.preventDefault()
+          event.dataTransfer.dropEffect = 'move'
+          setDocumentDropTargetId(dropKey)
+        }}
+        onDrop={(event) => {
+          event.preventDefault()
+          if (!draggingLibraryItem) return
+          if (location.type === 'group') {
+            moveLibraryItem(draggingLibraryItem, { type: 'group', groupId: location.groupId, targetMapId: document.id })
+          } else {
+            moveLibraryItem(draggingLibraryItem, { type: 'top', target: location.item })
+          }
+        }}
+        onDragEnd={() => { setDraggingLibraryItem(null); setDocumentDropTargetId(null) }}
+      >
+        <span className="map-dot" style={documentColorStyle(document.color, documents.findIndex((candidate) => candidate.id === document.id))} />
+        <span>
+          <strong>{document.title}</strong>
+          <small>
+            <span>{nodeCount}개 항목</span>
+            {rootProgress !== null && (
+              <span className={`map-root-progress ${rootProgress === 100 ? 'complete' : ''}`}>
+                {rootProgress}%
+              </span>
+            )}
+            {waitingCount > 0 && (
+              <span className="map-waiting-indicator" title={`대기 항목 ${waitingCount}건`} aria-label={`대기 항목 ${waitingCount}건`}>⏸️</span>
+            )}
+          </small>
+        </span>
+        {document.id === activeMapId && <Icon name="chevron" size={15} />}
+      </button>
+    )
+  }
+
   return (
-    <div className={`app-shell ${resizingInspector ? 'resizing-inspector' : ''}`}>
+    <div className={`app-shell ${resizingSidebar ? 'resizing-sidebar' : ''} ${resizingInspector ? 'resizing-inspector' : ''}`}>
       <header className="topbar">
         <div className="brand-mark"><Icon name="map" size={20} /></div>
         <div className="brand-copy">
@@ -3064,11 +3281,34 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
         </div>
       )}
 
-      <main className="workspace" style={{ '--inspector-width': `${inspectorWidth}px` } as CSSProperties}>
+      <main
+        className="workspace"
+        style={{
+          '--sidebar-width': `${sidebarWidth}px`,
+          '--inspector-width': `${inspectorWidth}px`,
+        } as CSSProperties}
+      >
         <aside className="sidebar">
           <div className="sidebar-header">
             <span>{trashOpen ? '휴지통' : '마인드맵'} <small>{trashOpen ? trashedDocuments.length : documents.length}</small></span>
-            {mode === 'editor' && !trashOpen && <button aria-label="새 마인드맵" onClick={() => setCreatingMap((current) => !current)}><Icon name={creatingMap ? 'close' : 'plus'} size={16} /></button>}
+            {mode === 'editor' && !trashOpen && (
+              <div className="sidebar-create-actions">
+                <button
+                  aria-label="새 문서 그룹"
+                  title="새 문서 그룹"
+                  onClick={() => { setCreatingGroup((current) => !current); setCreatingMap(false) }}
+                >
+                  <Icon name="folder" size={15} />
+                </button>
+                <button
+                  aria-label="새 마인드맵"
+                  title="새 마인드맵"
+                  onClick={() => { setCreatingMap((current) => !current); setCreatingGroup(false) }}
+                >
+                  <Icon name={creatingMap ? 'close' : 'plus'} size={16} />
+                </button>
+              </div>
+            )}
           </div>
           {!trashOpen ? (
             <>
@@ -3082,63 +3322,171 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                   <button type="submit" disabled={!newMapTitle.trim()}><Icon name="plus" size={14} />생성</button>
                 </form>
               )}
+              {creatingGroup && (
+                <form className="new-map-form new-group-form" onSubmit={(event) => { event.preventDefault(); createDocumentGroup() }}>
+                  <input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} placeholder="새 그룹 이름" maxLength={80} autoFocus />
+                  <button type="submit" disabled={!newGroupName.trim()}><Icon name="folder" size={14} />그룹 생성</button>
+                </form>
+              )}
               <nav className="map-list">
-                {filteredDocuments.map((document, index) => {
-                  const hasLoadedActiveDocument = document.id === activeMapId && loadedMapId === activeMapId
-                  const rootProgress = hasLoadedActiveDocument ? activeRootState.progress : document.rootProgress
-                  const rootStatus = hasLoadedActiveDocument ? activeRootState.status : document.rootStatus
-                  const nodeCount = hasLoadedActiveDocument ? nodes.length : document.nodeCount
-                  const waitingCount = hasLoadedActiveDocument
-                    ? nodes.reduce((count, node) => count + (node.data.waitingItems ?? []).filter((item) => item.label.trim()).length, 0)
-                    : document.waitingCount
-                  return (
-                    <button
-                    key={document.id}
-                    draggable={mode === 'editor'}
-                    className={`map-item ${document.id === activeMapId ? 'active' : ''} ${rootStatus === 'planned' ? 'root-planned' : ''} ${draggingDocumentId === document.id ? 'dragging' : ''} ${documentDropTargetId === document.id ? 'document-drop-target' : ''}`}
-                    onClick={() => { setRenamingMap(false); setActiveMapId(document.id) }}
-                    onContextMenu={(event) => openDocumentContextMenu(event, document.id)}
-                    onDragStart={(event) => {
-                      if (mode !== 'editor') return
-                      event.dataTransfer.effectAllowed = 'move'
-                      event.dataTransfer.setData('text/plain', document.id)
-                      setDraggingDocumentId(document.id)
-                    }}
+                {mode === 'editor' && draggingLibraryItem && !normalizedDocumentSearch && effectiveDocumentLayout.items.length > 0 && (
+                  <div
+                    className={`library-top-insertion-target ${documentDropTargetId === 'top-start' ? 'active' : ''}`}
+                    title="목록 처음으로 이동"
                     onDragOver={(event) => {
-                      if (mode !== 'editor' || !draggingDocumentId || draggingDocumentId === document.id) return
                       event.preventDefault()
+                      event.stopPropagation()
                       event.dataTransfer.dropEffect = 'move'
-                      setDocumentDropTargetId(document.id)
+                      setDocumentDropTargetId('top-start')
+                    }}
+                    onDragLeave={() => setDocumentDropTargetId((current) => current === 'top-start' ? null : current)}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      moveLibraryItem(draggingLibraryItem, { type: 'top', target: effectiveDocumentLayout.items[0] })
+                    }}
+                  />
+                )}
+                {effectiveDocumentLayout.items.map((layoutItem, layoutIndex) => {
+                  if (layoutItem.type === 'map') {
+                    const document = documentsById.get(layoutItem.id)
+                    if (!document || !document.title.toLowerCase().includes(normalizedDocumentSearch)) return null
+                    return (
+                      <div className="library-top-item" key={`map-${layoutItem.id}`}>
+                        {mode === 'editor' && !normalizedDocumentSearch && (
+                          <div
+                            className={`library-drop-line ${documentDropTargetId === `top-before:map:${layoutItem.id}` ? 'active' : ''}`}
+                            title={layoutIndex === 0 ? '목록 처음으로 이동' : '이 위치로 이동'}
+                            onDragOver={(event) => {
+                              if (!draggingLibraryItem) return
+                              event.preventDefault()
+                              setDocumentDropTargetId(`top-before:map:${layoutItem.id}`)
+                            }}
+                            onDrop={(event) => {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              if (draggingLibraryItem) moveLibraryItem(draggingLibraryItem, { type: 'top', target: layoutItem })
+                            }}
+                          />
+                        )}
+                        {renderDocumentListItem(document, { type: 'top', item: layoutItem })}
+                      </div>
+                    )
+                  }
+
+                  const group = effectiveDocumentLayout.groups.find((candidate) => candidate.id === layoutItem.id)
+                  if (!group) return null
+                  const groupNameMatches = group.name.toLowerCase().includes(normalizedDocumentSearch)
+                  const groupDocuments = group.mapIds.map((mapId) => documentsById.get(mapId)).filter((document): document is MapSummary => Boolean(document))
+                  const visibleGroupDocuments = normalizedDocumentSearch && !groupNameMatches
+                    ? groupDocuments.filter((document) => document.title.toLowerCase().includes(normalizedDocumentSearch))
+                    : groupDocuments
+                  if (normalizedDocumentSearch && !groupNameMatches && visibleGroupDocuments.length === 0) return null
+                  const collapsed = !normalizedDocumentSearch && collapsedDocumentGroupIds.has(group.id)
+                  const groupDropKey = `group:${group.id}`
+                  return (
+                    <section
+                      className={`document-group ${collapsed ? 'collapsed' : ''}`}
+                      key={`group-${group.id}`}
+                      onDragOver={(event) => {
+                        if (draggingLibraryItem?.type !== 'group' || normalizedDocumentSearch) return
+                        event.preventDefault()
+                        event.dataTransfer.dropEffect = 'move'
+                        setDocumentDropTargetId(groupDropKey)
+                      }}
+                      onDrop={(event) => {
+                        if (draggingLibraryItem?.type !== 'group') return
+                        event.preventDefault()
+                        moveLibraryItem(draggingLibraryItem, { type: 'top', target: layoutItem })
+                      }}
+                    >
+                      {mode === 'editor' && !normalizedDocumentSearch && (
+                        <div
+                          className={`library-drop-line ${documentDropTargetId === `top-before:group:${group.id}` ? 'active' : ''}`}
+                          title={layoutIndex === 0 ? '목록 처음으로 이동' : '이 위치로 이동'}
+                          onDragOver={(event) => {
+                            if (!draggingLibraryItem) return
+                            event.preventDefault()
+                            event.stopPropagation()
+                            setDocumentDropTargetId(`top-before:group:${group.id}`)
+                          }}
+                          onDrop={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            if (draggingLibraryItem) moveLibraryItem(draggingLibraryItem, { type: 'top', target: layoutItem })
+                          }}
+                        />
+                      )}
+                      <div
+                        className={`document-group-header ${draggingLibraryItem?.type === 'group' && draggingLibraryItem.id === group.id ? 'dragging' : ''} ${documentDropTargetId === groupDropKey ? 'document-drop-target' : ''}`}
+                        draggable={mode === 'editor' && !normalizedDocumentSearch}
+                        onDragStart={(event) => {
+                          const item: DocumentLayoutItem = { type: 'group', id: group.id }
+                          event.dataTransfer.effectAllowed = 'move'
+                          event.dataTransfer.setData('application/x-mindnprogress-library', JSON.stringify(item))
+                          setDraggingLibraryItem(item)
+                        }}
+                        onDragOver={(event) => {
+                          if (!draggingLibraryItem || normalizedDocumentSearch) return
+                          if (draggingLibraryItem.type === 'group') return
+                          event.preventDefault()
+                          setDocumentDropTargetId(groupDropKey)
+                        }}
+                        onDrop={(event) => {
+                          if (draggingLibraryItem?.type !== 'map') return
+                          event.preventDefault()
+                          event.stopPropagation()
+                          moveLibraryItem(draggingLibraryItem, { type: 'group', groupId: group.id })
+                        }}
+                        onDragEnd={() => { setDraggingLibraryItem(null); setDocumentDropTargetId(null) }}
+                      >
+                        <button
+                          type="button"
+                          className="document-group-toggle"
+                          onClick={() => setCollapsedDocumentGroupIds((current) => {
+                            const next = new Set(current)
+                            if (next.has(group.id)) next.delete(group.id)
+                            else next.add(group.id)
+                            return next
+                          })}
+                          aria-expanded={!collapsed}
+                        >
+                          <Icon name={collapsed ? 'chevron' : 'chevron-down'} size={12} />
+                          <Icon name="folder" size={14} />
+                          <strong>{group.name}</strong>
+                          <span>{group.mapIds.length}</span>
+                        </button>
+                        {mode === 'editor' && (
+                          <div className="document-group-actions">
+                            <button type="button" onClick={() => renameDocumentGroup(group)} aria-label={`${group.name} 이름 변경`}><Icon name="edit" size={11} /></button>
+                            <button type="button" onClick={() => deleteDocumentGroup(group)} aria-label={`${group.name} 그룹 삭제`}><Icon name="close" size={11} /></button>
+                          </div>
+                        )}
+                      </div>
+                      {!collapsed && (
+                        <div className="document-group-items">
+                          {visibleGroupDocuments.map((document) => renderDocumentListItem(document, { type: 'group', groupId: group.id }))}
+                          {visibleGroupDocuments.length === 0 && <div className="empty-document-group">문서를 이 그룹으로 드래그하세요.</div>}
+                        </div>
+                      )}
+                    </section>
+                  )
+                })}
+                {mode === 'editor' && !normalizedDocumentSearch && effectiveDocumentLayout.items.length > 0 && (
+                  <div
+                    className={`library-drop-boundary library-drop-end ${documentDropTargetId === 'top-end' ? 'active' : ''}`}
+                    onDragOver={(event) => {
+                      if (!draggingLibraryItem) return
+                      event.preventDefault()
+                      setDocumentDropTargetId('top-end')
                     }}
                     onDrop={(event) => {
                       event.preventDefault()
-                      const draggedId = event.dataTransfer.getData('text/plain') || draggingDocumentId
-                      setDraggingDocumentId(null)
-                      setDocumentDropTargetId(null)
-                      if (draggedId) void reorderDocuments(draggedId, document.id)
+                      if (draggingLibraryItem) moveLibraryItem(draggingLibraryItem, { type: 'top' })
                     }}
-                    onDragEnd={() => { setDraggingDocumentId(null); setDocumentDropTargetId(null) }}
-                  >
-                    <span className="map-dot" style={documentColorStyle(document.color, index)} />
-                    <span>
-                      <strong>{document.title}</strong>
-                      <small>
-                        <span>{nodeCount}개 항목</span>
-                        {rootProgress !== null && (
-                          <span className={`map-root-progress ${rootProgress === 100 ? 'complete' : ''}`}>
-                            {rootProgress}%
-                          </span>
-                        )}
-                        {waitingCount > 0 && (
-                          <span className="map-waiting-indicator" title={`대기 항목 ${waitingCount}건`} aria-label={`대기 항목 ${waitingCount}건`}>⏸️</span>
-                        )}
-                      </small>
-                    </span>
-                    {document.id === activeMapId && <Icon name="chevron" size={15} />}
-                  </button>
-                  )
-                })}
-                {filteredDocuments.length === 0 && (
+                  >목록 끝으로 이동</div>
+                )}
+                {filteredDocuments.length === 0 && !effectiveDocumentLayout.groups.some((group) => group.name.toLowerCase().includes(normalizedDocumentSearch)) && (
                   <div className="empty-map-list">{documents.length === 0 ? '생성된 마인드맵이 없습니다.' : '검색 결과가 없습니다.'}</div>
                 )}
               </nav>
@@ -3210,6 +3558,44 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
             <strong><span className={`access-dot ${mode}`} />{mode === 'editor' ? '편집 가능' : '읽기 전용'}</strong>
           </div>
         </aside>
+
+        <div
+          className="sidebar-resizer"
+          role="separator"
+          aria-label="문서 목록 패널 너비 조절"
+          aria-orientation="vertical"
+          aria-valuemin={190}
+          aria-valuemax={420}
+          aria-valuenow={Math.round(sidebarWidth)}
+          tabIndex={0}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return
+            event.preventDefault()
+            event.currentTarget.setPointerCapture(event.pointerId)
+            sidebarResizeStart.current = { pointerX: event.clientX, width: sidebarWidth }
+            setResizingSidebar(true)
+          }}
+          onPointerMove={(event) => {
+            if (!resizingSidebar) return
+            const centerMinWidth = window.innerWidth <= 1200 ? 500 : 520
+            const maxWidth = Math.min(420, Math.max(190, window.innerWidth - inspectorWidth - centerMinWidth))
+            const nextWidth = sidebarResizeStart.current.width + event.clientX - sidebarResizeStart.current.pointerX
+            setSidebarWidth(Math.min(maxWidth, Math.max(190, nextWidth)))
+          }}
+          onPointerUp={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+            setResizingSidebar(false)
+          }}
+          onPointerCancel={() => setResizingSidebar(false)}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+            event.preventDefault()
+            const delta = event.key === 'ArrowLeft' ? -20 : 20
+            setSidebarWidth((current) => Math.min(420, Math.max(190, current + delta)))
+          }}
+        >
+          <span />
+        </div>
 
         {viewMode === 'mindmap' ? (
         <section
@@ -3391,6 +3777,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
             aria-valuenow={Math.round(inspectorWidth)}
             tabIndex={0}
             onPointerDown={(event) => {
+              if (event.button !== 0) return
               event.preventDefault()
               event.currentTarget.setPointerCapture(event.pointerId)
               inspectorResizeStart.current = { pointerX: event.clientX, width: inspectorWidth }
@@ -3398,8 +3785,8 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
             }}
             onPointerMove={(event) => {
               if (!resizingInspector) return
-              const sidebarWidth = window.innerWidth <= 1200 ? 206 : 226
-              const maxWidth = Math.min(520, Math.max(240, window.innerWidth - sidebarWidth - 500))
+              const centerMinWidth = window.innerWidth <= 1200 ? 500 : 520
+              const maxWidth = Math.min(520, Math.max(240, window.innerWidth - sidebarWidth - centerMinWidth))
               const nextWidth = inspectorResizeStart.current.width + inspectorResizeStart.current.pointerX - event.clientX
               setInspectorWidth(Math.min(maxWidth, Math.max(240, nextWidth)))
             }}

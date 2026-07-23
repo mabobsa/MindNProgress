@@ -174,7 +174,7 @@ async function main() {
     await client.connect(transport)
     const listedTools = await client.listTools()
     const registeredToolNames = listedTools.tools.map((tool) => tool.name).sort()
-    assert.equal(registeredToolNames.length, 32, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
+    assert.equal(registeredToolNames.length, 33, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
 
     const invoke = async (name, args = {}) => {
       calledTools.set(name, (calledTools.get(name) ?? 0) + 1)
@@ -242,6 +242,32 @@ async function main() {
     assert.equal(loginResponse.status, 200)
     const sessionCookie = loginResponse.headers.get('set-cookie')?.split(';')[0]
     assert.ok(sessionCookie, '테스트 관리자 세션 쿠키가 없습니다.')
+    const layoutResponse = await fetch(`${apiBaseUrl}/api/maps/layout`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: sessionCookie },
+      body: JSON.stringify({
+        documentLayout: {
+          version: 1,
+          items: [
+            { type: 'map', id: secondaryMapId },
+            { type: 'group', id: 'group-mcp-regression' },
+          ],
+          groups: [{
+            id: 'group-mcp-regression',
+            name: 'JP-매니저',
+            mapIds: [mapId],
+          }],
+        },
+      }),
+    })
+    assert.equal(layoutResponse.status, 200)
+    const groupedLibrary = await layoutResponse.json()
+    assert.deepEqual(groupedLibrary.documentLayout.items, [
+      { type: 'map', id: secondaryMapId },
+      { type: 'group', id: 'group-mcp-regression' },
+    ])
+    assert.deepEqual(groupedLibrary.documentLayout.groups[0].mapIds, [mapId])
+    assert.deepEqual(groupedLibrary.maps.map((map) => map.id), [secondaryMapId, mapId])
     const integrationToken = (await readFile(path.join(testDataDirectory, '_integration-token'), 'utf8')).trim()
     const unspecifiedCommentResponse = await fetch(`${apiBaseUrl}/api/maps/${encodeURIComponent(mapId)}/comments`, {
       method: 'POST',
@@ -560,8 +586,30 @@ async function main() {
     })
     assert.equal(metadataResult.summary.color, 'red')
 
+    const savedDocumentLayout = await invoke('mindnprogress_save_document_layout', {
+      documentLayout: {
+        version: 1,
+        items: [
+          { type: 'group', id: 'group-mcp-regression' },
+          { type: 'map', id: secondaryMapId },
+        ],
+        groups: [{
+          id: 'group-mcp-regression',
+          name: 'JP-매니저 문서',
+          mapIds: [mapId],
+        }],
+      },
+    })
+    assert.deepEqual(savedDocumentLayout.documentLayout.items, [
+      { type: 'group', id: 'group-mcp-regression' },
+      { type: 'map', id: secondaryMapId },
+    ])
+    assert.deepEqual(savedDocumentLayout.maps.map((map) => map.id), [mapId, secondaryMapId])
+
     const reordered = await invoke('mindnprogress_reorder_documents', { mapIds: [secondaryMapId, mapId] })
     assert.deepEqual(reordered.maps.map((map) => map.id), [secondaryMapId, mapId])
+    assert.equal(reordered.documentLayout.groups[0].id, 'group-mcp-regression')
+    assert.deepEqual(reordered.documentLayout.groups[0].mapIds, [mapId])
 
     const notificationsPath = path.join(testDataDirectory, '_notifications')
     await rm(notificationsPath, { recursive: true, force: true })
@@ -687,6 +735,13 @@ async function main() {
     await invokeExpectError('mindnprogress_empty_trash', {
       confirmPermanentDeletion: false,
     }, /Invalid literal value|Invalid input/)
+    await invokeExpectError('mindnprogress_save_document_layout', {
+      documentLayout: {
+        version: 1,
+        items: [],
+        groups: [],
+      },
+    }, /문서 그룹과 순서 데이터가 올바르지 않습니다/)
     await invokeExpectError('mindnprogress_mark_notification_read', {
       notificationId: 'missing-notification',
     }, /알림을 찾을 수 없습니다/)

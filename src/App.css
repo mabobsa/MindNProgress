@@ -145,11 +145,7 @@
 .inspector { min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: #fff; z-index: 3; }
 .sidebar { border-right: 1px solid #e9e7ef; padding: 18px 12px 12px; }
 .sidebar-resizer { width: 11px; height: 100%; position: absolute; top: 0; left: calc(var(--sidebar-width, 226px) - 5px); z-index: 8; display: flex; align-items: center; justify-content: center; outline: 0; cursor: col-resize; touch-action: none; }
-.sidebar-resizer::before { content: ''; width: 1px; height: 100%; position: absolute; left: 5px; background: transparent; transition: width .15s, left .15s, background .15s; }
 .sidebar-resizer > span { width: 4px; height: 42px; position: relative; border-radius: 4px; background: #d2ceda; opacity: 0; transition: opacity .15s, background .15s; }
-.sidebar-resizer:hover::before,
-.sidebar-resizer:focus-visible::before,
-.resizing-sidebar .sidebar-resizer::before { width: 2px; left: 4px; background: #796bd9; }
 .sidebar-resizer:hover > span,
 .sidebar-resizer:focus-visible > span,
 .resizing-sidebar .sidebar-resizer > span { opacity: 1; background: #796bd9; }
@@ -197,10 +193,11 @@
 .document-group-header:hover { background: #f8f7fa; }
 .document-group-header.dragging { opacity: .42; }
 .document-group-header.document-drop-target { border-color: #c8bee9; background: #f0ecfb; box-shadow: inset 0 0 0 1px #ded7f4; }
-.document-group-toggle { min-width: 0; flex: 1; display: grid; grid-template-columns: 13px 16px minmax(0, 1fr) auto; align-items: center; gap: 5px; padding: 9px 4px 9px 8px; color: #5d5665; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; }
+.document-group-toggle { min-width: 0; flex: 1; display: grid; grid-template-columns: 13px 16px minmax(0, 1fr); align-items: center; gap: 5px; padding: 9px 4px 9px 8px; color: #5d5665; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; }
 .document-group-toggle > .icon:nth-child(2) { color: #b28a3d; }
-.document-group-toggle strong { overflow: hidden; color: #393440; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.document-group-toggle > span { min-width: 20px; padding: 2px 5px; color: #7168a0; border-radius: 9px; background: #efedf8; font-size: 7px; font-weight: 700; text-align: center; }
+.document-group-label { min-width: 0; display: flex; align-items: center; gap: 5px; }
+.document-group-label strong { min-width: 0; overflow: hidden; color: #393440; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.document-group-count { min-width: 20px; flex: 0 0 auto; padding: 2px 5px; color: #7168a0; border-radius: 9px; background: #efedf8; font-size: 9px; font-weight: 700; line-height: 1; text-align: center; transform: translateY(1px); }
 .document-group-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 1px; padding-right: 5px; opacity: 0; transition: opacity .12s; }
 .document-group-header:hover .document-group-actions,
 .document-group-header:focus-within .document-group-actions { opacity: 1; }
@@ -305,12 +302,8 @@
 .mini-map .react-flow__minimap-mask:active { cursor: grabbing; }
 
 .inspector { position: relative; border-left: 1px solid #e9e7ef; }
-.inspector-resizer { width: 11px; height: 100%; position: absolute; top: 0; left: -6px; z-index: 8; display: flex; align-items: center; justify-content: center; outline: 0; cursor: col-resize; touch-action: none; }
-.inspector-resizer::before { content: ''; width: 1px; height: 100%; position: absolute; left: 5px; background: transparent; transition: width .15s, left .15s, background .15s; }
+.inspector-resizer { width: 11px; height: 100%; position: absolute; top: 0; left: calc(100% - var(--inspector-width, 278px) - 5px); z-index: 8; display: flex; align-items: center; justify-content: center; outline: 0; cursor: col-resize; touch-action: none; }
 .inspector-resizer > span { width: 4px; height: 42px; position: relative; border-radius: 4px; background: #d2ceda; opacity: 0; transition: opacity .15s, background .15s; }
-.inspector-resizer:hover::before,
-.inspector-resizer:focus-visible::before,
-.resizing-inspector .inspector-resizer::before { width: 2px; left: 4px; background: #796bd9; }
 .inspector-resizer:hover > span,
 .inspector-resizer:focus-visible > span,
 .resizing-inspector .inspector-resizer > span { opacity: 1; background: #796bd9; }

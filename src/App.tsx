@@ -3453,8 +3453,10 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
                         >
                           <Icon name={collapsed ? 'chevron' : 'chevron-down'} size={12} />
                           <Icon name="folder" size={14} />
-                          <strong>{group.name}</strong>
-                          <span>{group.mapIds.length}</span>
+                          <span className="document-group-label">
+                            <strong>{group.name}</strong>
+                            <span className="document-group-count">{group.mapIds.length}</span>
+                          </span>
                         </button>
                         {mode === 'editor' && (
                           <div className="document-group-actions">
@@ -3766,44 +3768,45 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
           </section>
         )}
 
+        <div
+          className="inspector-resizer"
+          role="separator"
+          aria-label="세부정보 패널 너비 조절"
+          aria-orientation="vertical"
+          aria-valuemin={240}
+          aria-valuemax={520}
+          aria-valuenow={Math.round(inspectorWidth)}
+          tabIndex={0}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return
+            event.preventDefault()
+            event.currentTarget.setPointerCapture(event.pointerId)
+            inspectorResizeStart.current = { pointerX: event.clientX, width: inspectorWidth }
+            setResizingInspector(true)
+          }}
+          onPointerMove={(event) => {
+            if (!resizingInspector) return
+            const centerMinWidth = window.innerWidth <= 1200 ? 500 : 520
+            const maxWidth = Math.min(520, Math.max(240, window.innerWidth - sidebarWidth - centerMinWidth))
+            const nextWidth = inspectorResizeStart.current.width + inspectorResizeStart.current.pointerX - event.clientX
+            setInspectorWidth(Math.min(maxWidth, Math.max(240, nextWidth)))
+          }}
+          onPointerUp={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+            setResizingInspector(false)
+          }}
+          onPointerCancel={() => setResizingInspector(false)}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+            event.preventDefault()
+            const delta = event.key === 'ArrowLeft' ? 20 : -20
+            setInspectorWidth((current) => Math.min(520, Math.max(240, current + delta)))
+          }}
+        >
+          <span />
+        </div>
+
         <aside className={`inspector ${selectedNode ? 'open' : ''}`}>
-          <div
-            className="inspector-resizer"
-            role="separator"
-            aria-label="세부정보 패널 너비 조절"
-            aria-orientation="vertical"
-            aria-valuemin={240}
-            aria-valuemax={520}
-            aria-valuenow={Math.round(inspectorWidth)}
-            tabIndex={0}
-            onPointerDown={(event) => {
-              if (event.button !== 0) return
-              event.preventDefault()
-              event.currentTarget.setPointerCapture(event.pointerId)
-              inspectorResizeStart.current = { pointerX: event.clientX, width: inspectorWidth }
-              setResizingInspector(true)
-            }}
-            onPointerMove={(event) => {
-              if (!resizingInspector) return
-              const centerMinWidth = window.innerWidth <= 1200 ? 500 : 520
-              const maxWidth = Math.min(520, Math.max(240, window.innerWidth - sidebarWidth - centerMinWidth))
-              const nextWidth = inspectorResizeStart.current.width + inspectorResizeStart.current.pointerX - event.clientX
-              setInspectorWidth(Math.min(maxWidth, Math.max(240, nextWidth)))
-            }}
-            onPointerUp={(event) => {
-              if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
-              setResizingInspector(false)
-            }}
-            onPointerCancel={() => setResizingInspector(false)}
-            onKeyDown={(event) => {
-              if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-              event.preventDefault()
-              const delta = event.key === 'ArrowLeft' ? 20 : -20
-              setInspectorWidth((current) => Math.min(520, Math.max(240, current + delta)))
-            }}
-          >
-            <span />
-          </div>
           {selectedNode ? (
             <>
               <div className="inspector-header">

@@ -3756,6 +3756,7 @@ function Workspace({ user, onLogout, initialDeepLink }: { user: AuthUser; onLogo
             {viewMode === 'dashboard' && (
               <DashboardView
                 nodes={flowNodes}
+                documentProgress={activeRootState.progress}
                 mode={mode}
                 selectedId={selectedId}
                 onSelect={setSelectedId}

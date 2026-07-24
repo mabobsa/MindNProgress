@@ -21,6 +21,10 @@ type WorkViewProps = {
   teamMembers: TeamMember[]
 }
 
+type DashboardViewProps = WorkViewProps & {
+  documentProgress: number | null
+}
+
 const columns: { id: WorkStatus; title: string; description: string }[] = [
   { id: 'planned', title: '예정', description: '아직 시작하지 않은 업무' },
   { id: 'in-progress', title: '진행 중', description: '현재 실행 중인 업무' },
@@ -234,7 +238,7 @@ export function TimelineView({ nodes, selectedId, onSelect, onOpenMindMap, onCon
   )
 }
 
-export function DashboardView({ nodes, selectedId, onSelect, onOpenMindMap, onContextMenu, teamMembers }: WorkViewProps) {
+export function DashboardView({ nodes, documentProgress, selectedId, onSelect, onOpenMindMap, onContextMenu, teamMembers }: DashboardViewProps) {
   const [selectedMetric, setSelectedMetric] = useState<DashboardMetric | null>(null)
   const workNodes = nodes.filter((node) => node.data.isWork)
   const metrics = useMemo(() => {
@@ -274,6 +278,7 @@ export function DashboardView({ nodes, selectedId, onSelect, onOpenMindMap, onCo
           : selectedMetric === 'waiting'
             ? workNodes.filter((node) => waitingItemsFor(node).length > 0)
           : selectedMetric === 'all' ? workNodes : []
+  const displayedDocumentProgress = documentProgress ?? 0
 
   return (
     <div className="dashboard-view">
@@ -296,14 +301,27 @@ export function DashboardView({ nodes, selectedId, onSelect, onOpenMindMap, onCo
       </div>
       <div className="dashboard-panels">
         <section className="progress-overview">
-          <div className="panel-heading"><div><span>전체 진행률</span><strong>업무 완료 평균</strong></div></div>
+          <div className="panel-heading"><div><span>문서 진행률</span><strong>Root 노드 기준</strong></div></div>
           <div className="donut-wrap">
-            <div className="progress-donut" style={{ '--donut-progress': `${metrics.average * 3.6}deg` } as CSSProperties}><span><strong>{metrics.average}%</strong><small>평균</small></span></div>
-            <div className="status-legend">
-              {columns.map((column) => {
-                const count = column.id === 'done' ? metrics.completed : column.id === 'in-progress' ? metrics.inProgress : metrics.planned
-                return <div key={column.id}><span className={`legend-dot ${column.id}`} /><span>{column.title}</span><strong>{count}</strong></div>
-              })}
+            <div
+              className="progress-donut"
+              style={{ '--donut-progress': `${displayedDocumentProgress * 3.6}deg` } as CSSProperties}
+              aria-label={`문서 진행률 ${documentProgress === null ? '미설정' : `${documentProgress}%`}`}
+            >
+              <span><strong>{documentProgress === null ? '—' : `${documentProgress}%`}</strong><small>Root</small></span>
+            </div>
+            <div className="progress-breakdown">
+              <div className="work-average-summary">
+                <span>업무 평균</span>
+                <strong>{metrics.average}%</strong>
+                <small>{workNodes.length}개 업무 단순 평균</small>
+              </div>
+              <div className="status-legend">
+                {columns.map((column) => {
+                  const count = column.id === 'done' ? metrics.completed : column.id === 'in-progress' ? metrics.inProgress : metrics.planned
+                  return <div key={column.id}><span className={`legend-dot ${column.id}`} /><span>{column.title}</span><strong>{count}</strong></div>
+                })}
+              </div>
             </div>
           </div>
         </section>

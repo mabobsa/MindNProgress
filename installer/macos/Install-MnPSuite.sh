@@ -12,6 +12,11 @@ readonly UN_FONTS_URL='https://deb.debian.org/debian/pool/main/f/fonts-unfonts-c
 readonly UN_FONTS_SHA256='14abb309f9d979cc20212fabfbd7f50b55c42183985ae507390c7461ce0b307c'
 
 install_root="$DEFAULT_ROOT"
+mindnprogress_branch='main'
+aionui_branch='main'
+aioncore_branch='main'
+dooray_branch='main'
+pptx_branch='main'
 non_interactive=false
 install_prerequisites=false
 reuse_existing=false
@@ -30,6 +35,11 @@ usage() {
 Usage: ./Install-MnPSuite.sh [options]
 
   --install-root PATH                 Installation root (default: ~/Developer/MnPSuite)
+  --mindnprogress-branch NAME         MindNProgress branch (default: main)
+  --aionui-branch NAME                AionUi branch (default: main)
+  --aioncore-branch NAME              AionCore branch (default: main)
+  --dooray-mcp-branch NAME            Dooray MCP branch (default: main)
+  --pptx-mcp-branch NAME              PowerPoint MCP branch (default: main)
   --non-interactive                   Do not ask questions; --install-root is required
   --install-missing-prerequisites     Install missing tools with Homebrew
   --reuse-existing-repositories       Reuse repositories without updating them
@@ -304,6 +314,11 @@ configure_tool_paths() {
 while (($#)); do
   case "$1" in
     --install-root) install_root="${2:?missing value for --install-root}"; shift 2 ;;
+    --mindnprogress-branch) mindnprogress_branch="${2:?missing value for --mindnprogress-branch}"; shift 2 ;;
+    --aionui-branch) aionui_branch="${2:?missing value for --aionui-branch}"; shift 2 ;;
+    --aioncore-branch) aioncore_branch="${2:?missing value for --aioncore-branch}"; shift 2 ;;
+    --dooray-mcp-branch) dooray_branch="${2:?missing value for --dooray-mcp-branch}"; shift 2 ;;
+    --pptx-mcp-branch) pptx_branch="${2:?missing value for --pptx-mcp-branch}"; shift 2 ;;
     --non-interactive) non_interactive=true; shift ;;
     --install-missing-prerequisites) install_prerequisites=true; shift ;;
     --reuse-existing-repositories) reuse_existing=true; shift ;;
@@ -360,9 +375,9 @@ xcode-select -p >/dev/null 2>&1 || missing_tools+=(xcode-command-line-tools)
 
 note 'Installation plan'
 info "Root: $install_root"
-info 'Required repositories: MindNProgress, AionUi, AionCore'
-"$include_dooray" && info 'Optional repository: dooray-mcp-server'
-"$include_pptx" && info 'Optional repository: Office-PowerPoint-MCP-Server'
+info "Required repositories: MindNProgress@$mindnprogress_branch, AionUi@$aionui_branch, AionCore@$aioncore_branch"
+"$include_dooray" && info "Optional repository: dooray-mcp-server@$dooray_branch"
+"$include_pptx" && info "Optional repository: Office-PowerPoint-MCP-Server@$pptx_branch"
 "$include_unity_skill" && info 'Optional skill: unity-work'
 "$include_pptx_skill" && info 'Optional skill: pptx'
 if ((${#missing_tools[@]})); then info "Missing prerequisites: ${missing_tools[*]}"; else info 'Prerequisites: ready'; fi
@@ -458,12 +473,12 @@ sync_repo() {
 }
 
 repositories=(
-  "MindNProgress|$install_root/MindNProgress|https://github.com/mabobsa/MindNProgress.git||main"
-  "AionUi|$install_root/AionUi|https://github.com/mabobsa/AionUi.git|https://github.com/iOfficeAI/AionUi.git|main"
-  "AionCore|$install_root/AionCore|https://github.com/mabobsa/AionCore.git|https://github.com/iOfficeAI/AionCore.git|main"
+  "MindNProgress|$install_root/MindNProgress|https://github.com/mabobsa/MindNProgress.git||$mindnprogress_branch"
+  "AionUi|$install_root/AionUi|https://github.com/mabobsa/AionUi.git|https://github.com/iOfficeAI/AionUi.git|$aionui_branch"
+  "AionCore|$install_root/AionCore|https://github.com/mabobsa/AionCore.git|https://github.com/iOfficeAI/AionCore.git|$aioncore_branch"
 )
-"$include_dooray" && repositories+=("dooray-mcp|$install_root/dooray-mcp-server|https://github.com/mabobsa/dooray-mcp-server.git||main")
-"$include_pptx" && repositories+=("pptx-mcp|$install_root/Office-PowerPoint-MCP-Server|https://github.com/mabobsa/Office-PowerPoint-MCP-Server.git||main")
+"$include_dooray" && repositories+=("dooray-mcp|$install_root/dooray-mcp-server|https://github.com/mabobsa/dooray-mcp-server.git||$dooray_branch")
+"$include_pptx" && repositories+=("pptx-mcp|$install_root/Office-PowerPoint-MCP-Server|https://github.com/mabobsa/Office-PowerPoint-MCP-Server.git||$pptx_branch")
 
 for repository in "${repositories[@]}"; do
   IFS='|' read -r repo_name repo_path repo_origin repo_upstream repo_branch <<<"$repository"

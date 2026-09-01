@@ -55,7 +55,16 @@ AionUi와 AionCore에는 mabobsa fork가 `origin`, iOfficeAI 저장소가 `upstr
 
 PPTX MCP를 선택하면 Noto Sans CJK KR, Noto Serif CJK KR, 나눔고딕, 나눔명조, 나눔스퀘어, 나눔바른고딕, 은바탕, 은돋움을 `~/Library/Fonts`에 준비합니다. Homebrew가 제공하는 글꼴은 cask로 설치하고, 나눔바른고딕과 은글꼴은 공식 배포 archive를 고정 SHA-256으로 검증한 뒤 설치합니다. 기존에 같은 font family가 있으면 유지하며, 다른 내용의 동명 사용자 폰트 파일은 자동으로 덮어쓰지 않습니다. Apple Silicon의 `/opt/homebrew`와 Intel Mac의 `/usr/local`을 모두 지원하도록 PPTX MCP launcher에 `FONTCONFIG_FILE`과 `FONTCONFIG_PATH`도 기록합니다.
 
-## 대화형 설치
+## ZIP 배포본에서 실행
+
+압축을 푼 폴더의 Terminal에서 다음을 실행합니다.
+
+```bash
+chmod +x Install-MnPSuite.sh
+./Install-MnPSuite.sh --install-missing-prerequisites
+```
+
+## Git 저장소에서 실행
 
 ```bash
 cd installer/macos
@@ -87,6 +96,11 @@ API 키를 명령행 인수로 넘기지 마세요. 설치기는 환경값을 �
 
 | 옵션 | 역할 |
 | --- | --- |
+| `--mindnprogress-branch NAME` | 설치할 MindNProgress 브랜치 선택 |
+| `--aionui-branch NAME` | 설치할 AionUi 브랜치 선택 |
+| `--aioncore-branch NAME` | 설치할 AionCore 브랜치 선택 |
+| `--dooray-mcp-branch NAME` | 설치할 Dooray MCP 브랜치 선택 |
+| `--pptx-mcp-branch NAME` | 설치할 PowerPoint MCP 브랜치 선택 |
 | `--plan-only` | 파일을 변경하지 않고 선택 구성과 누락 도구만 출력 |
 | `--reuse-existing-repositories` | 올바른 origin/main 저장소를 업데이트 없이 재사용 |
 | `--update-existing-repositories` | 선택한 모든 저장소가 깨끗한지 먼저 확인한 후 `origin/main`으로 fast-forward |

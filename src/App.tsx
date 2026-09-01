@@ -47,6 +47,7 @@ import { collapsedDocumentGroupsStorageKey, initialCollapsedDocumentGroupIds, no
 import { createsKnowledgeCycle, isHierarchyEdge, isKnowledgeEdge, knowledgePolicyOf } from './utils/knowledgeEdges'
 import { isSameDoorayKnowledgeUrl, normalizedDoorayKnowledgeUrl, taskUrlProvider } from './utils/externalLinks'
 import { splitImageFileName, uniqueImageFileName } from './utils/imageFileNames.mjs'
+import { copiedImagePlacementOverrides } from './utils/imageClipboard.mjs'
 import { shouldReconnectEventStream } from './utils/eventStreamHealth.mjs'
 import { aiConversationLinksFromData } from './utils/aiConversations.mjs'
 import { revisionReasonLabel, shouldRefreshMapContentForAction } from './utils/mapChangeMetadata.mjs'
@@ -371,19 +372,26 @@ type CopiedNodes = {
   edges: MindMapEdge[]
 }
 
-type CopiedImage = {
-  token: string
-  sourceMapId: string
+type CopiedImageItem = {
   sourceNodeId: string
   file: File
   image: MindImageData
   description: string
+  position: { x: number; y: number }
+}
+
+type CopiedImages = {
+  token: string
+  sourceMapId: string
+  images: CopiedImageItem[]
 }
 
 type ImagePlacementOverride = {
   displayWidth: number
   displayHeight: number
   description: string
+  offsetX: number
+  offsetY: number
 }
 
 const IMAGE_CLIPBOARD_MARKER_PREFIX = 'mindnprogress:image-copy:'
@@ -1901,7 +1909,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const [canvasPasteMenu, setCanvasPasteMenu] = useState<{ x: number; y: number } | null>(null)
   const paneRightPressRef = useRef({ x: 0, y: 0 })
   const [copiedNodes, setCopiedNodes] = useState<CopiedNodes | null>(null)
-  const [copiedImage, setCopiedImage] = useState<CopiedImage | null>(null)
+  const [copiedImages, setCopiedImages] = useState<CopiedImages | null>(null)
   const [draggingLibraryItem, setDraggingLibraryItem] = useState<DocumentLayoutItem | null>(null)
   const [documentDropTargetId, setDocumentDropTargetId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
@@ -2158,6 +2166,9 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     ? nodes.find((node) => node.id === previewImageNodeId && node.data.kind === 'image') ?? null
     : null
   const contextMenuNode = nodeContextMenu ? nodes.find((node) => node.id === nodeContextMenu.nodeId) ?? null : null
+  const contextMenuImageCount = contextMenuNode?.data.kind === 'image' && contextMenuNode.selected
+    ? Math.max(1, nodes.filter((node) => node.selected && node.data.kind === 'image').length)
+    : 1
 
   useEffect(() => {
     if (doorayUrlCommitTimer.current !== null) {
@@ -3918,13 +3929,18 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     return true
   }, [edges, mode, nodes, setEdges, setNodes])
 
-  const deleteImageNodeById = useCallback((nodeId: string) => {
+  const deleteImageNodesById = useCallback((nodeId: string) => {
     if (mode !== 'editor') return
-    const image = nodes.find((node) => node.id === nodeId)?.data.image
-    if (!image) return
+    const node = nodes.find((candidate) => candidate.id === nodeId)
+    if (!node || node.data.kind !== 'image') return
+    const selectedImages = node.selected
+      ? nodes.filter((candidate) => candidate.selected && candidate.data.kind === 'image')
+      : [node]
     setNodeContextMenu(null)
-    deleteNodeById(nodeId)
-    setSavedAt('이미지 삭제됨 · 원본 정리는 백업 시 검사')
+    selectedImages.forEach((selectedImage) => deleteNodeById(selectedImage.id))
+    setSavedAt(selectedImages.length > 1
+      ? `이미지 ${selectedImages.length}개 삭제됨 · 원본 정리는 백업 시 검사`
+      : '이미지 삭제됨 · 원본 정리는 백업 시 검사')
   }, [deleteNodeById, mode, nodes])
 
   const deleteSelected = useCallback(() => {
@@ -4338,35 +4354,46 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         .filter((edge) => copiedNodeIds.has(edge.source) && copiedNodeIds.has(edge.target))
         .map((edge) => structuredClone(edge)),
     })
-    setCopiedImage(null)
+    setCopiedImages(null)
     setNodeContextMenu(null)
   }, [activeMapId, edges, nodes])
 
-  const copyImageNode = useCallback(async (nodeId: string) => {
+  const copyImageNodes = useCallback(async (nodeId: string) => {
     if (mode !== 'editor' || !activeMapId) return
     const node = nodes.find((candidate) => candidate.id === nodeId)
-    const image = node?.data.image
-    if (!node || node.data.kind !== 'image' || !image) return
+    if (!node || node.data.kind !== 'image' || !node.data.image) return
+    const imagesToCopy = node.selected
+      ? nodes.filter((candidate) => candidate.selected && candidate.data.kind === 'image' && candidate.data.image)
+      : [node]
 
     setNodeContextMenu(null)
     setSaveError('')
-    setSavedAt('이미지 복사 중…')
+    setSavedAt(imagesToCopy.length > 1 ? `이미지 ${imagesToCopy.length}개 복사 중…` : '이미지 복사 중…')
     try {
-      const response = await fetch(imageAssetUrl(activeMapId, image.assetId), { credentials: 'include' })
-      if (!response.ok) throw new Error('이미지 원본을 불러오지 못했습니다.')
-      const blob = await response.blob()
+      const copiedItems = await Promise.all(imagesToCopy.map(async (candidate): Promise<CopiedImageItem> => {
+        const image = candidate.data.image!
+        const response = await fetch(imageAssetUrl(activeMapId, image.assetId), { credentials: 'include' })
+        if (!response.ok) throw new Error(`이미지 원본을 불러오지 못했습니다: ${image.fileName}`)
+        const blob = await response.blob()
+        return {
+          sourceNodeId: candidate.id,
+          file: new File([blob], image.fileName, { type: image.mimeType }),
+          image: structuredClone(image),
+          description: candidate.data.description,
+          position: { ...candidate.position },
+        }
+      }))
       const token = crypto.randomUUID()
       await copyTextToClipboard(`${IMAGE_CLIPBOARD_MARKER_PREFIX}${token}`)
       setCopiedNodes(null)
-      setCopiedImage({
+      setCopiedImages({
         token,
         sourceMapId: activeMapId,
-        sourceNodeId: node.id,
-        file: new File([blob], image.fileName, { type: image.mimeType }),
-        image: structuredClone(image),
-        description: node.data.description,
+        images: copiedItems,
       })
-      setSavedAt('이미지 복사됨 · 다른 문서에서 붙여넣을 수 있음')
+      setSavedAt(imagesToCopy.length > 1
+        ? `이미지 ${imagesToCopy.length}개 복사됨 · 다른 문서에서 붙여넣을 수 있음`
+        : '이미지 복사됨 · 다른 문서에서 붙여넣을 수 있음')
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : '이미지를 복사하지 못했습니다.')
       setSavedAt('이미지 복사 실패')
@@ -5023,7 +5050,9 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           && Number.isFinite(placementOverride.displayHeight) && placementOverride.displayHeight > 0
           ? { width: placementOverride.displayWidth, height: placementOverride.displayHeight }
           : defaultImageDisplaySize(natural.width, natural.height)
-        const offset = index * 24
+        const defaultOffset = index * 24
+        const offsetX = placementOverride?.offsetX ?? defaultOffset
+        const offsetY = placementOverride?.offsetY ?? defaultOffset
         const image: MindImageData = {
           assetId: uploaded.assetId,
           fileName: (file.name.trim() || '붙여넣은 이미지').slice(0, 240),
@@ -5037,8 +5066,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           id: `image-${crypto.randomUUID()}`,
           type: 'mind',
           position: {
-            x: flowPoint.x - display.width / 2 + offset,
-            y: flowPoint.y - display.height / 2 + offset,
+            x: flowPoint.x - display.width / 2 + offsetX,
+            y: flowPoint.y - display.height / 2 + offsetY,
           },
           selected: true,
           connectable: false,
@@ -5083,9 +5112,10 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           },
         }
       })
+      const keepMultiSelection = uniquelyNamedNodes.length > 1 && placementOverrides.length === files.length
       return [
         ...current.map((node) => node.selected ? { ...node, selected: false } : node),
-        ...uniquelyNamedNodes.map((node) => ({ ...node, selected: node.id === selectedImageId })),
+        ...uniquelyNamedNodes.map((node) => ({ ...node, selected: keepMultiSelection || node.id === selectedImageId })),
       ]
     })
     setSelectedId(selectedImageId)
@@ -5093,15 +5123,15 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     if (lastError) setSaveError(`일부 이미지를 추가하지 못했습니다. ${lastError}`)
   }, [activeMapId, loadedMapId, mode, screenToFlowPosition, setNodes, viewMode])
 
-  const pasteCopiedImageAtPoint = useCallback((clientPoint: { x: number; y: number }) => {
-    if (!copiedImage) return
+  const pasteCopiedImagesAtPoint = useCallback((clientPoint: { x: number; y: number }) => {
+    if (!copiedImages || copiedImages.images.length === 0) return
     setCanvasPasteMenu(null)
-    void addImageFilesAtPoint([copiedImage.file], clientPoint, [{
-      displayWidth: copiedImage.image.displayWidth,
-      displayHeight: copiedImage.image.displayHeight,
-      description: copiedImage.description,
-    }])
-  }, [addImageFilesAtPoint, copiedImage])
+    void addImageFilesAtPoint(
+      copiedImages.images.map((item) => item.file),
+      clientPoint,
+      copiedImagePlacementOverrides(copiedImages.images),
+    )
+  }, [addImageFilesAtPoint, copiedImages])
 
   const addDoorayKnowledgeAtPoint = useCallback(async (url: string, clientPoint: { x: number; y: number }) => {
     if (mode !== 'editor' || viewMode !== 'mindmap' || !activeMapId || loadedMapId !== activeMapId) return
@@ -5182,9 +5212,9 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
       if (!elementAtPointer?.closest('.canvas-wrap')
         || elementAtPointer.closest('.react-flow__panel, .react-flow__controls, .react-flow__minimap')) return
       const clipboardText = event.clipboardData?.getData('text/plain') ?? ''
-      if (copiedImage && clipboardText.trim() === `${IMAGE_CLIPBOARD_MARKER_PREFIX}${copiedImage.token}`) {
+      if (copiedImages && clipboardText.trim() === `${IMAGE_CLIPBOARD_MARKER_PREFIX}${copiedImages.token}`) {
         event.preventDefault()
-        pasteCopiedImageAtPoint({ x: pointer.x, y: pointer.y })
+        pasteCopiedImagesAtPoint({ x: pointer.x, y: pointer.y })
         return
       }
       const files = [...(event.clipboardData?.items ?? [])]
@@ -5204,7 +5234,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
     window.addEventListener('paste', handleClipboardContent)
     return () => window.removeEventListener('paste', handleClipboardContent)
-  }, [addDoorayKnowledgeAtPoint, addImageFilesAtPoint, copiedImage, mode, pasteCopiedImageAtPoint, viewMode])
+  }, [addDoorayKnowledgeAtPoint, addImageFilesAtPoint, copiedImages, mode, pasteCopiedImagesAtPoint, viewMode])
 
   const submitComment = async () => {
     const summary = newComment.trim()
@@ -5630,7 +5660,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     if (mode !== 'editor' || viewMode !== 'mindmap' || knowledgeConnection || touchPanOwned.current) return
     if (event.touches.length !== 1) return
     const hasCrossDocumentNodeCopy = Boolean(copiedNodes && copiedNodes.nodes.length > 0 && copiedNodes.sourceMapId !== activeMapId)
-    if (!copiedImage && !hasCrossDocumentNodeCopy) return
+    if (!copiedImages && !hasCrossDocumentNodeCopy) return
     const target = event.target
     if (!(target instanceof Element) || !target.closest('.react-flow__pane')) return
     const touch = event.touches.item(0)
@@ -5653,7 +5683,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
       setAiConversationContextMenu(null)
       setCanvasPasteMenu({ x: gesture.startClient.x, y: gesture.startClient.y })
     }, TOUCH_CARD_LONG_PRESS_MS)
-  }, [activeMapId, cancelTouchPaneGesture, copiedImage, copiedNodes, knowledgeConnection, mode, viewMode])
+  }, [activeMapId, cancelTouchPaneGesture, copiedImages, copiedNodes, knowledgeConnection, mode, viewMode])
 
   const moveTouchPaneGesture = useCallback((event: ReactTouchEvent<HTMLElement>) => {
     const gesture = touchPaneGesture.current
@@ -7850,14 +7880,14 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           )}
           {contextMenuNode?.data.kind === 'image' ? (
             <>
-              <button role="menuitem" onClick={() => { void copyImageNode(nodeContextMenu.nodeId) }}>
+              <button role="menuitem" onClick={() => { void copyImageNodes(nodeContextMenu.nodeId) }}>
                 <span className="context-icon"><Icon name="copy" size={15} /></span>
-                <span><strong>이미지 복사</strong><small>다른 문서에서도 현재 크기로 붙여넣기</small></span>
+                <span><strong>이미지 복사{contextMenuImageCount > 1 ? ` (${contextMenuImageCount}개)` : ''}</strong><small>다른 문서에서도 현재 크기와 배치 유지</small></span>
               </button>
               <div className="context-divider" />
-              <button className="danger" role="menuitem" onClick={() => deleteImageNodeById(nodeContextMenu.nodeId)}>
+              <button className="danger" role="menuitem" onClick={() => deleteImageNodesById(nodeContextMenu.nodeId)}>
                 <span className="context-icon"><Icon name="trash" size={15} /></span>
-                <span><strong>이미지 삭제</strong><small>마인드맵과 디스크에서 즉시 제거</small></span>
+                <span><strong>이미지 삭제{contextMenuImageCount > 1 ? ` (${contextMenuImageCount}개)` : ''}</strong><small>선택한 이미지를 마인드맵에서 제거</small></span>
               </button>
             </>
           ) : (
@@ -7901,7 +7931,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         </div>
       )}
       {canvasPasteMenu && mode === 'editor' && viewMode === 'mindmap'
-        && (copiedImage || (copiedNodes && copiedNodes.nodes.length > 0 && copiedNodes.sourceMapId !== activeMapId)) && (
+        && (copiedImages || (copiedNodes && copiedNodes.nodes.length > 0 && copiedNodes.sourceMapId !== activeMapId)) && (
         <div
           className="node-context-menu"
           style={{
@@ -7913,16 +7943,23 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         >
           <div className="context-menu-title">
             <span>캔버스 메뉴</span>
-            <strong>{copiedImage
-              ? copiedImage.image.fileName
+            <strong>{copiedImages
+              ? copiedImages.images.length === 1
+                ? copiedImages.images[0].image.fileName
+                : `복사한 이미지 ${copiedImages.images.length}개`
               : copiedNodes!.nodes.length === 1
                 ? copiedNodes!.nodes[0].data.label.replace(/\s*\(ref\)\s*$/i, '')
                 : `복사한 카드 ${copiedNodes!.nodes.length}개`}</strong>
           </div>
-          {copiedImage ? (
-            <button role="menuitem" onClick={() => pasteCopiedImageAtPoint({ x: canvasPasteMenu.x, y: canvasPasteMenu.y })}>
+          {copiedImages ? (
+            <button role="menuitem" onClick={() => pasteCopiedImagesAtPoint({ x: canvasPasteMenu.x, y: canvasPasteMenu.y })}>
               <span className="context-icon"><Icon name="paste" size={15} /></span>
-              <span><strong>이미지 붙여넣기</strong><small>{Math.round(copiedImage.image.displayWidth)} × {Math.round(copiedImage.image.displayHeight)} 크기 유지</small></span>
+              <span>
+                <strong>이미지{copiedImages.images.length > 1 ? ` ${copiedImages.images.length}개` : ''} 붙여넣기</strong>
+                <small>{copiedImages.images.length === 1
+                  ? `${Math.round(copiedImages.images[0].image.displayWidth)} × ${Math.round(copiedImages.images[0].image.displayHeight)} 크기 유지`
+                  : '각 이미지 크기와 상대 배치 유지'}</small>
+              </span>
             </button>
           ) : (
             <button

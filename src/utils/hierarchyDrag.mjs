@@ -10,7 +10,16 @@ export function dragRootIds(draggedNodeId, selectedNodeIds = []) {
   return rootIds
 }
 
+export function hierarchyReparentPairs(targetId, movedNodeIds) {
+  const movedIds = [...new Set(movedNodeIds)].filter((nodeId) => nodeId && nodeId !== targetId)
+  return movedIds.map((nodeId) => ({ source: targetId, target: nodeId }))
+}
+
 export function collectDragDescendantIds(rootIds, hierarchyEdges) {
+  return new Set(collectDragDescendantOwners(rootIds, hierarchyEdges).keys())
+}
+
+export function collectDragDescendantOwners(rootIds, hierarchyEdges) {
   const roots = new Set(rootIds)
   const childrenByParent = new Map()
   for (const edge of hierarchyEdges ?? []) {
@@ -19,16 +28,17 @@ export function collectDragDescendantIds(rootIds, hierarchyEdges) {
     childrenByParent.set(edge.source, children)
   }
 
-  const descendantIds = new Set()
-  const pending = [...roots]
+  const descendantOwners = new Map()
+  const pending = [...roots].map((rootId) => ({ nodeId: rootId, rootId }))
   while (pending.length > 0) {
-    const parentId = pending.shift()
-    for (const childId of childrenByParent.get(parentId) ?? []) {
+    const current = pending.shift()
+    if (!current) continue
+    for (const childId of childrenByParent.get(current.nodeId) ?? []) {
       // 함께 끄는 카드는 자기 위치로 움직이므로 하위 목록에 넣지 않는다.
-      if (descendantIds.has(childId) || roots.has(childId)) continue
-      descendantIds.add(childId)
-      pending.push(childId)
+      if (descendantOwners.has(childId) || roots.has(childId)) continue
+      descendantOwners.set(childId, current.rootId)
+      pending.push({ nodeId: childId, rootId: current.rootId })
     }
   }
-  return descendantIds
+  return descendantOwners
 }

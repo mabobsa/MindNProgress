@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { collectDragDescendantIds, dragRootIds } from '../src/utils/hierarchyDrag.mjs'
+import {
+  collectDragDescendantIds,
+  collectDragDescendantOwners,
+  dragRootIds,
+  hierarchyReparentPairs,
+} from '../src/utils/hierarchyDrag.mjs'
 
 // root ─┬─ mid-a ─┬─ leaf-a1
 //       │         └─ leaf-a2 ── leaf-a2-child
@@ -48,6 +53,37 @@ test('함께 끄는 카드는 다른 카드의 하위로 잡지 않는다', () =
   // 선택한 카드의 하위는 그대로 따라온다.
   assert.equal(descendants.has('leaf-a2-child'), true)
   assert.deepEqual([...descendants].sort(), ['leaf-a1', 'leaf-a2-child'])
+})
+
+test('선택한 카드마다 자신에게 딸린 하위 카드의 이동 책임을 구분한다', () => {
+  const owners = collectDragDescendantOwners(new Set(['mid-a', 'mid-b']), edges)
+  assert.deepEqual([...owners.entries()].sort(), [
+    ['leaf-a1', 'mid-a'],
+    ['leaf-a2', 'mid-a'],
+    ['leaf-a2-child', 'mid-a'],
+    ['leaf-b1', 'mid-b'],
+  ])
+})
+
+test('선택한 카드 3개를 다른 카드에 놓으면 모두 대상의 직접 자식이 된다', () => {
+  assert.deepEqual(hierarchyReparentPairs('new-parent', ['mid-a', 'mid-b', 'mid-c']), [
+    { source: 'new-parent', target: 'mid-a' },
+    { source: 'new-parent', target: 'mid-b' },
+    { source: 'new-parent', target: 'mid-c' },
+  ])
+})
+
+test('부모 변경 대상은 중복 카드와 대상 카드 자신을 제외한다', () => {
+  assert.deepEqual(hierarchyReparentPairs('new-parent', ['mid-a', 'mid-a', 'new-parent']), [
+    { source: 'new-parent', target: 'mid-a' },
+  ])
+})
+
+test('부모와 자식을 함께 선택하면 선택한 자식의 하위는 자식 카드가 맡는다', () => {
+  const owners = collectDragDescendantOwners(new Set(['mid-a', 'leaf-a2']), edges)
+  assert.equal(owners.get('leaf-a1'), 'mid-a')
+  assert.equal(owners.get('leaf-a2-child'), 'leaf-a2')
+  assert.equal(owners.has('leaf-a2'), false)
 })
 
 test('순환 연결이 있어도 무한히 돌지 않는다', () => {

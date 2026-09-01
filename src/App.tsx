@@ -41,7 +41,7 @@ import { DashboardView, KanbanView, TimelineView } from './components/WorkViews'
 import type { AiConversationLink, AiConversationRuntime, ChecklistItem, KnowledgePolicy, MindDoorayLinkData, MindDoorayTaskData, MindDoorayWikiData, MindImageData, MindMapEdgeData, MindNodeData, TeamMember, WaitingItem } from './types/mindMap'
 import { resolveAiConversationTarget, type AiConversationExplicitTarget } from './utils/aiConversationLaunch.mjs'
 import { applyBoxSelection, boxSelectionNodeIds, boxSelectionRect, isBoxSelectionDrag } from './utils/boxSelection.mjs'
-import { collectDragDescendantIds, dragRootIds } from './utils/hierarchyDrag.mjs'
+import { collectDragDescendantOwners, dragRootIds, hierarchyReparentPairs } from './utils/hierarchyDrag.mjs'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
 import { collapsedDocumentGroupsStorageKey, initialCollapsedDocumentGroupIds, normalizeCollapsedDocumentGroupIds } from './utils/documentGroupCollapse.mjs'
 import { createsKnowledgeCycle, isHierarchyEdge, isKnowledgeEdge, knowledgePolicyOf } from './utils/knowledgeEdges'
@@ -827,8 +827,10 @@ class ApiRequestError<T = unknown> extends Error {
 
 type DragSnapshot = {
   rootId: string
+  rootIds: string[]
   rootPosition: { x: number; y: number }
   descendantPositions: Map<string, { x: number; y: number }>
+  descendantRootIds: Map<string, string>
   selectedPositions: Map<string, { x: number; y: number }>
 }
 
@@ -5334,13 +5336,14 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     const selectedNodeIds = draggedNodeIsSelected
       ? [draggedNode.id, ...nodes.filter((node) => node.selected).map((node) => node.id)]
       : []
-    const descendantIds = collectDragDescendantIds(dragRootIds(draggedNode.id, selectedNodeIds), hierarchyEdges)
+    const rootIds = dragRootIds(draggedNode.id, selectedNodeIds)
+    const descendantRootIds = collectDragDescendantOwners(rootIds, hierarchyEdges)
 
     const descendantPositions = new Map<string, { x: number; y: number }>()
     const selectedPositions = new Map<string, { x: number; y: number }>()
 
     for (const node of nodes) {
-      if (descendantIds.has(node.id)) {
+      if (descendantRootIds.has(node.id)) {
         descendantPositions.set(node.id, { ...node.position })
       }
       if (draggedNodeIsSelected && node.selected && node.id !== draggedNode.id) {
@@ -5350,8 +5353,10 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
     dragSnapshot.current = {
       rootId: draggedNode.id,
+      rootIds: [...rootIds],
       rootPosition: { ...draggedNode.position },
       descendantPositions,
+      descendantRootIds,
       selectedPositions,
     }
   }, [beginHistoryTransaction, hierarchyEdges, nodes])
@@ -5446,45 +5451,62 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     if (snapshot && targetId) {
       const target = nodes.find((node) => node.id === targetId)
       if (target) {
-        const childCount = hierarchyEdges.filter((edge) => edge.source === targetId && edge.target !== draggedNode.id).length
-        const automaticPosition = {
-          x: childMindMapHorizontalPosition(target.position, nodeDimensions(target).width),
-          y: target.position.y + childCount * 150 - 40,
-        }
-        const desiredPosition = snapToGrid ? snapMindMapPosition(automaticPosition) : automaticPosition
-        const rootDelta = {
-          x: desiredPosition.x - snapshot.rootPosition.x,
-          y: desiredPosition.y - snapshot.rootPosition.y,
-        }
-        const descendantIds = new Set(snapshot.descendantPositions.keys())
+        const eligibleReparentIds = snapshot.rootIds.filter((nodeId) =>
+          nodes.some((node) => node.id === nodeId && node.data.kind !== 'image'))
+        const reparentPairs = hierarchyReparentPairs(targetId, eligibleReparentIds)
+        const reparentIds = reparentPairs.map((pair) => pair.target)
+        const reparentIdSet = new Set(reparentIds)
+        const childCount = hierarchyEdges.filter((edge) =>
+          edge.source === targetId && !reparentIdSet.has(edge.target)).length
+        const desiredRootPositions = new Map<string, { x: number; y: number }>()
+        const initialRootPositions = new Map<string, { x: number; y: number }>([
+          [snapshot.rootId, snapshot.rootPosition],
+          ...snapshot.selectedPositions.entries(),
+        ])
+
+        reparentIds.forEach((nodeId, index) => {
+          const automaticPosition = {
+            x: childMindMapHorizontalPosition(target.position, nodeDimensions(target).width),
+            y: target.position.y + (childCount + index) * 150 - 40,
+          }
+          desiredRootPositions.set(
+            nodeId,
+            snapToGrid ? snapMindMapPosition(automaticPosition) : automaticPosition,
+          )
+        })
 
         setNodes((current) => current.map((node) => {
-          if (node.id === draggedNode.id) return { ...node, position: desiredPosition }
-          if (!descendantIds.has(node.id)) return node
+          const desiredRootPosition = desiredRootPositions.get(node.id)
+          if (desiredRootPosition) return { ...node, position: desiredRootPosition }
+
+          const ownerRootId = snapshot.descendantRootIds.get(node.id)
+          if (!ownerRootId) return node
+          const initialRootPosition = initialRootPositions.get(ownerRootId)
+          const nextRootPosition = desiredRootPositions.get(ownerRootId)
           const initialPosition = snapshot.descendantPositions.get(node.id)
-          if (!initialPosition) return node
+          if (!initialRootPosition || !nextRootPosition || !initialPosition) return node
           return {
             ...node,
             position: {
-              x: initialPosition.x + rootDelta.x,
-              y: initialPosition.y + rootDelta.y,
+              x: initialPosition.x + nextRootPosition.x - initialRootPosition.x,
+              y: initialPosition.y + nextRootPosition.y - initialRootPosition.y,
             },
           }
         }))
         setEdges((current) => [
-          ...current.filter((edge) => !isHierarchyEdge(edge) || edge.target !== draggedNode.id),
-          {
-            id: `edge-${targetId}-${draggedNode.id}-${Date.now()}`,
-            source: targetId,
-            target: draggedNode.id,
+          ...current.filter((edge) => !isHierarchyEdge(edge) || !reparentIdSet.has(edge.target)),
+          ...reparentPairs.map<MindMapEdge>((pair) => ({
+            id: `edge-${pair.source}-${pair.target}-${Date.now()}`,
+            source: pair.source,
+            target: pair.target,
             sourceHandle: target.data.kind === 'image' ? 'image-source-right' : undefined,
             type: 'default',
             data: { relation: 'hierarchy' },
             markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-          },
+          })),
         ])
         setSelectedId(draggedNode.id)
-        setSavedAt('부모 노드 변경됨')
+        setSavedAt(reparentIds.length > 1 ? `${reparentIds.length}개 카드 부모 변경됨` : '부모 노드 변경됨')
       }
     } else if (snapshot && snapToGrid) {
       const deltaX = draggedPosition.x - snapshot.rootPosition.x

@@ -268,7 +268,14 @@ function Set-MnPSuiteManagedBlock {
   Assert-MnPSuiteManagedBlockTarget $Path
   $existing = if (Test-Path -LiteralPath $Path -PathType Leaf) { Read-Utf8File $Path } else { '' }
   $newLine = if ($existing -match "`r`n") { "`r`n" } else { "`n" }
-  $block = $script:AgentGuidanceStartMarker + $newLine + $Content.Trim() + $newLine + $script:AgentGuidanceEndMarker
+  # Git can check out this installer with CRLF even when a newly created guidance file uses LF.
+  # Normalize the managed content to the target file's newline before comparing so an identical
+  # reinstall does not create a redundant backup solely because of mixed line endings.
+  $normalizedContent = $Content.Replace("`r`n", "`n").Replace("`r", "`n")
+  if ($newLine -eq "`r`n") {
+    $normalizedContent = $normalizedContent.Replace("`n", "`r`n")
+  }
+  $block = $script:AgentGuidanceStartMarker + $newLine + $normalizedContent.Trim() + $newLine + $script:AgentGuidanceEndMarker
   $startCount = [regex]::Matches($existing, [regex]::Escape($script:AgentGuidanceStartMarker)).Count
 
   if ($startCount -eq 1) {

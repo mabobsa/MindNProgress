@@ -61,6 +61,9 @@
 .view-switcher button:hover { color: #5d50ca; background: #efedf7; }
 .view-switcher button.active { color: #5b4dcc; background: white; box-shadow: 0 1px 5px rgba(42,34,78,.12); }
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 9px; }
+.mobile-panel-button,
+.mobile-drawer-close,
+.mobile-drawer-backdrop { display: none; }
 .subscription-usage-summary { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
 .subscription-usage-pill { height: 25px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; color: #6c6672; border: 1px solid #e3e0e7; border-radius: 7px; background: #faf9fb; font-size: 8px; white-space: nowrap; }
 .subscription-usage-pill strong { color: #4f4956; font-size: 8px; font-weight: 750; }
@@ -189,6 +192,7 @@
 .sidebar-header > span { display: flex; align-items: center; gap: 6px; }
 .sidebar-header small { min-width: 18px; padding: 2px 5px; color: #7770a4; border-radius: 10px; background: #efedf8; font-size: 8px; text-align: center; }
 .sidebar-header button { padding: 6px; }
+.sidebar-header-actions { display: flex; align-items: center; gap: 1px; }
 .sidebar-create-actions { display: flex; align-items: center; gap: 1px; }
 .sidebar-create-actions button:first-child { color: #7d6f4e; }
 
@@ -868,7 +872,174 @@
   .login-card-heading h2 { font-size: 23px; }
 }
 
+@media (max-width: 720px) {
+  .app-shell {
+    min-width: 0;
+    height: 100dvh;
+  }
+
+  .topbar {
+    min-height: 96px;
+    height: auto;
+    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "library title inspector"
+      "views views actions";
+    gap: 7px 8px;
+    padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left));
+  }
+
+  .brand-mark,
+  .brand-copy,
+  .topbar-divider { display: none; }
+
+  .mobile-panel-button {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    color: #6659c9;
+    border: 1px solid #ddd8ef;
+    border-radius: 9px;
+    background: #f4f2fc;
+    cursor: pointer;
+  }
+  .mobile-panel-button.active { color: white; border-color: #6657d9; background: #6657d9; }
+  .mobile-panel-button:disabled { color: #bdb8c4; border-color: #ebe8ee; background: #f7f6f8; cursor: default; }
+  .mobile-library-toggle { grid-area: library; }
+  .mobile-inspector-toggle { grid-area: inspector; justify-self: end; }
+
+  .document-title { min-width: 0; grid-area: title; }
+  .document-title-row { min-width: 0; }
+  .document-title-row > span { max-width: 100%; }
+  .document-title small { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+  .rename-form { min-width: 0; }
+  .rename-form input { width: 100%; min-width: 0; }
+
+  .view-switcher {
+    min-width: 0;
+    grid-area: views;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin-left: 0;
+  }
+  .view-switcher button { min-width: 0; justify-content: center; padding: 0 5px; }
+  .view-switcher button span { display: none; }
+
+  .topbar-actions { grid-area: actions; gap: 3px; margin-left: 0; }
+  .topbar-actions > .subscription-usage-summary,
+  .topbar-actions > .admin-panel-trigger,
+  .topbar-actions > .history-controls,
+  .topbar-actions > .shared-knowledge-review-trigger,
+  .topbar-actions > .presence-summary,
+  .topbar-actions > .role-badge,
+  .topbar-actions > .share-button { display: none; }
+  .theme-switch { height: 30px; gap: 0; padding: 3px 5px; }
+  .theme-switch-icon { display: none; }
+  .topbar-actions .icon-button { padding: 7px; }
+  .user-menu { padding: 0; }
+  .user-menu > span:nth-child(2),
+  .user-menu > .icon { display: none; }
+  .avatar { margin-left: 0; }
+
+  .notification-popover {
+    width: calc(100vw - 16px);
+    position: fixed;
+    top: 100px;
+    right: 8px;
+  }
+  .account-popover {
+    width: min(240px, calc(100vw - 16px));
+    position: fixed;
+    top: 100px;
+    right: 8px;
+  }
+  .external-change-banner,
+  .merge-notice {
+    top: 104px;
+    width: calc(100vw - 16px);
+    max-width: none;
+  }
+  .external-change-banner > span,
+  .merge-notice > span { min-width: 0; white-space: normal; }
+
+  .workspace { grid-template-columns: minmax(0, 1fr); }
+  .mobile-drawer-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: block;
+    padding: 0;
+    border: 0;
+    background: rgba(35, 29, 50, .34);
+    backdrop-filter: blur(1px);
+  }
+  .sidebar,
+  .inspector {
+    width: min(92vw, 420px);
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 31;
+    box-shadow: 0 16px 42px rgba(31, 24, 48, .24);
+    visibility: hidden;
+    transition: transform .2s ease, visibility .2s ease;
+    pointer-events: none;
+  }
+  .sidebar {
+    left: 0;
+    width: min(88vw, 320px);
+    padding: 14px 10px 10px;
+    transform: translateX(-102%);
+  }
+  .inspector {
+    right: 0;
+    left: auto;
+    border-left: 1px solid #e9e7ef;
+    transform: translateX(102%);
+  }
+  .sidebar.mobile-open,
+  .inspector.mobile-open {
+    visibility: visible;
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+  .mobile-drawer-close { display: grid; place-items: center; }
+  .sidebar-resizer,
+  .inspector-resizer { display: none; }
+  .canvas-wrap,
+  .work-view-wrap { min-width: 0; grid-column: 1; }
+  .inspector-header { min-height: 58px; height: auto; flex-basis: auto; padding: 10px 12px 10px 16px; }
+  .inspector-content { padding: 16px; scrollbar-gutter: auto; }
+  .inspector-footer { padding: 11px 16px; }
+
+  .canvas-toolbar { max-width: calc(100% - 16px); margin: 8px !important; }
+  .canvas-toolbar .primary-tool kbd { display: none; }
+  .node-explorer {
+    width: calc(100% - 16px);
+    max-width: none;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 52px 8px 8px !important;
+  }
+  .node-search-box { width: 100%; grid-column: 1 / -1; }
+  .node-explorer > select { width: 100%; }
+  .node-explorer > .filter-reset { grid-column: 1 / -1; }
+  .mini-map,
+  .hint-pill { display: none; }
+
+  .history-modal-backdrop { padding: 10px; }
+  .history-modal,
+  .password-modal { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); }
+  .content-tooltip { max-width: calc(100vw - 16px); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .preview-ai-dot { animation: none; opacity: .8; }
   .subscription-usage-loading i { animation: none; opacity: .75; }
+  .sidebar,
+  .inspector { transition: none; }
 }

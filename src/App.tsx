@@ -1810,6 +1810,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const mode: AccessMode = user.role === 'viewer' ? 'viewer' : 'editor'
   const [adminOpen, setAdminOpen] = useState(false)
   const closeAdminPanel = useCallback(() => setAdminOpen(false), [])
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false)
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false)
   const [aiDialogOpen, setAiDialogOpen] = useState(false)
@@ -1994,6 +1996,25 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   activeMapIdRef.current = activeMapId
   nodesRef.current = nodes
   edgesRef.current = edges
+
+  useEffect(() => {
+    const mobileViewport = window.matchMedia('(max-width: 720px)')
+    const closeMobilePanelsOnDesktop = (event: MediaQueryListEvent) => {
+      if (event.matches) return
+      setMobileSidebarOpen(false)
+      setMobileInspectorOpen(false)
+    }
+    mobileViewport.addEventListener('change', closeMobilePanelsOnDesktop)
+    return () => mobileViewport.removeEventListener('change', closeMobilePanelsOnDesktop)
+  }, [])
+
+  useEffect(() => {
+    if (!selectedId) {
+      setMobileInspectorOpen(false)
+      return
+    }
+    if (window.matchMedia('(max-width: 720px)').matches) setMobileInspectorOpen(true)
+  }, [selectedId])
   const reconcileRemoteMap = useCallback((remoteMap: MapDocument) => {
     if (activeMapIdRef.current !== remoteMap.id) return
     const baseline = serverBaseline.current
@@ -5899,7 +5920,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         key={document.id}
         draggable={mode === 'editor' && !normalizedDocumentSearch}
         className={`map-item ${location.type === 'group' ? 'group-document' : ''} ${document.id === activeMapId ? 'active' : ''} ${rootStatus === 'planned' ? 'root-planned' : ''} ${draggingLibraryItem?.type === 'map' && draggingLibraryItem.id === document.id ? 'dragging' : ''} ${documentDropTargetId === dropKey ? 'document-drop-target' : ''}`}
-        onClick={() => { setRenamingMap(false); setActiveMapId(document.id) }}
+        onClick={() => { setRenamingMap(false); setActiveMapId(document.id); setMobileSidebarOpen(false) }}
         onContextMenu={(event) => openDocumentContextMenu(event, document.id)}
         onDragStart={(event) => {
           if (mode !== 'editor' || normalizedDocumentSearch) return
@@ -5949,6 +5970,20 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   return (
     <div className={`app-shell ${resizingSidebar ? 'resizing-sidebar' : ''} ${resizingInspector ? 'resizing-inspector' : ''}`}>
       <header className="topbar">
+        <button
+          type="button"
+          className={`mobile-panel-button mobile-library-toggle ${mobileSidebarOpen ? 'active' : ''}`}
+          onClick={() => {
+            setMobileInspectorOpen(false)
+            setMobileSidebarOpen((current) => !current)
+          }}
+          aria-controls="document-library-panel"
+          aria-expanded={mobileSidebarOpen}
+          aria-label="문서 목록 열기"
+          title="문서 목록"
+        >
+          <Icon name="folder" size={18} />
+        </button>
         <div className="brand-mark"><Icon name="map" size={20} /></div>
         <div className="brand-copy">
           <strong>Mind & Progress</strong>
@@ -5987,6 +6022,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
               onClick={() => {
                 if (id !== 'mindmap' && selectedNode && !selectedNode.data.isWork) setSelectedId(null)
                 setViewMode(id)
+                setMobileSidebarOpen(false)
+                setMobileInspectorOpen(false)
                 if (id === 'mindmap') window.setTimeout(() => showFullMindMap(400), 0)
               }}
               aria-pressed={viewMode === id}
@@ -5997,6 +6034,21 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
             </button>
           ))}
         </nav>
+        <button
+          type="button"
+          className={`mobile-panel-button mobile-inspector-toggle ${mobileInspectorOpen ? 'active' : ''}`}
+          onClick={() => {
+            setMobileSidebarOpen(false)
+            setMobileInspectorOpen((current) => !current)
+          }}
+          aria-controls="node-inspector-panel"
+          aria-expanded={mobileInspectorOpen}
+          aria-label="선택 카드 세부정보 열기"
+          title="선택 카드 세부정보"
+          disabled={!selectedNode}
+        >
+          <Icon name="edit" size={18} />
+        </button>
         <div className="topbar-actions">
           {!user.publicAccess && <AionUiSubscriptionUsageIndicator />}
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
@@ -6122,31 +6174,53 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           '--inspector-width': `${inspectorWidth}px`,
         } as CSSProperties}
       >
-        <aside className="sidebar">
+        {(mobileSidebarOpen || mobileInspectorOpen) && (
+          <button
+            type="button"
+            className="mobile-drawer-backdrop"
+            onClick={() => {
+              setMobileSidebarOpen(false)
+              setMobileInspectorOpen(false)
+            }}
+            aria-label="모바일 패널 닫기"
+          />
+        )}
+        <aside id="document-library-panel" className={`sidebar ${mobileSidebarOpen ? 'mobile-open' : ''}`}>
           <div className="sidebar-header">
             <span>{trashOpen ? '휴지통' : '마인드맵'} <small>{trashOpen ? trashedDocuments.length : documents.length}</small></span>
-            {trashOpen ? (
-              <button type="button" aria-label="휴지통 닫기" title="휴지통 닫기" onClick={() => setTrashOpen(false)}>
-                <Icon name="close" size={14} />
+            <div className="sidebar-header-actions">
+              {trashOpen ? (
+                <button type="button" aria-label="휴지통 닫기" title="휴지통 닫기" onClick={() => setTrashOpen(false)}>
+                  <Icon name="close" size={14} />
+                </button>
+              ) : mode === 'editor' && (
+                <div className="sidebar-create-actions">
+                  <button
+                    aria-label="새 문서 그룹"
+                    title="새 문서 그룹"
+                    onClick={() => { setCreatingGroup((current) => !current); setCreatingMap(false) }}
+                  >
+                    <Icon name="folder" size={15} />
+                  </button>
+                  <button
+                    aria-label="새 마인드맵"
+                    title="새 마인드맵"
+                    onClick={() => { setCreatingMap((current) => !current); setCreatingGroup(false) }}
+                  >
+                    <Icon name={creatingMap ? 'close' : 'plus'} size={16} />
+                  </button>
+                </div>
+              )}
+              <button
+                type="button"
+                className="mobile-drawer-close"
+                onClick={() => setMobileSidebarOpen(false)}
+                aria-label="문서 목록 닫기"
+                title="문서 목록 닫기"
+              >
+                <Icon name="close" size={15} />
               </button>
-            ) : mode === 'editor' && (
-              <div className="sidebar-create-actions">
-                <button
-                  aria-label="새 문서 그룹"
-                  title="새 문서 그룹"
-                  onClick={() => { setCreatingGroup((current) => !current); setCreatingMap(false) }}
-                >
-                  <Icon name="folder" size={15} />
-                </button>
-                <button
-                  aria-label="새 마인드맵"
-                  title="새 마인드맵"
-                  onClick={() => { setCreatingMap((current) => !current); setCreatingGroup(false) }}
-                >
-                  <Icon name={creatingMap ? 'close' : 'plus'} size={16} />
-                </button>
-              </div>
-            )}
+            </div>
           </div>
           {!trashOpen ? (
             <>
@@ -6839,7 +6913,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           <span />
         </div>
 
-        <aside className={`inspector ${selectedNode ? 'open' : ''}`}>
+        <aside id="node-inspector-panel" className={`inspector ${selectedNode ? 'open' : ''} ${mobileInspectorOpen ? 'mobile-open' : ''}`}>
           {selectedNode?.data.kind === 'image' && selectedNode.data.image ? (
             <>
               <div className="inspector-header">

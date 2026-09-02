@@ -146,3 +146,43 @@
   .kanban-columns { gap: 8px; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+@media (max-width: 720px) {
+  .kanban-view,
+  .timeline-view,
+  .dashboard-view { padding: 12px 10px 20px; }
+  .work-view-header { min-height: 0; align-items: flex-start; gap: 10px; margin-bottom: 14px; }
+  .work-view-header h2 { font-size: 17px; }
+  .work-view-header p { line-height: 1.45; }
+  .work-view-header > strong { flex: 0 0 auto; }
+
+  .kanban-columns { min-height: 0; grid-template-columns: minmax(0, 1fr); }
+  .kanban-column { padding: 10px; }
+
+  .timeline-list { padding-top: 0; }
+  .timeline-item {
+    grid-template-columns: 18px minmax(0, 1fr);
+    grid-template-areas:
+      "dot date"
+      "dot content"
+      "dot meta";
+    align-items: start;
+    gap: 6px 8px;
+    padding: 9px 7px;
+  }
+  .timeline-item::before { top: -10px; bottom: -10px; left: 15px; }
+  .timeline-date { grid-area: date; flex-direction: row; align-items: baseline; gap: 5px; }
+  .timeline-dot { grid-area: dot; margin-top: 3px; }
+  .timeline-content { grid-area: content; width: 100%; }
+  .timeline-meta { min-width: 0; grid-area: meta; flex-direction: row; justify-content: flex-end; }
+
+  .metric-grid { gap: 7px; }
+  .metric-card { padding: 12px; }
+  .metric-card > strong { font-size: 20px; }
+  .dashboard-panels { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .progress-overview { grid-row: auto; }
+  .donut-wrap { flex-direction: column; gap: 18px; padding: 12px 0; }
+  .progress-breakdown { width: 100%; min-width: 0; }
+  .dashboard-metric-results { padding: 12px; }
+  .dashboard-work-list { grid-template-columns: minmax(0, 1fr); }
+}

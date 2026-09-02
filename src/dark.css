@@ -1590,3 +1590,25 @@
   background: #676d82;
   background-clip: padding-box;
 }
+
+[data-theme="dark"] .mobile-panel-button {
+  color: var(--theme-accent);
+  border-color: var(--theme-border);
+  background: var(--theme-surface-raised);
+}
+
+[data-theme="dark"] .mobile-panel-button.active {
+  color: #fff;
+  border-color: var(--theme-accent);
+  background: var(--theme-accent);
+}
+
+[data-theme="dark"] .mobile-panel-button:disabled {
+  color: var(--theme-text-muted);
+  border-color: var(--theme-border);
+  background: var(--theme-surface);
+}
+
+[data-theme="dark"] .mobile-drawer-backdrop {
+  background: rgba(5, 7, 13, .58);
+}

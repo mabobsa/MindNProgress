@@ -1973,6 +1973,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const suppressNodeContextMenuUntil = useRef(0)
   const suppressTouchClickUntil = useRef(0)
   const suppressTouchContextMenu = useRef<{ nodeId: string; until: number } | null>(null)
+  const suppressMobileInspectorSelection = useRef<string | null>(null)
   const serverBaseline = useRef<MapDocument | null>(null)
   const pastedNodeNotificationSuppressions = useRef<Map<string, Set<string>>>(new Map())
   const cursorSendAt = useRef(0)
@@ -2010,6 +2011,13 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
   useEffect(() => {
     if (!selectedId) {
+      suppressMobileInspectorSelection.current = null
+      setMobileInspectorOpen(false)
+      return
+    }
+    const suppressedNodeId = suppressMobileInspectorSelection.current
+    suppressMobileInspectorSelection.current = null
+    if (suppressedNodeId === selectedId) {
       setMobileInspectorOpen(false)
       return
     }
@@ -3992,10 +4000,19 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     }
   }, [viewMode, viewport.x, viewport.y, viewport.zoom])
 
-  const showNodeContextMenu = useCallback((nodeId: string, clientX: number, clientY: number) => {
+  const showNodeContextMenu = useCallback((
+    nodeId: string,
+    clientX: number,
+    clientY: number,
+    options: { suppressMobileInspector?: boolean } = {},
+  ) => {
     if (mode !== 'editor') return
     setDocumentContextMenu(null)
     setAiConversationContextMenu(null)
+    if (options.suppressMobileInspector && window.matchMedia('(max-width: 720px)').matches) {
+      setMobileInspectorOpen(false)
+      suppressMobileInspectorSelection.current = selectedIdRef.current === nodeId ? null : nodeId
+    }
     setSelectedId(nodeId)
     const menuHeight = nodes.find((node) => node.id === nodeId)?.data.kind === 'image' ? 310 : 440
     setNodeContextMenu({
@@ -5763,7 +5780,9 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         lastTouchCardTap.current = null
         touchCanvasPanGesture.current = null
         setNodes((current) => synchronizeNodeSelection(current, gesture.nodeId))
-        showNodeContextMenu(gesture.nodeId, gesture.startClient.x, gesture.startClient.y)
+        showNodeContextMenu(gesture.nodeId, gesture.startClient.x, gesture.startClient.y, {
+          suppressMobileInspector: true,
+        })
       }, TOUCH_CARD_LONG_PRESS_MS)
     }
   }, [cancelTouchCardGesture, knowledgeConnection, mode, screenToFlowPosition, setNodes, showNodeContextMenu, viewMode])

@@ -268,7 +268,14 @@ function Set-MnPSuiteManagedBlock {
   Assert-MnPSuiteManagedBlockTarget $Path
   $existing = if (Test-Path -LiteralPath $Path -PathType Leaf) { Read-Utf8File $Path } else { '' }
   $newLine = if ($existing -match "`r`n") { "`r`n" } else { "`n" }
-  $block = $script:AgentGuidanceStartMarker + $newLine + $Content.Trim() + $newLine + $script:AgentGuidanceEndMarker
+  # Git can check out this installer with CRLF even when a newly created guidance file uses LF.
+  # Normalize the managed content to the target file's newline before comparing so an identical
+  # reinstall does not create a redundant backup solely because of mixed line endings.
+  $normalizedContent = $Content.Replace("`r`n", "`n").Replace("`r", "`n")
+  if ($newLine -eq "`r`n") {
+    $normalizedContent = $normalizedContent.Replace("`n", "`r`n")
+  }
+  $block = $script:AgentGuidanceStartMarker + $newLine + $normalizedContent.Trim() + $newLine + $script:AgentGuidanceEndMarker
   $startCount = [regex]::Matches($existing, [regex]::Escape($script:AgentGuidanceStartMarker)).Count
 
   if ($startCount -eq 1) {
@@ -1260,11 +1267,16 @@ function Write-MnPSuiteMcpBootstrapConfig {
 function Ensure-AionUiMindNProgressBootstrap {
   param([string]$RepositoryPath)
 
-  $bootstrapRelativePath = 'packages\desktop\src\process\utils\mindNProgressMcpBootstrap.ts'
+  $bootstrapRelativePath = 'packages\desktop\src\process\startup\bootstrap\mnpSuiteMcp.ts'
   $migrationRelativePath = 'packages\desktop\src\process\utils\runBackendMigrations.ts'
-  $testRelativePath = 'tests\unit\mindNProgressMcpBootstrap.test.ts'
+  $testRelativePath = 'tests\unit\bootstrap\mnpSuiteMcp.test.ts'
   $bootstrapSource = Join-Path $RepositoryPath $bootstrapRelativePath
   $migrationSource = Join-Path $RepositoryPath $migrationRelativePath
+  if (-not (Test-Path -LiteralPath $bootstrapSource -PathType Leaf)) {
+    $bootstrapRelativePath = 'packages\desktop\src\process\utils\mindNProgressMcpBootstrap.ts'
+    $testRelativePath = 'tests\unit\mindNProgressMcpBootstrap.test.ts'
+    $bootstrapSource = Join-Path $RepositoryPath $bootstrapRelativePath
+  }
   $bootstrapMarker = 'MINDNPROGRESS_MCP_ENTRY'
   $migrationMarker = 'buildMindNProgressMcpServer'
   $optionalBootstrapMarker = 'MNP_SUITE_MCP_CONFIG'
@@ -1356,8 +1368,7 @@ function Write-WorkspacePoolScaffold {
   }
 
   $rulesPath = Join-Path $commonDirectory 'MULTI_WORKSPACE.md'
-  if (-not (Test-Path -LiteralPath $rulesPath -PathType Leaf)) {
-    $rules = @'
+  $rules = @'
 # Unity 멀티 작업공간 공통 규칙
 
 ## 기본 모델
@@ -1381,10 +1392,8 @@ function Write-WorkspacePoolScaffold {
 
 Unity MCP 대상은 등록된 `assetsPath`와 `unityInstanceHash`로 구분합니다. 프로젝트를 변경하는 호출은 배정된 작업공간과 일치하는 Unity 인스턴스만 사용합니다.
 '@
-    Write-Utf8File $rulesPath $rules
-  } else {
-    Write-Info "기존 작업공간 규칙 유지: $rulesPath"
-  }
+  Write-Utf8File $rulesPath $rules
+  Write-Info "관리 작업공간 규칙 최신화: $rulesPath"
 
   return [pscustomobject]@{
     Root = $poolRoot
@@ -1880,6 +1889,13 @@ function Invoke-SelfTest {
     if (@($registry.workspaces).Count -lt 2) { throw 'integration과 worker 작업공간 예시 누락' }
     if (@($registry.workspaces | Where-Object { $_.enabled -ne $false }).Count -ne 0) { throw '작업공간 예시는 비활성 상태여야 함' }
     if (-not (Test-Path -LiteralPath $workspacePool.Rules -PathType Leaf)) { throw '작업공간 공통 규칙 생성 실패' }
+    Write-Utf8File $workspacePool.Rules '# outdated user-edited managed rules'
+    $workspacePool = Write-WorkspacePoolScaffold $temporaryRoot
+    $rulesText = Read-Utf8File $workspacePool.Rules
+    if ($rulesText -match 'outdated user-edited managed rules' -or
+        $rulesText -notmatch '# Unity 멀티 작업공간 공통 규칙') {
+      throw '재설치 시 관리 작업공간 규칙 최신화 실패'
+    }
     $mindNProgressLauncher = Get-Content -LiteralPath (Join-Path $dev 'Start-MindNProgress-Dev.bat') -Raw
     if ($mindNProgressLauncher -notmatch 'MNP_WORKSPACE_POOL_REGISTRY=%SUITE_ROOT%\\workspace-pool\\workspaces\.json') {
       throw 'MindNProgress 런처의 작업공간 구성 연결 누락'

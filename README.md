@@ -152,6 +152,19 @@ MnP Suite Windows Git 설치 패키지는 업무 PC에 MindNProgress, AionUi와 
 
 PC마다 이렇게 설치한 MindNProgress의 `server/data`는 서로 독립되며 자동 동기화되지 않습니다. 설치 패키지 재실행이나 Git 업데이트가 운영 데이터를 동기화하지 않으므로, 공동 문서가 필요하면 별도의 팀 호스트 구성을 사용해야 합니다.
 
+### macOS Git 개발 환경 일괄 설치
+
+macOS에서는 [`installer/macos/Install-MnPSuite.sh`](installer/macos/Install-MnPSuite.sh)를 사용합니다. 이 설치기는 MindNProgress, AionUi, AionCore를 한 루트에 복제하고, 선택한 Dooray MCP와 PowerPoint MCP의 macOS 런타임을 준비합니다. Windows DPAPI 대신 Dooray 키를 macOS Keychain에 보관하고, PowerPoint COM 대신 LibreOffice 렌더링을 사용합니다. PowerPoint MCP 선택 시 Noto CJK·나눔·은글꼴을 사용자 폰트로 설치하고 한글 PPTX의 실제 PNG 렌더링까지 확인합니다.
+
+```bash
+cd installer/macos
+chmod +x Install-MnPSuite.sh
+./Install-MnPSuite.sh --install-missing-prerequisites \
+  --include-dooray-mcp --include-pptx-mcp --launch
+```
+
+실제 파일을 만들지 않고 사전 점검하려면 `--plan-only`를 추가합니다. 전체 옵션과 실행 방법은 [macOS 설치 패키지 안내](installer/macos/README.md)를 확인하세요.
+
 ### MindNProgress만 직접 실행
 
 ```bash

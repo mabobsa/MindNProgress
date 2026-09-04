@@ -507,6 +507,7 @@
 .work-switch.on > span { transform: translateX(13px); }
 .work-switch:disabled { opacity: .7; cursor: default; }
 .work-fields { margin-top: 17px; padding-top: 15px; border-top: 1px solid #e6e2f1; }
+.work-fields.waiting-only .waiting-block { margin-top: 0; }
 .work-fields > label { margin-bottom: 13px; }
 .dependency-block { margin: 18px 0 4px; padding-top: 16px; border-top: 1px solid #e6e2f1; }
 .dependency-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; }

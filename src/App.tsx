@@ -2328,6 +2328,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const selectedProgressRollup = selectedNode ? progressRollups.get(selectedNode.id) : undefined
   const selectedProgress = selectedProgressRollup?.progress ?? selectedNode?.data.progress ?? 0
   const selectedStatus = selectedProgressRollup?.status ?? selectedNode?.data.status ?? 'planned'
+  const selectedHasWaitingItems = Boolean(selectedNode?.data.waitingItems?.some((item) => item.label.trim()))
   const selectedDoorayKnowledgeNode = selectedNode && isDoorayKnowledgeCard(selectedNode.data)
     ? selectedNode
     : null
@@ -7611,7 +7612,11 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                   <div className="work-section-heading">
                     <div>
                       <span>업무 관리</span>
-                      <small>{selectedNode.data.isWork ? '담당자와 실행 항목을 관리합니다.' : '이 노드를 실행 가능한 업무로 전환합니다.'}</small>
+                      <small>{selectedNode.data.isWork
+                        ? '담당자와 실행 항목을 관리합니다.'
+                        : selectedHasWaitingItems
+                          ? '업무 관리와 별개로 등록된 대기 항목을 확인합니다.'
+                          : '이 노드를 실행 가능한 업무로 전환합니다.'}</small>
                     </div>
                     <button
                       type="button"
@@ -7625,8 +7630,9 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                     </button>
                   </div>
 
-                  {selectedNode.data.isWork && (
-                    <div className="work-fields">
+                  {(selectedNode.data.isWork || selectedHasWaitingItems) && (
+                    <div className={`work-fields ${selectedNode.data.isWork ? '' : 'waiting-only'}`}>
+                      {selectedNode.data.isWork && <>
                       <label>
                         <span>담당자</span>
                         <select
@@ -7688,6 +7694,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                           </div>
                         )}
                       </div>
+                      </>}
 
                       <div className="waiting-block" ref={waitingBlockRef}>
                         <div className="waiting-heading">
@@ -7794,7 +7801,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                         <small className="waiting-help">대기 항목은 상태와 진행률을 바꾸지 않으며, 업무를 완료하면 자동으로 정리됩니다. 문서 내부 선행 업무는 위의 업무 의존성을 사용하세요.</small>
                       </div>
 
-                      <div className="checklist-block">
+                      {selectedNode.data.isWork && <div className="checklist-block">
                         <div className="checklist-heading">
                           <span>체크리스트</span>
                           <strong>
@@ -7886,7 +7893,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                           </form>
                         )}
                         <small className="checklist-help">완료 비율이 노드 진행률에 자동 반영됩니다.</small>
-                      </div>
+                      </div>}
                     </div>
                   )}
                 </section>

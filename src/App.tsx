@@ -1280,8 +1280,10 @@ function LoadingUsageDots() {
 
 const SUBSCRIPTION_USAGE_READY_POLL_MS = 10_000
 
-function AionUiSubscriptionUsageIndicator() {
+function AionUiSubscriptionUsageIndicator({ onOpen }: { onOpen?: () => void }) {
   const [usage, setUsage] = useState<AionUiSubscriptionUsage | null>(null)
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let active = true
@@ -1310,12 +1312,46 @@ function AionUiSubscriptionUsageIndicator() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!mobileOpen) return
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !containerRef.current?.contains(event.target)) setMobileOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [mobileOpen])
+
+  useEffect(() => {
+    const mobileViewport = window.matchMedia('(max-width: 720px)')
+    const closeWhenDesktop = (event: MediaQueryListEvent) => {
+      if (!event.matches) setMobileOpen(false)
+    }
+    mobileViewport.addEventListener('change', closeWhenDesktop)
+    return () => mobileViewport.removeEventListener('change', closeWhenDesktop)
+  }, [])
+
   const claude = usage?.claude
   const codex = usage?.codex
   const claudeLoading = claude?.state === 'loading'
   const codexLoading = codex?.state === 'loading'
   const showClaude = claudeLoading || Boolean(claude?.state === 'ready' && !claude.stale && (claude.session || claude.weekly))
   const showCodex = codexLoading || Boolean(codex?.state === 'ready' && !codex.stale && codex.weekly)
+  const visibleUsageValues = [
+    showClaude ? claude?.session?.usedPercent : null,
+    showClaude ? claude?.weekly?.usedPercent : null,
+    showCodex ? codex?.weekly?.usedPercent : null,
+    showCodex && codex?.limitReached ? 100 : null,
+  ].filter((value): value is number => Number.isFinite(value))
+  const highestUsage = Math.max(...visibleUsageValues, 0)
+  const summaryTone = usageTone(...visibleUsageValues)
 
   if (!usage?.available || (!showClaude && !showCodex)) return null
 
@@ -1331,7 +1367,7 @@ function AionUiSubscriptionUsageIndicator() {
     : 'Codex 사용량을 조회하고 있습니다.'
 
   return (
-    <div className="subscription-usage-summary" aria-label="AI 구독 사용량">
+    <div className="subscription-usage-summary" aria-label="AI 구독 사용량" ref={containerRef}>
       {showClaude && <div
         className={`subscription-usage-pill claude ${usageTone(claude?.session?.usedPercent, claude?.weekly?.usedPercent)}`}
         title={claudeTitle}
@@ -1350,6 +1386,54 @@ function AionUiSubscriptionUsageIndicator() {
       >
         <strong>Codex</strong>
         {codexLoading ? <LoadingUsageDots /> : <span>{Math.round(codex?.weekly?.usedPercent ?? 0)}%</span>}
+      </div>}
+      <button
+        className={`subscription-usage-mobile-trigger ${summaryTone}`}
+        type="button"
+        aria-label={`AI 구독 사용량${visibleUsageValues.length > 0 ? `, 최고 ${Math.round(highestUsage)}%` : ', 조회 중'}`}
+        aria-haspopup="dialog"
+        aria-expanded={mobileOpen}
+        aria-controls="mobile-subscription-usage-popover"
+        title="AI 구독 사용량"
+        onClick={() => setMobileOpen((current) => {
+          const next = !current
+          if (next) onOpen?.()
+          return next
+        })}
+      >
+        {visibleUsageValues.length === 0
+          ? <LoadingUsageDots />
+          : <><Icon name="chart" size={14} /><span>{Math.round(highestUsage)}%</span></>}
+      </button>
+      {mobileOpen && <div
+        className="subscription-usage-popover"
+        id="mobile-subscription-usage-popover"
+        role="dialog"
+        aria-label="AI 구독 사용량 상세"
+      >
+        <header>
+          <strong>AI 구독 사용량</strong>
+          <button type="button" onClick={() => setMobileOpen(false)} aria-label="사용량 상세 닫기">
+            <Icon name="close" size={13} />
+          </button>
+        </header>
+        <div className="subscription-usage-provider-list">
+          {showClaude && <section className={usageTone(claude?.session?.usedPercent, claude?.weekly?.usedPercent)}>
+            <strong>Claude</strong>
+            {claudeLoading
+              ? <LoadingUsageDots />
+              : <div>
+                  {claude?.session && <span><b>5시간 {Math.round(claude.session.usedPercent)}%</b><small>{usageResetLabel(claude.session.resetsAt)}</small></span>}
+                  {claude?.weekly && <span><b>주간 {Math.round(claude.weekly.usedPercent)}%</b><small>{usageResetLabel(claude.weekly.resetsAt)}</small></span>}
+                </div>}
+          </section>}
+          {showCodex && <section className={usageTone(codex?.weekly?.usedPercent, codex?.limitReached ? 100 : null)}>
+            <strong>Codex</strong>
+            {codexLoading
+              ? <LoadingUsageDots />
+              : codex?.weekly && <div><span><b>주간 {Math.round(codex.weekly.usedPercent)}%</b><small>{usageResetLabel(codex.weekly.resetsAt)}</small></span></div>}
+          </section>}
+        </div>
       </div>}
     </div>
   )
@@ -6128,7 +6212,10 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           <Icon name="edit" size={18} />
         </button>
         <div className="topbar-actions">
-          {!user.publicAccess && <AionUiSubscriptionUsageIndicator />}
+          {!user.publicAccess && <AionUiSubscriptionUsageIndicator onOpen={() => {
+            setNotificationsOpen(false)
+            setAccountMenuOpen(false)
+          }} />}
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
           {user.role === 'admin' && (
             <button className={`admin-panel-trigger ${adminOpen ? 'active' : ''}`} onClick={() => { setAdminOpen((current) => !current); setNotificationsOpen(false) }} title="편집자 계정 관리">

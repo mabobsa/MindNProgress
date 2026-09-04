@@ -33,6 +33,8 @@ async function startMockAionUi({
   agentName = 'Claude Code',
   modelId = 'claude-test-model',
   modelName = 'Claude Test Model',
+  generalModelId = 'claude-general-model',
+  generalModelName = 'Claude General Model',
   conversationId = 'conversation-test',
   conversationCreatedAt = Date.parse('2026-07-20T00:00:00.000Z'),
   conversationModelId = `${modelId}[1m]`,
@@ -56,7 +58,10 @@ async function startMockAionUi({
         enabled: true,
         available_models: {
           current_model_id: modelId,
-          available_models: [{ value: modelId, name: modelName }],
+          available_models: [
+            { value: modelId, name: modelName },
+            { value: generalModelId, name: generalModelName },
+          ],
         },
       }])
     }
@@ -96,6 +101,20 @@ async function startMockAionUi({
           can_send_message: conversationRuntimeState === 'idle',
           pending_confirmations: 0,
           turn_id: conversationRuntimeState === 'running' ? 'turn-mcp-runtime-test' : null,
+        },
+      })
+    }
+    if (request.url === '/api/conversations/conversation-unlinked-known') {
+      return send({
+        id: 'conversation-unlinked-known',
+        name: 'MindNProgress 밖에서 시작한 일반 대화',
+        type: 'acp',
+        created_at: conversationCreatedAt + 240_000,
+        modified_at: conversationCreatedAt + 300_000,
+        extra: { agent_id: agentId, current_model_id: generalModelId, backend: 'claude' },
+        runtime: {
+          state: 'idle', is_processing: false, task_status: 'finished', can_send_message: true,
+          pending_confirmations: 0, turn_id: null,
         },
       })
     }
@@ -413,7 +432,8 @@ async function main() {
 
     const guide = await invoke('mindnprogress_read_me_first')
     assert.equal(guide.guide.product.name, 'MindNProgress')
-    assert.equal(guide.guide.version, '4.12')
+    assert.equal(guide.guide.version, '4.13')
+    assert.match(guide.guide.operationRules.join('\n'), /AionUi에서 시작한 대화.*임시 귀속.*AI_ATTRIBUTION_UNRESOLVED/)
     assert.match(guide.guide.operationRules.join('\n'), /응답을 받지 못한 시도는 횟수에 포함하지 않고/)
     assert.match(guide.guide.operationRules.join('\n'), /mindnprogress_complete_ai_delegation/)
     assert.match(guide.guide.operationRules.join('\n'), /중지된 위임을 resume하면 같은 AI 대화와 기존 worker lease/)
@@ -1375,8 +1395,45 @@ async function main() {
       await freshClient.close()
     }
 
-    // conversationId 귀속이 정확한 식별자만 사용하는지 확인한다. 연결된 대화가 없는
-    // conversationId는 같은 문서를 편집해도 다른 AI 귀속을 추측하지 않아야 한다.
+    // MindNProgress 밖에서 시작해 카드에 연결되지 않은 AionUi 대화도 현재 대화의
+    // 실제 모델을 조회해 임시로 귀속하되, 카드의 대화 목록과 문서 버전은 바꾸지 않는다.
+    const documentBeforeGeneralConversation = await invoke('mindnprogress_get_document', { mapId })
+    const generalConversationTransport = new StdioClientTransport({
+      command: process.execPath,
+      args: ['mcp/server.mjs'],
+      cwd: projectDirectory,
+      env: { ...environment, AIONUI_CONVERSATION_ID: 'conversation-unlinked-known' },
+      stderr: 'pipe',
+    })
+    const generalConversationClient = new Client({ name: 'mindnprogress-attribution-general-conversation', version: '1.0.0' })
+    await generalConversationClient.connect(generalConversationTransport)
+    try {
+      const generalContext = parseToolResult('mindnprogress_get_context', await generalConversationClient.callTool({
+        name: 'mindnprogress_get_context',
+        arguments: { mapId, cardId: 'branch-b' },
+      }))
+      assert.deepEqual(generalContext.aiAttribution, {
+        status: 'resolved',
+        source: 'aionui-conversation',
+        authorName: 'Claude Code(Claude General Model)',
+        conversationId: 'conversation-unlinked-known',
+      })
+      const generalConversationComment = parseToolResult('mindnprogress_add_comment', await generalConversationClient.callTool({
+        name: 'mindnprogress_add_comment',
+        arguments: { mapId, cardId: 'task-a', summary: '[진행] 일반 AionUi 대화의 실제 모델 귀속을 검증합니다.' },
+      }))
+      assert.equal(generalConversationComment.comment.author.name, 'Claude Code(Claude General Model)')
+    } finally {
+      await generalConversationClient.close()
+    }
+    const documentAfterGeneralConversation = await invoke('mindnprogress_get_document', { mapId })
+    assert.equal(documentAfterGeneralConversation.map.version, documentBeforeGeneralConversation.map.version)
+    assert.equal(documentAfterGeneralConversation.map.nodes.some((node) =>
+      node.data?.aiConversationId === 'conversation-unlinked-known'
+      || node.data?.aiConversations?.some((conversation) => conversation.conversationId === 'conversation-unlinked-known')), false)
+
+    // AionUi에서 대화 정보를 찾지 못하면 조회는 허용하지만 모델 미지정 댓글이
+    // 저장되지 않도록 편집 도구를 명시적으로 차단한다.
     const unknownConversationTransport = new StdioClientTransport({
       command: process.execPath,
       args: ['mcp/server.mjs'],
@@ -1387,11 +1444,19 @@ async function main() {
     const unknownConversationClient = new Client({ name: 'mindnprogress-attribution-unknown-conversation', version: '1.0.0' })
     await unknownConversationClient.connect(unknownConversationTransport)
     try {
-      const unknownConversationComment = parseToolResult('mindnprogress_add_comment', await unknownConversationClient.callTool({
-        name: 'mindnprogress_add_comment',
-        arguments: { mapId, nodeId: 'branch-b', summary: '[진행] 연결되지 않은 conversationId의 귀속 추측 방지를 검증합니다.' },
+      const unknownConversationContext = parseToolResult('mindnprogress_get_context', await unknownConversationClient.callTool({
+        name: 'mindnprogress_get_context',
+        arguments: { mapId, cardId: 'branch-b' },
       }))
-      assert.equal(unknownConversationComment.comment.author.name, 'AI(모델 미지정)')
+      assert.equal(unknownConversationContext.aiAttribution.status, 'unresolved')
+      assert.equal(unknownConversationContext.aiAttribution.code, 'AI_ATTRIBUTION_UNRESOLVED')
+      const unknownConversationComment = await unknownConversationClient.callTool({
+        name: 'mindnprogress_add_comment',
+        arguments: { mapId, cardId: 'branch-b', summary: '[진행] 확인되지 않은 AionUi 대화의 쓰기 차단을 검증합니다.' },
+      })
+      const unknownConversationError = unknownConversationComment.content?.find((item) => item.type === 'text')?.text ?? ''
+      assert.equal(unknownConversationComment.isError, true)
+      assert.match(unknownConversationError, /AionUi에서 현재 대화의 AI 종류와 모델을 확인하지 못했습니다/)
     } finally {
       await unknownConversationClient.close()
     }

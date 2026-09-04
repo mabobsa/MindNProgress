@@ -42,6 +42,9 @@ let activeAiType = ''
 let activeAiModel = ''
 let activeMapId = ''
 let activeCardId = ''
+let activeResolvedAttributionExpiresAt = 0
+let activeAttributionResolutionFailure = null
+let activeAttributionResolutionPromise = null
 let delegationOrigin = null
 const attributionContinuationToken = Symbol('attributionContinuationToken')
 let commentAttributionQueue = Promise.resolve()
@@ -134,9 +137,9 @@ const knowledgeLinePolicy = Object.freeze({
   }),
 })
 
-const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. MCP 도구에서 카드를 지정할 때는 cardId 계열 인자를 사용하세요. nodeId 계열 인자는 기존 대화 호환용이므로 새 호출에서는 사용하지 마세요. AionUi가 발급한 attributionToken이 없는 외부 MCP 세션은 자신이 현재 AI 종류와 모델을 정확히 알고 있을 때 get_context의 aiType과 aiModel에 함께 전달하고, 알지 못하면 추측하지 마세요. get_context의 selection.taskLinks.startupInspection을 따르세요. mode가 knowledge-guided이면 primary 선행 지식 중 kind=image인 항목은 imageAccess.localPath의 원본을 사용 가능한 로컬 이미지 열람 도구로 직접 확인하고 설명과 댓글을 함께 사용하며, 일반 카드는 sharedKnowledge를 먼저 재사용하고 설명과 댓글로 보완합니다. fallbackSources와 fallbackTargets는 정보가 부족할 때만 선택적으로 조사합니다. mode가 default이고 required가 true이면 targets의 업무 본문, 댓글, 첨부파일 목록과 관련 링크를 조사하세요. 지식선 생성과 제안은 get_context의 guide.knowledgeLinePolicy를 따르세요. 진행 과정과 결과는 댓글에 기록하고, 다른 카드나 후속 세션이 재사용할 현재 유효한 사실·결정·제약·검증 결과만 sharedKnowledge에 남기세요. 진행 기록·도구 로그·중복·폐기 결론은 넣지 말고 같은 주제의 결론은 새 이력으로 덧붙이지 말고 기존 절을 안전하게 교체하세요. 실제로 실행할 카드에 독립적으로 완료 여부를 판정할 구현·검증 조건이 2개 이상이면 결과 중심 체크리스트로 작성하고 진행에 맞춰 갱신하세요. 별도 하위 카드로 추적할 작업은 체크리스트에 중복하지 마세요. AI 댓글은 1~2문장의 summary와 작업을 이어가거나 검증하는 데 필요한 사실을 충실히 담은 detail로 작성하며, 요약 때문에 상세를 축약하지 마세요. 외부 전달물이나 결정 대기는 waitingItems로 기록하고 제목에 대기 문구를 붙이지 마세요. 대기를 등록할 때는 [차단], 해제할 때는 [진행] 댓글로 이유와 재개 상태를 기록하세요. 카드 일부 필드만 변경할 때는 mindnprogress_update_card의 data에 변경할 필드만 보내고 현재 카드 전체 데이터를 재전송하지 마세요. 기존 description 또는 sharedKnowledge 내부의 일부만 고칠 때는 조회 결과의 textIntegrity SHA-256과 mindnprogress_patch_card_text를 사용하세요. ${cardTextSafetyInstructions} 과도한 sharedKnowledge를 정리할 때는 후보 목록과 전용 검토 문맥을 조회한 뒤 mindnprogress_apply_shared_knowledge_review로 현재 해시가 일치하는 결과만 원자적으로 저장하세요. 일반 카드에서 생략한 필드와 위치는 보존되지만 완료 상태 또는 진행률 100 적용 시 waitingItems는 자동으로 해제되며, Ref 카드는 원본 관리 필드가 최신 원본 값으로 동기화될 수 있습니다. 선택 카드 밖의 형제·하위·선행 카드를 함께 수정하기 전에는 mindnprogress_get_ai_work_states로 해당 카드에 다른 AI 작업이 진행 중인지 확인하세요. running 또는 waiting-confirmation인 카드는 사용자 지시 없이 동시에 수정하지 마세요. 등록된 AI 작업공간의 최신 목록·경로·상태가 필요하면 폴더명을 추측하지 말고 mindnprogress_get_ai_workspace_pool을 호출하세요. 작업공간 선택·점유·전환·해제는 MindNProgress만 수행하며 AI가 임의로 worker를 선택하지 않습니다. 현재 위임 실행이 사용자의 중지로 끊긴 뒤 같은 대화에서 직접 이어 실제 작업을 완료했다면 카드 기록과 작업공간 체크포인트를 마친 뒤 최종 답변 직전에 mindnprogress_complete_ai_delegation을 호출하세요. 같은 대화의 과거 위임만 중지됐거나 현재 위임이 중단 없이 진행됐다면 호출하지 마세요. 도구가 required=false를 반환하면 오류가 아니며 최종 답변을 마치면 자동으로 상위 AI에 보고됩니다. 지식선만 변경할 때는 전체 문서를 다시 보내지 말고 지식선 전용 도구를 사용하세요. 조회 도구는 문서 version을 변경하지 않지만 카드·관계 편집과 AI 대화 ID 연결은 version을 증가시킬 수 있습니다. 특정 자료가 있다고 가정하지 마세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
+const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. MCP 도구에서 카드를 지정할 때는 cardId 계열 인자를 사용하세요. nodeId 계열 인자는 기존 대화 호환용이므로 새 호출에서는 사용하지 마세요. AionUi 일반 대화는 get_context 호출 시 현재 대화의 AI 종류와 모델을 자동 확인하므로 aiType과 aiModel을 임의로 채우지 마세요. AionUi가 아닌 외부 MCP 세션만 자신이 현재 AI 종류와 모델을 정확히 알고 있을 때 get_context의 aiType과 aiModel에 함께 전달하고, 알지 못하면 추측하지 마세요. get_context의 selection.taskLinks.startupInspection을 따르세요. mode가 knowledge-guided이면 primary 선행 지식 중 kind=image인 항목은 imageAccess.localPath의 원본을 사용 가능한 로컬 이미지 열람 도구로 직접 확인하고 설명과 댓글을 함께 사용하며, 일반 카드는 sharedKnowledge를 먼저 재사용하고 설명과 댓글로 보완합니다. fallbackSources와 fallbackTargets는 정보가 부족할 때만 선택적으로 조사합니다. mode가 default이고 required가 true이면 targets의 업무 본문, 댓글, 첨부파일 목록과 관련 링크를 조사하세요. 지식선 생성과 제안은 get_context의 guide.knowledgeLinePolicy를 따르세요. 진행 과정과 결과는 댓글에 기록하고, 다른 카드나 후속 세션이 재사용할 현재 유효한 사실·결정·제약·검증 결과만 sharedKnowledge에 남기세요. 진행 기록·도구 로그·중복·폐기 결론은 넣지 말고 같은 주제의 결론은 새 이력으로 덧붙이지 말고 기존 절을 안전하게 교체하세요. 실제로 실행할 카드에 독립적으로 완료 여부를 판정할 구현·검증 조건이 2개 이상이면 결과 중심 체크리스트로 작성하고 진행에 맞춰 갱신하세요. 별도 하위 카드로 추적할 작업은 체크리스트에 중복하지 마세요. AI 댓글은 1~2문장의 summary와 작업을 이어가거나 검증하는 데 필요한 사실을 충실히 담은 detail로 작성하며, 요약 때문에 상세를 축약하지 마세요. 외부 전달물이나 결정 대기는 waitingItems로 기록하고 제목에 대기 문구를 붙이지 마세요. 대기를 등록할 때는 [차단], 해제할 때는 [진행] 댓글로 이유와 재개 상태를 기록하세요. 카드 일부 필드만 변경할 때는 mindnprogress_update_card의 data에 변경할 필드만 보내고 현재 카드 전체 데이터를 재전송하지 마세요. 기존 description 또는 sharedKnowledge 내부의 일부만 고칠 때는 조회 결과의 textIntegrity SHA-256과 mindnprogress_patch_card_text를 사용하세요. ${cardTextSafetyInstructions} 과도한 sharedKnowledge를 정리할 때는 후보 목록과 전용 검토 문맥을 조회한 뒤 mindnprogress_apply_shared_knowledge_review로 현재 해시가 일치하는 결과만 원자적으로 저장하세요. 일반 카드에서 생략한 필드와 위치는 보존되지만 완료 상태 또는 진행률 100 적용 시 waitingItems는 자동으로 해제되며, Ref 카드는 원본 관리 필드가 최신 원본 값으로 동기화될 수 있습니다. 선택 카드 밖의 형제·하위·선행 카드를 함께 수정하기 전에는 mindnprogress_get_ai_work_states로 해당 카드에 다른 AI 작업이 진행 중인지 확인하세요. running 또는 waiting-confirmation인 카드는 사용자 지시 없이 동시에 수정하지 마세요. 등록된 AI 작업공간의 최신 목록·경로·상태가 필요하면 폴더명을 추측하지 말고 mindnprogress_get_ai_workspace_pool을 호출하세요. 작업공간 선택·점유·전환·해제는 MindNProgress만 수행하며 AI가 임의로 worker를 선택하지 않습니다. 현재 위임 실행이 사용자의 중지로 끊긴 뒤 같은 대화에서 직접 이어 실제 작업을 완료했다면 카드 기록과 작업공간 체크포인트를 마친 뒤 최종 답변 직전에 mindnprogress_complete_ai_delegation을 호출하세요. 같은 대화의 과거 위임만 중지됐거나 현재 위임이 중단 없이 진행됐다면 호출하지 마세요. 도구가 required=false를 반환하면 오류가 아니며 최종 답변을 마치면 자동으로 상위 AI에 보고됩니다. 지식선만 변경할 때는 전체 문서를 다시 보내지 말고 지식선 전용 도구를 사용하세요. 조회 도구는 문서 version을 변경하지 않지만 카드·관계 편집과 AI 대화 ID 연결은 version을 증가시킬 수 있습니다. 특정 자료가 있다고 가정하지 마세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
 const productGuide = {
-  version: '4.12',
+  version: '4.13',
   product: {
     name: 'MindNProgress',
     purpose: '아이디어를 계층형 마인드맵으로 구조화하고 실행 업무의 진행 상황을 같은 문서에서 관리하는 웹 서비스',
@@ -209,6 +212,7 @@ const productGuide = {
   ],
   operationRules: [
     '분석과 편집 전에 mindnprogress_get_context로 최신 버전과 제품 규칙을 확인',
+    'AionUi에서 시작한 대화에 attributionToken이 없으면 mindnprogress_get_context가 현재 대화의 AI 종류와 모델을 AionUi에서 확인해 임시 귀속함. 조회 실패 중에는 읽기 도구를 계속 사용할 수 있지만 모델 미지정 기록을 막기 위해 편집 도구는 AI_ATTRIBUTION_UNRESOLVED로 거부됨',
     'mindnprogress_get_context를 한 번 호출하라는 지침은 성공 응답 기준임. 사용자 중지, 취소, 시간 초과 또는 연결 종료로 응답을 받지 못한 시도는 횟수에 포함하지 않고 같은 대화를 이어갈 때 다시 호출하며, 성공 응답 뒤에는 같은 대화에서 반복 호출하지 않음',
     'MCP 도구에서 카드를 지정할 때는 cardId, parentCardId, newParentCardId를 사용하고 댓글의 상위 답글은 parentCommentId를 사용함. nodeId, parentId, newParentId는 기존 대화 호환용이므로 새 호출에서는 사용하지 않음',
     'get_context의 startupInspection.mode가 knowledge-guided이면 주요 선행 지식을 먼저 활용하되 kind=image인 source는 imageAccess.localPath의 원본을 로컬 이미지 열람 도구로 직접 확인하고, fallback은 정보가 부족할 때만 조사',
@@ -265,15 +269,47 @@ async function apiRequest(pathname, init = {}) {
     aiModel,
     timeoutMs = 10_000,
     requestAttributionContinuation,
+    allowUnresolvedAttribution = false,
     ...requestInit
   } = init
+  if (aionUiConversationId
+    && activeResolvedAttributionExpiresAt > 0
+    && activeResolvedAttributionExpiresAt <= Date.now() + 1_000) {
+    activeAttributionToken = ''
+    activeResolvedAttributionExpiresAt = 0
+  }
   const pathnameMapId = pathname.match(/^\/api\/maps\/([^/?]+)/)?.[1]
   const scopedMapId = String(aiMapId ?? (pathnameMapId ? decodeURIComponent(pathnameMapId) : '')).trim()
   const scopedCardId = String(aiCardId ?? (scopedMapId && scopedMapId === activeMapId ? activeCardId : '')).trim()
-  const scopedAttributionToken = String(aiAttributionToken ?? activeAttributionToken).trim()
+  let scopedAttributionToken = String(aiAttributionToken ?? activeAttributionToken).trim()
   const scopedEditorId = String(aiEditorId ?? activeEditorId).trim()
   const scopedAiType = String(aiType ?? activeAiType).trim()
   const scopedAiModel = String(aiModel ?? activeAiModel).trim()
+  const requestMethod = String(requestInit.method ?? 'GET').toUpperCase()
+  const mutatesState = !['GET', 'HEAD', 'OPTIONS'].includes(requestMethod)
+  if (!allowUnresolvedAttribution
+    && mutatesState
+    && aionUiConversationId
+    && !scopedAttributionToken
+    && !(scopedAiType && scopedAiModel)) {
+    try {
+      await resolveCurrentAionUiConversationAttribution({
+        mapId: scopedMapId,
+        cardId: scopedCardId,
+        editorId: scopedEditorId,
+      })
+    } catch {
+      // 아래의 일관된 오류로 쓰기를 차단하고, 원인은 상태에 보존합니다.
+    }
+    scopedAttributionToken = String(activeAttributionToken).trim()
+    if (!scopedAttributionToken) {
+      const detail = activeAttributionResolutionFailure?.message
+        ?? 'AionUi에서 현재 대화의 AI 종류와 모델을 확인하지 못했습니다. 모델 정보를 확인한 뒤 다시 시도하세요.'
+      const error = new Error(`AI_ATTRIBUTION_UNRESOLVED: ${detail}`)
+      error.code = 'AI_ATTRIBUTION_UNRESOLVED'
+      throw error
+    }
+  }
   const response = await fetch(`${apiBaseUrl}${pathname}`, {
     ...requestInit,
     headers: {
@@ -319,6 +355,51 @@ async function apiRequest(pathname, init = {}) {
   return result
 }
 
+async function resolveCurrentAionUiConversationAttribution({ mapId, cardId, editorId }) {
+  if (!aionUiConversationId || activeAttributionToken || (activeAiType && activeAiModel)) return null
+  if (activeAttributionResolutionPromise) return activeAttributionResolutionPromise
+  const hasDocumentScope = Boolean(mapId && cardId)
+
+  activeAttributionResolutionPromise = (async () => {
+    try {
+      const result = await apiRequest('/api/integrations/aionui/conversation-attribution/resolve', {
+        method: 'POST',
+        aiMapId: hasDocumentScope ? mapId : '',
+        aiCardId: hasDocumentScope ? cardId : '',
+        aiEditorId: editorId,
+        aiAttributionToken: '',
+        aiType: '',
+        aiModel: '',
+        allowUnresolvedAttribution: true,
+        body: JSON.stringify({}),
+      })
+      const attributionToken = String(result?.attributionToken ?? '').trim()
+      if (attributionToken.length < 32 || attributionToken.length > 200) {
+        const error = new Error('MindNProgress가 현재 AionUi 대화의 AI 작성자 귀속 토큰을 발급하지 못했습니다.')
+        error.code = 'AI_ATTRIBUTION_UNRESOLVED'
+        throw error
+      }
+      activeAttributionToken = attributionToken
+      activeResolvedAttributionExpiresAt = Number.isFinite(Number(result?.expiresAt)) ? Number(result.expiresAt) : 0
+      activeAiType = ''
+      activeAiModel = ''
+      activeAttributionResolutionFailure = null
+      return result
+    } catch (error) {
+      activeAttributionResolutionFailure = {
+        code: error?.code ?? 'AI_ATTRIBUTION_UNRESOLVED',
+        message: error instanceof Error
+          ? error.message
+          : 'AionUi에서 현재 대화의 AI 종류와 모델을 확인하지 못했습니다.',
+      }
+      throw error
+    } finally {
+      activeAttributionResolutionPromise = null
+    }
+  })()
+  return activeAttributionResolutionPromise
+}
+
 function rememberDelegationOrigin({ mapId, cardId, editorId, attributionToken, aiType, aiModel }) {
   if (delegationOrigin) return
   delegationOrigin = {
@@ -335,6 +416,7 @@ function adoptAttributionContinuation(result, scope = null) {
   const continuationToken = result?.[attributionContinuationToken]
   if (!continuationToken) return
   activeAttributionToken = continuationToken
+  activeResolvedAttributionExpiresAt = 0
   activeAiType = ''
   activeAiModel = ''
   if (scope && delegationOrigin?.mapId === scope.mapId && delegationOrigin?.cardId === scope.cardId) {
@@ -1003,7 +1085,7 @@ async function main() {
     ],
   }))
 
-  registerTool(server, 'mindnprogress_get_context', 'MindNProgress의 제품 개념과 작성 규칙, 최신 문서 개요, 선택 카드와 업무 링크, 계층·의존성·댓글·담당자 정보를 한 번에 조회합니다. focused는 작업 관련 원문과 문서 개요를, full은 전체 문서 원문을 반환합니다. 대화를 시작한 뒤 다른 MindNProgress 도구보다 먼저 호출하세요. attributionToken이 없고 현재 AI 종류와 모델을 정확히 알고 있다면 aiType과 aiModel을 함께 전달하세요.', {
+  registerTool(server, 'mindnprogress_get_context', 'MindNProgress의 제품 개념과 작성 규칙, 최신 문서 개요, 선택 카드와 업무 링크, 계층·의존성·댓글·담당자 정보를 한 번에 조회합니다. focused는 작업 관련 원문과 문서 개요를, full은 전체 문서 원문을 반환합니다. 대화를 시작한 뒤 다른 MindNProgress 도구보다 먼저 호출하세요. AionUi 일반 대화는 현재 대화의 AI 종류와 모델을 자동 확인합니다. AionUi가 아닌 외부 MCP 세션만 현재 AI 종류와 모델을 정확히 알고 있을 때 aiType과 aiModel을 함께 전달하세요.', {
     mapId: z.string().min(1).describe('현재 문서 ID'),
     cardId: z.string().min(1).describe('편집자가 선택한 카드 ID'),
     editorId: z.string().min(1).max(120).optional().describe('AI 대화를 시작한 MindNProgress 편집자 계정 ID'),
@@ -1019,8 +1101,18 @@ async function main() {
     activeCardId = cardId
     activeEditorId = editorId ?? ''
     activeAttributionToken = attributionToken ?? ''
+    activeResolvedAttributionExpiresAt = 0
     activeAiType = attributionToken ? '' : (aiType ?? '')
     activeAiModel = attributionToken ? '' : (aiModel ?? '')
+    activeAttributionResolutionFailure = null
+    let resolvedConversationAttribution = null
+    if (!activeAttributionToken && !activeAiType && !activeAiModel && aionUiConversationId) {
+      try {
+        resolvedConversationAttribution = await resolveCurrentAionUiConversationAttribution({ mapId, cardId, editorId: activeEditorId })
+      } catch {
+        // 조회는 계속 허용하되 이후 쓰기는 apiRequest에서 재확인 후 차단합니다.
+      }
+    }
     const [documentResult, commentsResult, usersResult, health] = await Promise.all([
       apiRequest(`/api/maps/${encodeURIComponent(mapId)}`, { aiCardId: cardId, requestAttributionContinuation: true }),
       apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments?includeDetail=false`),
@@ -1030,7 +1122,14 @@ async function main() {
     const map = documentResult.map
     const selectedCard = map.nodes.find((node) => node.id === cardId)
     if (!selectedCard) throw new Error(`선택 카드를 찾을 수 없습니다: ${cardId}`)
-    rememberDelegationOrigin({ mapId, cardId, editorId, attributionToken, aiType, aiModel })
+    rememberDelegationOrigin({
+      mapId,
+      cardId,
+      editorId,
+      attributionToken: activeAttributionToken,
+      aiType: activeAiType,
+      aiModel: activeAiModel,
+    })
     adoptAttributionContinuation(documentResult, { mapId, cardId })
 
     const hierarchyEdges = map.edges.filter(isHierarchyEdge)
@@ -1253,6 +1352,22 @@ async function main() {
     return {
       contextSchemaVersion,
       detailLevel,
+      ...(resolvedConversationAttribution ? {
+        aiAttribution: {
+          status: 'resolved',
+          source: 'aionui-conversation',
+          authorName: resolvedConversationAttribution.authorName,
+          conversationId: aionUiConversationId,
+        },
+      } : activeAttributionResolutionFailure ? {
+        aiAttribution: {
+          status: 'unresolved',
+          source: 'aionui-conversation',
+          code: activeAttributionResolutionFailure.code,
+          message: activeAttributionResolutionFailure.message,
+          instruction: '조회는 계속할 수 있지만 모델 미지정 기록을 방지하기 위해 편집은 거부됩니다. AionUi에서 대화의 모델 선택이 완료됐는지 확인한 뒤 다시 시도하세요.',
+        },
+      } : {}),
       guide: productGuide,
       document: full ? {
         id: map.id,

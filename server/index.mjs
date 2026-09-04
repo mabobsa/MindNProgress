@@ -524,6 +524,7 @@ function traceAttribution(request, source, user, scope, attributionToken = '') {
     mapId: scope.mapId || null,
     cardId: scope.cardId || null,
     editorId: scope.editorId || null,
+    conversationId: scope.conversationId || null,
     actorId: user?.id ?? null,
     authorName: user?.name ?? null,
     tokenHashPrefix: attributionToken ? sessionTokenKey(attributionToken).slice(0, 12) : null,
@@ -1289,7 +1290,9 @@ async function loadAiAttributions() {
   for (const attribution of storedAttributions) {
     if (!/^[a-f0-9]{64}$/.test(String(attribution?.tokenHash ?? ''))) continue
     if (!Number.isFinite(attribution?.expiresAt) || attribution.expiresAt <= now) continue
-    if (!isValidMapId(attribution?.mapId) || typeof attribution?.cardId !== 'string') continue
+    const hasDocumentScope = isValidMapId(attribution?.mapId) && typeof attribution?.cardId === 'string' && attribution.cardId
+    const hasConversationScope = validAiConversationId(attribution?.conversationId)
+    if (!hasDocumentScope && !hasConversationScope) continue
     if (typeof attribution?.authorName !== 'string' || !attribution.authorName.trim()) continue
     const { tokenHash, ...value } = attribution
     aiAttributions.set(tokenHash, value)
@@ -3863,7 +3866,14 @@ async function repairUnspecifiedConversationNotifications(attribution) {
   return repairedCount
 }
 
-async function resolveConversationAttribution(mapId, cardId, conversationId, startedBy = null, fallback = null) {
+async function resolveConversationAttribution(
+  mapId,
+  cardId,
+  conversationId,
+  startedBy = null,
+  fallback = null,
+  { inferStartedBy = true } = {},
+) {
   const [conversation, agents, providers] = await Promise.all([
     fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}`),
     fetchAionUi('/api/agents/management'),
@@ -3884,7 +3894,7 @@ async function resolveConversationAttribution(mapId, cardId, conversationId, sta
 
   let resolvedStartedBy = startedBy || fallback?.startedBy || null
   const authorName = `${agentName}(${modelName})`
-  if (!resolvedStartedBy) {
+  if (!resolvedStartedBy && inferStartedBy) {
     const comments = await listComments(mapId)
     const previousAuthor = [...comments].reverse().find((comment) => comment.nodeId === cardId
       && comment.author?.name === authorName
@@ -4731,6 +4741,103 @@ const server = createServer(async (request, response) => {
         aionUiWebBaseUrl,
         aionUiWebConfigured: Boolean(configuredAionUiWebBaseUrl),
       })
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/integrations/aionui/conversation-attribution/resolve') {
+      if (!hasValidIntegrationBearer(request)) {
+        return sendJson(response, 401, { error: '올바른 MindNProgress 연동 토큰이 필요합니다.' })
+      }
+      const scope = integrationRequestScope(request)
+      if (!validAiConversationId(scope.conversationId)) {
+        return sendJson(response, 400, {
+          error: '현재 AionUi 대화 ID를 확인할 수 없습니다.',
+          code: 'AI_ATTRIBUTION_CONVERSATION_REQUIRED',
+        })
+      }
+      if (Boolean(scope.mapId) !== Boolean(scope.cardId)) {
+        return sendJson(response, 400, {
+          error: 'AI 작성자 귀속 범위를 지정하려면 문서와 카드 ID를 함께 보내야 합니다.',
+          code: 'AI_ATTRIBUTION_SCOPE_REQUIRED',
+        })
+      }
+      if (scope.mapId) {
+        if (!isValidMapId(scope.mapId)) {
+          return sendJson(response, 400, {
+            error: 'AI 작성자 귀속을 확인할 문서 ID가 올바르지 않습니다.',
+            code: 'AI_ATTRIBUTION_SCOPE_REQUIRED',
+          })
+        }
+        const map = await readMap(scope.mapId)
+        if (!map || map.trashedAt || !map.nodes.some((node) => node.id === scope.cardId)) {
+          return sendJson(response, 404, {
+            error: 'AI 작성자 귀속을 확인할 문서 또는 카드를 찾을 수 없습니다.',
+            code: 'AI_ATTRIBUTION_SCOPE_NOT_FOUND',
+          })
+        }
+      }
+      const editor = scope.editorId
+        ? users.find((candidate) => candidate.id === scope.editorId && candidate.active !== false && canEdit(candidate))
+        : null
+      if (scope.editorId && !editor) {
+        return sendJson(response, 403, {
+          error: 'AI 작성자 귀속에 지정된 편집자 계정을 사용할 수 없습니다.',
+          code: 'AI_ATTRIBUTION_EDITOR_NOT_FOUND',
+        })
+      }
+
+      try {
+        const existing = resolveScopedAttribution(
+          scope,
+          [...aiAttributions.values()],
+          aiConversationAttributions,
+        ).attribution
+        const attribution = existing ?? await resolveConversationAttribution(
+          scope.mapId,
+          scope.cardId,
+          scope.conversationId,
+          editor?.id ?? null,
+          null,
+          { inferStartedBy: false },
+        )
+        const attributionToken = randomBytes(32).toString('base64url')
+        const now = Date.now()
+        const expiresAt = now + aiAttributionDurationMs
+        aiAttributions.set(sessionTokenKey(attributionToken), {
+          ...attribution,
+          createdAt: now,
+          expiresAt,
+        })
+        await persistAiAttributions()
+        console.log('[AI attribution]', JSON.stringify({
+          source: existing ? 'conversation-preflight-existing' : 'conversation-preflight',
+          mapId: scope.mapId,
+          cardId: scope.cardId,
+          editorId: editor?.id ?? null,
+          conversationId: scope.conversationId,
+          actorId: editor?.id ?? integrationUser.id,
+          authorName: attribution.authorName,
+          tokenHashPrefix: sessionTokenKey(attributionToken).slice(0, 12),
+        }))
+        return sendJson(response, 201, {
+          attributionToken,
+          authorName: attribution.authorName,
+          editorId: editor?.id ?? null,
+          conversationId: scope.conversationId,
+          expiresAt,
+        })
+      } catch (error) {
+        console.warn('[AionUi conversation attribution preflight]', JSON.stringify({
+          mapId: scope.mapId,
+          cardId: scope.cardId,
+          editorId: scope.editorId || null,
+          conversationId: scope.conversationId,
+          error: error?.message ?? String(error),
+        }))
+        return sendJson(response, 503, {
+          error: 'AionUi에서 현재 대화의 AI 종류와 모델을 확인하지 못했습니다.',
+          code: 'AI_ATTRIBUTION_UNRESOLVED',
+        })
+      }
     }
 
     if (request.method === 'POST' && url.pathname === '/api/auth/login') {

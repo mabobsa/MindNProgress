@@ -93,6 +93,8 @@ const SUPPORTED_IMAGE_FILE_PATTERN = /\.(?:png|jpe?g|gif|webp)$/i
 const SIDEBAR_MIN_WIDTH = 190
 const SIDEBAR_AI_ACTIVITY_MIN_WIDTH = 208
 const SIDEBAR_MAX_WIDTH = 420
+const DOCUMENT_LIST_AUTO_SCROLL_EDGE_PX = 56
+const DOCUMENT_LIST_AUTO_SCROLL_MAX_SPEED_PX = 14
 const AIONUI_WEB_DEFAULT_PORT = '7777'
 
 function isLoopbackHostname(hostname: string) {
@@ -1914,6 +1916,9 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const [copiedImages, setCopiedImages] = useState<CopiedImages | null>(null)
   const [draggingLibraryItem, setDraggingLibraryItem] = useState<DocumentLayoutItem | null>(null)
   const [documentDropTargetId, setDocumentDropTargetId] = useState<string | null>(null)
+  const documentListRef = useRef<HTMLElement | null>(null)
+  const documentListAutoScrollFrameRef = useRef<number | null>(null)
+  const documentListAutoScrollSpeedRef = useRef(0)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [rightPanning, setRightPanning] = useState(false)
   const [touchPanning, setTouchPanning] = useState(false)
@@ -1948,6 +1953,60 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const effectiveSidebarWidth = Math.max(sidebarMinWidth, sidebarWidth)
   const skipChecklistCommit = useRef(false)
   const waitingBlockRef = useRef<HTMLDivElement | null>(null)
+
+  const stopDocumentListAutoScroll = useCallback(() => {
+    documentListAutoScrollSpeedRef.current = 0
+    if (documentListAutoScrollFrameRef.current === null) return
+    window.cancelAnimationFrame(documentListAutoScrollFrameRef.current)
+    documentListAutoScrollFrameRef.current = null
+  }, [])
+
+  const startDocumentListAutoScroll = useCallback((speed: number) => {
+    documentListAutoScrollSpeedRef.current = speed
+    if (speed === 0) {
+      stopDocumentListAutoScroll()
+      return
+    }
+    if (documentListAutoScrollFrameRef.current !== null) return
+
+    const scroll = () => {
+      const list = documentListRef.current
+      const currentSpeed = documentListAutoScrollSpeedRef.current
+      if (!list || currentSpeed === 0) {
+        documentListAutoScrollFrameRef.current = null
+        return
+      }
+      list.scrollTop += currentSpeed
+      documentListAutoScrollFrameRef.current = window.requestAnimationFrame(scroll)
+    }
+    documentListAutoScrollFrameRef.current = window.requestAnimationFrame(scroll)
+  }, [stopDocumentListAutoScroll])
+
+  const updateDocumentListAutoScroll = useCallback((clientY: number) => {
+    const list = documentListRef.current
+    if (!list) return
+    const bounds = list.getBoundingClientRect()
+    const topDistance = clientY - bounds.top
+    const bottomDistance = bounds.bottom - clientY
+    if (topDistance >= 0 && topDistance < DOCUMENT_LIST_AUTO_SCROLL_EDGE_PX) {
+      const strength = 1 - topDistance / DOCUMENT_LIST_AUTO_SCROLL_EDGE_PX
+      startDocumentListAutoScroll(-Math.max(1, DOCUMENT_LIST_AUTO_SCROLL_MAX_SPEED_PX * strength))
+      return
+    }
+    if (bottomDistance >= 0 && bottomDistance < DOCUMENT_LIST_AUTO_SCROLL_EDGE_PX) {
+      const strength = 1 - bottomDistance / DOCUMENT_LIST_AUTO_SCROLL_EDGE_PX
+      startDocumentListAutoScroll(Math.max(1, DOCUMENT_LIST_AUTO_SCROLL_MAX_SPEED_PX * strength))
+      return
+    }
+    stopDocumentListAutoScroll()
+  }, [startDocumentListAutoScroll, stopDocumentListAutoScroll])
+
+  useEffect(() => {
+    if (!draggingLibraryItem) stopDocumentListAutoScroll()
+  }, [draggingLibraryItem, stopDocumentListAutoScroll])
+
+  useEffect(() => () => stopDocumentListAutoScroll(), [stopDocumentListAutoScroll])
+
   const dependencyBlockRef = useRef<HTMLDivElement | null>(null)
   const canvasWrapRef = useRef<HTMLElement | null>(null)
   const sidebarResizeStart = useRef({ pointerX: 0, width: 226 })
@@ -6259,7 +6318,22 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                   <button type="submit" disabled={!newGroupName.trim()}><Icon name="folder" size={14} />그룹 생성</button>
                 </form>
               )}
-              <nav className="map-list">
+              <nav
+                ref={documentListRef}
+                className="map-list"
+                onDragOverCapture={(event) => {
+                  if (mode !== 'editor' || !draggingLibraryItem || normalizedDocumentSearch) {
+                    stopDocumentListAutoScroll()
+                    return
+                  }
+                  updateDocumentListAutoScroll(event.clientY)
+                }}
+                onDragLeave={(event) => {
+                  const nextTarget = event.relatedTarget as globalThis.Node | null
+                  if (!nextTarget || !event.currentTarget.contains(nextTarget)) stopDocumentListAutoScroll()
+                }}
+                onDropCapture={stopDocumentListAutoScroll}
+              >
                 {mode === 'editor' && draggingLibraryItem && !normalizedDocumentSearch && effectiveDocumentLayout.items.length > 0 && (
                   <div
                     className={`library-top-insertion-target ${documentDropTargetId === 'top-start' ? 'active' : ''}`}

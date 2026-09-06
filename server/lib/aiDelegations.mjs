@@ -4,6 +4,7 @@ export const AI_DELEGATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$/
 export const AI_DELEGATION_WAIT_POLL_DELAYS_MS = Object.freeze([3_000, 5_000, 10_000, 30_000])
 
 export const ACTIVE_AI_DELEGATION_STATES = new Set([
+  'waiting-document-work',
   'waiting-workspace',
   'waiting-integration-clean',
   'starting',
@@ -143,6 +144,8 @@ function normalizedRequestList(values) {
 
 export function createAiDelegationRequestSignature({
   mapId,
+  parentMapId,
+  targetRevision,
   parentCardId,
   targetCardId,
   strategy,
@@ -167,6 +170,7 @@ export function createAiDelegationRequestSignature({
     : null
   return createHash('sha256').update(JSON.stringify({
     mapId,
+    ...(parentMapId ? { parentMapId, targetRevision } : {}),
     parentCardId,
     targetCardId,
     strategy,

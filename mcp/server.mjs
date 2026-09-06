@@ -1352,6 +1352,10 @@ async function main() {
     return {
       contextSchemaVersion,
       detailLevel,
+      groupProject: documentResult.groupProject ? {
+        ...documentResult.groupProject,
+        instruction: '먼저 mindnprogress_get_group_context로 이 그룹의 원본 기준·목표·공통 지침·소유 범위·실행 상태를 확인하세요. 총괄 문서의 루트는 같은 그룹 소속 문서 루트에 targetMapId와 targetRevision을 지정하여 분석·조정을 위임할 수 있습니다. 문서 AI는 실제 구현을 자신의 하위 카드로 위임하세요.',
+      } : null,
       ...(resolvedConversationAttribution ? {
         aiAttribution: {
           status: 'resolved',
@@ -1430,6 +1434,22 @@ async function main() {
       nextStep: '사용자 요청을 수행한 뒤 의미 있는 진행과 결과는 1~2문장의 summary와 작업을 이어가거나 검증하는 데 필요한 사실을 담은 detail 댓글로 기록하고, 재사용할 결론은 sharedKnowledge에 요약한 다음 mindnprogress_get_document로 결과를 다시 확인하세요. 작업 중 선택 카드 이외의 MindNProgress 카드를 실제 근거로 사용했다면 guide.knowledgeLinePolicy에 따라 작업 종료 전에 연결 또는 제안 여부를 판단하세요. 외부 전달물이나 결정 때문에 멈추면 제목을 바꾸지 말고 waitingItems와 [차단] 댓글을 추가하며, 재개할 때 해당 항목을 제거하고 [진행] 댓글을 남기세요.',
     }
   })
+
+  registerTool(server, 'mindnprogress_get_group_context', '그룹의 최신 기획 원본·버전, 목표·공통 지침, 통합 관리 문서, 소속 문서의 루트 업무 설명·대화와 그룹→문서 위임 현황을 조회합니다. 총괄 AI는 이 문맥을 먼저 읽고 원본 전수 분석, 요구사항 주 소유권, 문서 경계와 실행 순서를 관리하세요. 카드 완료 수는 기획 구현률이 아닙니다.', {
+    groupId: z.string().min(1),
+  }, async ({ groupId }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}`))
+
+  registerTool(server, 'mindnprogress_update_group_project', '그룹의 기획 원본·버전, 목표와 공통 지침을 부분 수정합니다. get_group_context의 project.version을 baseVersion으로 전달하세요. createCoordinator=true는 총괄 문서가 없을 때 통합 관리 문서와 집계 루트를 만들며 AI 실행을 시작하지 않습니다. 기존 문서는 coordinatorMapId로 연결합니다. 장문은 원문을 보존하고 수정 후 재조회해 비교하세요.', {
+    groupId: z.string().min(1), baseVersion: z.number().int().nonnegative(),
+    source: z.string().max(4096).optional(), sourceVersion: z.string().max(240).optional(),
+    objective: z.string().max(10000).optional(), instructions: z.string().max(20000).optional(),
+    coordinatorMapId: z.string().min(1).optional(), createCoordinator: z.boolean().optional(),
+  }, async ({ groupId, ...body }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}`, { method: 'PATCH', body: JSON.stringify(body) }))
+
+  registerTool(server, 'mindnprogress_create_group_document', '그룹에 기능 문서와 집계 전용 루트를 생성합니다. description에 담당 원본 범위, 요구사항 소유권, 분석·감사 순서, 정책 Ref와 완료 조건을 기록하세요. 이 호출은 AI를 실행하지 않습니다. 하위 카드는 기존 카드 도구로 구성하고 준비 후 그룹 총괄에서 delegate_ai_work의 targetMapId와 targetRevision을 지정해 위임하세요.', {
+    groupId: z.string().min(1), baseVersion: z.number().int().nonnegative(),
+    title: z.string().min(1).max(80), description: z.string().max(100000),
+  }, async ({ groupId, ...body }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}/documents`, { method: 'POST', body: JSON.stringify(body) }))
 
   registerTool(server, 'mindnprogress_get_document', '문서의 모든 카드와 연결 관계, 외부 접근 URL 및 이미지 카드의 로컬 원본 경로를 조회합니다.', mapIdSchema, async ({ mapId }) => {
     const [documentResult, health] = await Promise.all([
@@ -1561,8 +1581,10 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_delegate_ai_work', '이 대화가 시작된 카드의 계층상 하위 카드 AI 대화에 구체적인 작업을 위임합니다. 직계 자식뿐 아니라 모든 깊이의 하위 카드를 지원하며, 다른 카드를 get_context로 조회해도 위임 기준 카드는 바뀌지 않습니다. 기존 대화를 이어가거나 새 대화를 만들 수 있습니다. 중지된 위임을 resume하면 같은 AI 대화와 기존 작업공간 lease를 함께 이어가며, 같은 카드·대화의 활성 위임은 중복 생성하지 않습니다. 등록된 AI 작업공간 pool은 독립 worker를 자동 배정하고 lease 없이 실행하지 않으며, 가용 worker가 없으면 waiting-workspace로 접수해 FIFO 대기 후 자동 시작합니다. waiting-integration-clean은 통합 작업공간의 추적 변경 때문에 하위 전문을 아직 전달하지 않은 대기 상태이며, 변경이 정리되면 같은 위임을 자동 시작하므로 재위임하지 마세요. 완료 변경은 main에 직렬 통합합니다. 통합 충돌은 같은 하위 AI가 worker에서 해결하며, 실제 통합과 최종 검증이 끝난 뒤에만 결과를 포함한 메시지로 현재 상위 AI 대화를 자동 재개합니다. 먼저 후보 목록과 작업 상태를 확인하고, 현재 문서 version을 sourceRevision으로 전달하세요.', {
+  registerTool(server, 'mindnprogress_delegate_ai_work', '이 대화가 시작된 카드의 계층상 하위 카드 AI 대화에 구체적인 작업을 위임합니다. 그룹에 연결된 총괄 문서의 루트는 targetMapId와 targetRevision을 지정하여 같은 그룹의 다른 문서 루트에 분석·조정을 위임할 수 있으며, 이 문서 담당 위임은 worker를 점유하지 않습니다. 직계 자식뿐 아니라 모든 깊이의 하위 카드를 지원하며, 다른 카드를 get_context로 조회해도 위임 기준 카드는 바뀌지 않습니다. 기존 대화를 이어가거나 새 대화를 만들 수 있습니다. 중지된 위임을 resume하면 같은 AI 대화와 기존 작업공간 lease를 함께 이어가며, 같은 카드·대화의 활성 위임은 중복 생성하지 않습니다. 등록된 AI 작업공간 pool은 독립 worker를 자동 배정하고 lease 없이 실행하지 않으며, 가용 worker가 없으면 waiting-workspace로 접수해 FIFO 대기 후 자동 시작합니다. waiting-integration-clean은 통합 작업공간의 추적 변경 때문에 하위 전문을 아직 전달하지 않은 대기 상태이며, 변경이 정리되면 같은 위임을 자동 시작하므로 재위임하지 마세요. 완료 변경은 main에 직렬 통합합니다. 통합 충돌은 같은 하위 AI가 worker에서 해결하며, 실제 통합과 최종 검증이 끝난 뒤에만 결과를 포함한 메시지로 현재 상위 AI 대화를 자동 재개합니다. 먼저 후보 목록과 작업 상태를 확인하고, 현재 문서 version을 sourceRevision으로 전달하세요.', {
     mapId: z.string().min(1).describe('이 대화가 시작된 상위 카드가 속한 문서 ID'),
+    targetMapId: z.string().min(1).optional().describe('그룹 총괄 루트에서 같은 그룹 소속 문서 루트에 분석·조정을 위임할 때만 지정합니다. 먼저 mindnprogress_get_group_context로 범위를 확인하세요. 생략하면 같은 문서의 하위 카드 위임입니다.'),
+    targetRevision: z.number().int().positive().optional().describe('targetMapId 지정 시 대상 문서의 최신 version. 그룹→문서 위임은 worker를 점유하지 않으며 실제 구현은 문서의 하위 업무로 위임합니다.'),
     targetCardId: z.string().min(1).max(120).describe('작업을 맡길 대화 시작 카드의 계층상 하위 카드 ID. 모든 깊이의 하위 카드를 지원'),
     strategy: z.enum(['resume', 'new']).describe('resume은 연결된 기존 대화 이어가기, new는 새 대화 생성'),
     conversationId: z.string().min(1).max(120).optional().describe('resume일 때 이어갈 대상 카드의 conversationId'),

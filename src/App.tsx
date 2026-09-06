@@ -26,6 +26,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import './App.css'
 import { MindNode } from './components/MindNode'
+import { GroupOverview, type GroupAiTarget } from './components/GroupOverview'
 import { KnowledgeEdge } from './components/KnowledgeEdge'
 import { LinkifiedText } from './components/LinkifiedText'
 import { DoorayTaskLinkLabel } from './components/DoorayTaskLinkLabel'
@@ -1902,7 +1903,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false)
   const [aiDialogOpen, setAiDialogOpen] = useState(false)
   const [aiConversationLaunch, setAiConversationLaunch] = useState<AiConversationExplicitTarget & { initialRequest: string } | null>(null)
-  const [aiConversationPicker, setAiConversationPicker] = useState<{ mapId: string; cardId: string; cardTitle: string } | null>(null)
+  const [aiConversationPicker, setAiConversationPicker] = useState<{ mapId: string; cardId: string; cardTitle: string; launch?: GroupAiTarget } | null>(null)
   const [aionUiWebNavigation, setAionUiWebNavigation] = useState(() => ({
     baseUrl: defaultAionUiWebBaseUrl(),
     configured: false,
@@ -1916,6 +1917,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const [viewMode, setViewMode] = useState<ViewMode>(initialDeepLink?.viewMode ?? lastWorkspaceLocation.current?.viewMode ?? 'mindmap')
   const [documents, setDocuments] = useState<MapSummary[]>([])
   const [documentLayout, setDocumentLayout] = useState<DocumentLayout>(EMPTY_DOCUMENT_LAYOUT)
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
+  const selectedGroup = documentLayout.groups.find((group) => group.id === selectedGroupId) ?? null
   const storedCollapsedDocumentGroupIds = useRef(readStoredCollapsedDocumentGroupIds(user.id))
   const collapsedDocumentGroupsInitialized = useRef(false)
   const knownDocumentGroupIds = useRef(new Set<string>())
@@ -4049,7 +4052,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
   useEffect(() => {
     const handleHistoryShortcut = (event: KeyboardEvent) => {
-      if (mode !== 'editor' || (!event.ctrlKey && !event.metaKey)) return
+      if (selectedGroup || mode !== 'editor' || (!event.ctrlKey && !event.metaKey)) return
       const target = event.target as HTMLElement | null
       if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
@@ -4067,7 +4070,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
     window.addEventListener('keydown', handleHistoryShortcut)
     return () => window.removeEventListener('keydown', handleHistoryShortcut)
-  }, [mode, redo, undo])
+  }, [mode, redo, undo, selectedGroup])
 
   const deleteNodeById = useCallback((nodeId: string) => {
     if (mode === 'viewer') return
@@ -4795,6 +4798,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
       setDocumentLayout(created.documentLayout)
       setCreatingMap(false)
       setNewMapTitle('')
+      setSelectedGroupId(null)
       setActiveMapId(created.summary.id)
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : '새 문서를 만들지 못했습니다.')
@@ -5143,6 +5147,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         return next
       })
       setTrashOpen(false)
+      setSelectedGroupId(null)
       setActiveMapId(mapId)
       setSavedAt('문서 복원됨')
     } catch (error) {
@@ -5533,6 +5538,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   }
 
   const openNotification = (notification: UserNotification) => {
+    setSelectedGroupId(null)
     void markNotificationRead(notification)
     pendingSelection.current = notification.nodeId
     setViewMode('mindmap')
@@ -6082,8 +6088,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
       <button
         key={document.id}
         draggable={mode === 'editor' && !normalizedDocumentSearch}
-        className={`map-item ${location.type === 'group' ? 'group-document' : ''} ${document.id === activeMapId ? 'active' : ''} ${rootStatus === 'planned' ? 'root-planned' : ''} ${draggingLibraryItem?.type === 'map' && draggingLibraryItem.id === document.id ? 'dragging' : ''} ${documentDropTargetId === dropKey ? 'document-drop-target' : ''}`}
-        onClick={() => { setRenamingMap(false); setActiveMapId(document.id); setMobileSidebarOpen(false) }}
+        className={`map-item ${location.type === 'group' ? 'group-document' : ''} ${!selectedGroup && document.id === activeMapId ? 'active' : ''} ${rootStatus === 'planned' ? 'root-planned' : ''} ${draggingLibraryItem?.type === 'map' && draggingLibraryItem.id === document.id ? 'dragging' : ''} ${documentDropTargetId === dropKey ? 'document-drop-target' : ''}`}
+        onClick={() => { setSelectedGroupId(null); setRenamingMap(false); setActiveMapId(document.id); setMobileSidebarOpen(false) }}
         onContextMenu={(event) => openDocumentContextMenu(event, document.id)}
         onDragStart={(event) => {
           if (mode !== 'editor' || normalizedDocumentSearch) return
@@ -6162,17 +6168,17 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
             </form>
           ) : (
             <div className="document-title-row">
-              <span>{activeDocument?.title ?? '마인드맵 선택'}</span>
-              {mode === 'editor' && activeDocument && (
+              <span>{selectedGroup?.name ?? activeDocument?.title ?? '마인드맵 선택'}</span>
+              {mode === 'editor' && activeDocument && !selectedGroup && (
                 <button onClick={() => { setRenameTitle(activeDocument.title); setRenamingMap(true) }} aria-label="문서 이름 변경">
                   <Icon name="edit" size={13} />
                 </button>
               )}
             </div>
           )}
-          <small className={saveError ? 'save-error' : ''}>{saveError || savedAt}</small>
+          <small className={saveError ? 'save-error' : ''}>{saveError || (selectedGroup ? '그룹 개요' : savedAt)}</small>
         </div>
-        <nav className="view-switcher" aria-label="업무 보기 전환">
+        {!selectedGroup && <nav className="view-switcher" aria-label="업무 보기 전환">
           {([
             ['mindmap', 'map', '마인드맵'],
             ['kanban', 'board', '칸반'],
@@ -6196,7 +6202,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
               <span>{label}</span>
             </button>
           ))}
-        </nav>
+        </nav>}
         <button
           type="button"
           className={`mobile-panel-button mobile-inspector-toggle ${mobileInspectorOpen ? 'active' : ''}`}
@@ -6208,7 +6214,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           aria-expanded={mobileInspectorOpen}
           aria-label="선택 카드 세부정보 열기"
           title="선택 카드 세부정보"
-          disabled={!selectedNode}
+          disabled={!selectedNode || Boolean(selectedGroup)}
         >
           <Icon name="edit" size={18} />
         </button>
@@ -6225,8 +6231,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           )}
           {mode === 'editor' && (
             <div className="history-controls" aria-label="실행 취소와 다시 실행">
-              <button onClick={undo} disabled={!canUndo} title="실행 취소 (Ctrl+Z)" aria-label="실행 취소"><Icon name="undo" size={15} /></button>
-              <button onClick={redo} disabled={!canRedo} title="다시 실행 (Ctrl+Y)" aria-label="다시 실행"><Icon name="redo" size={15} /></button>
+              <button onClick={undo} disabled={!canUndo || Boolean(selectedGroup)} title="실행 취소 (Ctrl+Z)" aria-label="실행 취소"><Icon name="undo" size={15} /></button>
+              <button onClick={redo} disabled={!canRedo || Boolean(selectedGroup)} title="다시 실행 (Ctrl+Y)" aria-label="다시 실행"><Icon name="redo" size={15} /></button>
             </div>
           )}
           {mode === 'editor' && (
@@ -6241,7 +6247,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
               <Icon name="sparkles" size={15} /><span>지식 정리</span>
             </button>
           )}
-          <button className="icon-button" onClick={() => { void openMapHistory() }} disabled={!activeMapId} aria-label="서버 변경 이력" title="서버 변경 이력">
+          <button className="icon-button" onClick={() => { void openMapHistory() }} disabled={!activeMapId || Boolean(selectedGroup)} aria-label="서버 변경 이력" title="서버 변경 이력">
             <Icon name="history" size={16} />
           </button>
           {!user.publicAccess && <div className="notification-center">
@@ -6334,7 +6340,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
       )}
 
       <main
-        className="workspace"
+        className={`workspace ${selectedGroup ? 'group-workspace' : ''}`}
         style={{
           '--sidebar-width': `${effectiveSidebarWidth}px`,
           '--inspector-width': `${inspectorWidth}px`,
@@ -6511,7 +6517,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                         />
                       )}
                       <div
-                        className={`document-group-header ${draggingLibraryItem?.type === 'group' && draggingLibraryItem.id === group.id ? 'dragging' : ''} ${documentDropTargetId === groupDropKey ? 'document-drop-target' : ''}`}
+                        className={`document-group-header ${selectedGroup?.id === group.id ? 'group-selected' : ''} ${draggingLibraryItem?.type === 'group' && draggingLibraryItem.id === group.id ? 'dragging' : ''} ${documentDropTargetId === groupDropKey ? 'document-drop-target' : ''}`}
                         draggable={mode === 'editor' && !normalizedDocumentSearch}
                         onDragStart={(event) => {
                           const item: DocumentLayoutItem = { type: 'group', id: group.id }
@@ -6543,8 +6549,13 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                             return next
                           })}
                           aria-expanded={!collapsed}
+                          aria-label={`${group.name} ${collapsed ? '펼치기' : '접기'}`}
                         >
                           <Icon name={collapsed ? 'chevron' : 'chevron-down'} size={12} />
+                        </button>
+                        <button type="button" className="document-group-open" title={`${group.name} 그룹 개요`} aria-current={selectedGroup?.id === group.id ? 'page' : undefined} onClick={() => {
+                          setSelectedGroupId(group.id); setSelectedId(null); setRenamingMap(false); setMobileSidebarOpen(false); setMobileInspectorOpen(false)
+                        }}>
                           <Icon name="folder" size={14} />
                           <span className="document-group-label">
                             <strong>{group.name}</strong>
@@ -6697,6 +6708,24 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           <span />
         </div>
 
+        {selectedGroup ? <GroupOverview
+          key={selectedGroup.id}
+          groupId={selectedGroup.id}
+          name={selectedGroup.name}
+          membershipKey={selectedGroup.mapIds.join(',')}
+          editable={mode === 'editor'}
+          clientId={CLIENT_ID}
+          onNavigate={(mapId, rootId) => {
+            setSelectedGroupId(null); setViewMode('mindmap'); setMobileSidebarOpen(false)
+            pendingSelection.current = rootId ?? null
+            setSelectedId(rootId ?? null); setActiveMapId(mapId)
+          }}
+          onLaunch={setAiConversationLaunch}
+          onConversations={(target) => setAiConversationPicker({ mapId: target.mapId, cardId: target.cardId, cardTitle: target.cardTitle ?? '', launch: target })}
+          onLibraryChanged={() => {
+            void apiRequest<DocumentLibraryResponse>('/api/maps').then((library) => { setDocuments(library.maps); setDocumentLayout(library.documentLayout) }).catch((error) => setSaveError(error.message))
+          }}
+        /> : <>
         {viewMode === 'mindmap' ? (
         <section
           ref={canvasWrapRef}
@@ -7970,6 +7999,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
             </div>
           )}
         </aside>
+        </>}
       </main>
       {historyOpen && (
         <div className="history-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) setHistoryOpen(false) }}>
@@ -8082,8 +8112,10 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
             void openAiConversation(conversationId, target.cardId, target.mapId)
           }}
           onStartNew={() => {
+            const launch = aiConversationPicker.launch
             setAiConversationPicker(null)
-            setAiDialogOpen(true)
+            if (launch) setAiConversationLaunch(launch)
+            else setAiDialogOpen(true)
           }}
           onDeleteUnavailable={(conversationId) => deleteUnavailableAiConversation(
             aiConversationPicker.mapId,

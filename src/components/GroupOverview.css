@@ -1,0 +1,48 @@
+.workspace.group-workspace { grid-template-columns: var(--sidebar-width, 226px) minmax(0, 1fr); }
+.group-overview { min-width: 0; min-height: 0; flex: 1; overflow: auto; padding: 28px clamp(18px, 3vw, 46px); color: var(--theme-text, #393440); background: var(--theme-canvas, #f8f7fb); }
+.group-overview-header { display: flex; justify-content: space-between; align-items: start; gap: 16px; margin: 0 auto 24px; max-width: 1080px; }
+.group-overview-header > button { flex-shrink: 0; white-space: nowrap; }
+.group-overview-header h1 { margin: 5px 0 8px; font-size: 25px; }
+.group-overview p { font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.group-overview small, .group-muted { color: var(--theme-text-muted, #817a8c); font-size: 12px; }
+.group-overview button, .group-overview select { padding: 8px 12px; border: 1px solid var(--theme-border, #dfdbe8); border-radius: 7px; background: var(--theme-surface, #fff); color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.group-overview button:hover { border-color: #8978dc; }
+.group-overview button:disabled { opacity: .5; cursor: default; }
+.group-overview button.primary { color: white; background: #6657d9; border-color: #6657d9; }
+.group-project-card { max-width: 1080px; margin: 0 auto 18px; padding: 22px; background: var(--theme-surface, white); border: 1px solid var(--theme-border, #e6e2ed); border-radius: 12px; }
+.group-section-title { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.group-section-title h2 { margin: 0; font-size: 16px; }
+.group-section-title h2 span { margin-left: 5px; color: #8978dc; }
+.group-overview label { display: flex; flex-direction: column; gap: 6px; margin: 14px 0; font-size: 12px; font-weight: 600; }
+.group-overview input, .group-overview textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 10px; border: 1px solid var(--theme-control-border, #d9d4e2); border-radius: 7px; background: var(--theme-canvas, #faf9fc); color: inherit; font: inherit; font-size: 13px; line-height: 1.6; }
+.group-overview textarea { resize: vertical; }
+.group-source-fields { display: grid; grid-template-columns: minmax(0, 3fr) minmax(100px, 1fr); gap: 16px; }
+.group-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.group-project-summary p, .group-project-summary details p { white-space: pre-wrap; }
+.group-overview .group-text-button { padding: 0; border: 0; background: transparent; color: var(--theme-text, #5b4dcc); font-weight: 650; text-align: left; }
+.group-badge { font-size: 11px; padding: 4px 8px; background: var(--theme-surface-soft, #f1eefb); border-radius: 20px; white-space: nowrap; }
+.group-document-row { padding: 18px 0; border-top: 1px solid var(--theme-border, #ebe8f0); }
+.group-document-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.group-document-heading .group-text-button { font-size: 15px; }
+.group-scope { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
+.group-row-meta { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--theme-text-muted, #817a8c); }
+.group-new-document { padding-top: 12px; }
+.group-overview summary { cursor: pointer; font-size: 12px; line-height: 1.6; }
+.group-empty { padding: 25px 0; font-size: 13px; color: var(--theme-text-muted, #817a8c); }
+.group-message { max-width: 1080px; box-sizing: border-box; margin: 0 auto 14px; padding: 12px; border-radius: 8px; background: var(--theme-surface-soft, #efedf9); font-size: 12px; line-height: 1.6; }
+.group-message.error { color: var(--theme-text, #a33140); border: 1px solid #c46b7a; }
+.group-delegation { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--theme-border, #ebe8f0); }
+.group-delegation summary strong { margin-right: 14px; }
+.group-delegation pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.6; }
+.document-group-header .document-group-toggle { flex: 0 0 25px; display: flex; padding-right: 0; }
+.document-group-header .document-group-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; padding: 9px 0; color: inherit; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.document-group-header .document-group-open > .icon { color: #b28a3d; }
+.document-group-header.group-selected { background: var(--theme-surface-soft, #eeebfb); }
+@media (max-width: 720px) {
+  .workspace.group-workspace { grid-template-columns: minmax(0, 1fr); }
+  .group-overview { padding: 18px 12px; }
+  .group-project-card { padding: 16px; }
+  .group-source-fields { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .group-overview-header h1 { font-size: 21px; }
+  .group-actions select { max-width: 100%; }
+}

@@ -374,7 +374,7 @@ async function main() {
     await client.connect(transport)
     const listedTools = await client.listTools()
     const registeredToolNames = listedTools.tools.map((tool) => tool.name).sort()
-    assert.equal(registeredToolNames.length, 49, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
+    assert.equal(registeredToolNames.length, 52, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
     const toolSchema = (name) => listedTools.tools.find((tool) => tool.name === name)?.inputSchema
     const toolDescription = (name) => listedTools.tools.find((tool) => tool.name === name)?.description ?? ''
     for (const name of ['mindnprogress_update_card', 'mindnprogress_move_card', 'mindnprogress_delete_card', 'mindnprogress_list_comments', 'mindnprogress_add_comment']) {
@@ -2277,6 +2277,32 @@ async function main() {
       headers: { Cookie: editorSessionCookie },
     })
     assert.equal(repeatedDeleteConversationLinkResponse.status, 404)
+
+    const groupLibrary = await invoke('mindnprogress_list_documents', {})
+    const groupTestId = 'group-mcp-project'
+    await invoke('mindnprogress_save_document_layout', {
+      documentLayout: {
+        ...groupLibrary.documentLayout,
+        items: [...groupLibrary.documentLayout.items, { type: 'group', id: groupTestId }],
+        groups: [...groupLibrary.documentLayout.groups, { id: groupTestId, name: '기획서 개발 검증', mapIds: [] }],
+      },
+    })
+    const emptyGroup = await invoke('mindnprogress_get_group_context', { groupId: groupTestId })
+    assert.equal(emptyGroup.project.version, 0)
+    const managedGroup = await invoke('mindnprogress_update_group_project', {
+      groupId: groupTestId, baseVersion: 0, source: '기획 원본 경로', sourceVersion: 'v1', objective: '요구사항 전체 구현', createCoordinator: true,
+    })
+    assert.ok(managedGroup.coordinator.root.id)
+    assert.equal(managedGroup.coordinator.root.data.isWork, false)
+    const groupDocument = await invoke('mindnprogress_create_group_document', {
+      groupId: groupTestId, baseVersion: managedGroup.project.version, title: '기능 문서', description: '원본 분석 후 하위 업무를 구성합니다.',
+    })
+    const savedGroup = await invoke('mindnprogress_get_group_context', { groupId: groupTestId })
+    assert.ok(savedGroup.documents.some((document) => document.id === groupDocument.map.id))
+    assert.equal(savedGroup.delegations.length, 0)
+    await invokeExpectError('mindnprogress_update_group_project', {
+      groupId: groupTestId, baseVersion: 0, objective: '오래된 설정으로 변경',
+    }, /그룹 설정이 변경/)
 
     const uncalledTools = registeredToolNames.filter((name) => !calledTools.has(name))
     assert.deepEqual(uncalledTools, [], `호출되지 않은 MCP 도구: ${uncalledTools.join(', ')}`)

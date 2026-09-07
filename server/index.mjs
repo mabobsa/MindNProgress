@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { createGroupProjects, documentRoot, DOCUMENT_COORDINATOR_INSTRUCTION } from './lib/groupProjects.mjs'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { networkInterfaces, tmpdir } from 'node:os'
+import { hostname, networkInterfaces, tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { applyProgressRollup } from './lib/progressRollup.mjs'
@@ -85,6 +85,20 @@ import { isLocalLoopbackRequest, localLoopbackRedirectLocation } from './lib/loc
 import { listWorkspaceDirectory, listWorkspaceRoots } from './lib/workspaceBrowse.mjs'
 import { buildSharedKnowledgeAudit } from './lib/sharedKnowledgeAudit.mjs'
 import {
+  SubMachinePayloadError,
+  distributedWorkTargets,
+  ensureMainMachine,
+  findMachine,
+  normalizeDistributedWorkSettings,
+  normalizeMachineId,
+  normalizeMachineRegistry,
+  publicMachineRegistry,
+  removeSubMachine,
+  resolveDistributedWorkSettings,
+  serializeMachineRegistry,
+  upsertSubMachine,
+} from './lib/subMachines.mjs'
+import {
   SharedKnowledgeMaintenanceError,
   buildSharedKnowledgeReviewContext,
   prepareSharedKnowledgeReviewBatch,
@@ -122,6 +136,8 @@ const aiConversationOriginsFile = path.join(dataDirectory, '_ai-conversation-ori
 const aiDelegationsFile = path.join(dataDirectory, '_ai-delegations.json')
 const workspacePoolStateFile = path.join(dataDirectory, '_workspace-pool.json')
 const aiWorkspaceHistoriesFile = path.join(dataDirectory, '_ai-workspace-histories.json')
+const machineRegistryFile = path.join(dataDirectory, '_machines.json')
+const distributedWorkSettingsFile = path.join(dataDirectory, '_distributed-work-settings.json')
 const integrationTokenFile = path.join(dataDirectory, '_integration-token')
 const mapOrderFile = path.join(dataDirectory, '_map-order.json')
 const distDirectory = path.join(projectDirectory, 'dist')
@@ -313,6 +329,10 @@ const aiConversationAttributions = new Map()
 const aiConversationOrigins = new Map()
 const aiConversationLaunches = new Map()
 const aiWorkspaceHistories = new Map()
+const distributedWorkSettings = new Map()
+let machineRegistry = normalizeMachineRegistry([])
+let machineRegistryWriteQueue = Promise.resolve()
+let distributedWorkSettingsWriteQueue = Promise.resolve()
 const aiAttributionContinuationToken = Symbol('aiAttributionContinuationToken')
 let aiAttributionWriteQueue = Promise.resolve()
 let aiConversationAttributionWriteQueue = Promise.resolve()
@@ -1284,6 +1304,55 @@ function persistAiWorkspaceHistories() {
   aiWorkspaceHistoryWriteQueue = aiWorkspaceHistoryWriteQueue.catch(() => {})
     .then(() => writeStoredArray(aiWorkspaceHistoriesFile, storedHistories))
   return aiWorkspaceHistoryWriteQueue
+}
+
+// 메인 머신 ID는 MnP가 실행되는 PC를 가리킨다. 호스트명이 바뀌어도 등록을 유지하려면 MNP_MACHINE_ID로 고정한다.
+function mainMachineDescriptor() {
+  const configured = String(process.env.MNP_MACHINE_ID ?? '').trim()
+  const derived = configured || hostname()
+  const machineId = derived.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64)
+  return {
+    machineId: machineId || 'main',
+    label: String(process.env.MNP_MACHINE_LABEL ?? '').trim() || hostname() || '메인 머신',
+    platform: process.platform,
+  }
+}
+
+function persistMachineRegistry() {
+  const storedMachines = serializeMachineRegistry(machineRegistry)
+  machineRegistryWriteQueue = machineRegistryWriteQueue.catch(() => {})
+    .then(() => writeStoredArray(machineRegistryFile, storedMachines))
+  return machineRegistryWriteQueue
+}
+
+function persistDistributedWorkSettings() {
+  const storedSettings = [...distributedWorkSettings.entries()]
+    .sort(([firstUserId], [secondUserId]) => firstUserId.localeCompare(secondUserId))
+    .map(([userId, settings]) => ({ userId, ...settings }))
+  distributedWorkSettingsWriteQueue = distributedWorkSettingsWriteQueue.catch(() => {})
+    .then(() => writeStoredArray(distributedWorkSettingsFile, storedSettings))
+  return distributedWorkSettingsWriteQueue
+}
+
+async function loadMachineRegistry() {
+  machineRegistry = ensureMainMachine(
+    normalizeMachineRegistry(await readStoredArray(machineRegistryFile)),
+    mainMachineDescriptor(),
+  )
+  await persistMachineRegistry()
+}
+
+async function loadDistributedWorkSettings() {
+  const storedSettings = await readStoredArray(distributedWorkSettingsFile)
+  for (const settings of storedSettings) {
+    if (typeof settings?.userId !== 'string' || !users.some((user) => user.id === settings.userId)) continue
+    distributedWorkSettings.set(settings.userId, normalizeDistributedWorkSettings(settings))
+  }
+  await persistDistributedWorkSettings()
+}
+
+function userDistributedWork(user) {
+  return resolveDistributedWorkSettings(distributedWorkSettings.get(user.id), machineRegistry)
 }
 
 async function loadAiAttributions() {
@@ -4708,6 +4777,8 @@ await loadAiConversationAttributions()
 await loadAiConversationOrigins()
 await loadAiDelegations()
 await loadAiWorkspaceHistories()
+await loadMachineRegistry()
+await loadDistributedWorkSettings()
 try {
   if (await workspacePoolManager.initialize()) {
     console.log(`[Mind & Progress] AI 작업공간 pool registry를 불러왔습니다: ${workspacePoolRegistryFile}`)
@@ -6625,6 +6696,87 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    // 분산 작업은 사용자가 계정 설정에서 켤 때만 동작한다. 끈 상태에서는 메인 머신만 대상으로 남는다.
+    if (url.pathname === '/api/account/distributed-work') {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 분산 작업 설정을 사용할 수 있습니다.' })
+
+      if (request.method === 'GET') {
+        return sendJson(response, 200, {
+          settings: userDistributedWork(user),
+          targets: distributedWorkTargets(machineRegistry, distributedWorkSettings.get(user.id)),
+        })
+      }
+
+      if (request.method === 'PUT') {
+        const body = await readJsonBody(request)
+        if (typeof body?.enabled !== 'boolean') {
+          return sendJson(response, 400, { error: '분산 작업 사용 여부가 올바르지 않습니다.' })
+        }
+        const requested = normalizeDistributedWorkSettings(body)
+        if (requested.enabled && requested.defaultMachineId) {
+          const machine = findMachine(machineRegistry, requested.defaultMachineId)
+          if (!machine || !machine.enabled) {
+            return sendJson(response, 400, { error: '선택한 기본 머신을 사용할 수 없습니다.' })
+          }
+        }
+        distributedWorkSettings.set(user.id, requested)
+        await persistDistributedWorkSettings()
+        return sendJson(response, 200, {
+          settings: userDistributedWork(user),
+          targets: distributedWorkTargets(machineRegistry, requested),
+        })
+      }
+
+      return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
+    }
+
+    // 머신 레지스트리는 공용 인프라 정보이므로 조회는 편집자, 변경은 관리자만 가능하다.
+    if (url.pathname === '/api/machines') {
+      if (request.method === 'GET') {
+        const user = requireSignedInUser(request, response)
+        if (!user) return
+        if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 머신 목록을 조회할 수 있습니다.' })
+        return sendJson(response, 200, publicMachineRegistry(machineRegistry))
+      }
+
+      const admin = requireAdmin(request, response)
+      if (!admin) return
+
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request)
+        try {
+          machineRegistry = upsertSubMachine(machineRegistry, body)
+        } catch (error) {
+          if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
+          throw error
+        }
+        await persistMachineRegistry()
+        return sendJson(response, 200, publicMachineRegistry(machineRegistry))
+      }
+
+      if (request.method === 'DELETE') {
+        const body = await readJsonBody(request)
+        const removedMachineId = normalizeMachineId(body?.machineId)
+        try {
+          machineRegistry = removeSubMachine(machineRegistry, body?.machineId)
+        } catch (error) {
+          if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
+          throw error
+        }
+        // 삭제한 머신을 기본값으로 쓰던 사용자는 조회 시 자동으로 해제되지만 저장값도 함께 정리한다.
+        for (const [userId, settings] of distributedWorkSettings.entries()) {
+          if (settings.defaultMachineId !== removedMachineId) continue
+          distributedWorkSettings.set(userId, { ...settings, defaultMachineId: null })
+        }
+        await Promise.all([persistMachineRegistry(), persistDistributedWorkSettings()])
+        return sendJson(response, 200, publicMachineRegistry(machineRegistry))
+      }
+
+      return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
+    }
+
     if (url.pathname === '/api/integrations/aionui/workspaces') {
       const user = requireSignedInUser(request, response)
       if (!user) return
@@ -6864,7 +7016,9 @@ const server = createServer(async (request, response) => {
         users = users.filter((candidate) => candidate.id !== editor.id)
         await invalidateUserSessions(editor.id)
         aiWorkspaceHistories.delete(editor.id)
+        distributedWorkSettings.delete(editor.id)
         await persistAiWorkspaceHistories()
+        await persistDistributedWorkSettings()
         await persistUsers()
         return sendJson(response, 200, { deletedId: editor.id })
       }

@@ -667,6 +667,42 @@
 .password-actions button, .password-success > button { padding: 8px 12px; border: 1px solid #ddd9e4; border-radius: 7px; background: white; font-size: 8px; font-weight: 700; cursor: pointer; }
 .password-actions button[type="submit"], .password-success > button { color: white; border-color: #6657d9; background: #6657d9; }
 .password-actions button:disabled { opacity: .55; cursor: wait; }
+.distributed-work-modal { width: min(470px, calc(100vw - 48px)); }
+.distributed-work-loading { padding: 28px 18px; color: #918a97; font-size: 9px; text-align: center; }
+.distributed-work-body { display: flex; flex-direction: column; gap: 14px; padding: 18px; }
+.distributed-work-intro { margin: 0; color: #8c8592; font-size: 9px; line-height: 1.7; }
+.distributed-work-toggle { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid #e4e0ea; border-radius: 9px; background: #fbfafd; cursor: pointer; }
+.distributed-work-toggle input { margin: 1px 0 0; accent-color: #6657d9; }
+.distributed-work-toggle > span { display: flex; flex-direction: column; gap: 4px; }
+.distributed-work-toggle strong { color: #39333f; font-size: 10px; }
+.distributed-work-toggle small { color: #a49eaa; font-size: 8px; line-height: 1.6; }
+.distributed-work-field { display: flex; flex-direction: column; gap: 6px; }
+.distributed-work-field > span { color: #5f5866; font-size: 9px; font-weight: 700; }
+.distributed-work-field select { width: 100%; padding: 9px 10px; color: #39333f; border: 1px solid #dfdbe5; border-radius: 8px; outline: 0; background: white; font-size: 10px; }
+.distributed-work-field select:disabled { color: #a49eaa; background: #f6f4f9; }
+.distributed-work-field > small { color: #a49eaa; font-size: 7px; }
+.distributed-work-machines h4, .distributed-work-register h4 { margin: 0 0 8px; color: #5f5866; font-size: 9px; font-weight: 700; }
+.distributed-work-machines ul { display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.distributed-work-machines li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #e8e4ee; border-radius: 8px; }
+.distributed-work-machines li.disabled { opacity: .55; }
+.distributed-work-machines li > button { display: grid; place-items: center; padding: 5px; color: #b0788a; border: 1px solid #ebe7f0; border-radius: 6px; background: white; cursor: pointer; }
+.machine-role { flex: 0 0 auto; padding: 3px 6px; border-radius: 5px; font-size: 7px; font-weight: 700; }
+.machine-role.main { color: #4a3fa8; background: #eceafa; }
+.machine-role.sub { color: #3f7a68; background: #e8f5f0; }
+.machine-label { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.machine-label strong { color: #39333f; font-size: 9px; }
+.machine-label small { color: #a49eaa; font-size: 7px; }
+.distributed-work-empty { margin: 7px 0 0; color: #a49eaa; font-size: 8px; }
+.distributed-work-register { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px dashed #ddd8e6; border-radius: 9px; }
+.distributed-work-register-fields { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.distributed-work-register-fields label { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.distributed-work-register-fields span { color: #5f5866; font-size: 8px; font-weight: 700; }
+.distributed-work-register-fields input, .distributed-work-register-fields select { width: 100%; padding: 8px 9px; color: #39333f; border: 1px solid #dfdbe5; border-radius: 7px; outline: 0; background: white; font-size: 9px; }
+.distributed-work-register-fields input:focus { border-color: #7566d7; box-shadow: 0 0 0 3px rgba(102,87,217,.1); }
+.distributed-work-register > small { color: #a49eaa; font-size: 7px; line-height: 1.6; }
+.distributed-work-register > button { align-self: flex-start; padding: 7px 12px; color: #4a3fa8; border: 1px solid #d5cef0; border-radius: 7px; background: #f4f2fd; font-size: 8px; font-weight: 700; cursor: pointer; }
+.distributed-work-register > button:disabled { opacity: .5; cursor: not-allowed; }
+.distributed-work-notice { padding: 8px 10px; color: #3f7a68; border: 1px solid #cfe8de; border-radius: 7px; background: #f2fbf7; font-size: 8px; }
 .password-success { display: flex; flex-direction: column; align-items: center; padding: 28px 24px 24px; text-align: center; }
 .password-success > span { width: 42px; height: 42px; display: grid; place-items: center; color: white; border-radius: 50%; background: #55aa87; }
 .password-success strong { margin-top: 13px; color: #3d3744; font-size: 12px; }

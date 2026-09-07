@@ -543,6 +543,29 @@ type AuthUser = {
   active?: boolean
 }
 
+type MachineRole = 'main' | 'sub'
+
+type MachineSummary = {
+  machineId: string
+  label: string
+  role: MachineRole
+  platform: string
+  enabled: boolean
+  workspacePoolIds: string[]
+  lastSeenAt: string | null
+}
+
+type DistributedWorkSettings = {
+  enabled: boolean
+  defaultMachineId: string | null
+}
+
+type DistributedWorkTargets = {
+  enabled: boolean
+  defaultMachineId: string
+  machines: MachineSummary[]
+}
+
 type SubscriptionUsageWindow = {
   usedPercent: number
   resetsAt: string | null
@@ -1891,6 +1914,222 @@ function PasswordChangeDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
+const MACHINE_PLATFORM_LABELS: Record<string, string> = {
+  win32: 'Windows',
+  darwin: 'macOS',
+  linux: 'Linux',
+}
+
+function machinePlatformLabel(platform: string) {
+  return MACHINE_PLATFORM_LABELS[platform] ?? platform
+}
+
+function DistributedWorkDialog({ user, onClose }: { user: AuthUser; onClose: () => void }) {
+  const dialogRef = useRef<HTMLElement>(null)
+  const [targets, setTargets] = useState<DistributedWorkTargets | null>(null)
+  const [enabled, setEnabled] = useState(false)
+  const [defaultMachineId, setDefaultMachineId] = useState('')
+  const [machines, setMachines] = useState<MachineSummary[]>([])
+  const [newMachineId, setNewMachineId] = useState('')
+  const [newMachineLabel, setNewMachineLabel] = useState('')
+  const [newMachinePlatform, setNewMachinePlatform] = useState('darwin')
+  const [loading, setLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const applySettings = useCallback((payload: { settings: DistributedWorkSettings; targets: DistributedWorkTargets }) => {
+    setTargets(payload.targets)
+    setEnabled(payload.settings.enabled)
+    setDefaultMachineId(payload.settings.defaultMachineId ?? '')
+  }, [])
+
+  const reload = useCallback(async () => {
+    const [settings, registry] = await Promise.all([
+      apiRequest<{ settings: DistributedWorkSettings; targets: DistributedWorkTargets }>('/api/account/distributed-work'),
+      apiRequest<{ mainMachineId: string; machines: MachineSummary[] }>('/api/machines'),
+    ])
+    applySettings(settings)
+    setMachines(registry.machines)
+  }, [applySettings])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        await reload()
+      } catch (loadError) {
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : '분산 작업 설정을 불러오지 못했습니다.')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [reload])
+
+  async function save() {
+    setError('')
+    setNotice('')
+    setSubmitting(true)
+    try {
+      const payload = await apiRequest<{ settings: DistributedWorkSettings; targets: DistributedWorkTargets }>('/api/account/distributed-work', {
+        method: 'PUT',
+        body: JSON.stringify({ enabled, defaultMachineId: enabled && defaultMachineId ? defaultMachineId : null }),
+      })
+      applySettings(payload)
+      setNotice('분산 작업 설정을 저장했습니다.')
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '분산 작업 설정을 저장하지 못했습니다.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function registerMachine() {
+    setError('')
+    setNotice('')
+    setSubmitting(true)
+    try {
+      await apiRequest<{ machines: MachineSummary[] }>('/api/machines', {
+        method: 'POST',
+        body: JSON.stringify({
+          machineId: newMachineId.trim().toLowerCase(),
+          label: newMachineLabel.trim(),
+          platform: newMachinePlatform,
+        }),
+      })
+      await reload()
+      setNewMachineId('')
+      setNewMachineLabel('')
+      setNotice('서브 머신을 등록했습니다.')
+    } catch (registerError) {
+      setError(registerError instanceof Error ? registerError.message : '서브 머신을 등록하지 못했습니다.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function removeMachine(machineId: string) {
+    if (!window.confirm(`서브 머신 '${machineId}' 등록을 삭제할까요?`)) return
+    setError('')
+    setNotice('')
+    setSubmitting(true)
+    try {
+      await apiRequest<{ machines: MachineSummary[] }>('/api/machines', {
+        method: 'DELETE',
+        body: JSON.stringify({ machineId }),
+      })
+      await reload()
+      setNotice('서브 머신 등록을 삭제했습니다.')
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : '서브 머신 등록을 삭제하지 못했습니다.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const subMachines = machines.filter((machine) => machine.role === 'sub')
+
+  return (
+    <div className="history-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <section ref={dialogRef} className="history-modal distributed-work-modal" role="dialog" aria-modal="true" aria-label="분산 작업 설정">
+        <header>
+          <div><span>내 계정</span><strong>분산 작업 설정</strong></div>
+          <button onClick={onClose} aria-label="분산 작업 설정 닫기"><Icon name="close" size={16} /></button>
+        </header>
+
+        {loading ? (
+          <div className="distributed-work-loading" role="status">설정을 불러오는 중…</div>
+        ) : (
+          <div className="distributed-work-body">
+            <p className="distributed-work-intro">
+              메인 머신이 MnP를 단독으로 운영하고, 서브 머신은 자체 AionUi와 Unity 작업공간 풀로 위임 작업을 수행합니다.
+              이 설정을 켜야 서브 머신이 위임 대상 후보로 올라오며, 실제 실행은 해당 머신에 Runner를 연결한 뒤부터 가능합니다.
+            </p>
+
+            <label className="distributed-work-toggle">
+              <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+              <span>
+                <strong>서브 머신에 작업 분산 사용</strong>
+                <small>끄면 지금까지와 동일하게 메인 머신에서만 대화와 위임이 실행됩니다.</small>
+              </span>
+            </label>
+
+            <label className="distributed-work-field">
+              <span>기본 실행 머신</span>
+              <select value={defaultMachineId} onChange={(event) => setDefaultMachineId(event.target.value)} disabled={!enabled}>
+                <option value="">메인 머신 ({targets?.machines.find((machine) => machine.role === 'main')?.label ?? '메인'})</option>
+                {machines.filter((machine) => machine.role === 'sub' && machine.enabled).map((machine) => (
+                  <option key={machine.machineId} value={machine.machineId}>{machine.label}</option>
+                ))}
+              </select>
+              <small>새 대화와 위임에서 미리 선택될 머신입니다. 매번 다르게 고를 수 있습니다.</small>
+            </label>
+
+            <div className="distributed-work-machines">
+              <h4>등록된 머신</h4>
+              <ul>
+                {machines.map((machine) => (
+                  <li key={machine.machineId} className={machine.enabled ? '' : 'disabled'}>
+                    <span className={`machine-role ${machine.role}`}>{machine.role === 'main' ? '메인' : '서브'}</span>
+                    <span className="machine-label">
+                      <strong>{machine.label}</strong>
+                      <small>{machine.machineId}{machine.platform ? ` · ${machinePlatformLabel(machine.platform)}` : ''}</small>
+                    </span>
+                    {machine.role === 'sub' && user.role === 'admin' && (
+                      <button type="button" onClick={() => void removeMachine(machine.machineId)} disabled={submitting} aria-label={`${machine.label} 등록 삭제`}>
+                        <Icon name="trash" size={13} />
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {subMachines.length === 0 && <p className="distributed-work-empty">등록된 서브 머신이 없습니다.</p>}
+            </div>
+
+            {user.role === 'admin' && (
+              <form
+                className="distributed-work-register"
+                onSubmit={(event) => { event.preventDefault(); void registerMachine() }}
+              >
+                <h4>서브 머신 등록</h4>
+                <div className="distributed-work-register-fields">
+                  <label>
+                    <span>머신 ID</span>
+                    <input value={newMachineId} onChange={(event) => setNewMachineId(event.target.value)} placeholder="macbook" maxLength={64} required />
+                  </label>
+                  <label>
+                    <span>이름</span>
+                    <input value={newMachineLabel} onChange={(event) => setNewMachineLabel(event.target.value)} placeholder="맥북" maxLength={60} required />
+                  </label>
+                  <label>
+                    <span>플랫폼</span>
+                    <select value={newMachinePlatform} onChange={(event) => setNewMachinePlatform(event.target.value)}>
+                      <option value="darwin">macOS</option>
+                      <option value="win32">Windows</option>
+                      <option value="linux">Linux</option>
+                    </select>
+                  </label>
+                </div>
+                <small>머신 ID는 소문자, 숫자, 하이픈만 사용합니다. 서브 머신의 Runner가 이 ID로 연결합니다.</small>
+                <button type="submit" disabled={submitting || !newMachineId.trim() || !newMachineLabel.trim()}>등록</button>
+              </form>
+            )}
+
+            {error && <div className="password-error" role="alert">{error}</div>}
+            {notice && <div className="distributed-work-notice" role="status">{notice}</div>}
+
+            <div className="password-actions">
+              <button type="button" onClick={onClose}>닫기</button>
+              <button type="button" onClick={() => void save()} disabled={submitting}>{submitting ? '저장 중…' : '설정 저장'}</button>
+            </div>
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
 function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { user: AuthUser; onLogout: () => void; initialDeepLink: WorkspaceDeepLink | null; theme: UiTheme; onToggleTheme: () => void }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<MindMapNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<MindMapEdge>([])
@@ -1901,6 +2140,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false)
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
+  const [distributedWorkOpen, setDistributedWorkOpen] = useState(false)
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false)
   const [aiDialogOpen, setAiDialogOpen] = useState(false)
   const [aiConversationLaunch, setAiConversationLaunch] = useState<AiConversationExplicitTarget & { initialRequest: string } | null>(null)
@@ -6315,6 +6555,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
             {accountMenuOpen && (
               <div className="account-popover">
                 <div className="account-summary"><strong>{user.name}</strong><span>{user.email}</span></div>
+                {!user.publicAccess && mode === 'editor' && <button onClick={() => { setAccountMenuOpen(false); setDistributedWorkOpen(true) }}><Icon name="sparkles" size={14} /><span>분산 작업 설정</span></button>}
                 {!user.publicAccess && <button onClick={() => { setAccountMenuOpen(false); setPasswordDialogOpen(true) }}><Icon name="lock" size={14} /><span>비밀번호 변경</span></button>}
                 <button className="account-logout" onClick={onLogout}><Icon name="logout" size={14} /><span>{user.publicAccess ? '로그인 화면으로 이동' : '로그아웃'}</span></button>
               </div>
@@ -6325,6 +6566,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
       {adminOpen && user.role === 'admin' && <AdminEditorPanel onClose={closeAdminPanel} />}
       {passwordDialogOpen && !user.publicAccess && <PasswordChangeDialog onClose={() => setPasswordDialogOpen(false)} />}
+      {distributedWorkOpen && !user.publicAccess && mode === 'editor' && <DistributedWorkDialog user={user} onClose={() => setDistributedWorkOpen(false)} />}
 
       {externalChange && (
         <div className="external-change-banner" role="status">

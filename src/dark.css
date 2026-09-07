@@ -1006,6 +1006,69 @@
   background: var(--theme-danger-soft);
 }
 
+[data-theme="dark"] .distributed-work-intro,
+[data-theme="dark"] .distributed-work-loading,
+[data-theme="dark"] .distributed-work-toggle small,
+[data-theme="dark"] .distributed-work-field > small,
+[data-theme="dark"] .distributed-work-register > small,
+[data-theme="dark"] .distributed-work-empty,
+[data-theme="dark"] .machine-label small {
+  color: var(--theme-text-muted);
+}
+
+[data-theme="dark"] .distributed-work-toggle strong,
+[data-theme="dark"] .machine-label strong {
+  color: var(--theme-text-primary);
+}
+
+[data-theme="dark"] .distributed-work-field > span,
+[data-theme="dark"] .distributed-work-machines h4,
+[data-theme="dark"] .distributed-work-register h4,
+[data-theme="dark"] .distributed-work-register-fields span {
+  color: var(--theme-text-secondary);
+}
+
+[data-theme="dark"] .distributed-work-toggle,
+[data-theme="dark"] .distributed-work-machines li {
+  border-color: var(--theme-border);
+  background: var(--theme-surface-raised);
+}
+
+[data-theme="dark"] .distributed-work-register {
+  border-color: var(--theme-border-strong);
+}
+
+[data-theme="dark"] .distributed-work-field select,
+[data-theme="dark"] .distributed-work-register-fields input,
+[data-theme="dark"] .distributed-work-register-fields select,
+[data-theme="dark"] .distributed-work-machines li > button,
+[data-theme="dark"] .distributed-work-register > button {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-border-strong);
+  background: var(--theme-surface);
+}
+
+[data-theme="dark"] .distributed-work-field select:disabled {
+  color: var(--theme-text-muted);
+  background: var(--theme-surface-soft);
+}
+
+[data-theme="dark"] .machine-role.main {
+  color: #c3bbf5;
+  background: #332e57;
+}
+
+[data-theme="dark"] .machine-role.sub {
+  color: #9fd8c5;
+  background: #26443c;
+}
+
+[data-theme="dark"] .distributed-work-notice {
+  color: #9fd8c5;
+  border-color: #35604f;
+  background: #21362f;
+}
+
 /* Login */
 [data-theme="dark"] .login-page {
   color: var(--theme-text);

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { copyTextToClipboard } from '../utils/clipboardText.mjs'
 import './AdminEditorPanel.css'
 
 type EditorAccount = {
@@ -141,7 +142,13 @@ export function AdminEditorPanel({ onClose }: { onClose: () => void }) {
           {credentialNotice && (
             <div className="credential-notice" role="status">
               <span><strong>{credentialNotice.title}</strong><code>{credentialNotice.password}</code><small>이 화면을 닫으면 다시 확인할 수 없습니다.</small></span>
-              <button onClick={() => { void navigator.clipboard.writeText(credentialNotice.password) }}>복사</button>
+              <button
+                onClick={() => {
+                  // LAN 주소로 접속하면 navigator.clipboard가 없으므로 폴백이 있는 공용 헬퍼를 사용한다.
+                  void copyTextToClipboard(credentialNotice.password)
+                    .catch(() => setError('임시 비밀번호를 클립보드에 복사하지 못했습니다. 위 값을 직접 선택해 복사해 주세요.'))
+                }}
+              >복사</button>
               <button className="notice-close" onClick={() => setCredentialNotice(null)} aria-label="임시 비밀번호 알림 닫기">×</button>
             </div>
           )}

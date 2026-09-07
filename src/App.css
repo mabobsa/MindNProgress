@@ -697,7 +697,8 @@
 .machine-probe.fail { color: #b94d4d; }
 .distributed-work-token { display: flex; flex-direction: column; gap: 6px; margin-top: 9px; padding: 10px 11px; border: 1px solid #d5cef0; border-radius: 8px; background: #f7f5fd; }
 .distributed-work-token strong { color: #4a3fa8; font-size: 8px; }
-.distributed-work-token > code { padding: 8px 9px; color: #39333f; border: 1px solid #e2ddef; border-radius: 6px; background: white; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 8px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
+/* 복사 버튼이 막히는 환경에서도 한 번 클릭으로 전체를 선택해 복사할 수 있어야 한다. */
+.distributed-work-token > code { padding: 8px 9px; color: #39333f; border: 1px solid #e2ddef; border-radius: 6px; background: white; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 8px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; user-select: all; cursor: text; }
 .distributed-work-token small { color: #8c8592; font-size: 7px; line-height: 1.6; }
 .distributed-work-token small code { padding: 1px 3px; border-radius: 4px; background: #ece9f7; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .distributed-work-token-actions { display: flex; gap: 5px; }

@@ -42,6 +42,7 @@ import { DashboardView, KanbanView, TimelineView } from './components/WorkViews'
 import type { AiConversationLink, AiConversationRuntime, ChecklistItem, KnowledgePolicy, MindDoorayLinkData, MindDoorayTaskData, MindDoorayWikiData, MindImageData, MindMapEdgeData, MindNodeData, TeamMember, WaitingItem } from './types/mindMap'
 import { resolveAiConversationTarget, type AiConversationExplicitTarget } from './utils/aiConversationLaunch.mjs'
 import { applyBoxSelection, boxSelectionNodeIds, boxSelectionRect, isBoxSelectionDrag } from './utils/boxSelection.mjs'
+import { copyTextToClipboard } from './utils/clipboardText.mjs'
 import { collectDragDescendantOwners, dragRootIds, hierarchyReparentPairs } from './utils/hierarchyDrag.mjs'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
 import { collapsedDocumentGroupsStorageKey, initialCollapsedDocumentGroupIds, normalizeCollapsedDocumentGroupIds } from './utils/documentGroupCollapse.mjs'
@@ -506,32 +507,6 @@ function parseWorkspaceDeepLink(pathname: string): WorkspaceDeepLink | null {
 
 function canSelectNodeInView(node: MindMapNode, viewMode: ViewMode) {
   return viewMode === 'mindmap' || Boolean(node.data.isWork)
-}
-
-async function copyTextToClipboard(text: string) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text)
-      return
-    } catch {
-      // 권한이 제한된 브라우저에서는 선택 영역 복사 방식으로 다시 시도합니다.
-    }
-  }
-
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.setAttribute('readonly', '')
-  textarea.style.position = 'fixed'
-  textarea.style.opacity = '0'
-  document.body.appendChild(textarea)
-  textarea.select()
-  let copied = false
-  try {
-    copied = document.execCommand('copy')
-  } finally {
-    textarea.remove()
-  }
-  if (!copied) throw new Error('클립보드 복사를 지원하지 않는 브라우저입니다.')
 }
 
 type AuthUser = {
@@ -2094,6 +2069,19 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
+  // LAN 주소로 접속하면 보안 컨텍스트가 아니어서 navigator.clipboard가 없다.
+  // 공용 헬퍼가 선택 영역 복사로 폴백하며, 그마저 막히면 실패를 알려 직접 선택하도록 안내한다.
+  async function copyText(text: string, label: string) {
+    setError('')
+    setNotice('')
+    try {
+      await copyTextToClipboard(text)
+      setNotice(`${label}을 클립보드에 복사했습니다.`)
+    } catch {
+      setError(`${label}을 클립보드에 복사하지 못했습니다. 아래 내용을 직접 선택해 복사해 주세요.`)
+    }
+  }
+
   async function probeMachine(machineId: string) {
     setError('')
     setNotice('')
@@ -2255,14 +2243,11 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
                   <div className="distributed-work-token-actions">
                     <button
                       type="button"
-                      onClick={() => {
-                        void navigator.clipboard?.writeText(runnerStartCommand(runnerInfo.apiUrl, issuedToken.machineId, issuedToken.token))
-                        setNotice('실행 명령을 클립보드에 복사했습니다.')
-                      }}
+                      onClick={() => void copyText(runnerStartCommand(runnerInfo.apiUrl, issuedToken.machineId, issuedToken.token), '실행 명령')}
                     >실행 명령 복사</button>
                     <button
                       type="button"
-                      onClick={() => { void navigator.clipboard?.writeText(issuedToken.token); setNotice('토큰을 클립보드에 복사했습니다.') }}
+                      onClick={() => void copyText(issuedToken.token, '토큰')}
                     >토큰만 복사</button>
                   </div>
                   {!runnerInfo.lanReachable && (

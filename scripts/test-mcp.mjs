@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { MCP_TOOL_USAGE_DIRECTORY_NAME, readToolUsageTotals } from '../server/lib/mcpToolUsage.mjs'
+import { sharedKnowledgeMaxLength } from '../src/utils/sharedKnowledgePolicy.mjs'
 
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const testDataDirectory = path.resolve(projectDirectory, '.mcp-test-data')
@@ -1910,8 +1911,8 @@ async function main() {
       cardId: addedCard.id,
       field: 'sharedKnowledge',
       expectedSha256: betweenPatch.after.sha256,
-      operation: { type: 'append', text: '가'.repeat(10_001) },
-    }, /TEXT_PATCH_LENGTH_LIMIT.*10,000자/)
+      operation: { type: 'append', text: '가'.repeat(sharedKnowledgeMaxLength) },
+    }, /TEXT_PATCH_LENGTH_LIMIT.*15,000자/)
     const lengthErrorCard = await invoke('mindnprogress_get_card', { mapId, cardId: addedCard.id })
     assert.equal(lengthErrorCard.document.version, versionBeforeLengthError)
     assert.equal(lengthErrorCard.card.data.sharedKnowledge, '앞[시작]교체[끝]뒤')

@@ -61,6 +61,7 @@ import {
   rememberAiWorkspace,
   removeAiWorkspace,
 } from '../src/utils/aiWorkspaceHistory.mjs'
+import { sharedKnowledgeMaxLength } from '../src/utils/sharedKnowledgePolicy.mjs'
 import {
   isAiConversationPurpose,
 } from '../src/utils/aiConversationLaunch.mjs'
@@ -753,7 +754,7 @@ function isValidMap(map) {
       || (isValidDoorayKnowledgeLinkData(node.data.externalLink)
         && node.data.taskUrl === node.data.externalLink.url))
     && (node.data?.sharedKnowledge === undefined
-      || (typeof node.data.sharedKnowledge === 'string' && node.data.sharedKnowledge.length <= 10_000))
+      || (typeof node.data.sharedKnowledge === 'string' && node.data.sharedKnowledge.length <= sharedKnowledgeMaxLength))
     && (node.data?.sharedKnowledgeReview === undefined
       || isValidSharedKnowledgeReview(node.data.sharedKnowledgeReview))
     && (node.data?.waitingItems === undefined

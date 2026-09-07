@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { sharedKnowledgeMaxLength } from '../src/utils/sharedKnowledgePolicy.mjs'
 
 const projectDirectory = path.resolve(import.meta.dirname, '..')
 
@@ -48,7 +49,7 @@ test('전체 활성 문서의 공유 지식 현황을 원문과 문서 변경 �
       'X-MNP-Editor-Id': 'shared-knowledge-audit-editor',
     }
     const repeatedStatement = '반복되는 확정 지식 문장입니다.'
-    const sharedKnowledge = `${repeatedStatement}\n${repeatedStatement}\n${'장기 지식 '.repeat(900)}`
+    const sharedKnowledge = `${repeatedStatement}\n${repeatedStatement}\n${'장기 지식 '.repeat(1_400)}`
     const createResponse = await fetch(`${baseUrl}/api/maps`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
@@ -166,6 +167,31 @@ test('전체 활성 문서의 공유 지식 현황을 원문과 문서 변경 �
     assert.equal(emptyMapIdResponse.status, 400)
     const missingResponse = await fetch(`${baseUrl}/api/shared-knowledge/audit?mapId=map-missing`, { headers })
     assert.equal(missingResponse.status, 404)
+
+    const createBoundaryMap = (length) => fetch(`${baseUrl}/api/maps`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: `공유 지식 ${length}자 경계`,
+        map: {
+          nodes: [{
+            id: `root-boundary-${length}`,
+            type: 'mind',
+            position: { x: 0, y: 0 },
+            data: {
+              label: '저장 경계 검증',
+              kind: 'root',
+              progress: 0,
+              status: 'planned',
+              sharedKnowledge: '가'.repeat(length),
+            },
+          }],
+          edges: [],
+        },
+      }),
+    })
+    assert.equal((await createBoundaryMap(sharedKnowledgeMaxLength)).status, 201)
+    assert.equal((await createBoundaryMap(sharedKnowledgeMaxLength + 1)).status, 400)
   } finally {
     if (server.exitCode === null) {
       server.kill()

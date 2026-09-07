@@ -28,7 +28,7 @@ const selection = {
 const reviewContext = {
   document: { id: 'map-other', title: '다른 문서' },
   card: { id: 'node-candidate', label: '정리 후보 카드', textIntegrity: { length: 8_432 } },
-  candidate: { reviewLevel: 'priority', limitUsagePercent: 84, exactDuplicateStatementCount: 3 },
+  candidate: { reviewLevel: 'recommended', limitUsagePercent: 56.2, exactDuplicateStatementCount: 3 },
   relations: { totals: { knowledgeConsumers: 2 } },
 }
 
@@ -154,7 +154,7 @@ test('정리 제안 전문은 자동 저장을 금지하고 검토 문맥 조회
   assert.ok(request.includes('`mindnprogress_apply_shared_knowledge_review`를 호출하지 마세요.'))
   assert.ok(request.includes('공유 지식을 직접 고치지 마세요'))
   assert.ok(request.includes('지식선으로 소비하는 카드가 재사용하는 내용은 지우지 마세요'))
-  assert.ok(request.includes('- 공유 지식 8,432자 (10,000자 제한의 84%) · 검토 수준 우선 정리'))
+  assert.ok(request.includes('- 공유 지식 8,432자 (15,000자 제한의 56.2%) · 검토 수준 정리 권장'))
   assert.ok(request.includes('완전히 같은 문장 반복 3건 · 이 공유 지식을 지식선으로 쓰는 카드 2개'))
   assert.ok(request.length <= AI_EDITOR_REQUEST_MAX_LENGTH)
 })
@@ -163,9 +163,9 @@ test('제한 사용률이 소수여도 버리지 않고 그대로 알린다', ()
   const request = buildSharedKnowledgeCleanupRequest({
     ...reviewContext,
     card: { ...reviewContext.card, textIntegrity: { length: 6_040 } },
-    candidate: { reviewLevel: 'recommended', limitUsagePercent: 60.4, exactDuplicateStatementCount: 0 },
+    candidate: { reviewLevel: 'attention', limitUsagePercent: 40.3, exactDuplicateStatementCount: 0 },
   })
-  assert.ok(request.includes('- 공유 지식 6,040자 (10,000자 제한의 60.4%) · 검토 수준 정리 권장'))
+  assert.ok(request.includes('- 공유 지식 6,040자 (15,000자 제한의 40.3%) · 검토 수준 확인 필요'))
 })
 
 test('지표가 없어도 정리 제안 전문을 만든다', () => {

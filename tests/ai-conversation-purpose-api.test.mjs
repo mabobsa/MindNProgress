@@ -121,7 +121,7 @@ test('지식 정리 대화는 임시 귀속만 유지하고 카드 대화와 영
               data: {
                 label: '정리 후보',
                 description: '공유 지식을 검토합니다.',
-                sharedKnowledge: '가'.repeat(3_100),
+                sharedKnowledge: '가'.repeat(5_100),
                 kind: 'root',
                 progress: 0,
                 status: 'planned',

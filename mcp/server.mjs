@@ -846,7 +846,7 @@ const documentLayoutSchema = z.object({
 const nodeDataSchema = z.object({
   label: z.string().min(1),
   description: z.string().default(''),
-  sharedKnowledge: z.string().max(10_000).default(''),
+  sharedKnowledge: z.string().max(sharedKnowledgeMaxLength).default(''),
   progress: z.number().min(0).max(100).default(0),
   status: z.enum(['planned', 'in-progress', 'done']).default('planned'),
   kind: z.enum(['root', 'branch', 'task', 'image']).default('branch'),
@@ -887,7 +887,7 @@ const outlineCardSchema = z.object({
   parentKey: outlineKey.optional().describe('상위 카드 key. 루트 카드는 생략'),
   label: z.string().min(1).max(200),
   description: z.string().max(5000).default(''),
-  sharedKnowledge: z.string().max(10_000).default(''),
+  sharedKnowledge: z.string().max(sharedKnowledgeMaxLength).default(''),
   progress: z.number().min(0).max(100).default(0),
   status: z.enum(['planned', 'in-progress', 'done']).optional(),
   kind: z.enum(['root', 'branch', 'task']).optional(),
@@ -1705,7 +1705,7 @@ async function main() {
     color: documentColor.default('violet'),
     rootLabel: z.string().min(1),
     rootDescription: z.string().default(''),
-    rootSharedKnowledge: z.string().max(10_000).default(''),
+    rootSharedKnowledge: z.string().max(sharedKnowledgeMaxLength).default(''),
   }, async ({ title, color, rootLabel, rootDescription, rootSharedKnowledge }) => {
     const rootId = `node-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
     return apiRequest('/api/maps', {
@@ -1925,7 +1925,7 @@ async function main() {
       cardId: z.string().min(1).max(120),
       expectedSha256: z.string().regex(/^[a-f0-9]{64}$/).describe('검토 문맥의 card.textIntegrity.sha256'),
       reviewResult: z.enum(['cleaned', 'accepted-long']),
-      replacement: z.string().max(10_000).optional().describe('cleaned일 때만 보내는 정리된 sharedKnowledge 전체. accepted-long일 때는 생략'),
+      replacement: z.string().max(sharedKnowledgeMaxLength).optional().describe('cleaned일 때만 보내는 정리된 sharedKnowledge 전체. accepted-long일 때는 생략'),
     })).min(1).max(20),
   }, async ({ mapId, baseVersion, patches }) => apiRequest(
     `/api/maps/${encodeURIComponent(mapId)}/shared-knowledge/reviews`,

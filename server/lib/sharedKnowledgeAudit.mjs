@@ -4,13 +4,9 @@ import {
   sharedKnowledgeReviewDue,
   sharedKnowledgeSha256,
 } from './sharedKnowledgeReview.mjs'
+import { sharedKnowledgeAuditThresholds } from '../../src/utils/sharedKnowledgePolicy.mjs'
 
-export const sharedKnowledgeAuditThresholds = Object.freeze({
-  attentionCharacters: 3_000,
-  recommendedCharacters: 5_000,
-  priorityCharacters: 8_000,
-  limitCharacters: 10_000,
-})
+export { sharedKnowledgeAuditThresholds }
 
 export const sharedKnowledgeAuthoringPolicy = Object.freeze({
   writeWhen: '다른 카드나 후속 세션이 다시 사용할 새 사실·결정·제약·검증 결과 또는 적용 조건이 생기거나 기존 내용이 더 이상 유효하지 않을 때만 수정',

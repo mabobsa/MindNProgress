@@ -33,6 +33,12 @@ test('공유 지식의 구조와 정확히 반복된 문장을 본문 노출 없
 
 test('글자 수 임계값에 따라 관심·정리 권장·우선 정리 단계를 구분한다', () => {
   const { attentionCharacters, recommendedCharacters, priorityCharacters } = sharedKnowledgeAuditThresholds
+  assert.deepEqual(sharedKnowledgeAuditThresholds, {
+    attentionCharacters: 5_000,
+    recommendedCharacters: 8_000,
+    priorityCharacters: 12_000,
+    limitCharacters: 15_000,
+  })
   assert.equal(analyzeSharedKnowledgeText('가'.repeat(attentionCharacters - 1)).reviewLevel, 'normal')
   assert.equal(analyzeSharedKnowledgeText('가'.repeat(attentionCharacters)).reviewLevel, 'attention')
   assert.equal(analyzeSharedKnowledgeText('가'.repeat(recommendedCharacters)).reviewLevel, 'recommended')
@@ -41,7 +47,7 @@ test('글자 수 임계값에 따라 관심·정리 권장·우선 정리 단계
 })
 
 test('30일이 지난 장문 유지 승인을 본문 변경 없이 다시 후보로 분류한다', () => {
-  const sharedKnowledge = '가'.repeat(3_100)
+  const sharedKnowledge = '가'.repeat(5_100)
   const audit = buildSharedKnowledgeAudit([{
     id: 'map-expired-review',
     title: '재검토 문서',
@@ -71,8 +77,8 @@ test('30일이 지난 장문 유지 승인을 본문 변경 없이 다시 후보
 
 test('활성 문서의 공유 지식 카드와 실제 지식선 소비자를 우선순위대로 집계한다', () => {
   const sourceKnowledge = `외부에 노출되면 안 되는 원문\n${'가'.repeat(5_100)}`
-  const priorityKnowledge = '나'.repeat(8_100)
-  const reviewedKnowledge = '다'.repeat(8_200)
+  const priorityKnowledge = '나'.repeat(12_100)
+  const reviewedKnowledge = '다'.repeat(12_200)
   const staleKnowledge = '라'.repeat(5_200)
   const reviewMetadata = (reviewedHash, reviewResult) => ({
     reviewedAt: '2026-08-17T00:00:00.000Z',

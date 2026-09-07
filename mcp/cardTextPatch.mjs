@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
+import { sharedKnowledgeMaxLength } from '../src/utils/sharedKnowledgePolicy.mjs'
 
-export const sharedKnowledgeMaxLength = 10_000
+export { sharedKnowledgeMaxLength }
 
 export function textIntegrity(value) {
   const text = typeof value === 'string' ? value : ''

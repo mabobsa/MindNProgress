@@ -10,13 +10,13 @@ import {
   sharedKnowledgeSha256,
 } from '../server/lib/sharedKnowledgeReview.mjs'
 
-function candidateText(character = '가', length = 5_100) {
+function candidateText(character = '가', length = 8_100) {
   return character.repeat(length)
 }
 
 function testMap() {
   const firstText = candidateText('가')
-  const secondText = candidateText('나', 8_100)
+  const secondText = candidateText('나', 12_100)
   return {
     id: 'map-review',
     title: '공유 지식 검토',
@@ -76,7 +76,7 @@ test('검토 문맥은 선택한 후보 원문과 직접 관계만 명시적으�
     knowledgeConsumers: 1,
   })
   assert.deepEqual(context.relations.truncatedTypes, [])
-  assert.equal(context.relations.children[0].sharedKnowledgeLength, 8_100)
+  assert.equal(context.relations.children[0].sharedKnowledgeLength, 12_100)
   assert.equal(context.relations.children[0].descriptionPreview, '둘째 후보 설명')
   assert.equal(Object.hasOwn(context.relations.children[0], 'sharedKnowledge'), false)
 })

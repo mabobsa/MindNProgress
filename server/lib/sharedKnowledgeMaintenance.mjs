@@ -6,9 +6,9 @@ import {
   sharedKnowledgeReviewState,
   sharedKnowledgeSha256,
 } from './sharedKnowledgeReview.mjs'
+import { sharedKnowledgeMaxLength } from '../../src/utils/sharedKnowledgePolicy.mjs'
 
 const maximumBatchSize = 20
-const maximumSharedKnowledgeLength = 10_000
 const maximumRelatedCardsPerType = 40
 const relatedDescriptionPreviewLength = 600
 
@@ -183,8 +183,8 @@ function validatePatchShape(patch, index) {
   if (patch.reviewResult === 'accepted-long' && hasReplacement) {
     fail('SHARED_KNOWLEDGE_REVIEW_REPLACEMENT', `${cardId} 카드를 accepted-long으로 처리할 때는 replacement를 보내지 않습니다.`)
   }
-  if (typeof patch.replacement === 'string' && patch.replacement.length > maximumSharedKnowledgeLength) {
-    fail('SHARED_KNOWLEDGE_REVIEW_LENGTH', `정리된 sharedKnowledge는 ${maximumSharedKnowledgeLength.toLocaleString('en-US')}자 이하여야 합니다.`, 400, {
+  if (typeof patch.replacement === 'string' && patch.replacement.length > sharedKnowledgeMaxLength) {
+    fail('SHARED_KNOWLEDGE_REVIEW_LENGTH', `정리된 sharedKnowledge는 ${sharedKnowledgeMaxLength.toLocaleString('en-US')}자 이하여야 합니다.`, 400, {
       cardId,
       resultLength: patch.replacement.length,
     })

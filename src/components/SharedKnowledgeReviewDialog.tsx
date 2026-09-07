@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { buildSharedKnowledgeCleanupLaunch, type AiConversationExplicitTarget } from '../utils/aiConversationLaunch.mjs'
+import { sharedKnowledgeAuditThresholds, sharedKnowledgeMaxLength } from '../utils/sharedKnowledgePolicy.mjs'
 import './SharedKnowledgeReviewDialog.css'
 
 type ReviewLevel = 'attention' | 'recommended' | 'priority'
@@ -172,9 +173,9 @@ const reviewLevelLabels: Record<ReviewLevel, string> = {
 }
 
 const reasonLabels: Record<string, string> = {
-  'length-attention': '3,000자 이상',
-  'length-recommended': '5,000자 이상',
-  'length-priority': '8,000자 이상',
+  'length-attention': `${sharedKnowledgeAuditThresholds.attentionCharacters.toLocaleString('ko-KR')}자 이상`,
+  'length-recommended': `${sharedKnowledgeAuditThresholds.recommendedCharacters.toLocaleString('ko-KR')}자 이상`,
+  'length-priority': `${sharedKnowledgeAuditThresholds.priorityCharacters.toLocaleString('ko-KR')}자 이상`,
   'exact-duplicate-statements': '동일 문장 반복',
   'accepted-long-review-expired': '장문 유지 30일 재검토',
 }
@@ -354,7 +355,7 @@ export function SharedKnowledgeReviewDialog({
   }, [clientId, contextKey, selectedCandidate])
 
   const proposalChanged = Boolean(context && proposal !== context.card.sharedKnowledge)
-  const proposalOverLimit = proposal.length > 10_000
+  const proposalOverLimit = proposal.length > sharedKnowledgeMaxLength
   const canApply = Boolean(
     context
     && decision
@@ -660,7 +661,7 @@ export function SharedKnowledgeReviewDialog({
                   <div className="shared-knowledge-review-inline-warning danger">적용하면 이 카드의 공유 지식이 모두 제거됩니다.</div>
                 )}
                 {proposalOverLimit && (
-                  <div className="shared-knowledge-review-inline-warning danger">정리안은 10,000자를 넘을 수 없습니다.</div>
+                  <div className="shared-knowledge-review-inline-warning danger">정리안은 {formatCount(sharedKnowledgeMaxLength)}자를 넘을 수 없습니다.</div>
                 )}
                 {applyError && (
                   <div className="shared-knowledge-review-apply-error" role="alert">

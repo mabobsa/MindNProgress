@@ -1,3 +1,5 @@
+import { sharedKnowledgeMaxLength } from './sharedKnowledgePolicy.mjs'
+
 const REFERENCE_SUFFIX_PATTERN = /\s*\(ref\)\s*$/i
 
 export const AI_CONVERSATION_PURPOSES = Object.freeze([
@@ -145,7 +147,7 @@ export function buildSharedKnowledgeCleanupRequest(context) {
   const consumerCount = count(totals.knowledgeConsumers)
   const statusLines = [
     length > 0
-      ? `- 공유 지식 ${formatCount(length)}자${limitUsagePercent > 0 ? ` (10,000자 제한의 ${limitUsagePercent}%)` : ''}${reviewLevel ? ` · 검토 수준 ${reviewLevel}` : ''}`
+      ? `- 공유 지식 ${formatCount(length)}자${limitUsagePercent > 0 ? ` (${formatCount(sharedKnowledgeMaxLength)}자 제한의 ${limitUsagePercent}%)` : ''}${reviewLevel ? ` · 검토 수준 ${reviewLevel}` : ''}`
       : '',
     `- 완전히 같은 문장 반복 ${formatCount(duplicateCount)}건 · 이 공유 지식을 지식선으로 쓰는 카드 ${formatCount(consumerCount)}개`,
   ].filter(Boolean)

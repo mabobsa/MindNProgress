@@ -58,6 +58,7 @@ import { computeProgressRollups } from './utils/progressRollup.mjs'
 import { snapAspectResizeToGrid, snapFreeResizeToGrid } from './utils/resizeGrid.mjs'
 import type { ResizeSnapRequest } from './utils/resizeGrid.mjs'
 import { rootDeletionPlan } from './utils/rootDeletion.mjs'
+import { sharedKnowledgeMaxLength } from './utils/sharedKnowledgePolicy.mjs'
 import { extractTextLinks } from './utils/textLinks.mjs'
 import { touchPointCentroid, touchPointDistance, viewportForTouchGesture } from './utils/touchViewport.mjs'
 import { normalizeWorkspaceLocation, restorableWorkspaceLocation, workspaceLocationStorageKey } from './utils/workspaceLocation.mjs'
@@ -7523,7 +7524,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                         value={selectedNode.data.sharedKnowledge ?? ''}
                         onChange={(event) => updateSharedKnowledge(selectedNode.id, event.target.value)}
                         rows={4}
-                        maxLength={10_000}
+                        maxLength={sharedKnowledgeMaxLength}
                         placeholder="예: 적용하기로 한 정책, 재사용할 조사 결과, 구현 제약과 사용 방법"
                         aria-label="공유 지식"
                         style={inspectorTextareaHeights.sharedKnowledge === undefined

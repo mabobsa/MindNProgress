@@ -1,4 +1,5 @@
 const CONVERSATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/
+const MACHINE_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
 
 function cleanText(value, maxLength) {
   if (typeof value !== 'string') return ''
@@ -53,8 +54,11 @@ export function normalizeAiConversationLink(value) {
   const startedBy = cleanOption(value.startedBy)
   const linkedAt = Number.isFinite(Date.parse(value.linkedAt)) ? new Date(value.linkedAt).toISOString() : null
   const startedAt = Number.isFinite(Date.parse(value.startedAt)) ? new Date(value.startedAt).toISOString() : linkedAt
+  const candidateHomeMachineId = cleanText(value.homeMachineId, 64).toLowerCase()
+  const homeMachineId = MACHINE_ID_PATTERN.test(candidateHomeMachineId) ? candidateHomeMachineId : ''
   return {
     conversationId,
+    ...(homeMachineId ? { homeMachineId } : {}),
     ...(agent ? { agent } : {}),
     ...(model ? { model } : {}),
     ...(cleanText(value.providerId, 120) ? { providerId: cleanText(value.providerId, 120) } : {}),

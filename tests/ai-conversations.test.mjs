@@ -19,6 +19,17 @@ test('기존 단일 대화 ID를 정보가 없는 연결 이력으로 호환한�
   }])
 })
 
+test('대화가 생성된 머신 ID를 정규화하고 올바르지 않은 값은 버린다', () => {
+  assert.equal(normalizeAiConversationLink({
+    conversationId: 'conversation-on-sub',
+    homeMachineId: 'MacBook-Pro',
+  }).homeMachineId, 'macbook-pro')
+  assert.equal(normalizeAiConversationLink({
+    conversationId: 'conversation-on-main',
+    homeMachineId: '../other-machine',
+  }).homeMachineId, undefined)
+})
+
 test('새 대화를 추가해도 기존 대화와 시작 옵션을 유지한다', () => {
   const existing = {
     aiConversationId: 'conversation-first',

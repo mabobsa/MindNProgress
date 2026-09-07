@@ -70,6 +70,7 @@ test('같은 위임 ID의 새 대화 실행 설정이 달라지면 다른 요청
       mcpIds: ['mcp-a', 'mcp-b'],
     },
   }))
+  assert.equal(signature, createAiDelegationRequestSignature({ ...base, machineId: '' }))
   assert.notEqual(signature, createAiDelegationRequestSignature({
     ...base,
     newConversation: { ...base.newConversation, modelId: 'sonnet' },
@@ -77,6 +78,10 @@ test('같은 위임 ID의 새 대화 실행 설정이 달라지면 다른 요청
   assert.notEqual(signature, createAiDelegationRequestSignature({
     ...base,
     newConversation: { ...base.newConversation, workspace: 'C:\\Git\\Game_Worker03\\game-client' },
+  }))
+  assert.notEqual(signature, createAiDelegationRequestSignature({
+    ...base,
+    machineId: 'macbook',
   }))
 })
 

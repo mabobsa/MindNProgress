@@ -150,11 +150,13 @@ export function createAiDelegationRequestSignature({
   targetCardId,
   strategy,
   conversationId,
+  machineId,
   instruction,
   decisionReason,
   sourceRevision,
   newConversation,
 }) {
+  const normalizedMachineId = String(machineId ?? '').trim()
   const requested = newConversation && typeof newConversation === 'object'
     ? {
         agentId: String(newConversation.agentId ?? '').trim() || null,
@@ -175,6 +177,7 @@ export function createAiDelegationRequestSignature({
     targetCardId,
     strategy,
     conversationId,
+    ...(normalizedMachineId ? { machineId: normalizedMachineId } : {}),
     instruction,
     decisionReason,
     sourceRevision,

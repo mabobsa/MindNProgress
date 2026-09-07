@@ -72,16 +72,20 @@ export function normalizeAionUiExternalLaunchPayload(value) {
   return Object.fromEntries(Object.entries(payload).filter(([, item]) => item !== undefined))
 }
 
-export function parseMindNProgressCompletionToken(value, apiPort) {
+export function parseMindNProgressCompletionToken(value, allowedTarget) {
   if (typeof value !== 'string' || !value) return null
   try {
     const url = new URL(value)
-    const isLoopback = url.hostname === '127.0.0.1' || url.hostname === '[::1]'
+    const allowedOrigins = typeof allowedTarget === 'number'
+      ? new Set([`http://127.0.0.1:${allowedTarget}`, `http://[::1]:${allowedTarget}`])
+      : new Set((Array.isArray(allowedTarget) ? allowedTarget : [allowedTarget])
+        .flatMap((candidate) => {
+          try { return [new URL(String(candidate)).origin] } catch { return [] }
+        }))
     const route = url.pathname.match(/^\/api\/integrations\/aionui\/launches\/([^/]+)\/conversation$/)
     if (
-      url.protocol !== 'http:'
-      || !isLoopback
-      || url.port !== String(apiPort)
+      (url.protocol !== 'http:' && url.protocol !== 'https:')
+      || !allowedOrigins.has(url.origin)
       || url.username
       || url.password
       || url.search

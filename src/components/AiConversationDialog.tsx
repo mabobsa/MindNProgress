@@ -39,10 +39,16 @@ type AionAgent = {
 }
 type AionSkill = { id: string; name: string; description: string; autoInject: boolean }
 type AionMcpServer = { id: string; name: string; description: string; toolCount: number; required: boolean }
+type AionMachine = { machineId: string; label: string; role: 'main' | 'sub'; online?: boolean | null }
 type AionOptions = {
   connected: boolean
+  machineId: string
+  machineLabel: string
+  machineRole: 'main' | 'sub'
+  machines: AionMachine[]
   protocol: string
   defaultWorkspace: string
+  workspaceBrowseAvailable: boolean
   agents: AionAgent[]
   skills: AionSkill[]
   mcpServers: AionMcpServer[]
@@ -79,34 +85,33 @@ async function requestWorkspaceDirectory(directoryPath: string) {
   } satisfies WorkspaceDirectory
 }
 
-function workspaceStorageKey(userId: string, documentId: string) {
-  return `mindnprogress-ai-workspace:${userId}:${documentId}`
+function workspaceStorageKey(userId: string, documentId: string, machineId = '') {
+  return `mindnprogress-ai-workspace:${userId}:${documentId}${machineId ? `:${machineId}` : ''}`
 }
 
-function workspaceHistoryStorageKey(userId: string) {
-  return `mindnprogress-ai-workspace-history-v2:${userId}`
+function workspaceHistoryStorageKey(userId: string, machineId = '') {
+  return `mindnprogress-ai-workspace-history-v2:${userId}${machineId ? `:${machineId}` : ''}`
 }
 
-function readDocumentWorkspace(userId: string, documentId: string) {
+function readDocumentWorkspace(userId: string, documentId: string, machineId = '') {
   try {
-    return localStorage.getItem(workspaceStorageKey(userId, documentId))
-      ?? ''
+    return localStorage.getItem(workspaceStorageKey(userId, documentId, machineId)) ?? ''
   } catch {
     return ''
   }
 }
 
-function hasStoredDocumentWorkspace(userId: string, documentId: string) {
+function hasStoredDocumentWorkspace(userId: string, documentId: string, machineId = '') {
   try {
-    return localStorage.getItem(workspaceStorageKey(userId, documentId)) !== null
+    return localStorage.getItem(workspaceStorageKey(userId, documentId, machineId)) !== null
   } catch {
     return false
   }
 }
 
-function storeDocumentWorkspace(userId: string, documentId: string, value: string) {
+function storeDocumentWorkspace(userId: string, documentId: string, value: string, machineId = '') {
   try {
-    localStorage.setItem(workspaceStorageKey(userId, documentId), value)
+    localStorage.setItem(workspaceStorageKey(userId, documentId, machineId), value)
   } catch {
     // 브라우저 저장소를 사용할 수 없어도 현재 입력값은 계속 사용합니다.
   }
@@ -137,10 +142,10 @@ function readMcpSelections() {
   }
 }
 
-function readWorkspaceHistory(userId: string) {
+function readWorkspaceHistory(userId: string, machineId = '') {
   try {
-    const stored = localStorage.getItem(workspaceHistoryStorageKey(userId))
-      ?? localStorage.getItem(legacyWorkspaceHistoryStorageKey)
+    const stored = localStorage.getItem(workspaceHistoryStorageKey(userId, machineId))
+      ?? (machineId ? null : localStorage.getItem(legacyWorkspaceHistoryStorageKey))
       ?? '[]'
     return normalizeAiWorkspaceHistory(JSON.parse(stored))
   } catch {
@@ -156,9 +161,9 @@ function readLegacyWorkspaceHistory() {
   }
 }
 
-function storeWorkspaceHistory(userId: string, history: string[]) {
+function storeWorkspaceHistory(userId: string, history: string[], machineId = '') {
   try {
-    localStorage.setItem(workspaceHistoryStorageKey(userId), JSON.stringify(history))
+    localStorage.setItem(workspaceHistoryStorageKey(userId, machineId), JSON.stringify(history))
   } catch {
     // 브라우저 저장소를 사용할 수 없어도 현재 대화는 시작할 수 있습니다.
   }
@@ -206,6 +211,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   onClose: () => void
 }) {
   const [options, setOptions] = useState<AionOptions | null>(null)
+  const [machineId, setMachineId] = useState('')
   const [loading, setLoading] = useState(true)
   const [launching, setLaunching] = useState(false)
   const [error, setError] = useState('')
@@ -238,9 +244,9 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
 
   const applyWorkspaceHistory = useCallback((history: string[]) => {
     workspaceHistoryRef.current = history
-    storeWorkspaceHistory(userId, history)
+    storeWorkspaceHistory(userId, history, machineId)
     setWorkspaceHistory(history)
-  }, [userId])
+  }, [machineId, userId])
 
   const enqueueWorkspaceHistoryRequest = useCallback((requestAction: () => Promise<string[]>) => {
     const operation = workspaceHistoryRequestRef.current.then(requestAction, requestAction)
@@ -249,6 +255,11 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   }, [])
 
   useEffect(() => {
+    if (!options) return
+    if (options.machineRole === 'sub') {
+      applyWorkspaceHistory(readWorkspaceHistory(userId, options.machineId))
+      return
+    }
     let active = true
     const legacyHistory = readLegacyWorkspaceHistory()
     const mutationVersion = workspaceHistoryMutationRef.current
@@ -264,19 +275,32 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
       // 서버가 일시적으로 응답하지 않으면 사용자별 브라우저 캐시를 계속 사용합니다.
     })
     return () => { active = false }
-  }, [applyWorkspaceHistory, enqueueWorkspaceHistoryRequest])
+  }, [applyWorkspaceHistory, enqueueWorkspaceHistoryRequest, options, userId])
 
   useEffect(() => {
     const controller = new AbortController()
-    fetch('/api/integrations/aionui/options', { credentials: 'include', signal: controller.signal })
+    setLoading(true)
+    setError('')
+    setBrowserOpen(false)
+    const query = machineId ? `?machineId=${encodeURIComponent(machineId)}` : ''
+    fetch(`/api/integrations/aionui/options${query}`, { credentials: 'include', signal: controller.signal })
       .then(async (response) => {
         const body = await response.json().catch(() => ({})) as AionOptions & { error?: string }
-        if (!response.ok) throw new Error(body.error ?? 'AionUi 옵션을 불러오지 못했습니다.')
+        if (!response.ok) {
+          if (body.machineId && Array.isArray(body.machines)) {
+            setOptions(body)
+            if (body.machineId !== machineId) setMachineId(body.machineId)
+          }
+          throw new Error(body.error ?? 'AionUi 옵션을 불러오지 못했습니다.')
+        }
         return body
       })
       .then((body) => {
         setOptions(body)
-        if (hasStoredDocumentWorkspace(userId, documentId)) {
+        if (body.machineId !== machineId) setMachineId(body.machineId)
+        if (hasStoredDocumentWorkspace(userId, documentId, body.machineId)) {
+          setWorkspace(readDocumentWorkspace(userId, documentId, body.machineId))
+        } else if (body.machineRole === 'main' && hasStoredDocumentWorkspace(userId, documentId)) {
           setWorkspace(readDocumentWorkspace(userId, documentId))
         } else if (typeof body.defaultWorkspace === 'string') {
           setWorkspace(body.defaultWorkspace.trim())
@@ -302,7 +326,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
       })
       .finally(() => setLoading(false))
     return () => controller.abort()
-  }, [documentId, userId])
+  }, [documentId, machineId, userId])
 
   useEffect(() => {
     if (!options || !agentId) return
@@ -341,7 +365,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
 
   const updateWorkspace = (value: string) => {
     setWorkspace(value)
-    storeDocumentWorkspace(userId, documentId, value)
+    storeDocumentWorkspace(userId, documentId, value, options?.machineId ?? machineId)
   }
 
   const openWorkspaceBrowser = useCallback((directoryPath: string) => {
@@ -367,11 +391,12 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   const rememberWorkspace = async (value: string) => {
     const normalizedWorkspace = value.trim()
     if (!normalizedWorkspace) return
-    storeDocumentWorkspace(userId, documentId, normalizedWorkspace)
+    storeDocumentWorkspace(userId, documentId, normalizedWorkspace, options?.machineId ?? machineId)
     const next = rememberAiWorkspace(workspaceHistoryRef.current, normalizedWorkspace)
     const mutationVersion = ++workspaceHistoryMutationRef.current
     applyWorkspaceHistory(next)
     try {
+      if (options?.machineRole === 'sub') return
       const history = await enqueueWorkspaceHistoryRequest(() => requestWorkspaceHistory('POST', { workspace: normalizedWorkspace }))
       if (workspaceHistoryMutationRef.current === mutationVersion) applyWorkspaceHistory(history)
     } catch {
@@ -385,6 +410,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
     const mutationVersion = ++workspaceHistoryMutationRef.current
     applyWorkspaceHistory(next)
     try {
+      if (options?.machineRole === 'sub') return
       const history = await enqueueWorkspaceHistoryRequest(() => requestWorkspaceHistory('DELETE', { workspace: value }))
       if (workspaceHistoryMutationRef.current === mutationVersion) applyWorkspaceHistory(history)
     } catch {
@@ -396,8 +422,9 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
     if (!options || !selectedAgent || !modelId) return
     const request = combineAiEditorRequest(automaticRequest, userRequest)
     if (!request) return
+    const useWebLaunch = launchInWebUi || options.machineRole === 'sub'
     let launchTab: Window | null = null
-    if (launchInWebUi) {
+    if (useWebLaunch) {
       launchTab = window.open('about:blank', '_blank')
       if (!launchTab) {
         setLaunchError('AionUi 대화 탭을 열지 못했습니다. 브라우저의 팝업 차단을 해제한 뒤 다시 시도해 주세요.')
@@ -428,6 +455,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           providerId: selectedModel?.providerId,
           mapId: documentId,
           cardId,
+          machineId: options.machineId,
           purpose,
           mode: mode || undefined,
           thoughtLevel: thoughtLevel || undefined,
@@ -465,7 +493,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
         autoSend: true,
       }
       void rememberWorkspace(workspace)
-      if (launchInWebUi) {
+      if (useWebLaunch) {
         const launchResponse = await fetch('/api/integrations/aionui/external-conversation-launches', {
           method: 'POST',
           credentials: 'include',
@@ -504,7 +532,21 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           <button type="button" onClick={onClose} aria-label="AI 대화 옵션 닫기">×</button>
         </header>
         {loading ? <div className="ai-dialog-message">AionUi의 새 채팅 옵션을 불러오는 중…</div> : error ? (
-          <div className="ai-dialog-message error"><strong>연결할 수 없습니다.</strong><span>{error}</span><small>AionUi를 실행한 뒤 다시 시도해 주세요.</small></div>
+          <div className="ai-dialog-message error">
+            <strong>연결할 수 없습니다.</strong><span>{error}</span><small>AionUi를 실행하거나 다른 실행 머신을 선택해 주세요.</small>
+            {options && options.machines.length > 1 && (
+              <label>
+                <span>실행 머신</span>
+                <select value={options.machineId} onChange={(event) => setMachineId(event.target.value)}>
+                  {options.machines.map((machine) => (
+                    <option key={machine.machineId} value={machine.machineId}>
+                      {machine.label}{machine.role === 'main' ? ' · 메인' : machine.online === false ? ' · Runner 끊김' : ' · 서브'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
         ) : options && (
           <div className="ai-dialog-content">
             {knowledgeSources.length > 0 && (
@@ -514,6 +556,11 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
                 <small>최상위 업무와 원본 자료는 선행 지식만으로 부족할 때만 선택적으로 확인합니다.</small>
               </div>
             )}
+            <div className="ai-knowledge-notice">
+              <strong>실행 머신: {options.machineLabel}</strong>
+              <span>이 대화와 이후 조회·재개는 {options.machineLabel}에 고정됩니다.</span>
+              {options.machineRole === 'sub' && <small>서브 머신 대화 창은 해당 장비에서 이 화면을 열었을 때 로컬 AionUi로 연결됩니다.</small>}
+            </div>
             <label className="ai-request ai-user-request">
               <span>추가 정보 또는 요청</span>
               <textarea
@@ -532,6 +579,16 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
               <small>MindNProgress가 대화 목적에 맞춰 자동으로 전달하며 편집할 수 없습니다.</small>
             </label>
             <div className="ai-dialog-grid">
+              <label>
+                <span>실행 머신</span>
+                <select value={options.machineId} onChange={(event) => setMachineId(event.target.value)}>
+                  {options.machines.map((machine) => (
+                    <option key={machine.machineId} value={machine.machineId}>
+                      {machine.label}{machine.role === 'main' ? ' · 메인' : machine.online === false ? ' · Runner 끊김' : ' · 서브'}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label><span>AI 종류</span><select value={agentId} onChange={(event) => changeAgent(event.target.value)}>{options.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
               <label><span>모델</span><select value={modelId} onChange={(event) => setModelId(event.target.value)}>{selectedAgent?.models.map((model) => <option key={`${model.providerId ?? ''}-${model.id}`} value={model.id}>{model.label}</option>)}</select></label>
               {selectedAgent && selectedAgent.modes.length > 0 && <label><span>권한</span><select value={mode} onChange={(event) => setMode(event.target.value)}>{selectedAgent.modes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>}
@@ -545,6 +602,8 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
                   <button
                     type="button"
                     className="ai-workspace-browse"
+                    disabled={!options.workspaceBrowseAvailable}
+                    title={options.workspaceBrowseAvailable ? '서버 머신의 폴더 탐색' : '이 실행 머신의 경로를 직접 입력해 주세요.'}
                     onClick={() => {
                       if (browserOpen) {
                         setBrowserOpen(false)
@@ -651,7 +710,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
             {launchError && <div className="ai-launch-error" role="alert">{launchError}</div>}
           </div>
         )}
-        <footer><span>응답은 AionUi에서만 처리됩니다.</span><div><button type="button" onClick={onClose}>취소</button><button type="button" className="primary" onClick={() => { void launch() }} disabled={loading || launching || Boolean(error) || !selectedAgent || !modelId}>{launching ? '준비 중…' : 'AionUi에서 시작'}</button></div></footer>
+        <footer><span>응답은 {options?.machineLabel ?? '선택한 머신'}의 AionUi에서만 처리됩니다.</span><div><button type="button" onClick={onClose}>취소</button><button type="button" className="primary" onClick={() => { void launch() }} disabled={loading || launching || Boolean(error) || !selectedAgent || !modelId}>{launching ? '준비 중…' : 'AionUi에서 시작'}</button></div></footer>
       </section>
     </div>
   )

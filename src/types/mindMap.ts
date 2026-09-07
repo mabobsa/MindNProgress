@@ -90,6 +90,7 @@ export type AiConversationOptionSnapshot = { id: string; label: string }
 
 export type AiConversationLink = {
   conversationId: string
+  homeMachineId?: string
   agent?: AiConversationOptionSnapshot
   model?: AiConversationOptionSnapshot
   providerId?: string

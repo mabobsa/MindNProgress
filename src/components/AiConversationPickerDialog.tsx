@@ -3,6 +3,9 @@ import type { AiConversationLink, AiConversationRuntime } from '../types/mindMap
 import './AiConversationPickerDialog.css'
 
 type ConversationListItem = AiConversationLink & {
+  homeMachineLabel: string
+  homeMachineRole: 'main' | 'sub'
+  accessible: boolean
   available: boolean
   name: string
   modifiedAt: string | null
@@ -32,7 +35,7 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, onSelect,
   mapId: string
   cardId: string
   cardTitle: string
-  onSelect: (conversationId: string) => void
+  onSelect: (conversation: ConversationListItem) => void
   onStartNew: () => void
   onDeleteUnavailable: (conversationId: string) => Promise<{ latestConversationId: string | null }>
   onClose: () => void
@@ -108,8 +111,8 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, onSelect,
                 <button
                   type="button"
                   className="ai-conversation-choice-open"
-                  disabled={deletingConversationId === conversation.conversationId}
-                  onClick={() => onSelect(conversation.conversationId)}
+                  disabled={!conversation.accessible || deletingConversationId === conversation.conversationId}
+                  onClick={() => onSelect(conversation)}
                 >
                   <span className="ai-conversation-choice-heading">
                     <span className={`ai-conversation-choice-status ${status.className}`}><i />{status.label}</span>
@@ -118,6 +121,10 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, onSelect,
                   <strong>{conversation.name || 'AionUi 대화'}</strong>
                   <span className="ai-conversation-choice-model">
                     {conversation.agent?.label ?? 'AI 종류 정보 없음'} <span>({conversation.model?.label ?? '모델 정보 없음'})</span>
+                  </span>
+                  <span className="ai-conversation-choice-options">
+                    <span>실행 머신 {conversation.homeMachineLabel}{conversation.homeMachineRole === 'main' ? ' · 메인' : ' · 서브'}</span>
+                    {!conversation.accessible && <span>이 머신을 사용할 권한 없음</span>}
                   </span>
                   {(conversation.mode || conversation.thoughtLevel) && (
                     <span className="ai-conversation-choice-options">
@@ -133,7 +140,7 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, onSelect,
                   </span>
                   <span className="ai-conversation-choice-meta"><span>{conversation.startedBy?.label ?? '시작한 편집자 정보 없음'}</span><time>{displayDate(conversation.startedAt ?? conversation.linkedAt)}</time></span>
                 </button>
-                {!conversation.available && (
+                {conversation.accessible && !conversation.available && (
                   <button
                     type="button"
                     className="ai-conversation-choice-delete"

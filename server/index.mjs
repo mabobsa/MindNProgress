@@ -194,13 +194,9 @@ const workspacePoolManager = new WorkspacePoolManager({
   stateFile: workspacePoolStateFile,
 })
 let aiConversationRuntimeLibraryRefresh = null
-let aiConversationRuntimeSnapshotRequest = null
-let aiConversationRuntimeSnapshotCache = null
-let aiConversationRuntimeSnapshotCachedAt = 0
-let aiConversationRuntimeSnapshotLastSuccessAt = 0
-let aionCoreDispatchCapabilitiesCache = null
-let aionCoreDispatchCapabilitiesCachedAt = 0
-let aionCoreDispatchCapabilitiesRequest = null
+const aiConversationRuntimeSnapshotStates = new Map()
+const aionCoreDispatchCapabilitiesCaches = new Map()
+const aionCoreDispatchCapabilitiesRequests = new Map()
 const aionCoreDispatchCapabilitiesCacheMs = Math.max(
   500,
   Number(process.env.MNP_AIONCORE_CAPABILITIES_CACHE_MS) || 3_000,
@@ -501,8 +497,12 @@ function normalizeAiConversationOrigin(value) {
   if (!validAiConversationId(conversationId) || !isValidMapId(mapId) || !cardId || cardId.length > 120) return null
   const workspace = String(value?.workspace ?? '').trim().slice(0, 4_096) || null
   const workspacePoolId = String(value?.workspacePoolId ?? '').trim().slice(0, 120) || null
+  const homeMachineId = normalizeMachineId(value?.homeMachineId)
+    || machineRegistry.mainMachineId
+    || mainMachineDescriptor().machineId
   return {
     conversationId,
+    homeMachineId,
     mapId,
     cardId,
     startedBy: String(value?.startedBy ?? '').trim().slice(0, 120) || null,
@@ -519,6 +519,7 @@ function rememberAiConversationOrigin(value) {
   if (existing) {
     const enriched = {
       ...existing,
+      homeMachineId: existing.homeMachineId || origin.homeMachineId,
       ...(origin.workspace ? { workspace: origin.workspace } : {}),
       ...(origin.workspacePoolId ? { workspacePoolId: origin.workspacePoolId } : {}),
     }
@@ -527,6 +528,45 @@ function rememberAiConversationOrigin(value) {
   }
   aiConversationOrigins.set(origin.conversationId, origin)
   return origin
+}
+
+function conversationHomeMachineId(conversationId, fallbackLink = null) {
+  return normalizeMachineId(aiConversationOrigins.get(String(conversationId ?? ''))?.homeMachineId)
+    || normalizeMachineId(fallbackLink?.homeMachineId)
+    || machineRegistry.mainMachineId
+}
+
+function resolveTargetMachineForUser(user, requestedMachineId = '') {
+  const requested = String(requestedMachineId ?? '').trim()
+  const normalizedRequested = normalizeMachineId(requested)
+  if (requested && !normalizedRequested) {
+    throw new SubMachinePayloadError('실행 머신 ID가 올바르지 않습니다.')
+  }
+  const targets = distributedWorkTargets(
+    machineRegistry,
+    distributedWorkSettings.get(user.id),
+    machineViewer(user),
+  )
+  const machineId = normalizedRequested || targets.defaultMachineId
+  const machine = targets.machines.find((candidate) => candidate.machineId === machineId)
+  if (!machine) throw new SubMachinePayloadError('선택한 실행 머신을 사용할 수 없습니다.')
+  return { machineId, machine, targets }
+}
+
+function machineLabel(machineId) {
+  return findMachine(machineRegistry, machineId)?.label ?? machineId
+}
+
+function machineAccessibleByUser(user, machineId) {
+  const machine = findMachine(machineRegistry, machineId)
+  return Boolean(machine && machineTargetableBy(machineRegistry, machine, machineViewer(user)))
+}
+
+function aionUiWebBaseUrlForMachine(machineId) {
+  if (!machineId || machineId === machineRegistry.mainMachineId) return aionUiWebBaseUrl
+  const url = new URL(aionUiWebBaseUrl)
+  url.hostname = '127.0.0.1'
+  return url.toString().replace(/\/+$/, '')
 }
 
 function scopedAttribution(request) {
@@ -1520,6 +1560,7 @@ async function recoverAiConversationOrigins() {
           startedBy: link.startedBy?.id ?? null,
           linkedAt: link.startedAt ?? link.linkedAt,
           workspace: link.workspace,
+          homeMachineId: link.homeMachineId ?? machineRegistry.mainMachineId,
         })
       }
     }
@@ -1548,10 +1589,17 @@ async function loadAiDelegations() {
       rejectedCount += 1
       continue
     }
-    const normalized = delegation.state === 'completed' && delegation.parentDispatchState !== 'completed'
-      ? { ...delegation, parentDispatchState: 'completed' }
-      : delegation
-    if (normalized !== delegation) repairedCount += 1
+    const normalized = {
+      ...delegation,
+      parentHomeMachineId: normalizeMachineId(delegation.parentHomeMachineId)
+        || conversationHomeMachineId(delegation.parentConversationId),
+      targetHomeMachineId: normalizeMachineId(delegation.targetHomeMachineId)
+        || conversationHomeMachineId(delegation.targetConversationId),
+      ...(delegation.state === 'completed' && delegation.parentDispatchState !== 'completed'
+        ? { parentDispatchState: 'completed' }
+        : {}),
+    }
+    if (JSON.stringify(normalized) !== JSON.stringify(delegation)) repairedCount += 1
     aiDelegations.set(normalized.id, normalized)
   }
   if (rejectedCount > 0) {
@@ -1701,35 +1749,35 @@ function fetchAionUiOn(machineId, pathname, options = {}) {
   }
 }
 
-function fetchAionCoreDispatchCapabilities() {
-  if (aionCoreDispatchCapabilitiesRequest) return aionCoreDispatchCapabilitiesRequest
-  if (aionCoreDispatchCapabilitiesCache
-    && Date.now() - aionCoreDispatchCapabilitiesCachedAt < aionCoreDispatchCapabilitiesCacheMs) {
-    return Promise.resolve(aionCoreDispatchCapabilitiesCache)
+function fetchAionCoreDispatchCapabilities(machineId = machineRegistry.mainMachineId) {
+  const targetMachineId = normalizeMachineId(machineId) || machineRegistry.mainMachineId
+  const pendingRequest = aionCoreDispatchCapabilitiesRequests.get(targetMachineId)
+  if (pendingRequest) return pendingRequest
+  const cached = aionCoreDispatchCapabilitiesCaches.get(targetMachineId)
+  if (cached && Date.now() - cached.cachedAt < aionCoreDispatchCapabilitiesCacheMs) {
+    return Promise.resolve(cached.value)
   }
-  const request = fetchAionUi('/api/internal/external-conversation-dispatches/capabilities', {
+  const request = fetchAionUiOn(targetMachineId, '/api/internal/external-conversation-dispatches/capabilities', {
     timeoutMs: 3_000,
   })
     .then((capabilities) => {
-      aionCoreDispatchCapabilitiesCache = capabilities
-      aionCoreDispatchCapabilitiesCachedAt = Date.now()
+      aionCoreDispatchCapabilitiesCaches.set(targetMachineId, { value: capabilities, cachedAt: Date.now() })
       return capabilities
     })
     .catch((error) => {
-      aionCoreDispatchCapabilitiesCache = null
-      aionCoreDispatchCapabilitiesCachedAt = 0
+      aionCoreDispatchCapabilitiesCaches.delete(targetMachineId)
       throw error
     })
     .finally(() => {
-      aionCoreDispatchCapabilitiesRequest = null
+      aionCoreDispatchCapabilitiesRequests.delete(targetMachineId)
     })
-  aionCoreDispatchCapabilitiesRequest = request
+  aionCoreDispatchCapabilitiesRequests.set(targetMachineId, request)
   return request
 }
 
-async function aionCoreSupportsWorkspaceLease() {
+async function aionCoreSupportsWorkspaceLease(machineId = machineRegistry.mainMachineId) {
   try {
-    const capabilities = await fetchAionCoreDispatchCapabilities()
+    const capabilities = await fetchAionCoreDispatchCapabilities(machineId)
     return capabilities?.workspaceLeaseVersion >= 2
       && capabilities?.atomicWorkspaceRebind === true
       && capabilities?.releasesRuntimeOnTerminal === true
@@ -1738,9 +1786,9 @@ async function aionCoreSupportsWorkspaceLease() {
   }
 }
 
-async function aionCoreSupportsExplicitCompletionAfterInterruption() {
+async function aionCoreSupportsExplicitCompletionAfterInterruption(machineId = machineRegistry.mainMachineId) {
   try {
-    const capabilities = await fetchAionCoreDispatchCapabilities()
+    const capabilities = await fetchAionCoreDispatchCapabilities(machineId)
     return capabilities?.schemaVersion >= 3
       && capabilities?.explicitCompletionAfterInterruption === true
   } catch {
@@ -1748,8 +1796,8 @@ async function aionCoreSupportsExplicitCompletionAfterInterruption() {
   }
 }
 
-async function protectAionUiConversationTitle(conversationId, title) {
-  const protectedConversation = await fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}`, {
+async function protectAionUiConversationTitle(conversationId, title, machineId = conversationHomeMachineId(conversationId)) {
+  const protectedConversation = await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(conversationId)}`, {
     method: 'PATCH',
     body: { name: title, name_source: 'user' },
   })
@@ -1812,6 +1860,7 @@ function delegationParentAttribution(request, source, parentCard, fallbackUser) 
     mapId: source.mapId,
     cardId: source.cardId,
     conversationId,
+    homeMachineId: conversationHomeMachineId(conversationId, conversationLink ?? source),
     startedBy: matchingAttribution?.startedBy
       ?? source.startedBy
       ?? conversationLink?.startedBy?.id
@@ -1844,21 +1893,32 @@ function isHierarchyDescendant(map, parentCardId, targetCardId) {
   return false
 }
 
-async function delegationCreateSelection(targetCard, requestedSelection, parentAttribution) {
+async function delegationCreateSelection(targetCard, requestedSelection, parentAttribution, machineId) {
   const linkedConversations = aiConversationLinksFromData(targetCard.data)
-  const latestLink = linkedConversations.at(-1)
+  const latestLink = [...linkedConversations].reverse()
+    .find((link) => conversationHomeMachineId(link.conversationId, link) === machineId)
+  const inheritParentWorkspace = conversationHomeMachineId(
+    parentAttribution?.conversationId,
+    parentAttribution,
+  ) === machineId
+  const parentSelection = inheritParentWorkspace || !parentAttribution?.selection
+    ? parentAttribution?.selection
+    : { ...parentAttribution.selection, workspace: null }
+  const parentFallback = inheritParentWorkspace || !parentAttribution
+    ? parentAttribution
+    : { ...parentAttribution, selection: parentSelection, workspace: null }
   const selection = mergeAiDelegationSelections(
     requestedSelection,
     latestLink,
-    parentAttribution?.selection,
-    parentAttribution,
+    parentSelection,
+    parentFallback,
   )
   if (!selection) throw new AionUiExternalLaunchPayloadError('새 AI 대화에 사용할 AI 종류와 모델을 확인할 수 없습니다.')
 
   const [agents, providers, rawMcpServers] = await Promise.all([
-    fetchAionUi('/api/agents/management'),
-    fetchAionUi('/api/providers'),
-    fetchAionUi('/api/mcp/servers'),
+    fetchAionUiOn(machineId, '/api/agents/management'),
+    fetchAionUiOn(machineId, '/api/providers'),
+    fetchAionUiOn(machineId, '/api/mcp/servers'),
   ])
   const normalizedAgents = (Array.isArray(agents) ? agents : [])
     .filter((agent) => agent?.enabled !== false && agent?.installed === true)
@@ -1878,7 +1938,7 @@ async function delegationCreateSelection(targetCard, requestedSelection, parentA
   return selection
 }
 
-function issueDelegatedAttribution({ mapId, cardId, conversationId, selection, startedBy }) {
+function issueDelegatedAttribution({ mapId, cardId, conversationId, selection, startedBy, homeMachineId }) {
   const token = randomBytes(32).toString('base64url')
   const now = Date.now()
   const attribution = {
@@ -1890,6 +1950,7 @@ function issueDelegatedAttribution({ mapId, cardId, conversationId, selection, s
     providerId: selection.providerId,
     mapId,
     cardId,
+    homeMachineId,
     startedBy,
     selection: {
       agent: selection.agent,
@@ -1964,6 +2025,16 @@ function delegationPublicView(delegation) {
   delete publicDelegation.pendingWorkspaceHint
   delete publicDelegation.childResultSnapshot
   return publicDelegation
+}
+
+function delegationTargetMachineId(delegation) {
+  return normalizeMachineId(delegation?.targetHomeMachineId)
+    || conversationHomeMachineId(delegation?.targetConversationId)
+}
+
+function delegationParentMachineId(delegation) {
+  return normalizeMachineId(delegation?.parentHomeMachineId)
+    || conversationHomeMachineId(delegation?.parentConversationId)
 }
 
 async function resolveAiDelegationWorkspacePool({ selection, targetCard, parentAttribution, requested }) {
@@ -2066,8 +2137,10 @@ async function dispatchPreparedAiDelegation({
   resumedDelegation,
   user,
   expectsWorkspacePool = false,
+  parentHomeMachineId = conversationHomeMachineId(parentAttribution?.conversationId),
+  targetHomeMachineId = machineRegistry.mainMachineId,
 }) {
-  if (!await aionCoreSupportsExplicitCompletionAfterInterruption()) {
+  if (!await aionCoreSupportsExplicitCompletionAfterInterruption(targetHomeMachineId)) {
     throw aiDelegationDispatchError(
       '현재 AionCore가 중단 후 명시적 완료 신호를 지원하지 않습니다. AionCore를 최신 빌드로 재기동해 주세요.',
       503,
@@ -2098,6 +2171,7 @@ async function dispatchPreparedAiDelegation({
     conversationId: strategy === 'resume' ? targetConversationId : null,
     selection,
     startedBy: parentAttribution.startedBy ?? user.id,
+    homeMachineId: targetHomeMachineId,
   })
   await persistAiAttributions()
   const delegatedInstruction = buildDelegatedInstruction({
@@ -2114,7 +2188,7 @@ async function dispatchPreparedAiDelegation({
 
   let dispatch
   try {
-    dispatch = await fetchAionUi('/api/internal/external-conversation-dispatches', {
+    dispatch = await fetchAionUiOn(targetHomeMachineId, '/api/internal/external-conversation-dispatches', {
       method: 'POST',
       timeoutMs: 30_000,
       body: {
@@ -2143,7 +2217,7 @@ async function dispatchPreparedAiDelegation({
     for (let attempt = 0; attempt < 10 && !dispatch; attempt += 1) {
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
       try {
-        dispatch = await fetchAionUi(`/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`)
+        dispatch = await fetchAionUiOn(targetHomeMachineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`)
       } catch {
         // The POST may have reached AionCore even if its response was lost.
       }
@@ -2219,7 +2293,7 @@ async function dispatchPreparedAiDelegation({
   }
   if (delegatedConversationTitle) {
     try {
-      await protectAionUiConversationTitle(targetConversationId, delegatedConversationTitle)
+      await protectAionUiConversationTitle(targetConversationId, delegatedConversationTitle, targetHomeMachineId)
     } catch (error) {
       console.warn('[AI delegation conversation title protection]', JSON.stringify({
         mapId: map.id,
@@ -2239,6 +2313,7 @@ async function dispatchPreparedAiDelegation({
     linkedAt: new Date().toISOString(),
     workspace: selection.workspace,
     workspacePoolId: workspaceLease?.poolId ?? null,
+    homeMachineId: targetHomeMachineId,
   })
   aiConversationAttributions.set(conversationAttributionKey(map.id, targetCard.id), {
     mapId: map.id,
@@ -2250,6 +2325,7 @@ async function dispatchPreparedAiDelegation({
     modelId: attribution.modelId,
     modelName: attribution.modelName,
     providerId: attribution.providerId,
+    homeMachineId: targetHomeMachineId,
     startedBy: attribution.startedBy,
     linkedAt: new Date().toISOString(),
     refreshedAt: new Date().toISOString(),
@@ -2266,6 +2342,7 @@ async function dispatchPreparedAiDelegation({
     } else {
       const conversationLink = normalizeAiConversationLink({
         conversationId: targetConversationId,
+        homeMachineId: targetHomeMachineId,
         agent: selection.agent,
         model: selection.model,
         providerId: selection.providerId,
@@ -2314,7 +2391,9 @@ async function dispatchPreparedAiDelegation({
     targetCardId: targetCard.id,
     targetCardLabel: targetCard.data?.label ?? targetCard.id,
     parentConversationId: parentAttribution.conversationId,
+    parentHomeMachineId,
     targetConversationId,
+    targetHomeMachineId,
     childOperationId: id,
     strategy,
     decisionReason,
@@ -2441,7 +2520,8 @@ async function reconcileAiDelegationWorkspaceLeases() {
         || !delegation.childOperationId
         || !delegation.targetConversationId) continue
       try {
-        const status = await fetchAionUi(
+        const status = await fetchAionUiOn(
+          delegationTargetMachineId(delegation),
           `/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.childOperationId)}`,
           { timeoutMs: 3_000 },
         )
@@ -2578,7 +2658,7 @@ async function reconcileAiDelegationWorkspaceLeaseStatus(delegation, status, sou
 
 async function latestAssistantResult(conversationId) {
   try {
-    const messagePage = await fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=100&content_mode=full`, { timeoutMs: 30_000 })
+    const messagePage = await fetchAionUiOn(conversationHomeMachineId(conversationId), `/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=100&content_mode=full`, { timeoutMs: 30_000 })
     const messages = Array.isArray(messagePage?.items) ? messagePage.items : Array.isArray(messagePage) ? messagePage : []
     const message = [...messages].reverse().find((candidate) => candidate?.position === 'left'
       && (candidate.type === 'text' || candidate.type === 'tips')
@@ -2761,7 +2841,7 @@ async function processAiDelegationIntegrationCleanWaitNotice(originalDelegation)
     && delegation.integrationCleanWakeDeliveredAt) return
   if (delegation.integrationCleanWakeKey === waitKey && delegation.integrationCleanWakeOperationId) {
     try {
-      const status = await fetchAionUi(`/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.integrationCleanWakeOperationId)}`)
+      const status = await fetchAionUiOn(delegationParentMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.integrationCleanWakeOperationId)}`)
       if (['starting', 'waiting_resource', 'running', 'waiting_resume'].includes(status.state)) {
         await updateAiDelegation(delegation.id, {
           integrationCleanWakeState: status.state,
@@ -2800,7 +2880,7 @@ async function processAiDelegationIntegrationCleanWaitNotice(originalDelegation)
 
   const attempt = Number(delegation.integrationCleanWakeAttempt ?? 0) + 1
   const operationId = boundedAionOperationId(delegation.id, `integration-clean-notice-${attempt}`)
-  const response = await fetchAionUi('/api/internal/external-conversation-dispatches', {
+  const response = await fetchAionUiOn(delegationParentMachineId(delegation), '/api/internal/external-conversation-dispatches', {
     method: 'POST',
     body: {
       operationId,
@@ -2840,7 +2920,7 @@ async function processAiDelegationRecoveryNotice(originalDelegation) {
     && (delegation.recoveryWakeDeliveredAt || delegation.recoveryWakeFailedAt)) return
   if (delegation.recoveryWakeKey === recoveryKey && delegation.recoveryWakeOperationId) {
     try {
-      const status = await fetchAionUi(`/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.recoveryWakeOperationId)}`)
+      const status = await fetchAionUiOn(delegationParentMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.recoveryWakeOperationId)}`)
       if (['starting', 'waiting_resource', 'running', 'waiting_resume'].includes(status.state)) {
         await updateAiDelegation(delegation.id, {
           recoveryWakeState: status.state,
@@ -2880,7 +2960,7 @@ async function processAiDelegationRecoveryNotice(originalDelegation) {
 
   const recoveryWakeAttempt = Number(delegation.recoveryWakeAttempt ?? 0) + 1
   const operationId = boundedAionOperationId(delegation.id, `recovery-notice-${recoveryWakeAttempt}`)
-  const response = await fetchAionUi('/api/internal/external-conversation-dispatches', {
+  const response = await fetchAionUiOn(delegationParentMachineId(delegation), '/api/internal/external-conversation-dispatches', {
     method: 'POST',
     body: {
       operationId,
@@ -3000,7 +3080,7 @@ async function startWorkspaceCheckpointResolution(delegation, workspaceResult) {
   const operationId = boundedAionOperationId(delegation.id, `checkpoint-${workspaceResult.checkpointRound}`)
   let dispatch = null
   try {
-    dispatch = await fetchAionUi('/api/internal/external-conversation-dispatches', {
+    dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation), '/api/internal/external-conversation-dispatches', {
       method: 'POST',
       timeoutMs: 30_000,
       body: {
@@ -3016,7 +3096,7 @@ async function startWorkspaceCheckpointResolution(delegation, workspaceResult) {
     for (let attempt = 0; attempt < 10 && !dispatch; attempt += 1) {
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
       try {
-        dispatch = await fetchAionUi(`/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
+        dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
       } catch {
         // The checkpoint dispatch may have started even when its POST response was lost.
       }
@@ -3049,7 +3129,7 @@ async function startWorkspaceConflictResolution(delegation, workspaceResult) {
   const operationId = boundedAionOperationId(delegation.id, `integrate-${workspaceResult.conflictRound}`)
   let dispatch = null
   try {
-    dispatch = await fetchAionUi('/api/internal/external-conversation-dispatches', {
+    dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation), '/api/internal/external-conversation-dispatches', {
       method: 'POST',
       timeoutMs: 30_000,
       body: {
@@ -3065,7 +3145,7 @@ async function startWorkspaceConflictResolution(delegation, workspaceResult) {
     for (let attempt = 0; attempt < 10 && !dispatch; attempt += 1) {
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
       try {
-        dispatch = await fetchAionUi(`/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
+        dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
       } catch {
         // The conflict-resolution dispatch may have started even when its POST response was lost.
       }
@@ -3201,7 +3281,9 @@ async function drainWaitingWorkspaceDelegations() {
         clearAiDelegationWaitPoll(queued.id)
         continue
       }
-      const runtimeSnapshot = await fetchAiConversationRuntimeSnapshot()
+      const runtimeSnapshot = await fetchAiConversationRuntimeSnapshot(
+        conversationHomeMachineId(queued.targetConversationId),
+      )
       const activeRuntime = runtimeSnapshot.available
         ? runtimeSnapshot.runtimes.get(queued.targetConversationId) ?? null
         : null
@@ -3233,7 +3315,7 @@ async function drainWaitingWorkspaceDelegations() {
       scheduleAiDelegationWaitPoll(blocked)
       break
     }
-    if (!await aionCoreSupportsExplicitCompletionAfterInterruption()) {
+    if (!await aionCoreSupportsExplicitCompletionAfterInterruption(delegationTargetMachineId(queued))) {
       const blocked = await updateAiDelegation(queued.id, {
         workspaceWaitError: '현재 AionCore가 중단 후 명시적 완료 신호를 지원하지 않아 재기동을 기다리고 있습니다.',
       })
@@ -3373,6 +3455,8 @@ async function drainWaitingWorkspaceDelegations() {
         resumedDelegation,
         user,
         expectsWorkspacePool: true,
+        parentHomeMachineId: delegationParentMachineId(queued),
+        targetHomeMachineId: delegationTargetMachineId(queued),
       })
     } catch (error) {
       const needsRecovery = ['AI_WORKSPACE_LEASE_MISMATCH', 'AI_WORKSPACE_CONVERSATION_CONFLICT'].includes(error?.code)
@@ -3422,7 +3506,7 @@ async function pollAiDelegations() {
       if (['starting', 'waiting-resource', 'running', 'waiting-child-resume', 'waiting-document-work'].includes(delegation.state)) {
         try {
           const operationId = delegation.childOperationId ?? delegation.id
-          const status = await fetchAionUi(`/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
+          const status = await fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
           if (!await reconcileAiDelegationWorkspaceLeaseStatus(delegation, status, 'poll')) continue
           if (status.state === 'recovery_required') {
             await updateAiDelegation(delegation.id, {
@@ -3504,7 +3588,7 @@ async function pollAiDelegations() {
 
       if (['integration-starting', 'integration-waiting-resource', 'integration-running', 'integration-waiting-resume'].includes(delegation.state)) {
         try {
-          const status = await fetchAionUi(`/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.integrationOperationId)}`)
+          const status = await fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.integrationOperationId)}`)
           if (status.state === 'recovery_required') {
             await updateAiDelegation(delegation.id, {
               state: 'integration-recovery-required',
@@ -3577,7 +3661,7 @@ async function pollAiDelegations() {
           const result = delegation.childResultSnapshot || await latestAssistantResult(delegation.targetConversationId)
           const parentWakeAttempt = Number(delegation.parentWakeAttempt ?? 0) + 1
           const wakeOperationId = boundedAionOperationId(delegation.id, `wake-${parentWakeAttempt}`)
-          const response = await fetchAionUi('/api/internal/external-conversation-dispatches', {
+          const response = await fetchAionUiOn(delegationParentMachineId(delegation), '/api/internal/external-conversation-dispatches', {
             method: 'POST',
             body: {
               operationId: wakeOperationId,
@@ -3600,7 +3684,7 @@ async function pollAiDelegations() {
       }
 
       try {
-        const status = await fetchAionUi(`/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.wakeOperationId)}`)
+        const status = await fetchAionUiOn(delegationParentMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.wakeOperationId)}`)
         if (status.state === 'recovery_required') {
           await updateAiDelegation(delegation.id, {
             state: 'waiting-parent',
@@ -3755,60 +3839,77 @@ function clearAiConversationRuntimeMap(mapId) {
   }
 }
 
-function fetchAiConversationRuntimeSnapshot(force = false) {
-  if (aiConversationRuntimeSnapshotRequest) return aiConversationRuntimeSnapshotRequest
-  if (!force
-    && aiConversationRuntimeSnapshotCache
-    && Date.now() - aiConversationRuntimeSnapshotCachedAt < aiConversationRuntimePollIntervalMs) {
-    return Promise.resolve(aiConversationRuntimeSnapshotCache)
+function fetchAiConversationRuntimeSnapshot(machineId = machineRegistry.mainMachineId, force = false) {
+  const targetMachineId = normalizeMachineId(machineId) || machineRegistry.mainMachineId
+  const state = aiConversationRuntimeSnapshotStates.get(targetMachineId) ?? {
+    request: null,
+    cache: null,
+    cachedAt: 0,
+    lastSuccessAt: 0,
   }
-  const request = fetchAionUi('/api/internal/conversation-runtimes/active', { timeoutMs: 2_500 })
+  aiConversationRuntimeSnapshotStates.set(targetMachineId, state)
+  if (state.request) return state.request
+  if (!force
+    && state.cache
+    && Date.now() - state.cachedAt < aiConversationRuntimePollIntervalMs) {
+    return Promise.resolve(state.cache)
+  }
+  const request = fetchAionUiOn(targetMachineId, '/api/internal/conversation-runtimes/active', { timeoutMs: 2_500 })
     .then((snapshot) => {
       const parsed = parseAionUiActiveConversationRuntimeSnapshot(snapshot)
-      aiConversationRuntimeSnapshotLastSuccessAt = Date.now()
+      state.lastSuccessAt = Date.now()
       return { available: true, retainPrevious: false, ...parsed }
     })
     .catch(() => ({
       available: false,
-      retainPrevious: aiConversationRuntimeSnapshotLastSuccessAt > 0
-        && Date.now() - aiConversationRuntimeSnapshotLastSuccessAt <= aiConversationRuntimeFailureGraceMs,
+      retainPrevious: state.lastSuccessAt > 0
+        && Date.now() - state.lastSuccessAt <= aiConversationRuntimeFailureGraceMs,
       observedAt: new Date().toISOString(),
       runtimes: new Map(),
     }))
     .then((snapshot) => {
-      aiConversationRuntimeSnapshotCache = snapshot
-      aiConversationRuntimeSnapshotCachedAt = Date.now()
+      state.cache = snapshot
+      state.cachedAt = Date.now()
       return snapshot
     })
     .finally(() => {
-      aiConversationRuntimeSnapshotRequest = null
+      state.request = null
     })
-  aiConversationRuntimeSnapshotRequest = request
+  state.request = request
   return request
 }
 
 function fetchAiConversationRuntime(conversationId) {
-  const existing = aiConversationRuntimeRequests.get(conversationId)
+  const machineId = conversationHomeMachineId(conversationId)
+  const requestKey = `${machineId}:${conversationId}`
+  const existing = aiConversationRuntimeRequests.get(requestKey)
   if (existing) return existing
-  const request = fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}`, { timeoutMs: 2_500 })
-    .finally(() => aiConversationRuntimeRequests.delete(conversationId))
-  aiConversationRuntimeRequests.set(conversationId, request)
+  const request = fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(conversationId)}`, { timeoutMs: 2_500 })
+    .finally(() => aiConversationRuntimeRequests.delete(requestKey))
+  aiConversationRuntimeRequests.set(requestKey, request)
   return request
 }
 
-function refreshAiConversationRuntimeForMap(mapId, suppliedRuntimeSnapshot = null) {
+function refreshAiConversationRuntimeForMap(mapId, suppliedRuntimeSnapshots = null, forceSnapshots = false) {
   const existing = aiConversationRuntimeRefreshes.get(mapId)
   if (existing) return existing
 
   const refresh = (async () => {
-    const runtimeSnapshot = suppliedRuntimeSnapshot ?? await fetchAiConversationRuntimeSnapshot()
     const map = await readMap(mapId)
     const targets = map && !map.trashedAt
       ? map.nodes.flatMap((node) => {
-          const conversationIds = aiConversationIdsFromData(node.data)
-          return conversationIds.length > 0 ? [{ nodeId: node.id, conversationIds }] : []
+          const conversations = aiConversationLinksFromData(node.data).map((link) => ({
+            conversationId: link.conversationId,
+            homeMachineId: conversationHomeMachineId(link.conversationId, link),
+          }))
+          return conversations.length > 0 ? [{ nodeId: node.id, conversations }] : []
         })
       : []
+    const machineIds = [...new Set(targets.flatMap((target) => target.conversations.map((item) => item.homeMachineId)))]
+    const runtimeSnapshots = suppliedRuntimeSnapshots ?? new Map(await Promise.all(machineIds.map(async (machineId) => [
+      machineId,
+      await fetchAiConversationRuntimeSnapshot(machineId, forceSnapshots),
+    ])))
     const targetKeys = new Set(targets.map((target) => conversationAttributionKey(mapId, target.nodeId)))
     const prefix = `${mapId}:`
 
@@ -3818,19 +3919,20 @@ function refreshAiConversationRuntimeForMap(mapId, suppliedRuntimeSnapshot = nul
       broadcastAiConversationRuntime(mapId, key.slice(prefix.length), null)
     }
 
-    if (runtimeSnapshot.retainPrevious) {
-      updateAiConversationRuntimeSummary(mapId)
-      return aiConversationRuntimeSnapshot(mapId)
-    }
-
     for (const target of targets) {
       const key = conversationAttributionKey(mapId, target.nodeId)
-      const runtime = aggregateAiConversationRuntime(target.conversationIds.map((conversationId) => (
-        runtimeSnapshot.runtimes.get(conversationId)
+      if (target.conversations.some((item) => runtimeSnapshots.get(item.homeMachineId)?.retainPrevious)) continue
+      const runtime = aggregateAiConversationRuntime(target.conversations.map(({ conversationId, homeMachineId }) => {
+        const runtimeSnapshot = runtimeSnapshots.get(homeMachineId) ?? {
+          available: false,
+          observedAt: new Date().toISOString(),
+          runtimes: new Map(),
+        }
+        return runtimeSnapshot.runtimes.get(conversationId)
           ?? (runtimeSnapshot.available
             ? inactiveAiConversationRuntime(conversationId, runtimeSnapshot.observedAt)
             : unavailableAiConversationRuntime(conversationId, runtimeSnapshot.observedAt))
-      )))
+      }))
       if (!runtime) continue
       const previous = aiConversationRuntimeStates.get(key)
       aiConversationRuntimeStates.set(key, runtime)
@@ -3850,11 +3952,10 @@ function refreshAiConversationRuntimeForMap(mapId, suppliedRuntimeSnapshot = nul
 function refreshAiConversationRuntimeLibrary(forceSnapshot = false) {
   if (aiConversationRuntimeLibraryRefresh) return aiConversationRuntimeLibraryRefresh
   const refresh = (async () => {
-    const runtimeSnapshot = await fetchAiConversationRuntimeSnapshot(forceSnapshot)
     const maps = await listMaps()
     const mapIds = maps.map((map) => map.id)
     const mapIdSet = new Set(mapIds)
-    await Promise.allSettled(mapIds.map((mapId) => refreshAiConversationRuntimeForMap(mapId, runtimeSnapshot)))
+    await Promise.allSettled(mapIds.map((mapId) => refreshAiConversationRuntimeForMap(mapId, null, forceSnapshot)))
     for (const mapId of aiConversationRuntimeSummaries.keys()) {
       if (!mapIdSet.has(mapId)) clearAiConversationRuntimeMap(mapId)
     }
@@ -4124,10 +4225,11 @@ async function resolveConversationAttribution(
   fallback = null,
   { inferStartedBy = true } = {},
 ) {
+  const homeMachineId = conversationHomeMachineId(conversationId, fallback)
   const [conversation, agents, providers] = await Promise.all([
-    fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}`),
-    fetchAionUi('/api/agents/management'),
-    fetchAionUi('/api/providers'),
+    fetchAionUiOn(homeMachineId, `/api/conversations/${encodeURIComponent(conversationId)}`),
+    fetchAionUiOn(homeMachineId, '/api/agents/management'),
+    fetchAionUiOn(homeMachineId, '/api/providers'),
   ])
   if (!conversation || conversation.id !== conversationId) throw new Error('AIONUI_CONVERSATION_NOT_FOUND')
 
@@ -4156,6 +4258,7 @@ async function resolveConversationAttribution(
     mapId,
     cardId,
     conversationId,
+    homeMachineId,
     authorName,
     agentId,
     agentName,
@@ -4933,10 +5036,10 @@ const adminBootstrapped = await loadUsers()
 await loadSessions()
 await loadAiAttributions()
 await loadAiConversationAttributions()
+await loadMachineRegistry()
 await loadAiConversationOrigins()
 await loadAiDelegations()
 await loadAiWorkspaceHistories()
-await loadMachineRegistry()
 await loadDistributedWorkSettings()
 try {
   if (await workspacePoolManager.initialize()) {
@@ -5290,11 +5393,12 @@ const server = createServer(async (request, response) => {
       }
 
       try {
+        const { machineId: homeMachineId } = resolveTargetMachineForUser(user, body.machineId)
         const [agents, providers, skills, mcpServers] = await Promise.all([
-          fetchAionUi('/api/agents/management'),
-          fetchAionUi('/api/providers'),
-          fetchAionUi('/api/skills'),
-          fetchAionUi('/api/mcp/servers'),
+          fetchAionUiOn(homeMachineId, '/api/agents/management'),
+          fetchAionUiOn(homeMachineId, '/api/providers'),
+          fetchAionUiOn(homeMachineId, '/api/skills'),
+          fetchAionUiOn(homeMachineId, '/api/mcp/servers'),
         ])
         const normalizedAgents = (Array.isArray(agents) ? agents : [])
           .filter((agent) => agent?.enabled !== false && agent?.installed === true)
@@ -5327,6 +5431,7 @@ const server = createServer(async (request, response) => {
           providerId: model.providerId ?? null,
           mapId,
           cardId,
+          homeMachineId,
           startedBy: user.id,
           selection: aiConversationSelectionSnapshot(body, agent, model, normalizedSkills, normalizedMcpServers),
           createdAt: Date.now(),
@@ -5336,18 +5441,32 @@ const server = createServer(async (request, response) => {
           attributionKey: sessionTokenKey(attributionToken),
           mapId,
           cardId,
+          homeMachineId,
           purpose,
           startedBy: user.id,
           expiresAt,
         })
-        const completionUrl = `http://127.0.0.1:${port}/api/integrations/aionui/launches/${completionToken}/conversation`
+        const completionBaseUrl = homeMachineId === machineRegistry.mainMachineId
+          ? `http://127.0.0.1:${port}`
+          : publicBaseUrl
+        const completionUrl = `${completionBaseUrl}/api/integrations/aionui/launches/${completionToken}/conversation`
+        aiConversationLaunches.get(sessionTokenKey(completionToken)).completionUrl = completionUrl
         await persistAiAttributions()
         console.log('[AI attribution]', JSON.stringify({
           source: 'created', mapId, cardId, actorId: user.id, authorName,
           tokenHashPrefix: sessionTokenKey(attributionToken).slice(0, 12),
         }))
-        return sendJson(response, 201, { attributionToken, completionUrl, authorName, editorId: user.id, expiresAt })
+        return sendJson(response, 201, {
+          attributionToken,
+          completionUrl,
+          authorName,
+          editorId: user.id,
+          homeMachineId,
+          homeMachineLabel: machineLabel(homeMachineId),
+          expiresAt,
+        })
       } catch (error) {
+        if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
         console.error('[AionUi attribution]', error)
         return sendJson(response, 503, { error: 'AionUi에서 선택한 AI 정보를 확인할 수 없습니다.' })
       }
@@ -5360,7 +5479,10 @@ const server = createServer(async (request, response) => {
 
       try {
         const payload = normalizeAionUiExternalLaunchPayload(await readJsonBody(request))
-        const completionToken = parseMindNProgressCompletionToken(payload.completionUrl, port)
+        const completionToken = parseMindNProgressCompletionToken(payload.completionUrl, [
+          `http://127.0.0.1:${port}`,
+          publicBaseUrl,
+        ])
         if (!completionToken) {
           return sendJson(response, 400, { error: 'AI 대화 완료 통보 주소가 올바르지 않습니다.' })
         }
@@ -5373,6 +5495,9 @@ const server = createServer(async (request, response) => {
         if (launch.startedBy !== user.id) {
           return sendJson(response, 403, { error: '다른 편집자의 AI 대화 시작 정보는 사용할 수 없습니다.' })
         }
+        if (payload.completionUrl !== launch.completionUrl) {
+          return sendJson(response, 409, { error: 'AI 대화 완료 통보 주소가 발급 정보와 일치하지 않습니다.' })
+        }
 
         const attribution = aiAttributions.get(launch.attributionKey)
         if (!attribution
@@ -5382,15 +5507,17 @@ const server = createServer(async (request, response) => {
           return sendJson(response, 409, { error: 'AI 종류와 모델 정보가 작성자 귀속 정보와 일치하지 않습니다.' })
         }
 
-        const ticket = await fetchAionUi('/api/internal/external-conversation-launches', {
+        const ticket = await fetchAionUiOn(launch.homeMachineId, '/api/internal/external-conversation-launches', {
           method: 'POST',
           body: payload,
         })
-        const launchUrl = createAionUiWebLaunchUrl(aionUiWebBaseUrl, ticket?.launchId)
+        const launchUrl = createAionUiWebLaunchUrl(aionUiWebBaseUrlForMachine(launch.homeMachineId), ticket?.launchId)
         return sendJson(response, 201, {
           launchId: ticket.launchId,
           expiresAt: ticket.expiresAt ?? null,
           launchUrl,
+          homeMachineId: launch.homeMachineId,
+          homeMachineLabel: machineLabel(launch.homeMachineId),
         })
       } catch (error) {
         if (error instanceof AionUiExternalLaunchPayloadError) {
@@ -5416,7 +5543,10 @@ const server = createServer(async (request, response) => {
       }
 
       try {
-        const conversation = await fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}`)
+        const conversation = await fetchAionUiOn(
+          launch.homeMachineId,
+          `/api/conversations/${encodeURIComponent(conversationId)}`,
+        )
         if (!conversation || conversation.id !== conversationId) {
           return sendJson(response, 409, { error: '생성된 AionUi 대화를 확인할 수 없습니다.' })
         }
@@ -5450,6 +5580,7 @@ const server = createServer(async (request, response) => {
         }
         const conversationLink = normalizeAiConversationLink({
           conversationId,
+          homeMachineId: launch.homeMachineId,
           ...selection,
           startedBy: { id: actor.id, label: actor.name },
           startedAt: normalizedIsoDate(conversation.created_at),
@@ -5476,6 +5607,7 @@ const server = createServer(async (request, response) => {
           linkedAt: conversationLink.startedAt ?? conversationLink.linkedAt,
           workspace: conversationLink.workspace,
           workspacePoolId: workspacePoolManager.poolForWorkspace(conversationLink.workspace)?.poolId ?? null,
+          homeMachineId: launch.homeMachineId,
         })
         await persistAiConversationOrigins()
         if (attribution) {
@@ -5492,6 +5624,7 @@ const server = createServer(async (request, response) => {
               modelId: attribution.modelId,
               modelName: attribution.modelName,
               providerId: attribution.providerId ?? null,
+              homeMachineId: launch.homeMachineId,
               startedBy: launch.startedBy,
               linkedAt: normalizedIsoDate(conversation.created_at),
               refreshedAt: new Date().toISOString(),
@@ -5515,7 +5648,7 @@ const server = createServer(async (request, response) => {
         void refreshAiConversationRuntimeForMap(launch.mapId).catch((error) => {
           console.warn('[AI conversation runtime link refresh]', error)
         })
-        return sendJson(response, 200, { conversationId })
+        return sendJson(response, 200, { conversationId, homeMachineId: launch.homeMachineId })
       } catch (error) {
         console.error('[AionUi conversation completion]', error)
         return sendJson(response, 503, { error: '생성된 AionUi 대화를 확인하지 못했습니다.' })
@@ -5693,7 +5826,7 @@ const server = createServer(async (request, response) => {
       const delegation = candidates[0]
       const dispatchPath = `/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.childOperationId)}`
       try {
-        const dispatch = await fetchAionUi(dispatchPath)
+        const dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation), dispatchPath)
         const dispatchState = String(dispatch?.state ?? '').trim()
         if (dispatchState !== 'waiting_resume') {
           if (dispatchState === 'failed' || dispatchState === 'recovery_required') {
@@ -5727,7 +5860,8 @@ const server = createServer(async (request, response) => {
             delegation: delegationPublicView(delegation),
           })
         }
-        const confirmation = await fetchAionUi(
+        const confirmation = await fetchAionUiOn(
+          delegationTargetMachineId(delegation),
           `${dispatchPath}/complete`,
           {
             method: 'POST',
@@ -5776,7 +5910,7 @@ const server = createServer(async (request, response) => {
         return sendJson(response, 404, { error: '복구할 AI 위임을 찾을 수 없습니다.' })
       }
       const mapId = delegation.mapId
-      if (!await aionCoreSupportsExplicitCompletionAfterInterruption()) {
+      if (!await aionCoreSupportsExplicitCompletionAfterInterruption(delegationTargetMachineId(delegation))) {
         return sendJson(response, 503, {
           error: '현재 실행 중인 AionCore가 중단 후 명시적 완료 신호를 지원하지 않습니다. AionCore를 최신 빌드로 재기동해 주세요.',
           code: 'AIONCORE_EXPLICIT_COMPLETION_UNAVAILABLE',
@@ -5875,6 +6009,7 @@ const server = createServer(async (request, response) => {
         conversationId: delegation.targetConversationId,
         selection,
         startedBy: delegation.startedBy ?? user.id,
+        homeMachineId: delegationTargetMachineId(delegation),
       })
       await persistAiAttributions()
 
@@ -5900,7 +6035,7 @@ const server = createServer(async (request, response) => {
 
       let dispatch
       try {
-        dispatch = await fetchAionUi('/api/internal/external-conversation-dispatches', {
+        dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation), '/api/internal/external-conversation-dispatches', {
           method: 'POST',
           timeoutMs: 30_000,
           body: {
@@ -5917,7 +6052,7 @@ const server = createServer(async (request, response) => {
         for (let attempt = 0; attempt < 10 && !dispatch; attempt += 1) {
           if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
           try {
-            dispatch = await fetchAionUi(`/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
+            dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
           } catch {
             // The recovery dispatch may have started even when its POST response was lost.
           }
@@ -6000,13 +6135,6 @@ const server = createServer(async (request, response) => {
         }
         return sendJson(response, 400, { error: '현재 상위 카드의 문서와 카드 범위가 필요합니다.' })
       }
-      if (!await aionCoreSupportsExplicitCompletionAfterInterruption()) {
-        return sendJson(response, 503, {
-          error: '현재 실행 중인 AionCore가 중단 후 명시적 완료 신호를 지원하지 않습니다. AionCore를 최신 빌드로 재기동해 주세요.',
-          code: 'AIONCORE_EXPLICIT_COMPLETION_UNAVAILABLE',
-        })
-      }
-
       const body = await readJsonBody(request)
       const mapId = body.targetMapId === undefined ? parentMapId : String(body.targetMapId)
       if (!isValidMapId(mapId)) return sendJson(response, 400, { error: '올바르지 않은 대상 문서 ID입니다.' })
@@ -6028,6 +6156,38 @@ const server = createServer(async (request, response) => {
         return sendJson(response, 400, { error: 'AI 작업 위임 값이 올바르지 않습니다.' })
       }
 
+      const parentHomeMachineId = conversationHomeMachineId(source.conversationId, source)
+      let targetHomeMachineId
+      try {
+        if (strategy === 'resume') {
+          targetHomeMachineId = conversationHomeMachineId(conversationId)
+          const requestedResumeMachineId = String(body.machineId ?? '').trim()
+          const normalizedResumeMachineId = normalizeMachineId(requestedResumeMachineId)
+          if (requestedResumeMachineId && !normalizedResumeMachineId) {
+            throw new SubMachinePayloadError('실행 머신 ID가 올바르지 않습니다.')
+          }
+          if (normalizedResumeMachineId && normalizedResumeMachineId !== targetHomeMachineId) {
+            return sendJson(response, 409, {
+              error: '기존 대화는 생성된 머신에서만 이어갈 수 있습니다.',
+              code: 'AI_CONVERSATION_MACHINE_MISMATCH',
+              homeMachineId: targetHomeMachineId,
+            })
+          }
+          resolveTargetMachineForUser(user, targetHomeMachineId)
+        } else {
+          targetHomeMachineId = resolveTargetMachineForUser(user, body.machineId).machineId
+        }
+      } catch (error) {
+        if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
+        throw error
+      }
+      if (!await aionCoreSupportsExplicitCompletionAfterInterruption(targetHomeMachineId)) {
+        return sendJson(response, 503, {
+          error: `${machineLabel(targetHomeMachineId)}의 AionCore가 중단 후 명시적 완료 신호를 지원하지 않습니다. AionCore를 최신 빌드로 재기동해 주세요.`,
+          code: 'AIONCORE_EXPLICIT_COMPLETION_UNAVAILABLE',
+        })
+      }
+
       const requestSignature = createAiDelegationRequestSignature({
         mapId,
         ...(crossDocument ? { parentMapId, targetRevision: body.targetRevision } : {}),
@@ -6035,6 +6195,7 @@ const server = createServer(async (request, response) => {
         targetCardId,
         strategy,
         conversationId,
+        machineId: targetHomeMachineId === machineRegistry.mainMachineId ? null : targetHomeMachineId,
         instruction,
         decisionReason,
         sourceRevision,
@@ -6082,7 +6243,7 @@ const server = createServer(async (request, response) => {
       if (parentMap.version !== sourceRevision || targetVersionMismatch) {
         let recoveredDispatch = null
         try {
-          const candidate = await fetchAionUi(`/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`)
+          const candidate = await fetchAionUiOn(targetHomeMachineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`)
           const recoveredConversationId = String(candidate?.conversationId ?? '').trim()
           const linkedToTarget = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(recoveredConversationId)
             && isAiConversationLinked(targetCard.data, recoveredConversationId)
@@ -6122,7 +6283,9 @@ const server = createServer(async (request, response) => {
             targetCardId: targetCard.id,
             targetCardLabel: targetCard.data?.label ?? targetCard.id,
             parentConversationId: parentAttribution.conversationId,
+            parentHomeMachineId,
             targetConversationId,
+            targetHomeMachineId,
             childOperationId: id,
             strategy,
             decisionReason,
@@ -6191,7 +6354,7 @@ const server = createServer(async (request, response) => {
         }
       } else {
         try {
-          selection = await delegationCreateSelection(targetCard, body.newConversation, parentAttribution)
+          selection = await delegationCreateSelection(targetCard, body.newConversation, parentAttribution, targetHomeMachineId)
         } catch (error) {
           return sendJson(response, 400, { error: error.message })
         }
@@ -6261,6 +6424,13 @@ const server = createServer(async (request, response) => {
         ?? null
       const expectsWorkspacePool = !crossDocument && Boolean(workspacePoolResolution.expectsWorkspacePool
         || resumedDelegation?.workspaceLease?.leaseId)
+      if (expectsWorkspacePool && targetHomeMachineId !== machineRegistry.mainMachineId) {
+        return sendJson(response, 409, {
+          error: '등록된 Unity 작업공간 풀 위임의 서브 머신 라우팅은 Tier 2에서 지원합니다. 이번 위임은 메인 머신을 선택해 주세요.',
+          code: 'AI_WORKSPACE_REMOTE_ROUTING_NOT_SUPPORTED',
+          targetHomeMachineId,
+        })
+      }
       if (expectsWorkspacePool) {
         const now = new Date().toISOString()
         let integrationChanges = { dirty: false, paths: [] }
@@ -6280,7 +6450,9 @@ const server = createServer(async (request, response) => {
           targetCardId: targetCard.id,
           targetCardLabel: targetCard.data?.label ?? targetCard.id,
           parentConversationId: parentAttribution.conversationId,
+          parentHomeMachineId,
           targetConversationId,
+          targetHomeMachineId,
           childOperationId: id,
           strategy,
           decisionReason,
@@ -6321,7 +6493,7 @@ const server = createServer(async (request, response) => {
       }
       let workspaceLease = null
       if (expectsWorkspacePool
-        && !await aionCoreSupportsWorkspaceLease()) {
+        && !await aionCoreSupportsWorkspaceLease(targetHomeMachineId)) {
         return sendJson(response, 503, {
           error: '현재 실행 중인 AionCore가 AI 작업공간 lease를 지원하지 않습니다. AionCore를 최신 빌드로 재기동해 주세요.',
           code: 'AIONCORE_WORKSPACE_LEASE_UNAVAILABLE',
@@ -6362,7 +6534,9 @@ const server = createServer(async (request, response) => {
               targetCardId: targetCard.id,
               targetCardLabel: targetCard.data?.label ?? targetCard.id,
               parentConversationId: parentAttribution.conversationId,
+              parentHomeMachineId,
               targetConversationId,
+              targetHomeMachineId,
               childOperationId: id,
               strategy,
               decisionReason,
@@ -6417,6 +6591,7 @@ const server = createServer(async (request, response) => {
         conversationId: strategy === 'resume' ? targetConversationId : null,
         selection,
         startedBy: parentAttribution.startedBy ?? user.id,
+        homeMachineId: targetHomeMachineId,
       })
       await persistAiAttributions()
       const delegatedInstruction = buildDelegatedInstruction({
@@ -6433,7 +6608,7 @@ const server = createServer(async (request, response) => {
         : null
       let dispatch
       try {
-        dispatch = await fetchAionUi('/api/internal/external-conversation-dispatches', {
+        dispatch = await fetchAionUiOn(targetHomeMachineId, '/api/internal/external-conversation-dispatches', {
           method: 'POST',
           timeoutMs: 30_000,
           body: {
@@ -6462,7 +6637,7 @@ const server = createServer(async (request, response) => {
         for (let attempt = 0; attempt < 10 && !dispatch; attempt += 1) {
           if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
           try {
-            dispatch = await fetchAionUi(`/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`)
+            dispatch = await fetchAionUiOn(targetHomeMachineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`)
           } catch {
             // The POST may have reached AionCore even if its response was lost.
           }
@@ -6512,7 +6687,7 @@ const server = createServer(async (request, response) => {
       }
       if (delegatedConversationTitle) {
         try {
-          await protectAionUiConversationTitle(targetConversationId, delegatedConversationTitle)
+          await protectAionUiConversationTitle(targetConversationId, delegatedConversationTitle, targetHomeMachineId)
         } catch (error) {
           console.warn('[AI delegation conversation title protection]', JSON.stringify({
             mapId,
@@ -6529,6 +6704,7 @@ const server = createServer(async (request, response) => {
         cardId: targetCard.id,
         startedBy: attribution.startedBy,
         linkedAt: new Date().toISOString(),
+        homeMachineId: targetHomeMachineId,
       })
       aiConversationAttributions.set(conversationAttributionKey(mapId, targetCard.id), {
         mapId,
@@ -6540,6 +6716,7 @@ const server = createServer(async (request, response) => {
         modelId: attribution.modelId,
         modelName: attribution.modelName,
         providerId: attribution.providerId,
+        homeMachineId: targetHomeMachineId,
         startedBy: attribution.startedBy,
         linkedAt: new Date().toISOString(),
         refreshedAt: new Date().toISOString(),
@@ -6556,6 +6733,7 @@ const server = createServer(async (request, response) => {
         } else {
           const conversationLink = normalizeAiConversationLink({
             conversationId: targetConversationId,
+            homeMachineId: targetHomeMachineId,
             agent: selection.agent,
             model: selection.model,
             providerId: selection.providerId,
@@ -6604,7 +6782,9 @@ const server = createServer(async (request, response) => {
         targetCardId: targetCard.id,
         targetCardLabel: targetCard.data?.label ?? targetCard.id,
         parentConversationId: parentAttribution.conversationId,
+        parentHomeMachineId,
         targetConversationId,
+        targetHomeMachineId,
         childOperationId: id,
         strategy,
         decisionReason,
@@ -6711,9 +6891,13 @@ const server = createServer(async (request, response) => {
       if (!map || map.trashedAt || !card) return sendJson(response, 404, { error: '카드를 찾을 수 없습니다.' })
       const currentAttribution = aiConversationAttributions.get(conversationAttributionKey(mapId, cardId))
       const links = aiConversationLinksFromData(card.data).map((link) => {
-        if (link.conversationId !== currentAttribution?.conversationId) return link
+        const homeMachineId = conversationHomeMachineId(link.conversationId, link)
+        if (link.conversationId !== currentAttribution?.conversationId) {
+          return normalizeAiConversationLink({ ...link, homeMachineId })
+        }
         return normalizeAiConversationLink({
           ...link,
+          homeMachineId,
           agent: link.agent ?? (currentAttribution.agentId ? {
             id: currentAttribution.agentId,
             label: currentAttribution.agentName ?? currentAttribution.agentId,
@@ -6733,6 +6917,18 @@ const server = createServer(async (request, response) => {
       }).filter(Boolean)
       const observedAt = new Date().toISOString()
       const conversations = await Promise.all(links.map(async (link) => {
+        if (!machineAccessibleByUser(user, link.homeMachineId)) {
+          return {
+            ...link,
+            homeMachineLabel: machineLabel(link.homeMachineId),
+            homeMachineRole: link.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
+            accessible: false,
+            available: false,
+            name: '',
+            modifiedAt: null,
+            runtime: normalizeAiConversationRuntime(link.conversationId, null, observedAt),
+          }
+        }
         try {
           const conversation = await fetchAiConversationRuntime(link.conversationId)
           if (!conversation || String(conversation.id) !== link.conversationId) throw new Error('AIONUI_CONVERSATION_NOT_FOUND')
@@ -6751,6 +6947,9 @@ const server = createServer(async (request, response) => {
           }) ?? link
           return {
             ...enrichedLink,
+            homeMachineLabel: machineLabel(enrichedLink.homeMachineId),
+            homeMachineRole: enrichedLink.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
+            accessible: true,
             available: true,
             name: String(conversation.name ?? ''),
             startedAt: enrichedLink.startedAt ?? normalizedIsoDate(conversation.created_at),
@@ -6760,6 +6959,9 @@ const server = createServer(async (request, response) => {
         } catch {
           return {
             ...link,
+            homeMachineLabel: machineLabel(link.homeMachineId),
+            homeMachineRole: link.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
+            accessible: true,
             available: false,
             name: '',
             modifiedAt: null,
@@ -6794,10 +6996,16 @@ const server = createServer(async (request, response) => {
       if (!map || map.trashedAt || !card || !isAiConversationLinked(card.data, conversationId)) {
         return sendJson(response, 404, { error: '카드에 연결된 AI 대화를 찾을 수 없습니다.' })
       }
+      const linkedConversation = aiConversationLinksFromData(card.data)
+        .find((link) => link.conversationId === conversationId)
+      const homeMachineId = conversationHomeMachineId(conversationId, linkedConversation)
+      if (!machineAccessibleByUser(user, homeMachineId)) {
+        return sendJson(response, 403, { error: '이 대화가 저장된 서브 머신을 사용할 권한이 없습니다.' })
+      }
       try {
         const [conversation, messagePage] = await Promise.all([
-          fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}`),
-          fetchAionUi(`/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=10000&content_mode=full`, { timeoutMs: 30_000 }),
+          fetchAionUiOn(homeMachineId, `/api/conversations/${encodeURIComponent(conversationId)}`),
+          fetchAionUiOn(homeMachineId, `/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=10000&content_mode=full`, { timeoutMs: 30_000 }),
         ])
         if (!conversation || conversation.id !== conversationId) {
           return sendJson(response, 404, { error: 'AionUi 대화를 찾을 수 없습니다.' })
@@ -6814,6 +7022,8 @@ const server = createServer(async (request, response) => {
             modifiedAt: conversation.modified_at ?? null,
           },
           card: { mapId: map.id, cardId: card.id, label: card.data?.label ?? card.id },
+          homeMachineId,
+          homeMachineLabel: machineLabel(homeMachineId),
           exportedAt,
           messageCount: messages.length,
           exportedMessageCount: exported.exportedMessageCount,
@@ -6844,8 +7054,13 @@ const server = createServer(async (request, response) => {
       if (!map || map.trashedAt || !card || !isAiConversationLinked(card.data, conversationId)) {
         return sendJson(response, 404, { error: '연결된 AI 대화의 문서 또는 카드를 찾을 수 없습니다.' })
       }
+      const linkedConversation = aiConversationLinksFromData(card.data)
+        .find((link) => link.conversationId === conversationId)
+      if (!machineAccessibleByUser(user, conversationHomeMachineId(conversationId, linkedConversation))) {
+        return sendJson(response, 403, { error: '이 대화가 저장된 서브 머신을 사용할 권한이 없습니다.' })
+      }
       try {
-        const result = await refreshConversationAttribution(mapId, cardId, conversationId, user.id, null, {
+        const result = await refreshConversationAttribution(mapId, cardId, conversationId, user.id, linkedConversation, {
           makeCurrent: card.data?.aiConversationId === conversationId,
         })
         return sendJson(response, 200, result)
@@ -7198,12 +7413,15 @@ const server = createServer(async (request, response) => {
       if (!user) return
       if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 AI 대화를 시작할 수 있습니다.' })
 
+      let resolvedTarget = null
       try {
+        resolvedTarget = resolveTargetMachineForUser(user, url.searchParams.get('machineId'))
+        const { machineId, machine, targets } = resolvedTarget
         const [agents, providers, skills, mcpServers] = await Promise.all([
-          fetchAionUi('/api/agents/management'),
-          fetchAionUi('/api/providers'),
-          fetchAionUi('/api/skills'),
-          fetchAionUi('/api/mcp/servers'),
+          fetchAionUiOn(machineId, '/api/agents/management'),
+          fetchAionUiOn(machineId, '/api/providers'),
+          fetchAionUiOn(machineId, '/api/skills'),
+          fetchAionUiOn(machineId, '/api/mcp/servers'),
         ])
         const normalizedAgents = (Array.isArray(agents) ? agents : [])
           .filter((agent) => agent?.enabled !== false && agent?.installed === true)
@@ -7213,18 +7431,36 @@ const server = createServer(async (request, response) => {
         const normalizedMcpServers = normalizeAionUiMcpServers(mcpServers)
         return sendJson(response, 200, {
           connected: true,
-          aionUiUrl: activeAionUiBaseUrl,
+          machineId,
+          machineLabel: machine.label,
+          machineRole: machine.role,
+          machines: targets.machines,
+          aionUiUrl: machine.role === 'main' ? activeAionUiBaseUrl : null,
           protocol: 'aionui://conversation/new',
-          defaultWorkspace: projectDirectory,
+          defaultWorkspace: machine.role === 'main' ? projectDirectory : '',
+          workspaceBrowseAvailable: machine.role === 'main' && isLocalLoopbackRequest(request),
           agents: normalizedAgents,
           skills: normalizedSkills,
           mcpServers: normalizedMcpServers,
         })
       } catch (error) {
+        if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
         console.error('[AionUi integration]', error)
         return sendJson(response, 503, {
           error: 'AionUi에 연결할 수 없습니다. AionUi가 실행 중인지 확인해 주세요.',
           connected: false,
+          ...(resolvedTarget ? {
+            machineId: resolvedTarget.machineId,
+            machineLabel: resolvedTarget.machine.label,
+            machineRole: resolvedTarget.machine.role,
+            machines: resolvedTarget.targets.machines,
+            protocol: 'aionui://conversation/new',
+            defaultWorkspace: resolvedTarget.machine.role === 'main' ? projectDirectory : '',
+            workspaceBrowseAvailable: false,
+            agents: [],
+            skills: [],
+            mcpServers: [],
+          } : {}),
         })
       }
     }

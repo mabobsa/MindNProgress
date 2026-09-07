@@ -1581,13 +1581,14 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_delegate_ai_work', '이 대화가 시작된 카드의 계층상 하위 카드 AI 대화에 구체적인 작업을 위임합니다. 그룹에 연결된 총괄 문서의 루트는 targetMapId와 targetRevision을 지정하여 같은 그룹의 다른 문서 루트에 분석·조정을 위임할 수 있으며, 이 문서 담당 위임은 worker를 점유하지 않습니다. 직계 자식뿐 아니라 모든 깊이의 하위 카드를 지원하며, 다른 카드를 get_context로 조회해도 위임 기준 카드는 바뀌지 않습니다. 기존 대화를 이어가거나 새 대화를 만들 수 있습니다. 중지된 위임을 resume하면 같은 AI 대화와 기존 작업공간 lease를 함께 이어가며, 같은 카드·대화의 활성 위임은 중복 생성하지 않습니다. 등록된 AI 작업공간 pool은 독립 worker를 자동 배정하고 lease 없이 실행하지 않으며, 가용 worker가 없으면 waiting-workspace로 접수해 FIFO 대기 후 자동 시작합니다. waiting-integration-clean은 통합 작업공간의 추적 변경 때문에 하위 전문을 아직 전달하지 않은 대기 상태이며, 변경이 정리되면 같은 위임을 자동 시작하므로 재위임하지 마세요. 완료 변경은 main에 직렬 통합합니다. 통합 충돌은 같은 하위 AI가 worker에서 해결하며, 실제 통합과 최종 검증이 끝난 뒤에만 결과를 포함한 메시지로 현재 상위 AI 대화를 자동 재개합니다. 먼저 후보 목록과 작업 상태를 확인하고, 현재 문서 version을 sourceRevision으로 전달하세요.', {
+  registerTool(server, 'mindnprogress_delegate_ai_work', '이 대화가 시작된 카드의 계층상 하위 카드 AI 대화에 구체적인 작업을 위임합니다. 그룹에 연결된 총괄 문서의 루트는 targetMapId와 targetRevision을 지정하여 같은 그룹의 다른 문서 루트에 분석·조정을 위임할 수 있으며, 이 문서 담당 위임은 worker를 점유하지 않습니다. 직계 자식뿐 아니라 모든 깊이의 하위 카드를 지원하며, 다른 카드를 get_context로 조회해도 위임 기준 카드는 바뀌지 않습니다. 기존 대화를 이어가거나 새 대화를 만들 수 있습니다. 중지된 위임을 resume하면 같은 AI 대화와 기존 작업공간 lease를 함께 이어가며, 같은 카드·대화의 활성 위임은 중복 생성하지 않습니다. 풀 lease가 없는 일반 위임은 machineId 또는 편집자의 기본 머신으로 라우팅하지만, 등록된 Unity 작업공간 pool 위임은 원격 풀 Tier 2 전까지 메인 머신에서만 실행합니다. 등록된 AI 작업공간 pool은 독립 worker를 자동 배정하고 lease 없이 실행하지 않으며, 가용 worker가 없으면 waiting-workspace로 접수해 FIFO 대기 후 자동 시작합니다. waiting-integration-clean은 통합 작업공간의 추적 변경 때문에 하위 전문을 아직 전달하지 않은 대기 상태이며, 변경이 정리되면 같은 위임을 자동 시작하므로 재위임하지 마세요. 완료 변경은 main에 직렬 통합합니다. 통합 충돌은 같은 하위 AI가 worker에서 해결하며, 실제 통합과 최종 검증이 끝난 뒤에만 결과를 포함한 메시지로 현재 상위 AI 대화를 자동 재개합니다. 먼저 후보 목록과 작업 상태를 확인하고, 현재 문서 version을 sourceRevision으로 전달하세요.', {
     mapId: z.string().min(1).describe('이 대화가 시작된 상위 카드가 속한 문서 ID'),
     targetMapId: z.string().min(1).optional().describe('그룹 총괄 루트에서 같은 그룹 소속 문서 루트에 분석·조정을 위임할 때만 지정합니다. 먼저 mindnprogress_get_group_context로 범위를 확인하세요. 생략하면 같은 문서의 하위 카드 위임입니다.'),
     targetRevision: z.number().int().positive().optional().describe('targetMapId 지정 시 대상 문서의 최신 version. 그룹→문서 위임은 worker를 점유하지 않으며 실제 구현은 문서의 하위 업무로 위임합니다.'),
     targetCardId: z.string().min(1).max(120).describe('작업을 맡길 대화 시작 카드의 계층상 하위 카드 ID. 모든 깊이의 하위 카드를 지원'),
     strategy: z.enum(['resume', 'new']).describe('resume은 연결된 기존 대화 이어가기, new는 새 대화 생성'),
     conversationId: z.string().min(1).max(120).optional().describe('resume일 때 이어갈 대상 카드의 conversationId'),
+    machineId: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/).optional().describe('new일 때 풀 lease 없는 일반 작업을 실행할 머신 ID. 생략하면 편집자의 기본 머신을 사용합니다. resume은 기존 대화의 homeMachineId로 고정되며, 등록된 Unity 작업공간 pool 위임은 현재 메인 머신만 지원합니다.'),
     instruction: z.string().min(1).max(100000).describe('하위 AI가 제안에 그치지 않고 실제로 수행할 구체적인 지시와 완료 조건'),
     decisionReason: z.string().min(1).max(1000).describe('이 기존 대화를 선택했거나 새 대화가 필요하다고 판단한 근거'),
     sourceRevision: z.number().int().positive().describe('get_context 또는 get_document에서 확인한 현재 문서 version'),

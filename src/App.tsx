@@ -4033,6 +4033,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     conversationId: string,
     cardId = selectedCommentNodeId,
     mapId = selectedCommentMapId,
+    homeMachineRole: MachineRole = 'main',
   ) => {
     if (mapId && cardId) {
       void apiRequest(`/api/integrations/aionui/conversations/${encodeURIComponent(conversationId)}/attribution`, {
@@ -4043,10 +4044,17 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         console.warn('[AI conversation attribution refresh]', error)
       })
     }
-    const useWebUi = aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)
+    const useWebUi = homeMachineRole === 'sub' || aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)
     if (useWebUi) {
       try {
-        const conversationUrl = aionUiConversationWebUrl(aionUiWebNavigation.baseUrl, conversationId)
+        const targetBaseUrl = homeMachineRole === 'sub'
+          ? (() => {
+              const url = new URL(aionUiWebNavigation.baseUrl)
+              url.hostname = '127.0.0.1'
+              return url.toString()
+            })()
+          : aionUiWebNavigation.baseUrl
+        const conversationUrl = aionUiConversationWebUrl(targetBaseUrl, conversationId)
         const aionUiTab = window.open(conversationUrl, '_blank')
         if (!aionUiTab) {
           window.alert('AionUi 대화 탭을 열지 못했습니다. 브라우저의 팝업 차단을 해제한 뒤 다시 시도해 주세요.')
@@ -8524,10 +8532,10 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           mapId={aiConversationPicker.mapId}
           cardId={aiConversationPicker.cardId}
           cardTitle={aiConversationPicker.cardTitle}
-          onSelect={(conversationId) => {
+          onSelect={(conversation) => {
             const target = aiConversationPicker
             setAiConversationPicker(null)
-            void openAiConversation(conversationId, target.cardId, target.mapId)
+            void openAiConversation(conversation.conversationId, target.cardId, target.mapId, conversation.homeMachineRole)
           }}
           onStartNew={() => {
             const launch = aiConversationPicker.launch

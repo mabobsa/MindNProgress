@@ -49,7 +49,14 @@ test('MindNProgress가 발급한 loopback 완료 주소에서만 token을 추출
   assert.equal(parseMindNProgressCompletionToken(valid, 4176), COMPLETION_TOKEN)
   assert.equal(parseMindNProgressCompletionToken(valid, 4177), null)
   assert.equal(parseMindNProgressCompletionToken(valid.replace('127.0.0.1', 'localhost'), 4176), null)
+  assert.equal(parseMindNProgressCompletionToken(valid.replace('127.0.0.1', '[::1]'), 4176), COMPLETION_TOKEN)
   assert.equal(parseMindNProgressCompletionToken(`${valid}?retry=1`, 4176), null)
+})
+
+test('서브 머신에는 허용한 공개 MindNProgress 주소의 완료 token을 전달한다', () => {
+  const valid = `https://mind.example:4175/api/integrations/aionui/launches/${COMPLETION_TOKEN}/conversation`
+  assert.equal(parseMindNProgressCompletionToken(valid, ['http://127.0.0.1:4176', 'https://mind.example:4175']), COMPLETION_TOKEN)
+  assert.equal(parseMindNProgressCompletionToken(valid.replace('mind.example', 'other.example'), ['https://mind.example:4175']), null)
 })
 
 test('AionUi WebUI launch 주소에는 짧은 ticket만 포함한다', () => {

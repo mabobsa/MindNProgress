@@ -1069,6 +1069,40 @@
   background: #21362f;
 }
 
+[data-theme="dark"] .machine-actions > button {
+  color: var(--theme-text-secondary);
+  border-color: var(--theme-border-strong);
+  background: var(--theme-surface);
+}
+
+[data-theme="dark"] .machine-probe.ok {
+  color: #9fd8c5;
+}
+
+[data-theme="dark"] .machine-probe.fail {
+  color: #ff9ca2;
+}
+
+[data-theme="dark"] .distributed-work-token {
+  border-color: var(--theme-border-strong);
+  background: var(--theme-surface-raised);
+}
+
+[data-theme="dark"] .distributed-work-token strong {
+  color: #c3bbf5;
+}
+
+[data-theme="dark"] .distributed-work-token code,
+[data-theme="dark"] .distributed-work-token > button {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-border-strong);
+  background: var(--theme-surface);
+}
+
+[data-theme="dark"] .distributed-work-token small {
+  color: var(--theme-text-muted);
+}
+
 /* Login */
 [data-theme="dark"] .login-page {
   color: var(--theme-text);

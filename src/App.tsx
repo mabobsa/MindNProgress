@@ -553,6 +553,7 @@ type MachineSummary = {
   enabled: boolean
   workspacePoolIds: string[]
   lastSeenAt: string | null
+  hasToken: boolean
 }
 
 type DistributedWorkSettings = {
@@ -564,6 +565,15 @@ type DistributedWorkTargets = {
   enabled: boolean
   defaultMachineId: string
   machines: MachineSummary[]
+}
+
+type MachineProbeResult = {
+  machineId: string
+  reachable: boolean
+  elapsedMs: number
+  conversationCount?: number | null
+  reasonCode?: string | null
+  error?: string
 }
 
 type SubscriptionUsageWindow = {
@@ -1937,6 +1947,9 @@ function DistributedWorkDialog({ user, onClose }: { user: AuthUser; onClose: () 
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [probingMachineId, setProbingMachineId] = useState('')
+  const [probeResults, setProbeResults] = useState<Record<string, MachineProbeResult>>({})
+  const [issuedToken, setIssuedToken] = useState<{ machineId: string; token: string } | null>(null)
 
   const applySettings = useCallback((payload: { settings: DistributedWorkSettings; targets: DistributedWorkTargets }) => {
     setTargets(payload.targets)
@@ -2028,6 +2041,52 @@ function DistributedWorkDialog({ user, onClose }: { user: AuthUser; onClose: () 
     }
   }
 
+  async function probeMachine(machineId: string) {
+    setError('')
+    setNotice('')
+    setProbingMachineId(machineId)
+    try {
+      const result = await apiRequest<MachineProbeResult>(`/api/machines/${encodeURIComponent(machineId)}/probe`, { method: 'POST' })
+      setProbeResults((current) => ({ ...current, [machineId]: result }))
+    } catch (probeError) {
+      setError(probeError instanceof Error ? probeError.message : '머신 연결을 확인하지 못했습니다.')
+    } finally {
+      setProbingMachineId('')
+    }
+  }
+
+  async function issueToken(machineId: string) {
+    setError('')
+    setNotice('')
+    setSubmitting(true)
+    try {
+      const issued = await apiRequest<{ machineId: string; token: string }>(`/api/machines/${encodeURIComponent(machineId)}/token`, { method: 'POST' })
+      setIssuedToken(issued)
+      await reload()
+    } catch (tokenError) {
+      setError(tokenError instanceof Error ? tokenError.message : 'Runner 토큰을 발급하지 못했습니다.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function revokeToken(machineId: string) {
+    if (!window.confirm(`'${machineId}' 머신의 Runner 토큰을 폐기할까요? 해당 Runner는 즉시 연결이 끊깁니다.`)) return
+    setError('')
+    setNotice('')
+    setSubmitting(true)
+    try {
+      await apiRequest(`/api/machines/${encodeURIComponent(machineId)}/token`, { method: 'DELETE' })
+      if (issuedToken?.machineId === machineId) setIssuedToken(null)
+      await reload()
+      setNotice('Runner 토큰을 폐기했습니다.')
+    } catch (revokeError) {
+      setError(revokeError instanceof Error ? revokeError.message : 'Runner 토큰을 폐기하지 못했습니다.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   const subMachines = machines.filter((machine) => machine.role === 'sub')
 
   return (
@@ -2069,22 +2128,57 @@ function DistributedWorkDialog({ user, onClose }: { user: AuthUser; onClose: () 
             <div className="distributed-work-machines">
               <h4>등록된 머신</h4>
               <ul>
-                {machines.map((machine) => (
-                  <li key={machine.machineId} className={machine.enabled ? '' : 'disabled'}>
-                    <span className={`machine-role ${machine.role}`}>{machine.role === 'main' ? '메인' : '서브'}</span>
-                    <span className="machine-label">
-                      <strong>{machine.label}</strong>
-                      <small>{machine.machineId}{machine.platform ? ` · ${machinePlatformLabel(machine.platform)}` : ''}</small>
-                    </span>
-                    {machine.role === 'sub' && user.role === 'admin' && (
-                      <button type="button" onClick={() => void removeMachine(machine.machineId)} disabled={submitting} aria-label={`${machine.label} 등록 삭제`}>
-                        <Icon name="trash" size={13} />
-                      </button>
-                    )}
-                  </li>
-                ))}
+                {machines.map((machine) => {
+                  const probe = probeResults[machine.machineId]
+                  return (
+                    <li key={machine.machineId} className={machine.enabled ? '' : 'disabled'}>
+                      <span className={`machine-role ${machine.role}`}>{machine.role === 'main' ? '메인' : '서브'}</span>
+                      <span className="machine-label">
+                        <strong>{machine.label}</strong>
+                        <small>
+                          {machine.machineId}
+                          {machine.platform ? ` · ${machinePlatformLabel(machine.platform)}` : ''}
+                          {machine.role === 'sub' && (machine.hasToken ? ' · 토큰 발급됨' : ' · 토큰 없음')}
+                        </small>
+                        {probe && (
+                          <small className={probe.reachable ? 'machine-probe ok' : 'machine-probe fail'}>
+                            {probe.reachable
+                              ? `연결 확인 (${probe.elapsedMs}ms, 대화 ${probe.conversationCount ?? 0}개)`
+                              : `연결 실패${probe.reasonCode ? ` · ${probe.reasonCode}` : ''}`}
+                          </small>
+                        )}
+                      </span>
+                      <span className="machine-actions">
+                        <button type="button" onClick={() => void probeMachine(machine.machineId)} disabled={probingMachineId === machine.machineId || submitting}>
+                          {probingMachineId === machine.machineId ? '확인 중…' : '연결 확인'}
+                        </button>
+                        {machine.role === 'sub' && user.role === 'admin' && (
+                          <>
+                            <button type="button" onClick={() => void issueToken(machine.machineId)} disabled={submitting}>
+                              {machine.hasToken ? '토큰 재발급' : '토큰 발급'}
+                            </button>
+                            {machine.hasToken && (
+                              <button type="button" onClick={() => void revokeToken(machine.machineId)} disabled={submitting}>토큰 폐기</button>
+                            )}
+                            <button type="button" className="machine-remove" onClick={() => void removeMachine(machine.machineId)} disabled={submitting} aria-label={`${machine.label} 등록 삭제`}>
+                              <Icon name="trash" size={13} />
+                            </button>
+                          </>
+                        )}
+                      </span>
+                    </li>
+                  )
+                })}
               </ul>
               {subMachines.length === 0 && <p className="distributed-work-empty">등록된 서브 머신이 없습니다.</p>}
+              {issuedToken && (
+                <div className="distributed-work-token" role="status">
+                  <strong>{issuedToken.machineId} Runner 토큰</strong>
+                  <code>{issuedToken.token}</code>
+                  <small>이 값은 지금만 표시됩니다. 서브 머신 Runner 설정에 저장한 뒤 이 창을 닫으세요.</small>
+                  <button type="button" onClick={() => { void navigator.clipboard?.writeText(issuedToken.token); setNotice('토큰을 클립보드에 복사했습니다.') }}>복사</button>
+                </div>
+              )}
             </div>
 
             {user.role === 'admin' && (

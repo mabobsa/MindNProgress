@@ -96,8 +96,12 @@ import {
   removeSubMachine,
   resolveDistributedWorkSettings,
   serializeMachineRegistry,
+  setMachineToken,
+  touchMachine,
   upsertSubMachine,
+  verifyMachineToken,
 } from './lib/subMachines.mjs'
+import { MachineOperationError, MachineOperationQueue } from './lib/machineOperations.mjs'
 import {
   SharedKnowledgeMaintenanceError,
   buildSharedKnowledgeReviewContext,
@@ -333,6 +337,15 @@ const distributedWorkSettings = new Map()
 let machineRegistry = normalizeMachineRegistry([])
 let machineRegistryWriteQueue = Promise.resolve()
 let distributedWorkSettingsWriteQueue = Promise.resolve()
+const machineOperationLongPollMs = Math.max(
+  1_000,
+  Math.min(120_000, Number(process.env.MNP_MACHINE_LONG_POLL_MS) || 25_000),
+)
+const machineOperationQueue = new MachineOperationQueue({
+  dispatchTimeoutMs: Math.max(5_000, Number(process.env.MNP_MACHINE_DISPATCH_TIMEOUT_MS) || 30_000),
+  resultTimeoutMs: Math.max(10_000, Number(process.env.MNP_MACHINE_RESULT_TIMEOUT_MS) || 180_000),
+  createOperationId: () => randomBytes(12).toString('base64url'),
+})
 const aiAttributionContinuationToken = Symbol('aiAttributionContinuationToken')
 let aiAttributionWriteQueue = Promise.resolve()
 let aiConversationAttributionWriteQueue = Promise.resolve()
@@ -1355,6 +1368,26 @@ function userDistributedWork(user) {
   return resolveDistributedWorkSettings(distributedWorkSettings.get(user.id), machineRegistry)
 }
 
+function requireRunnerMachine(request, response, machineId) {
+  const authorization = String(request.headers.authorization ?? '')
+  const token = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : ''
+  if (!token || !verifyMachineToken(machineRegistry, machineId, token)) {
+    sendJson(response, 401, { error: 'Runner 인증에 실패했습니다.' })
+    return null
+  }
+  return findMachine(machineRegistry, machineId)
+}
+
+// 하트비트와 오퍼레이션 조회는 자주 오므로 실제 값이 바뀔 때만 저장한다.
+async function noteMachineSeen(machineId) {
+  const previous = findMachine(machineRegistry, machineId)?.lastSeenAt
+  const updated = touchMachine(machineRegistry, machineId)
+  if (updated === machineRegistry) return
+  machineRegistry = updated
+  if (previous && Date.now() - Date.parse(previous) < 60_000) return
+  await persistMachineRegistry()
+}
+
 async function loadAiAttributions() {
   const now = Date.now()
   const storedAttributions = await readStoredArray(aiAttributionsFile)
@@ -1540,6 +1573,47 @@ async function fetchAionUi(pathname, { timeoutMs = 8_000, method = 'GET', body }
     }
   }
   throw lastError ?? new Error('AIONUI_REQUEST_FAILED')
+}
+
+// 메인 머신과 서브 머신의 유일한 분기점이다.
+// 메인은 기존과 같이 루프백으로 직접 호출하고, 서브는 Runner가 가져갈 오퍼레이션 큐에 넣는다.
+// 서브 머신의 AionUi는 inbound 주소를 열지 않으므로 메인에서 직접 호출할 수 없다.
+function fetchAionUiOn(machineId, pathname, options = {}) {
+  const targetMachineId = normalizeMachineId(machineId)
+  if (!targetMachineId || targetMachineId === machineRegistry.mainMachineId) {
+    return fetchAionUi(pathname, options)
+  }
+
+  const machine = findMachine(machineRegistry, targetMachineId)
+  if (!machine) {
+    return Promise.reject(new MachineOperationError(
+      `${targetMachineId} 머신이 등록되어 있지 않습니다.`,
+      { reasonCode: 'MACHINE_UNREGISTERED' },
+    ))
+  }
+  if (!machine.enabled) {
+    return Promise.reject(new MachineOperationError(
+      `${machine.label} 머신이 비활성화되어 있습니다.`,
+      { reasonCode: 'MACHINE_DISABLED' },
+    ))
+  }
+  if (!machine.tokenHash) {
+    return Promise.reject(new MachineOperationError(
+      `${machine.label} 머신에 Runner 토큰이 발급되지 않았습니다.`,
+      { reasonCode: 'RUNNER_NOT_CONFIGURED' },
+    ))
+  }
+
+  try {
+    return machineOperationQueue.enqueue(targetMachineId, {
+      method: options.method ?? 'GET',
+      pathname,
+      body: options.body,
+      timeoutMs: options.timeoutMs,
+    }).completion
+  } catch (error) {
+    return Promise.reject(error)
+  }
 }
 
 function fetchAionCoreDispatchCapabilities() {
@@ -6732,6 +6806,115 @@ const server = createServer(async (request, response) => {
       return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
     }
 
+    // Runner는 사용자 세션이 아니라 머신 토큰으로 인증한다.
+    const machineRunnerClaimRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/runner\/operations\/claim$/)
+    if (request.method === 'POST' && machineRunnerClaimRoute) {
+      const machine = requireRunnerMachine(request, response, machineRunnerClaimRoute[1])
+      if (!machine) return
+      const body = await readJsonBody(request)
+      const waitMs = Math.max(0, Math.min(machineOperationLongPollMs, Math.trunc(Number(body?.waitMs)) || machineOperationLongPollMs))
+      await noteMachineSeen(machine.machineId)
+      const operations = await machineOperationQueue.waitForClaim(machine.machineId, {
+        limit: Number(body?.limit) || 1,
+        waitMs,
+      })
+      return sendJson(response, 200, { operations })
+    }
+
+    const machineRunnerResultRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/runner\/operations\/([^/]+)\/result$/)
+    if (request.method === 'POST' && machineRunnerResultRoute) {
+      const machine = requireRunnerMachine(request, response, machineRunnerResultRoute[1])
+      if (!machine) return
+      const body = await readJsonBody(request)
+      try {
+        const settled = machineOperationQueue.settle(machine.machineId, machineRunnerResultRoute[2], body)
+        return sendJson(response, 200, settled)
+      } catch (error) {
+        if (error instanceof MachineOperationError) return sendJson(response, 409, { error: error.message, reasonCode: error.reasonCode })
+        throw error
+      }
+    }
+
+    const machineRunnerHeartbeatRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/runner\/heartbeat$/)
+    if (request.method === 'POST' && machineRunnerHeartbeatRoute) {
+      const machine = requireRunnerMachine(request, response, machineRunnerHeartbeatRoute[1])
+      if (!machine) return
+      await noteMachineSeen(machine.machineId)
+      return sendJson(response, 200, {
+        machineId: machine.machineId,
+        label: machine.label,
+        longPollMs: machineOperationLongPollMs,
+        queue: machineOperationQueue.snapshot(machine.machineId),
+        serverStartedAt,
+      })
+    }
+
+    // Runner를 거쳐 그 머신의 AionUi까지 실제로 닿는지 확인한다.
+    const machineProbeRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/probe$/)
+    if (request.method === 'POST' && machineProbeRoute) {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 머신 연결을 확인할 수 있습니다.' })
+
+      const machineId = normalizeMachineId(machineProbeRoute[1])
+      const machine = findMachine(machineRegistry, machineId)
+      if (!machine) return sendJson(response, 404, { error: '등록된 머신을 찾지 못했습니다.' })
+
+      const startedAt = Date.now()
+      try {
+        const snapshot = await fetchAionUiOn(machineId, '/api/internal/conversation-runtimes/active', { timeoutMs: 5_000 })
+        return sendJson(response, 200, {
+          machineId,
+          reachable: true,
+          elapsedMs: Date.now() - startedAt,
+          conversationCount: Array.isArray(snapshot?.items) ? snapshot.items.length : null,
+        })
+      } catch (error) {
+        return sendJson(response, 200, {
+          machineId,
+          reachable: false,
+          elapsedMs: Date.now() - startedAt,
+          reasonCode: error instanceof MachineOperationError ? error.reasonCode : null,
+          error: error instanceof Error ? error.message : 'AionUi에 연결하지 못했습니다.',
+        })
+      }
+    }
+
+    // Runner 토큰은 발급 시점에 한 번만 평문으로 보여 준다.
+    const machineTokenRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/token$/)
+    if (machineTokenRoute) {
+      const admin = requireAdmin(request, response)
+      if (!admin) return
+
+      if (request.method === 'POST') {
+        const token = `mnprn_${randomBytes(32).toString('base64url')}`
+        try {
+          machineRegistry = setMachineToken(machineRegistry, machineTokenRoute[1], token)
+        } catch (error) {
+          if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
+          throw error
+        }
+        await persistMachineRegistry()
+        return sendJson(response, 200, { machineId: normalizeMachineId(machineTokenRoute[1]), token })
+      }
+
+      if (request.method === 'DELETE') {
+        const machineId = normalizeMachineId(machineTokenRoute[1])
+        try {
+          machineRegistry = setMachineToken(machineRegistry, machineId, null)
+        } catch (error) {
+          if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
+          throw error
+        }
+        // 토큰을 폐기하면 그 머신으로 향하던 요청은 더 이상 전달될 수 없다.
+        machineOperationQueue.cancelMachine(machineId, 'Runner 토큰이 폐기되었습니다.')
+        await persistMachineRegistry()
+        return sendJson(response, 200, publicMachineRegistry(machineRegistry))
+      }
+
+      return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
+    }
+
     // 머신 레지스트리는 공용 인프라 정보이므로 조회는 편집자, 변경은 관리자만 가능하다.
     if (url.pathname === '/api/machines') {
       if (request.method === 'GET') {
@@ -6765,6 +6948,8 @@ const server = createServer(async (request, response) => {
           if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
           throw error
         }
+        // 등록이 사라진 머신으로 향하던 요청은 영원히 전달될 수 없으므로 즉시 실패로 확정한다.
+        machineOperationQueue.cancelMachine(removedMachineId)
         // 삭제한 머신을 기본값으로 쓰던 사용자는 조회 시 자동으로 해제되지만 저장값도 함께 정리한다.
         for (const [userId, settings] of distributedWorkSettings.entries()) {
           if (settings.defaultMachineId !== removedMachineId) continue
@@ -8016,6 +8201,12 @@ setInterval(() => {
 setInterval(() => {
   void ensureDailyBackups().catch((error) => console.warn('[Daily backup scheduler]', error))
 }, 60 * 60 * 1000).unref()
+
+// 제한 시간을 넘긴 서브 머신 요청을 재전달 없이 실패로 확정한다.
+setInterval(() => {
+  const expired = machineOperationQueue.sweep()
+  if (expired > 0) console.warn(`[Machine operation sweep] ${expired}개 요청을 제한 시간 초과로 실패 처리했습니다.`)
+}, 5_000).unref()
 
 server.listen(port, host, () => {
   console.log(`[Mind & Progress API] http://${host}:${port}`)

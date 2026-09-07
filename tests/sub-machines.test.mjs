@@ -15,8 +15,10 @@ import {
   removeSubMachine,
   resolveDistributedWorkSettings,
   serializeMachineRegistry,
+  setMachineToken,
   touchMachine,
   upsertSubMachine,
+  verifyMachineToken,
 } from '../server/lib/subMachines.mjs'
 
 const mainDescriptor = { machineId: 'desk-win', label: '메인 데스크탑', platform: 'win32' }
@@ -163,8 +165,56 @@ test('직렬화는 role을 복원하고 왕복해도 같은 레지스트리가 �
 test('클라이언트 응답에는 내부 시각 필드를 넣지 않는다', () => {
   const machine = publicMachineRegistry(registryWithSub()).machines[1]
   assert.deepEqual(Object.keys(machine).sort(), [
-    'enabled', 'label', 'lastSeenAt', 'machineId', 'platform', 'role', 'workspacePoolIds',
+    'enabled', 'hasToken', 'label', 'lastSeenAt', 'machineId', 'platform', 'role', 'workspacePoolIds',
   ])
+  assert.equal(machine.hasToken, false)
+})
+
+test('Runner 토큰은 해시로만 보관하고 발급한 머신에서만 검증에 성공한다', () => {
+  const registry = upsertSubMachine(registryWithSub(), { machineId: 'spare', label: '예비' })
+  const issued = setMachineToken(registry, 'macbook', 'runner-secret-token')
+
+  assert.equal(findMachine(issued, 'macbook').tokenHash.length, 64)
+  assert.notEqual(findMachine(issued, 'macbook').tokenHash, 'runner-secret-token')
+  assert.equal(publicMachineRegistry(issued).machines[1].hasToken, true)
+
+  assert.equal(verifyMachineToken(issued, 'macbook', 'runner-secret-token'), true)
+  assert.equal(verifyMachineToken(issued, 'macbook', 'wrong-token'), false)
+  assert.equal(verifyMachineToken(issued, 'spare', 'runner-secret-token'), false)
+  assert.equal(verifyMachineToken(issued, 'unknown', 'runner-secret-token'), false)
+})
+
+test('메인 머신에는 Runner 토큰을 발급하지 않는다', () => {
+  assert.throws(() => setMachineToken(registryWithSub(), 'desk-win', 'token'), SubMachinePayloadError)
+  assert.throws(() => setMachineToken(registryWithSub(), 'unknown', 'token'), SubMachinePayloadError)
+})
+
+test('비활성화한 머신과 토큰을 폐기한 머신은 검증에 실패한다', () => {
+  const issued = setMachineToken(registryWithSub(), 'macbook', 'runner-secret-token')
+
+  const disabled = upsertSubMachine(issued, { machineId: 'macbook', label: '맥북', enabled: false })
+  assert.equal(verifyMachineToken(disabled, 'macbook', 'runner-secret-token'), false)
+
+  const revoked = setMachineToken(issued, 'macbook', null)
+  assert.equal(findMachine(revoked, 'macbook').tokenHash, null)
+  assert.equal(verifyMachineToken(revoked, 'macbook', 'runner-secret-token'), false)
+})
+
+test('머신 정보를 수정해도 이미 발급한 Runner 토큰은 유지한다', () => {
+  const issued = setMachineToken(registryWithSub(), 'macbook', 'runner-secret-token')
+  const renamed = upsertSubMachine(issued, { machineId: 'macbook', label: '맥북 16', platform: 'darwin' })
+
+  assert.equal(renamed.machines[1].label, '맥북 16')
+  assert.equal(verifyMachineToken(renamed, 'macbook', 'runner-secret-token'), true)
+})
+
+test('서브였던 머신이 메인이 되면 남은 Runner 토큰을 폐기한다', () => {
+  const issued = setMachineToken(registryWithSub(), 'macbook', 'runner-secret-token')
+  const promoted = ensureMainMachine(issued, { machineId: 'macbook', label: '맥북', platform: 'darwin' })
+
+  assert.equal(promoted.mainMachineId, 'macbook')
+  assert.equal(findMachine(promoted, 'macbook').tokenHash, null)
+  assert.equal(verifyMachineToken(promoted, 'macbook', 'runner-secret-token'), false)
 })
 
 test('마지막 접속 시각은 등록된 머신에만 기록한다', () => {

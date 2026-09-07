@@ -2,6 +2,8 @@
 // 이 모듈은 머신 레지스트리와 사용자별 분산 작업 설정을 정규화한다.
 // 메인 머신은 registry의 mainMachineId 하나로만 결정되므로 role 중복이 구조적으로 생기지 않는다.
 
+import { createHash, timingSafeEqual } from 'node:crypto'
+
 export const MACHINE_REGISTRY_VERSION = 1
 export const MACHINE_LIMIT = 32
 export const MACHINE_ID_MAX_LENGTH = 64
@@ -72,7 +74,13 @@ export function normalizeMachine(value) {
     createdAt: isoOrNull(value.createdAt),
     updatedAt: isoOrNull(value.updatedAt),
     lastSeenAt: isoOrNull(value.lastSeenAt),
+    // Runner 인증 토큰은 평문을 보관하지 않고 발급 시점에 한 번만 노출한다.
+    tokenHash: /^[a-f0-9]{64}$/.test(String(value.tokenHash ?? '')) ? String(value.tokenHash) : null,
   }
+}
+
+export function hashMachineToken(token) {
+  return createHash('sha256').update(String(token ?? '')).digest('hex')
 }
 
 // 저장 파일은 머신 배열이고 각 항목이 role을 들고 있다.
@@ -131,6 +139,7 @@ export function publicMachine(registry, machine) {
     enabled: machine.enabled,
     workspacePoolIds: machine.workspacePoolIds,
     lastSeenAt: machine.lastSeenAt,
+    hasToken: Boolean(machine.tokenHash),
   }
 }
 
@@ -165,6 +174,8 @@ export function ensureMainMachine(registry, descriptor, now = new Date().toISOSt
     platform,
     enabled: true,
     updatedAt: now,
+    // 서브였던 머신이 메인이 되면 남은 Runner 토큰을 폐기한다.
+    tokenHash: null,
   }
 
   return {
@@ -202,6 +213,8 @@ export function upsertSubMachine(registry, input, now = new Date().toISOString()
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     lastSeenAt: existing?.lastSeenAt ?? null,
+    // 이름이나 플랫폼만 고칠 때 이미 발급한 Runner 토큰이 무효화되면 안 된다.
+    tokenHash: existing?.tokenHash ?? null,
   }
 
   return {
@@ -225,6 +238,31 @@ export function removeSubMachine(registry, machineId) {
     ...registry,
     machines: registry.machines.filter((machine) => machine.machineId !== normalized),
   }
+}
+
+// 토큰은 서브 머신에만 발급한다. 메인 머신의 AionUi는 항상 루프백으로 직접 호출한다.
+export function setMachineToken(registry, machineId, token, now = new Date().toISOString()) {
+  const machine = findMachine(registry, machineId)
+  if (!machine) throw new SubMachinePayloadError('등록된 머신을 찾지 못했습니다.')
+  if (machine.machineId === registry.mainMachineId) {
+    throw new SubMachinePayloadError('메인 머신에는 Runner 토큰을 발급하지 않습니다.')
+  }
+  const tokenHash = token === null ? null : hashMachineToken(token)
+  return {
+    ...registry,
+    machines: registry.machines.map((current) => (
+      current.machineId === machine.machineId ? { ...current, tokenHash, updatedAt: now } : current
+    )),
+  }
+}
+
+export function verifyMachineToken(registry, machineId, token) {
+  const machine = findMachine(registry, machineId)
+  if (!machine || !machine.enabled || !machine.tokenHash) return false
+  if (machine.machineId === registry.mainMachineId) return false
+  const candidate = Buffer.from(hashMachineToken(token), 'hex')
+  const expected = Buffer.from(machine.tokenHash, 'hex')
+  return candidate.length === expected.length && timingSafeEqual(candidate, expected)
 }
 
 export function touchMachine(registry, machineId, now = new Date().toISOString()) {

@@ -697,9 +697,19 @@
 .machine-probe.fail { color: #b94d4d; }
 .distributed-work-token { display: flex; flex-direction: column; gap: 6px; margin-top: 9px; padding: 10px 11px; border: 1px solid #d5cef0; border-radius: 8px; background: #f7f5fd; }
 .distributed-work-token strong { color: #4a3fa8; font-size: 8px; }
-.distributed-work-token code { padding: 7px 8px; color: #39333f; border: 1px solid #e2ddef; border-radius: 6px; background: white; font-size: 8px; word-break: break-all; }
+.distributed-work-token > code { padding: 8px 9px; color: #39333f; border: 1px solid #e2ddef; border-radius: 6px; background: white; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 8px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
 .distributed-work-token small { color: #8c8592; font-size: 7px; line-height: 1.6; }
-.distributed-work-token > button { align-self: flex-start; padding: 5px 10px; color: #4a3fa8; border: 1px solid #d5cef0; border-radius: 6px; background: white; font-size: 7px; font-weight: 700; cursor: pointer; }
+.distributed-work-token small code { padding: 1px 3px; border-radius: 4px; background: #ece9f7; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.distributed-work-token-actions { display: flex; gap: 5px; }
+.distributed-work-token-actions > button { padding: 5px 10px; color: #4a3fa8; border: 1px solid #d5cef0; border-radius: 6px; background: white; font-size: 7px; font-weight: 700; cursor: pointer; }
+.distributed-work-token-warning { color: #b94d4d !important; }
+.distributed-work-warning { display: flex; flex-direction: column; gap: 4px; padding: 10px 11px; border: 1px solid #f0d0d0; border-radius: 8px; background: #fff5f5; }
+.distributed-work-warning strong { color: #b94d4d; font-size: 9px; }
+.distributed-work-warning span { color: #8c6a6a; font-size: 8px; line-height: 1.7; }
+.distributed-work-warning code { padding: 1px 4px; border-radius: 4px; background: #f7e2e2; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.machine-status { margin-left: 6px; font-size: 7px; font-style: normal; font-weight: 700; }
+.machine-status.online { color: #3f7a68; }
+.machine-status.offline { color: #a49eaa; }
 .machine-role { flex: 0 0 auto; padding: 3px 6px; border-radius: 5px; font-size: 7px; font-weight: 700; }
 .machine-role.main { color: #4a3fa8; background: #eceafa; }
 .machine-role.sub { color: #3f7a68; background: #e8f5f0; }

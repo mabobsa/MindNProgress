@@ -557,6 +557,20 @@ type MachineSummary = {
   ownerUserId: string | null
   ownerName: string | null
   manageable: boolean
+  online: boolean | null
+}
+
+type RunnerConnectionInfo = {
+  apiUrl: string
+  lanReachable: boolean
+  bindHost: string
+  onlineWithinMs: number
+}
+
+type MachineRegistryResponse = {
+  mainMachineId: string
+  machines: MachineSummary[]
+  runner: RunnerConnectionInfo
 }
 
 type DistributedWorkSettings = {
@@ -1937,12 +1951,33 @@ function machinePlatformLabel(platform: string) {
   return MACHINE_PLATFORM_LABELS[platform] ?? platform
 }
 
+function machineSeenLabel(lastSeenAt: string | null) {
+  const seenAt = lastSeenAt ? Date.parse(lastSeenAt) : Number.NaN
+  if (!Number.isFinite(seenAt)) return '접속 기록 없음'
+  const elapsedSeconds = Math.max(0, Math.round((Date.now() - seenAt) / 1_000))
+  if (elapsedSeconds < 60) return `${elapsedSeconds}초 전`
+  if (elapsedSeconds < 3_600) return `${Math.floor(elapsedSeconds / 60)}분 전`
+  if (elapsedSeconds < 86_400) return `${Math.floor(elapsedSeconds / 3_600)}시간 전`
+  return `${Math.floor(elapsedSeconds / 86_400)}일 전`
+}
+
+// 발급 직후에만 평문 토큰이 있으므로 실행 명령도 이 시점에만 만들 수 있다.
+function runnerStartCommand(apiUrl: string, machineId: string, token: string) {
+  return [
+    `MNP_RUNNER_API_URL=${apiUrl}`,
+    `MNP_RUNNER_MACHINE_ID=${machineId}`,
+    `MNP_RUNNER_TOKEN=${token}`,
+    'node runner/index.mjs',
+  ].join(' \\\n')
+}
+
 function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLElement>(null)
   const [targets, setTargets] = useState<DistributedWorkTargets | null>(null)
   const [enabled, setEnabled] = useState(false)
   const [defaultMachineId, setDefaultMachineId] = useState('')
   const [machines, setMachines] = useState<MachineSummary[]>([])
+  const [runnerInfo, setRunnerInfo] = useState<RunnerConnectionInfo | null>(null)
   const [newMachineId, setNewMachineId] = useState('')
   const [newMachineLabel, setNewMachineLabel] = useState('')
   const [newMachinePlatform, setNewMachinePlatform] = useState('darwin')
@@ -1963,10 +1998,11 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
   const reload = useCallback(async () => {
     const [settings, registry] = await Promise.all([
       apiRequest<{ settings: DistributedWorkSettings; targets: DistributedWorkTargets }>('/api/account/distributed-work'),
-      apiRequest<{ mainMachineId: string; machines: MachineSummary[] }>('/api/machines'),
+      apiRequest<MachineRegistryResponse>('/api/machines'),
     ])
     applySettings(settings)
     setMachines(registry.machines)
+    setRunnerInfo(registry.runner)
   }, [applySettings])
 
   useEffect(() => {
@@ -1982,6 +2018,21 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
     })()
     return () => { cancelled = true }
   }, [reload])
+
+  // 접속 상태를 최신으로 유지한다. 저장하지 않은 설정 편집을 덮지 않도록 머신 목록만 다시 읽는다.
+  useEffect(() => {
+    let cancelled = false
+    const timer = setInterval(() => {
+      void apiRequest<MachineRegistryResponse>('/api/machines')
+        .then((registry) => {
+          if (cancelled) return
+          setMachines(registry.machines)
+          setRunnerInfo(registry.runner)
+        })
+        .catch(() => {})
+    }, 15_000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [])
 
   async function save() {
     setError('')
@@ -2006,7 +2057,7 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
     setNotice('')
     setSubmitting(true)
     try {
-      await apiRequest<{ machines: MachineSummary[] }>('/api/machines', {
+      await apiRequest<MachineRegistryResponse>('/api/machines', {
         method: 'POST',
         body: JSON.stringify({
           machineId: newMachineId.trim().toLowerCase(),
@@ -2031,7 +2082,7 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
     setNotice('')
     setSubmitting(true)
     try {
-      await apiRequest<{ machines: MachineSummary[] }>('/api/machines', {
+      await apiRequest<MachineRegistryResponse>('/api/machines', {
         method: 'DELETE',
         body: JSON.stringify({ machineId }),
       })
@@ -2109,6 +2160,16 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
               이 설정을 켜야 서브 머신이 위임 대상 후보로 올라오며, 실제 실행은 해당 머신에 Runner를 연결한 뒤부터 가능합니다.
             </p>
 
+            {runnerInfo && !runnerInfo.lanReachable && (
+              <div className="distributed-work-warning" role="alert">
+                <strong>서브 머신에서 이 서버에 접속할 수 없습니다.</strong>
+                <span>
+                  MindNProgress가 <code>{runnerInfo.bindHost}</code>에만 바인딩되어 있어 다른 장비의 Runner가 연결하지 못합니다.
+                  메인 머신에서 <code>MNP_API_HOST=0.0.0.0</code>으로 서버를 다시 실행한 뒤 아래 절차를 진행하세요.
+                </span>
+              </div>
+            )}
+
             <label className="distributed-work-toggle">
               <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
               <span>
@@ -2137,7 +2198,14 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
                     <li key={machine.machineId} className={machine.enabled ? '' : 'disabled'}>
                       <span className={`machine-role ${machine.role}`}>{machine.role === 'main' ? '메인' : '서브'}</span>
                       <span className="machine-label">
-                        <strong>{machine.label}</strong>
+                        <strong>
+                          {machine.label}
+                          {machine.role === 'sub' && (
+                            <em className={`machine-status ${machine.online ? 'online' : 'offline'}`}>
+                              {machine.online ? '연결됨' : '끊김'} · {machineSeenLabel(machine.lastSeenAt)}
+                            </em>
+                          )}
+                        </strong>
                         <small>
                           {machine.machineId}
                           {machine.platform ? ` · ${machinePlatformLabel(machine.platform)}` : ''}
@@ -2177,12 +2245,33 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
                 })}
               </ul>
               {subMachines.length === 0 && <p className="distributed-work-empty">등록된 서브 머신이 없습니다.</p>}
-              {issuedToken && (
+              {issuedToken && runnerInfo && (
                 <div className="distributed-work-token" role="status">
-                  <strong>{issuedToken.machineId} Runner 토큰</strong>
-                  <code>{issuedToken.token}</code>
-                  <small>이 값은 지금만 표시됩니다. 서브 머신 Runner 설정에 저장한 뒤 이 창을 닫으세요.</small>
-                  <button type="button" onClick={() => { void navigator.clipboard?.writeText(issuedToken.token); setNotice('토큰을 클립보드에 복사했습니다.') }}>복사</button>
+                  <strong>{issuedToken.machineId} Runner 실행 명령</strong>
+                  <small>
+                    아래 명령을 <b>{issuedToken.machineId}</b> 머신의 MindNProgress 저장소 폴더에서 실행하세요.
+                    토큰은 지금만 표시되므로 창을 닫기 전에 복사해 두세요.
+                  </small>
+                  <code>{runnerStartCommand(runnerInfo.apiUrl, issuedToken.machineId, issuedToken.token)}</code>
+                  <div className="distributed-work-token-actions">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(runnerStartCommand(runnerInfo.apiUrl, issuedToken.machineId, issuedToken.token))
+                        setNotice('실행 명령을 클립보드에 복사했습니다.')
+                      }}
+                    >실행 명령 복사</button>
+                    <button
+                      type="button"
+                      onClick={() => { void navigator.clipboard?.writeText(issuedToken.token); setNotice('토큰을 클립보드에 복사했습니다.') }}
+                    >토큰만 복사</button>
+                  </div>
+                  {!runnerInfo.lanReachable && (
+                    <small className="distributed-work-token-warning">
+                      지금은 서버가 <code>{runnerInfo.bindHost}</code>에만 바인딩되어 있어 이 명령이 연결에 실패합니다.
+                      <code>MNP_API_HOST=0.0.0.0</code>으로 다시 실행한 뒤 사용하세요.
+                    </small>
+                  )}
                 </div>
               )}
             </div>

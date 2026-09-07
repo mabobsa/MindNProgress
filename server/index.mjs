@@ -1366,6 +1366,19 @@ async function loadDistributedWorkSettings() {
   await persistDistributedWorkSettings()
 }
 
+// Runner는 하트비트와 오퍼레이션 대기마다 접속 시각을 남긴다.
+// 하트비트 기본 간격이 60초, long-poll이 25초이므로 이 정도면 정상 동작 중에는 끊김으로 보이지 않는다.
+const runnerOnlineWithinMs = 150_000
+
+function isLoopbackBindHost(value) {
+  const normalized = String(value ?? '').trim().toLowerCase().replace(/^\[|\]$/g, '')
+  return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.')
+}
+
+// 서브 머신의 Runner가 접속할 주소다. 루프백에만 바인딩되어 있으면 어떤 Runner도 붙을 수 없다.
+const runnerApiBaseUrl = `http://${detectedPublicIpv4()}:${port}`
+const runnerApiLanReachable = !isLoopbackBindHost(host)
+
 function machineViewer(user) {
   return { userId: user.id, isAdmin: user.role === 'admin' }
 }
@@ -1374,15 +1387,26 @@ function userDistributedWork(user) {
   return resolveDistributedWorkSettings(distributedWorkSettings.get(user.id), machineRegistry, machineViewer(user))
 }
 
-// 소유자 표시는 화면에서만 쓰므로 순수 모듈이 아니라 응답 단계에서 붙인다.
+// 소유자 표시와 접속 상태는 화면에서만 쓰므로 순수 모듈이 아니라 응답 단계에서 붙인다.
 function machineRegistryResponse(user) {
   const registry = publicMachineRegistry(machineRegistry)
+  const now = Date.now()
   return {
     ...registry,
+    runner: {
+      apiUrl: runnerApiBaseUrl,
+      lanReachable: runnerApiLanReachable,
+      bindHost: host,
+      onlineWithinMs: runnerOnlineWithinMs,
+    },
     machines: registry.machines.map((machine) => ({
       ...machine,
       ownerName: users.find((candidate) => candidate.id === machine.ownerUserId)?.name ?? null,
       manageable: machineManageableBy(machineRegistry, machine.machineId, machineViewer(user)),
+      // 메인 머신은 Runner 없이 루프백으로 직접 호출하므로 접속 상태가 없다.
+      online: machine.role === 'main'
+        ? null
+        : machine.lastSeenAt !== null && now - Date.parse(machine.lastSeenAt) <= runnerOnlineWithinMs,
     })),
   }
 }

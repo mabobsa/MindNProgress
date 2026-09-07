@@ -23,7 +23,7 @@ async function waitForServer(baseUrl, timeoutMs = 15_000) {
   throw new Error('머신 레지스트리 API 검증 서버가 제한 시간 안에 시작되지 않았습니다.')
 }
 
-function startServer(dataDirectory, port) {
+function startServer(dataDirectory, port, extraEnv = {}) {
   return spawn(process.execPath, ['server/index.mjs'], {
     cwd: projectDirectory,
     env: {
@@ -36,6 +36,7 @@ function startServer(dataDirectory, port) {
       MNP_MACHINE_LABEL: '메인 데스크탑',
       MNP_ADMIN_EMAIL: adminEmail,
       MNP_ADMIN_PASSWORD: adminPassword,
+      ...extraEnv,
     },
     stdio: 'ignore',
   })
@@ -166,6 +167,70 @@ test('머신 레지스트리와 사용자별 분산 작업 설정을 관리한�
     const storedSettings = JSON.parse(await readFile(path.join(dataDirectory, '_distributed-work-settings.json'), 'utf8'))
     assert.equal(storedSettings.length, 1)
     assert.equal(storedSettings[0].defaultMachineId, null)
+  } finally {
+    await stopServer(server)
+    await rm(dataDirectory, { recursive: true, force: true })
+  }
+})
+
+test('루프백 바인딩이면 Runner가 접속할 수 없다고 알린다', { timeout: 45_000 }, async () => {
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-bind-'))
+  const port = 4_972
+  const baseUrl = `http://127.0.0.1:${port}`
+  const server = startServer(dataDirectory, port)
+
+  try {
+    await waitForServer(baseUrl)
+    const cookie = await login(baseUrl, adminEmail, adminPassword)
+    const listed = await apiRequest(baseUrl, cookie, '/api/machines')
+
+    // 테스트 서버는 127.0.0.1에 바인딩하므로 다른 장비의 Runner가 붙을 수 없다.
+    assert.equal(listed.body.runner.lanReachable, false)
+    assert.equal(listed.body.runner.bindHost, '127.0.0.1')
+    // 실행 명령에 쓸 주소는 루프백이 아니라 LAN 주소여야 한다.
+    assert.match(listed.body.runner.apiUrl, new RegExp(`^http://\\d+\\.\\d+\\.\\d+\\.\\d+:${port}$`))
+    assert.ok(listed.body.runner.onlineWithinMs > 0)
+  } finally {
+    await stopServer(server)
+    await rm(dataDirectory, { recursive: true, force: true })
+  }
+})
+
+test('서브 머신 접속 상태는 하트비트 시각으로 판정하고 메인 머신에는 없다', { timeout: 45_000 }, async () => {
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-online-'))
+  const port = 4_973
+  const baseUrl = `http://127.0.0.1:${port}`
+  const server = startServer(dataDirectory, port, { MNP_API_HOST: '0.0.0.0' })
+
+  try {
+    await waitForServer(baseUrl)
+    const cookie = await login(baseUrl, adminEmail, adminPassword)
+
+    // 0.0.0.0에 바인딩하면 경고가 사라진다.
+    const bound = await apiRequest(baseUrl, cookie, '/api/machines')
+    assert.equal(bound.body.runner.lanReachable, true)
+    assert.equal(bound.body.machines[0].online, null, '메인 머신은 Runner가 없어 접속 상태가 없다')
+
+    await apiRequest(baseUrl, cookie, '/api/machines', 'POST', { machineId: 'macbook', label: '맥북' })
+    const issued = await apiRequest(baseUrl, cookie, '/api/machines/macbook/token', 'POST')
+
+    // Runner가 한 번도 붙지 않았으면 끊김이다.
+    const before = await apiRequest(baseUrl, cookie, '/api/machines')
+    const beforeMachine = before.body.machines.find((machine) => machine.machineId === 'macbook')
+    assert.equal(beforeMachine.online, false)
+    assert.equal(beforeMachine.lastSeenAt, null)
+
+    // 하트비트가 오면 연결됨으로 바뀐다.
+    const heartbeat = await fetch(`${baseUrl}/api/machines/macbook/runner/heartbeat`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${issued.body.token}` },
+    })
+    assert.equal(heartbeat.status, 200)
+
+    const after = await apiRequest(baseUrl, cookie, '/api/machines')
+    const afterMachine = after.body.machines.find((machine) => machine.machineId === 'macbook')
+    assert.equal(afterMachine.online, true)
+    assert.ok(Number.isFinite(Date.parse(afterMachine.lastSeenAt)))
   } finally {
     await stopServer(server)
     await rm(dataDirectory, { recursive: true, force: true })

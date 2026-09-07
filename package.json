@@ -13,6 +13,7 @@
     "test:mcp": "node scripts/test-mcp.mjs",
     "test:unit": "node scripts/run-unit-tests.mjs",
     "mcp": "node mcp/server.mjs",
+    "runner": "node runner/index.mjs",
     "usage:mcp": "node scripts/mcp-tool-usage.mjs",
     "comments:migration": "node scripts/comment-migration.mjs",
     "preview": "vite preview",

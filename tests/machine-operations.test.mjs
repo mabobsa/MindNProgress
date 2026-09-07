@@ -214,6 +214,76 @@ test('이미 대기 중인 요청이 있으면 기다리지 않고 바로 가져
   assert.deepEqual(claimed.map((operation) => operation.request.pathname), ['/api/ready'])
 })
 
+test('전달되지 못한 응답의 오퍼레이션은 대기열로 되돌려 다음 Runner가 받는다', async () => {
+  const { queue } = createQueue()
+  const { operationId, completion } = queue.enqueue('macbook', { pathname: '/api/x' })
+
+  const claimed = queue.claim('macbook')
+  assert.equal(claimed.length, 1)
+  assert.equal(queue.snapshot('macbook').dispatched, 1)
+
+  // Runner가 long-poll 응답을 받지 못했으므로 실행되지 않았다. 되돌려도 중복 실행이 아니다.
+  assert.equal(queue.release('macbook', [operationId]), 1)
+  assert.deepEqual(queue.snapshot('macbook'), { pending: 1, dispatched: 0, waiting: 0 })
+
+  const reclaimed = queue.claim('macbook')
+  assert.deepEqual(reclaimed.map((operation) => operation.operationId), [operationId])
+  queue.settle('macbook', operationId, { ok: true, data: { relayed: true } })
+  assert.deepEqual(await completion, { relayed: true })
+})
+
+test('되돌린 오퍼레이션의 전달 상한은 등록 시점 기준이라 무한히 늘어나지 않는다', async () => {
+  const { queue, advance } = createQueue({ dispatchTimeoutMs: 30_000 })
+  const { operationId, completion } = queue.enqueue('macbook', { pathname: '/api/x' })
+
+  // Runner가 반복해서 끊겼다 붙는 상황을 재현한다.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    advance(9_000)
+    queue.claim('macbook')
+    queue.release('macbook', [operationId])
+  }
+
+  assert.equal(queue.sweep(), 0)
+  advance(3_001)
+  assert.equal(queue.sweep(), 1)
+  const result = await settledState(completion)
+  assert.equal(result.error.reasonCode, 'RUNNER_UNAVAILABLE')
+})
+
+test('되돌리기는 가져간 오퍼레이션에만 적용한다', () => {
+  const { queue } = createQueue()
+  // claim은 등록 순서대로 가져가므로 first가 dispatched, second는 pending으로 남는다.
+  const first = queue.enqueue('macbook', { pathname: '/api/first' })
+  const second = queue.enqueue('macbook', { pathname: '/api/second' })
+  queue.claim('macbook', 1)
+
+  assert.equal(queue.release('macbook', [second.operationId]), 0, '아직 가져가지 않은 오퍼레이션')
+  assert.equal(queue.release('desk-win', [first.operationId]), 0, '다른 머신의 오퍼레이션')
+  assert.equal(queue.release('macbook', ['없음', null, undefined]), 0, '존재하지 않는 오퍼레이션')
+  assert.deepEqual(queue.snapshot('macbook'), { pending: 1, dispatched: 1, waiting: 0 })
+
+  assert.equal(queue.release('macbook', [first.operationId]), 1)
+  assert.deepEqual(queue.snapshot('macbook'), { pending: 2, dispatched: 0, waiting: 0 })
+  void first.completion.catch(() => {})
+  void second.completion.catch(() => {})
+})
+
+test('되돌린 오퍼레이션은 대기 중인 다음 Runner를 즉시 깨운다', async () => {
+  const { queue } = createQueue()
+  const { operationId, completion } = queue.enqueue('macbook', { pathname: '/api/x' })
+  queue.claim('macbook')
+
+  // 끊긴 Runner를 대신해 새 Runner가 대기에 들어간 상태를 만든다.
+  const waiting = queue.waitForClaim('macbook', { waitMs: 30_000 })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(queue.snapshot('macbook').waiting, 1)
+
+  assert.equal(queue.release('macbook', [operationId]), 1)
+  const claimed = await waiting
+  assert.deepEqual(claimed.map((operation) => operation.operationId), [operationId])
+  void completion.catch(() => {})
+})
+
 test('머신별 대기 상한을 넘는 요청은 거부한다', () => {
   const { queue } = createQueue({ maxPendingPerMachine: 2 })
   const first = queue.enqueue('macbook', { pathname: '/api/1' })

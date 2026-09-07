@@ -162,6 +162,24 @@ export class MachineOperationQueue {
     return this.claim(machineId, limit)
   }
 
+  // long-poll 응답이 Runner에 전달되지 못한 경우다.
+  // Runner가 받지 못했으므로 다시 대기열로 돌려도 중복 실행이 되지 않는다.
+  // 이 되돌림이 없으면 절전이나 종료로 끊긴 연결이 다음 요청을 결과 상한까지 묶는다.
+  release(machineId, operationIds) {
+    let released = 0
+    for (const operationId of operationIds ?? []) {
+      const operation = this.operations.get(String(operationId ?? ''))
+      if (!operation || operation.machineId !== machineId || operation.state !== 'dispatched') continue
+      operation.state = 'pending'
+      operation.dispatchedAt = null
+      // Runner가 계속 끊겼다 붙어도 전달 상한이 무한히 늘어나지 않도록 등록 시점을 기준으로 둔다.
+      operation.expiresAt = operation.createdAt + this.dispatchTimeoutMs
+      released += 1
+    }
+    if (released > 0) this.wake(machineId)
+    return released
+  }
+
   settle(machineId, operationId, result) {
     const operation = this.operations.get(String(operationId ?? ''))
     if (!operation || operation.machineId !== machineId) {

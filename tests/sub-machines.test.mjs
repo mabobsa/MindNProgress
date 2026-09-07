@@ -7,7 +7,9 @@ import {
   ensureMainMachine,
   findMachine,
   isMainMachine,
+  machineManageableBy,
   machineRole,
+  machineTargetableBy,
   normalizeDistributedWorkSettings,
   normalizeMachineId,
   normalizeMachineRegistry,
@@ -22,6 +24,9 @@ import {
 } from '../server/lib/subMachines.mjs'
 
 const mainDescriptor = { machineId: 'desk-win', label: '메인 데스크탑', platform: 'win32' }
+const owner = { userId: 'user-editor', isAdmin: false }
+const otherUser = { userId: 'user-other', isAdmin: false }
+const admin = { userId: 'user-admin', isAdmin: true }
 
 function registryWithSub(overrides = {}) {
   const base = ensureMainMachine(normalizeMachineRegistry([]), mainDescriptor, '2026-09-07T00:00:00.000Z')
@@ -29,6 +34,7 @@ function registryWithSub(overrides = {}) {
     machineId: 'macbook',
     label: '맥북',
     platform: 'darwin',
+    ownerUserId: 'user-editor',
     workspacePoolIds: ['holdem'],
     ...overrides,
   }, '2026-09-07T01:00:00.000Z')
@@ -165,9 +171,47 @@ test('직렬화는 role을 복원하고 왕복해도 같은 레지스트리가 �
 test('클라이언트 응답에는 내부 시각 필드를 넣지 않는다', () => {
   const machine = publicMachineRegistry(registryWithSub()).machines[1]
   assert.deepEqual(Object.keys(machine).sort(), [
-    'enabled', 'hasToken', 'label', 'lastSeenAt', 'machineId', 'platform', 'role', 'workspacePoolIds',
+    'enabled', 'hasToken', 'label', 'lastSeenAt', 'machineId', 'ownerUserId', 'platform', 'role', 'workspacePoolIds',
   ])
   assert.equal(machine.hasToken, false)
+  assert.equal(machine.ownerUserId, 'user-editor')
+})
+
+test('서브 머신은 소유자와 관리자만 관리할 수 있고 메인 머신은 관리자만 다룬다', () => {
+  const registry = registryWithSub()
+
+  assert.equal(machineManageableBy(registry, 'macbook', owner), true)
+  assert.equal(machineManageableBy(registry, 'macbook', otherUser), false)
+  assert.equal(machineManageableBy(registry, 'macbook', admin), true)
+
+  assert.equal(machineManageableBy(registry, 'desk-win', owner), false)
+  assert.equal(machineManageableBy(registry, 'desk-win', admin), true)
+  assert.equal(machineManageableBy(registry, 'unknown', admin), false)
+})
+
+test('소유자가 없는 서브 머신은 관리자만 다룰 수 있다', () => {
+  const registry = upsertSubMachine(registryWithSub(), { machineId: 'orphan', label: '주인 없음' })
+  assert.equal(findMachine(registry, 'orphan').ownerUserId, null)
+  assert.equal(machineManageableBy(registry, 'orphan', owner), false)
+  assert.equal(machineManageableBy(registry, 'orphan', admin), true)
+})
+
+test('머신 정보를 수정해도 소유자는 유지된다', () => {
+  const renamed = upsertSubMachine(registryWithSub(), { machineId: 'macbook', label: '맥북 16' })
+  assert.equal(findMachine(renamed, 'macbook').ownerUserId, 'user-editor')
+  assert.equal(machineManageableBy(renamed, 'macbook', owner), true)
+})
+
+test('위임은 본인 소유 서브 머신과 메인 머신에만 보낼 수 있다', () => {
+  const registry = registryWithSub()
+  const macbook = findMachine(registry, 'macbook')
+  const main = findMachine(registry, 'desk-win')
+
+  assert.equal(machineTargetableBy(registry, macbook, owner), true)
+  assert.equal(machineTargetableBy(registry, macbook, otherUser), false)
+  // 관리자도 남의 장비를 위임 대상으로 쓰지 않는다. 그 사람의 AionUi와 자격 증명이 쓰이기 때문이다.
+  assert.equal(machineTargetableBy(registry, macbook, admin), false)
+  assert.equal(machineTargetableBy(registry, main, otherUser), true)
 })
 
 test('Runner 토큰은 해시로만 보관하고 발급한 머신에서만 검증에 성공한다', () => {
@@ -240,24 +284,29 @@ test('비활성 사용자의 기본 머신 선택은 무시한다', () => {
 
 test('사라졌거나 비활성화된 기본 머신은 선택을 해제한다', () => {
   const registry = registryWithSub()
-  assert.equal(resolveDistributedWorkSettings({ enabled: true, defaultMachineId: 'macbook' }, registry).defaultMachineId, 'macbook')
-  assert.equal(resolveDistributedWorkSettings({ enabled: true, defaultMachineId: 'gone' }, registry).defaultMachineId, null)
+  assert.equal(resolveDistributedWorkSettings({ enabled: true, defaultMachineId: 'macbook' }, registry, owner).defaultMachineId, 'macbook')
+  assert.equal(resolveDistributedWorkSettings({ enabled: true, defaultMachineId: 'gone' }, registry, owner).defaultMachineId, null)
 
   const disabled = upsertSubMachine(registry, { machineId: 'macbook', label: '맥북', enabled: false })
-  assert.equal(resolveDistributedWorkSettings({ enabled: true, defaultMachineId: 'macbook' }, disabled).defaultMachineId, null)
+  assert.equal(resolveDistributedWorkSettings({ enabled: true, defaultMachineId: 'macbook' }, disabled, owner).defaultMachineId, null)
+})
+
+test('남이 소유한 머신은 기본 머신으로 남아 있어도 해제한다', () => {
+  const settings = resolveDistributedWorkSettings({ enabled: true, defaultMachineId: 'macbook' }, registryWithSub(), otherUser)
+  assert.equal(settings.defaultMachineId, null)
 })
 
 test('활성화하지 않은 사용자에게는 메인 머신만 위임 대상으로 노출한다', () => {
-  const targets = distributedWorkTargets(registryWithSub(), { enabled: false })
+  const targets = distributedWorkTargets(registryWithSub(), { enabled: false }, owner)
   assert.equal(targets.enabled, false)
   assert.equal(targets.defaultMachineId, 'desk-win')
   assert.deepEqual(targets.machines.map((machine) => machine.machineId), ['desk-win'])
 })
 
-test('활성화한 사용자에게는 메인을 앞에 두고 활성 서브 머신을 함께 노출한다', () => {
-  const registry = upsertSubMachine(registryWithSub(), { machineId: 'spare', label: '가', platform: 'linux' })
-  const withDisabled = upsertSubMachine(registry, { machineId: 'off', label: '중지', enabled: false })
-  const targets = distributedWorkTargets(withDisabled, { enabled: true, defaultMachineId: 'macbook' })
+test('활성화한 사용자에게는 메인을 앞에 두고 본인 소유 활성 서브 머신을 함께 노출한다', () => {
+  const registry = upsertSubMachine(registryWithSub(), { machineId: 'spare', label: '가', platform: 'linux', ownerUserId: 'user-editor' })
+  const withDisabled = upsertSubMachine(registry, { machineId: 'off', label: '중지', ownerUserId: 'user-editor', enabled: false })
+  const targets = distributedWorkTargets(withDisabled, { enabled: true, defaultMachineId: 'macbook' }, owner)
 
   assert.equal(targets.enabled, true)
   assert.equal(targets.defaultMachineId, 'macbook')
@@ -265,8 +314,14 @@ test('활성화한 사용자에게는 메인을 앞에 두고 활성 서브 머�
   assert.equal(targets.machines[0].role, 'main')
 })
 
+test('다른 사용자 소유 서브 머신은 위임 대상에서 제외한다', () => {
+  const registry = upsertSubMachine(registryWithSub(), { machineId: 'her-mac', label: '남의 맥', ownerUserId: 'user-other' })
+  const targets = distributedWorkTargets(registry, { enabled: true }, owner)
+  assert.deepEqual(targets.machines.map((machine) => machine.machineId), ['desk-win', 'macbook'])
+})
+
 test('머신이 없는 레지스트리와 잘못된 입력에서도 위임 대상 조회가 안전하다', () => {
-  assert.deepEqual(distributedWorkTargets(null, { enabled: true }), {
+  assert.deepEqual(distributedWorkTargets(null, { enabled: true }, owner), {
     enabled: true,
     defaultMachineId: '',
     machines: [],

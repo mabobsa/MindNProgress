@@ -554,6 +554,9 @@ type MachineSummary = {
   workspacePoolIds: string[]
   lastSeenAt: string | null
   hasToken: boolean
+  ownerUserId: string | null
+  ownerName: string | null
+  manageable: boolean
 }
 
 type DistributedWorkSettings = {
@@ -1934,7 +1937,7 @@ function machinePlatformLabel(platform: string) {
   return MACHINE_PLATFORM_LABELS[platform] ?? platform
 }
 
-function DistributedWorkDialog({ user, onClose }: { user: AuthUser; onClose: () => void }) {
+function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLElement>(null)
   const [targets, setTargets] = useState<DistributedWorkTargets | null>(null)
   const [enabled, setEnabled] = useState(false)
@@ -2139,6 +2142,7 @@ function DistributedWorkDialog({ user, onClose }: { user: AuthUser; onClose: () 
                           {machine.machineId}
                           {machine.platform ? ` · ${machinePlatformLabel(machine.platform)}` : ''}
                           {machine.role === 'sub' && (machine.hasToken ? ' · 토큰 발급됨' : ' · 토큰 없음')}
+                          {machine.role === 'sub' && machine.ownerName ? ` · ${machine.ownerName}` : ''}
                         </small>
                         {probe && (
                           <small className={probe.reachable ? 'machine-probe ok' : 'machine-probe fail'}>
@@ -2149,10 +2153,12 @@ function DistributedWorkDialog({ user, onClose }: { user: AuthUser; onClose: () 
                         )}
                       </span>
                       <span className="machine-actions">
-                        <button type="button" onClick={() => void probeMachine(machine.machineId)} disabled={probingMachineId === machine.machineId || submitting}>
-                          {probingMachineId === machine.machineId ? '확인 중…' : '연결 확인'}
-                        </button>
-                        {machine.role === 'sub' && user.role === 'admin' && (
+                        {(machine.role === 'main' || machine.manageable) && (
+                          <button type="button" onClick={() => void probeMachine(machine.machineId)} disabled={probingMachineId === machine.machineId || submitting}>
+                            {probingMachineId === machine.machineId ? '확인 중…' : '연결 확인'}
+                          </button>
+                        )}
+                        {machine.role === 'sub' && machine.manageable && (
                           <>
                             <button type="button" onClick={() => void issueToken(machine.machineId)} disabled={submitting}>
                               {machine.hasToken ? '토큰 재발급' : '토큰 발급'}
@@ -2181,34 +2187,32 @@ function DistributedWorkDialog({ user, onClose }: { user: AuthUser; onClose: () 
               )}
             </div>
 
-            {user.role === 'admin' && (
-              <form
-                className="distributed-work-register"
-                onSubmit={(event) => { event.preventDefault(); void registerMachine() }}
-              >
-                <h4>서브 머신 등록</h4>
-                <div className="distributed-work-register-fields">
-                  <label>
-                    <span>머신 ID</span>
-                    <input value={newMachineId} onChange={(event) => setNewMachineId(event.target.value)} placeholder="macbook" maxLength={64} required />
-                  </label>
-                  <label>
-                    <span>이름</span>
-                    <input value={newMachineLabel} onChange={(event) => setNewMachineLabel(event.target.value)} placeholder="맥북" maxLength={60} required />
-                  </label>
-                  <label>
-                    <span>플랫폼</span>
-                    <select value={newMachinePlatform} onChange={(event) => setNewMachinePlatform(event.target.value)}>
-                      <option value="darwin">macOS</option>
-                      <option value="win32">Windows</option>
-                      <option value="linux">Linux</option>
-                    </select>
-                  </label>
-                </div>
-                <small>머신 ID는 소문자, 숫자, 하이픈만 사용합니다. 서브 머신의 Runner가 이 ID로 연결합니다.</small>
-                <button type="submit" disabled={submitting || !newMachineId.trim() || !newMachineLabel.trim()}>등록</button>
-              </form>
-            )}
+            <form
+              className="distributed-work-register"
+              onSubmit={(event) => { event.preventDefault(); void registerMachine() }}
+            >
+              <h4>서브 머신 등록</h4>
+              <div className="distributed-work-register-fields">
+                <label>
+                  <span>머신 ID</span>
+                  <input value={newMachineId} onChange={(event) => setNewMachineId(event.target.value)} placeholder="macbook" maxLength={64} required />
+                </label>
+                <label>
+                  <span>이름</span>
+                  <input value={newMachineLabel} onChange={(event) => setNewMachineLabel(event.target.value)} placeholder="맥북" maxLength={60} required />
+                </label>
+                <label>
+                  <span>플랫폼</span>
+                  <select value={newMachinePlatform} onChange={(event) => setNewMachinePlatform(event.target.value)}>
+                    <option value="darwin">macOS</option>
+                    <option value="win32">Windows</option>
+                    <option value="linux">Linux</option>
+                  </select>
+                </label>
+              </div>
+              <small>머신 ID는 소문자, 숫자, 하이픈만 사용합니다. 내가 소유자가 되며, 위임은 본인 소유 머신에만 보낼 수 있습니다.</small>
+              <button type="submit" disabled={submitting || !newMachineId.trim() || !newMachineLabel.trim()}>등록</button>
+            </form>
 
             {error && <div className="password-error" role="alert">{error}</div>}
             {notice && <div className="distributed-work-notice" role="status">{notice}</div>}
@@ -6660,7 +6664,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
       {adminOpen && user.role === 'admin' && <AdminEditorPanel onClose={closeAdminPanel} />}
       {passwordDialogOpen && !user.publicAccess && <PasswordChangeDialog onClose={() => setPasswordDialogOpen(false)} />}
-      {distributedWorkOpen && !user.publicAccess && mode === 'editor' && <DistributedWorkDialog user={user} onClose={() => setDistributedWorkOpen(false)} />}
+      {distributedWorkOpen && !user.publicAccess && mode === 'editor' && <DistributedWorkDialog onClose={() => setDistributedWorkOpen(false)} />}
 
       {externalChange && (
         <div className="external-change-banner" role="status">

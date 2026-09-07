@@ -172,6 +172,79 @@ test('머신 레지스트리와 사용자별 분산 작업 설정을 관리한�
   }
 })
 
+test('편집자는 본인 서브 머신만 등록·관리하고 위임 대상으로 쓸 수 있다', { timeout: 60_000 }, async () => {
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-owner-'))
+  const port = 4_967
+  const baseUrl = `http://127.0.0.1:${port}`
+  const server = startServer(dataDirectory, port)
+
+  try {
+    await waitForServer(baseUrl)
+    const adminCookie = await login(baseUrl, adminEmail, adminPassword)
+
+    const first = await apiRequest(baseUrl, adminCookie, '/api/admin/editors', 'POST', {
+      name: '첫째 편집자', email: 'first-editor@mind.local', password: 'first-editor-password',
+    })
+    assert.equal(first.response.status, 201)
+    const second = await apiRequest(baseUrl, adminCookie, '/api/admin/editors', 'POST', {
+      name: '둘째 편집자', email: 'second-editor@mind.local', password: 'second-editor-password',
+    })
+    assert.equal(second.response.status, 201)
+
+    const firstCookie = await login(baseUrl, 'first-editor@mind.local', 'first-editor-password')
+    const secondCookie = await login(baseUrl, 'second-editor@mind.local', 'second-editor-password')
+
+    // 편집자가 관리자 권한 없이 자기 장비를 등록한다.
+    const registered = await apiRequest(baseUrl, firstCookie, '/api/machines', 'POST', {
+      machineId: 'first-mac', label: '첫째 맥북', platform: 'darwin',
+    })
+    assert.equal(registered.response.status, 200)
+    const firstMac = registered.body.machines.find((machine) => machine.machineId === 'first-mac')
+    assert.equal(firstMac.ownerUserId, first.body.editor.id)
+    assert.equal(firstMac.ownerName, '첫째 편집자')
+    assert.equal(firstMac.manageable, true)
+
+    // 소유자는 토큰을 발급할 수 있다.
+    const issued = await apiRequest(baseUrl, firstCookie, '/api/machines/first-mac/token', 'POST')
+    assert.equal(issued.response.status, 200)
+    assert.match(issued.body.token, /^mnprn_/)
+
+    // 다른 편집자는 목록은 보지만 관리할 수 없다.
+    const seenByOther = await apiRequest(baseUrl, secondCookie, '/api/machines')
+    assert.equal(seenByOther.body.machines.find((machine) => machine.machineId === 'first-mac').manageable, false)
+    for (const [method, pathname] of [
+      ['POST', '/api/machines/first-mac/token'],
+      ['DELETE', '/api/machines/first-mac/token'],
+    ]) {
+      assert.equal((await apiRequest(baseUrl, secondCookie, pathname, method)).response.status, 403)
+    }
+    assert.equal((await apiRequest(baseUrl, secondCookie, '/api/machines', 'POST', { machineId: 'first-mac', label: '가로채기' })).response.status, 403)
+    assert.equal((await apiRequest(baseUrl, secondCookie, '/api/machines', 'DELETE', { machineId: 'first-mac' })).response.status, 403)
+    assert.equal((await apiRequest(baseUrl, secondCookie, '/api/machines/first-mac/probe', 'POST')).response.status, 403)
+
+    // 남의 장비는 위임 대상에도 오르지 않고 기본 머신으로 저장되지도 않는다.
+    const otherTargets = await apiRequest(baseUrl, secondCookie, '/api/account/distributed-work', 'PUT', { enabled: true })
+    assert.deepEqual(otherTargets.body.targets.machines.map((machine) => machine.machineId), ['desk-win'])
+    assert.equal((await apiRequest(baseUrl, secondCookie, '/api/account/distributed-work', 'PUT', {
+      enabled: true, defaultMachineId: 'first-mac',
+    })).response.status, 400)
+
+    // 소유자에게는 위임 대상으로 노출된다.
+    const ownerTargets = await apiRequest(baseUrl, firstCookie, '/api/account/distributed-work', 'PUT', {
+      enabled: true, defaultMachineId: 'first-mac',
+    })
+    assert.deepEqual(ownerTargets.body.settings, { enabled: true, defaultMachineId: 'first-mac' })
+    assert.deepEqual(ownerTargets.body.targets.machines.map((machine) => machine.machineId), ['desk-win', 'first-mac'])
+
+    // 편집자는 메인 머신을 다룰 수 없지만 관리자는 남의 서브 머신도 정리할 수 있다.
+    assert.equal((await apiRequest(baseUrl, firstCookie, '/api/machines', 'DELETE', { machineId: 'desk-win' })).response.status, 403)
+    assert.equal((await apiRequest(baseUrl, adminCookie, '/api/machines', 'DELETE', { machineId: 'first-mac' })).response.status, 200)
+  } finally {
+    await stopServer(server)
+    await rm(dataDirectory, { recursive: true, force: true })
+  }
+})
+
 test('로그인하지 않으면 머신 목록과 분산 작업 설정을 사용할 수 없다', { timeout: 45_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-auth-'))
   const port = 4_961

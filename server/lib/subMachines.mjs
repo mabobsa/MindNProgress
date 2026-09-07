@@ -69,6 +69,9 @@ export function normalizeMachine(value) {
     machineId,
     label: cleanText(value.label, MACHINE_LABEL_MAX_LENGTH) || machineId,
     platform: cleanText(value.platform, MACHINE_PLATFORM_MAX_LENGTH),
+    // 서브 머신은 그 장비를 쓰는 사람의 것이다. Runner 토큰은 그 머신의 AionUi로
+    // 요청을 중계할 권한이므로 소유자와 관리자만 발급하고 폐기할 수 있다.
+    ownerUserId: cleanText(value.ownerUserId, 120) || null,
     enabled: value.enabled !== false,
     workspacePoolIds: normalizeWorkspacePoolIds(value.workspacePoolIds),
     createdAt: isoOrNull(value.createdAt),
@@ -136,6 +139,7 @@ export function publicMachine(registry, machine) {
     label: machine.label,
     role: machine.machineId === registry?.mainMachineId ? 'main' : 'sub',
     platform: machine.platform,
+    ownerUserId: machine.ownerUserId,
     enabled: machine.enabled,
     workspacePoolIds: machine.workspacePoolIds,
     lastSeenAt: machine.lastSeenAt,
@@ -172,6 +176,8 @@ export function ensureMainMachine(registry, descriptor, now = new Date().toISOSt
     machineId,
     label: existing?.label || label,
     platform,
+    // 메인 머신은 MnP 서버 자체이므로 소유자가 없고 관리자만 다룬다.
+    ownerUserId: null,
     enabled: true,
     updatedAt: now,
     // 서브였던 머신이 메인이 되면 남은 Runner 토큰을 폐기한다.
@@ -208,6 +214,8 @@ export function upsertSubMachine(registry, input, now = new Date().toISOString()
     machineId,
     label,
     platform: cleanText(input.platform, MACHINE_PLATFORM_MAX_LENGTH),
+    // 소유자는 등록할 때 정해지고 이후 수정에서는 유지된다.
+    ownerUserId: cleanText(input.ownerUserId, 120) || existing?.ownerUserId || null,
     enabled: input.enabled !== false,
     workspacePoolIds: normalizeWorkspacePoolIds(input.workspacePoolIds),
     createdAt: existing?.createdAt ?? now,
@@ -238,6 +246,17 @@ export function removeSubMachine(registry, machineId) {
     ...registry,
     machines: registry.machines.filter((machine) => machine.machineId !== normalized),
   }
+}
+
+// 등록·삭제·토큰 발급은 그 머신의 소유자와 관리자만 할 수 있다.
+// 메인 머신은 MnP가 실행되는 서버 자체이므로 관리자만 다룬다.
+export function machineManageableBy(registry, machineId, viewer) {
+  const machine = findMachine(registry, machineId)
+  if (!machine) return false
+  if (viewer?.isAdmin === true) return true
+  if (machine.machineId === registry?.mainMachineId) return false
+  const userId = cleanText(viewer?.userId, 120)
+  return Boolean(userId) && machine.ownerUserId === userId
 }
 
 // 토큰은 서브 머신에만 발급한다. 메인 머신의 AionUi는 항상 루프백으로 직접 호출한다.
@@ -286,27 +305,36 @@ export function normalizeDistributedWorkSettings(value) {
   }
 }
 
+// 위임은 본인 소유 서브 머신과 메인 머신에만 보낼 수 있다.
+// 남의 장비에서 그 사람의 AionUi와 자격 증명으로 작업이 돌아가면 안 된다.
+export function machineTargetableBy(registry, machine, viewer) {
+  if (!machine?.enabled) return false
+  if (machine.machineId === registry?.mainMachineId) return true
+  const userId = cleanText(viewer?.userId, 120)
+  return Boolean(userId) && machine.ownerUserId === userId
+}
+
 // 등록이 취소되거나 비활성화된 머신이 기본값으로 남아 있으면 조용히 메인으로 되돌린다.
-export function resolveDistributedWorkSettings(value, registry) {
+export function resolveDistributedWorkSettings(value, registry, viewer) {
   const settings = normalizeDistributedWorkSettings(value)
   if (!settings.enabled) return { enabled: false, defaultMachineId: null }
 
   const machine = findMachine(registry, settings.defaultMachineId)
   return {
     enabled: true,
-    defaultMachineId: machine && machine.enabled ? machine.machineId : null,
+    defaultMachineId: machine && machineTargetableBy(registry, machine, viewer) ? machine.machineId : null,
   }
 }
 
 // 사용자가 위임 대상으로 고를 수 있는 머신 목록이다.
 // 활성화하지 않은 사용자에게는 메인 머신만 노출해 기존 동작과 같은 상태를 유지한다.
-export function distributedWorkTargets(registry, value) {
+export function distributedWorkTargets(registry, value, viewer) {
   const normalized = isRecord(registry) && Array.isArray(registry.machines)
     ? registry
     : normalizeMachineRegistry([])
-  const settings = resolveDistributedWorkSettings(value, normalized)
+  const settings = resolveDistributedWorkSettings(value, normalized, viewer)
   const machines = normalized.machines
-    .filter((machine) => machine.enabled)
+    .filter((machine) => machineTargetableBy(normalized, machine, viewer))
     .filter((machine) => settings.enabled || machine.machineId === normalized.mainMachineId)
     .map((machine) => publicMachine(normalized, machine))
 

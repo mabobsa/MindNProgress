@@ -89,6 +89,8 @@ import {
   distributedWorkTargets,
   ensureMainMachine,
   findMachine,
+  machineManageableBy,
+  machineTargetableBy,
   normalizeDistributedWorkSettings,
   normalizeMachineId,
   normalizeMachineRegistry,
@@ -1364,8 +1366,25 @@ async function loadDistributedWorkSettings() {
   await persistDistributedWorkSettings()
 }
 
+function machineViewer(user) {
+  return { userId: user.id, isAdmin: user.role === 'admin' }
+}
+
 function userDistributedWork(user) {
-  return resolveDistributedWorkSettings(distributedWorkSettings.get(user.id), machineRegistry)
+  return resolveDistributedWorkSettings(distributedWorkSettings.get(user.id), machineRegistry, machineViewer(user))
+}
+
+// 소유자 표시는 화면에서만 쓰므로 순수 모듈이 아니라 응답 단계에서 붙인다.
+function machineRegistryResponse(user) {
+  const registry = publicMachineRegistry(machineRegistry)
+  return {
+    ...registry,
+    machines: registry.machines.map((machine) => ({
+      ...machine,
+      ownerName: users.find((candidate) => candidate.id === machine.ownerUserId)?.name ?? null,
+      manageable: machineManageableBy(machineRegistry, machine.machineId, machineViewer(user)),
+    })),
+  }
 }
 
 function requireRunnerMachine(request, response, machineId) {
@@ -6779,7 +6798,7 @@ const server = createServer(async (request, response) => {
       if (request.method === 'GET') {
         return sendJson(response, 200, {
           settings: userDistributedWork(user),
-          targets: distributedWorkTargets(machineRegistry, distributedWorkSettings.get(user.id)),
+          targets: distributedWorkTargets(machineRegistry, distributedWorkSettings.get(user.id), machineViewer(user)),
         })
       }
 
@@ -6791,7 +6810,7 @@ const server = createServer(async (request, response) => {
         const requested = normalizeDistributedWorkSettings(body)
         if (requested.enabled && requested.defaultMachineId) {
           const machine = findMachine(machineRegistry, requested.defaultMachineId)
-          if (!machine || !machine.enabled) {
+          if (!machine || !machineTargetableBy(machineRegistry, machine, machineViewer(user))) {
             return sendJson(response, 400, { error: '선택한 기본 머신을 사용할 수 없습니다.' })
           }
         }
@@ -6799,7 +6818,7 @@ const server = createServer(async (request, response) => {
         await persistDistributedWorkSettings()
         return sendJson(response, 200, {
           settings: userDistributedWork(user),
-          targets: distributedWorkTargets(machineRegistry, requested),
+          targets: distributedWorkTargets(machineRegistry, requested, machineViewer(user)),
         })
       }
 
@@ -6814,11 +6833,31 @@ const server = createServer(async (request, response) => {
       const body = await readJsonBody(request)
       const waitMs = Math.max(0, Math.min(machineOperationLongPollMs, Math.trunc(Number(body?.waitMs)) || machineOperationLongPollMs))
       await noteMachineSeen(machine.machineId)
-      const operations = await machineOperationQueue.waitForClaim(machine.machineId, {
+
+      // long-poll 도중 Runner가 끊기면 깨어난 이 요청이 오퍼레이션을 가져가 버린다.
+      // 전달되지 못한 응답의 오퍼레이션은 대기열로 되돌려야 다음 Runner가 받을 수 있다.
+      let claimed = []
+      let delivered = false
+      const releaseClaimed = () => {
+        if (delivered || claimed.length === 0) return
+        const operationIds = claimed.map((operation) => operation.operationId)
+        claimed = []
+        machineOperationQueue.release(machine.machineId, operationIds)
+      }
+      response.once('finish', () => { delivered = true })
+      response.once('close', releaseClaimed)
+
+      claimed = await machineOperationQueue.waitForClaim(machine.machineId, {
         limit: Number(body?.limit) || 1,
         waitMs,
       })
-      return sendJson(response, 200, { operations })
+      // 대기 중에 이미 close가 발생했다면 위 핸들러는 빈 목록을 보았으므로 여기서 되돌린다.
+      // 요청 스트림은 본문을 다 읽으면 정상적으로 destroy되므로 판단 근거로 쓸 수 없다.
+      if (response.destroyed || response.writableEnded || request.socket?.destroyed === true) {
+        releaseClaimed()
+        return
+      }
+      return sendJson(response, 200, { operations: claimed })
     }
 
     const machineRunnerResultRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/runner\/operations\/([^/]+)\/result$/)
@@ -6859,6 +6898,10 @@ const server = createServer(async (request, response) => {
       const machineId = normalizeMachineId(machineProbeRoute[1])
       const machine = findMachine(machineRegistry, machineId)
       if (!machine) return sendJson(response, 404, { error: '등록된 머신을 찾지 못했습니다.' })
+      if (!machineTargetableBy(machineRegistry, machine, machineViewer(user))
+        && !machineManageableBy(machineRegistry, machineId, machineViewer(user))) {
+        return sendJson(response, 403, { error: '본인 소유 머신만 연결을 확인할 수 있습니다.' })
+      }
 
       const startedAt = Date.now()
       try {
@@ -6883,8 +6926,12 @@ const server = createServer(async (request, response) => {
     // Runner 토큰은 발급 시점에 한 번만 평문으로 보여 준다.
     const machineTokenRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/token$/)
     if (machineTokenRoute) {
-      const admin = requireAdmin(request, response)
-      if (!admin) return
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 Runner 토큰을 다룰 수 있습니다.' })
+      if (!machineManageableBy(machineRegistry, machineTokenRoute[1], machineViewer(user))) {
+        return sendJson(response, 403, { error: '본인이 등록한 서브 머신의 Runner 토큰만 다룰 수 있습니다.' })
+      }
 
       if (request.method === 'POST') {
         const token = `mnprn_${randomBytes(32).toString('base64url')}`
@@ -6909,39 +6956,51 @@ const server = createServer(async (request, response) => {
         // 토큰을 폐기하면 그 머신으로 향하던 요청은 더 이상 전달될 수 없다.
         machineOperationQueue.cancelMachine(machineId, 'Runner 토큰이 폐기되었습니다.')
         await persistMachineRegistry()
-        return sendJson(response, 200, publicMachineRegistry(machineRegistry))
+        return sendJson(response, 200, machineRegistryResponse(user))
       }
 
       return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
     }
 
-    // 머신 레지스트리는 공용 인프라 정보이므로 조회는 편집자, 변경은 관리자만 가능하다.
+    // 머신 목록은 편집자가 모두 조회하지만, 등록과 삭제는 소유자와 관리자만 할 수 있다.
     if (url.pathname === '/api/machines') {
-      if (request.method === 'GET') {
-        const user = requireSignedInUser(request, response)
-        if (!user) return
-        if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 머신 목록을 조회할 수 있습니다.' })
-        return sendJson(response, 200, publicMachineRegistry(machineRegistry))
-      }
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 머신 목록을 사용할 수 있습니다.' })
 
-      const admin = requireAdmin(request, response)
-      if (!admin) return
+      if (request.method === 'GET') {
+        return sendJson(response, 200, machineRegistryResponse(user))
+      }
 
       if (request.method === 'POST') {
         const body = await readJsonBody(request)
+        const targetMachineId = normalizeMachineId(body?.machineId)
+        // 이미 등록된 머신을 고치는 경우에는 소유자와 관리자만 허용한다.
+        if (findMachine(machineRegistry, targetMachineId)
+          && !machineManageableBy(machineRegistry, targetMachineId, machineViewer(user))) {
+          return sendJson(response, 403, { error: '본인이 등록한 서브 머신만 수정할 수 있습니다.' })
+        }
         try {
-          machineRegistry = upsertSubMachine(machineRegistry, body)
+          machineRegistry = upsertSubMachine(machineRegistry, {
+            ...body,
+            // 관리자만 다른 사용자 소유로 등록할 수 있다.
+            ownerUserId: user.role === 'admin' && body?.ownerUserId ? body.ownerUserId : user.id,
+          })
         } catch (error) {
           if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
           throw error
         }
         await persistMachineRegistry()
-        return sendJson(response, 200, publicMachineRegistry(machineRegistry))
+        return sendJson(response, 200, machineRegistryResponse(user))
       }
 
       if (request.method === 'DELETE') {
         const body = await readJsonBody(request)
         const removedMachineId = normalizeMachineId(body?.machineId)
+        if (findMachine(machineRegistry, removedMachineId)
+          && !machineManageableBy(machineRegistry, removedMachineId, machineViewer(user))) {
+          return sendJson(response, 403, { error: '본인이 등록한 서브 머신만 삭제할 수 있습니다.' })
+        }
         try {
           machineRegistry = removeSubMachine(machineRegistry, body?.machineId)
         } catch (error) {
@@ -6956,7 +7015,7 @@ const server = createServer(async (request, response) => {
           distributedWorkSettings.set(userId, { ...settings, defaultMachineId: null })
         }
         await Promise.all([persistMachineRegistry(), persistDistributedWorkSettings()])
-        return sendJson(response, 200, publicMachineRegistry(machineRegistry))
+        return sendJson(response, 200, machineRegistryResponse(user))
       }
 
       return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })

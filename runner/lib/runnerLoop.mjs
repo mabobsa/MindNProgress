@@ -10,7 +10,10 @@ export function createRunnerLoop({
   onEvent = () => {},
   concurrency = 4,
   retryDelayMs = 3_000,
+  resultRetryMaxMs = 10 * 60_000,
+  now = () => Date.now(),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  cancelClaim = () => {},
 } = {}) {
   let running = false
   let stopped = false
@@ -29,17 +32,33 @@ export function createRunnerLoop({
       }
     }
 
-    try {
-      await reportResult(operation.operationId, result)
-      onEvent({
-        type: result.ok ? 'operation-succeeded' : 'operation-failed',
-        operationId: operation.operationId,
-        pathname: operation.request?.pathname,
-        status: result.status ?? null,
-      })
-    } catch (error) {
-      // 결과 전달에 실패하면 서버가 상한으로 정리한다. 같은 오퍼레이션을 다시 실행하지 않는다.
-      onEvent({ type: 'report-failed', operationId: operation.operationId, error })
+    const reportStartedAt = now()
+    let reportAttempt = 0
+    while (true) {
+      reportAttempt += 1
+      try {
+        await reportResult(operation.operationId, result, operation.resultToken)
+        onEvent({
+          type: result.ok ? 'operation-succeeded' : 'operation-failed',
+          operationId: operation.operationId,
+          pathname: operation.request?.pathname,
+          status: result.status ?? null,
+          reportAttempt,
+        })
+        break
+      } catch (error) {
+        const status = Number(error?.status) || null
+        const retryable = status === null || status === 408 || status === 429 || status >= 500
+        const retryWindowExpired = now() - reportStartedAt >= resultRetryMaxMs
+        onEvent({
+          type: retryable && !retryWindowExpired ? 'report-retrying' : 'report-failed',
+          operationId: operation.operationId,
+          attempt: reportAttempt,
+          error,
+        })
+        if (!retryable || retryWindowExpired) break
+        await sleep(retryDelayMs)
+      }
     }
   }
 
@@ -74,8 +93,8 @@ export function createRunnerLoop({
         await runOnce()
       } catch (error) {
         // MnP에 닿지 못하는 상황이다. 대기 후 다시 시도한다.
-        onEvent({ type: 'claim-failed', error })
         if (stopped) break
+        onEvent({ type: 'claim-failed', error })
         await sleep(retryDelayMs)
       }
     }
@@ -86,6 +105,7 @@ export function createRunnerLoop({
 
   function stop() {
     stopped = true
+    cancelClaim()
   }
 
   return { runOnce, start, stop, get running() { return running } }

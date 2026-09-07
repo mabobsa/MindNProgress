@@ -20,6 +20,7 @@ const baseEnvironment = {
 function operation(operationId, pathname, overrides = {}) {
   return {
     operationId,
+    resultToken: `result-${operationId}`,
     request: { method: 'GET', pathname, timeoutMs: 8_000, ...overrides },
   }
 }
@@ -77,12 +78,12 @@ test('가져온 오퍼레이션을 로컬 AionUi에 전달하고 결과를 올�
       calls.push(request)
       return { ok: true, data: { conversationId: 'abc' } }
     },
-    reportResult: async (operationId, result) => { reported.push([operationId, result]) },
+    reportResult: async (operationId, result, resultToken) => { reported.push([operationId, result, resultToken]) },
   })
 
   assert.equal(await loop.runOnce(), 1)
   assert.deepEqual(calls, [{ method: 'POST', pathname: '/api/conversations', timeoutMs: 8_000, body: { title: '테스트' } }])
-  assert.deepEqual(reported, [['op-1', { ok: true, data: { conversationId: 'abc' } }]])
+  assert.deepEqual(reported, [['op-1', { ok: true, data: { conversationId: 'abc' } }, 'result-op-1']])
 })
 
 test('가져올 오퍼레이션이 없으면 아무것도 호출하지 않는다', async () => {
@@ -131,13 +132,38 @@ test('결과 전달이 실패해도 같은 오퍼레이션을 다시 실행하�
   const loop = createRunnerLoop({
     claimOperations: async () => [operation('op-1', '/api/x')],
     callAionUi: async () => { callCount += 1; return { ok: true, data: {} } },
-    reportResult: async () => { throw new Error('MNP_REQUEST_FAILED:409') },
+    reportResult: async () => {
+      const error = new Error('MNP_REQUEST_FAILED:409')
+      error.status = 409
+      throw error
+    },
     onEvent: (event) => events.push(event.type),
   })
 
   await loop.runOnce()
   assert.equal(callCount, 1)
   assert.ok(events.includes('report-failed'))
+})
+
+test('결과 응답이 유실되면 AionUi를 다시 호출하지 않고 같은 결과만 재전송한다', async () => {
+  const reports = []
+  const sleeps = []
+  let aionUiCalls = 0
+  const loop = createRunnerLoop({
+    claimOperations: async () => [operation('op-1', '/api/conversations', { method: 'POST' })],
+    callAionUi: async () => { aionUiCalls += 1; return { ok: true, data: { id: 'conversation-1' } } },
+    reportResult: async (operationId, result, resultToken) => {
+      reports.push({ operationId, result, resultToken })
+      if (reports.length === 1) throw new Error('fetch failed')
+    },
+    sleep: async (ms) => { sleeps.push(ms) },
+  })
+
+  await loop.runOnce()
+  assert.equal(aionUiCalls, 1)
+  assert.equal(reports.length, 2)
+  assert.deepEqual(reports[0], reports[1])
+  assert.deepEqual(sleeps, [3_000])
 })
 
 test('여러 오퍼레이션을 동시 실행 수 안에서 처리한다', async () => {

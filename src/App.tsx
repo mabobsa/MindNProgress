@@ -2169,7 +2169,7 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
               <span>기본 실행 머신</span>
               <select value={defaultMachineId} onChange={(event) => setDefaultMachineId(event.target.value)} disabled={!enabled}>
                 <option value="">메인 머신 ({targets?.machines.find((machine) => machine.role === 'main')?.label ?? '메인'})</option>
-                {machines.filter((machine) => machine.role === 'sub' && machine.enabled).map((machine) => (
+                {(targets?.machines ?? []).filter((machine) => machine.role === 'sub' && machine.enabled).map((machine) => (
                   <option key={machine.machineId} value={machine.machineId}>{machine.label}</option>
                 ))}
               </select>

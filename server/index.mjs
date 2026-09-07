@@ -1419,13 +1419,48 @@ function machineRegistryResponse(user) {
 }
 
 function requireRunnerMachine(request, response, machineId) {
-  const authorization = String(request.headers.authorization ?? '')
-  const token = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : ''
+  const token = runnerBearerToken(request)
   if (!token || !verifyMachineToken(machineRegistry, machineId, token)) {
     sendJson(response, 401, { error: 'Runner 인증에 실패했습니다.' })
     return null
   }
   return findMachine(machineRegistry, machineId)
+}
+
+function runnerBearerToken(request) {
+  const authorization = String(request.headers.authorization ?? '')
+  return authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : ''
+}
+
+async function decommissionEditorMachines(editorId, { remove = false } = {}) {
+  const machineIds = machineRegistry.machines
+    .filter((machine) => machine.machineId !== machineRegistry.mainMachineId && machine.ownerUserId === editorId)
+    .map((machine) => machine.machineId)
+  if (machineIds.length === 0) return
+
+  const machineIdSet = new Set(machineIds)
+  const now = new Date().toISOString()
+  machineRegistry = {
+    ...machineRegistry,
+    machines: remove
+      ? machineRegistry.machines.filter((machine) => !machineIdSet.has(machine.machineId))
+      : machineRegistry.machines.map((machine) => (
+        machineIdSet.has(machine.machineId)
+          ? { ...machine, enabled: false, tokenHash: null, updatedAt: now }
+          : machine
+      )),
+  }
+  for (const machineId of machineIds) {
+    machineOperationQueue.cancelMachine(
+      machineId,
+      remove ? '머신 소유자 계정이 삭제되었습니다.' : '머신 소유자 계정이 비활성화되었습니다.',
+    )
+  }
+  for (const [userId, settings] of distributedWorkSettings) {
+    if (!machineIdSet.has(settings.defaultMachineId)) continue
+    distributedWorkSettings.set(userId, { ...settings, defaultMachineId: null })
+  }
+  await Promise.all([persistMachineRegistry(), persistDistributedWorkSettings()])
 }
 
 // 하트비트와 오퍼레이션 조회는 자주 오므로 실제 값이 바뀔 때만 저장한다.
@@ -6859,6 +6894,7 @@ const server = createServer(async (request, response) => {
     // Runner는 사용자 세션이 아니라 머신 토큰으로 인증한다.
     const machineRunnerClaimRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/runner\/operations\/claim$/)
     if (request.method === 'POST' && machineRunnerClaimRoute) {
+      const runnerToken = runnerBearerToken(request)
       const machine = requireRunnerMachine(request, response, machineRunnerClaimRoute[1])
       if (!machine) return
       const body = await readJsonBody(request)
@@ -6881,6 +6917,8 @@ const server = createServer(async (request, response) => {
       claimed = await machineOperationQueue.waitForClaim(machine.machineId, {
         limit: Number(body?.limit) || 1,
         waitMs,
+        // 토큰 재발급·폐기 중 깨어난 구 Runner가 새 작업을 가져가지 못하게 한다.
+        shouldClaim: () => verifyMachineToken(machineRegistry, machine.machineId, runnerToken),
       })
       // 대기 중에 이미 close가 발생했다면 위 핸들러는 빈 목록을 보았으므로 여기서 되돌린다.
       // 요청 스트림은 본문을 다 읽으면 정상적으로 destroy되므로 판단 근거로 쓸 수 없다.
@@ -6888,16 +6926,25 @@ const server = createServer(async (request, response) => {
         releaseClaimed()
         return
       }
+      if (!verifyMachineToken(machineRegistry, machine.machineId, runnerToken)) {
+        return sendJson(response, 401, { error: 'Runner 인증에 실패했습니다.' })
+      }
       return sendJson(response, 200, { operations: claimed })
     }
 
     const machineRunnerResultRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/runner\/operations\/([^/]+)\/result$/)
     if (request.method === 'POST' && machineRunnerResultRoute) {
-      const machine = requireRunnerMachine(request, response, machineRunnerResultRoute[1])
-      if (!machine) return
+      const machineId = normalizeMachineId(machineRunnerResultRoute[1])
+      const operationId = machineRunnerResultRoute[2]
+      const operationToken = String(request.headers['x-mnp-operation-token'] ?? '')
+      const currentTokenIsValid = verifyMachineToken(machineRegistry, machineId, runnerBearerToken(request))
+      const operationTokenIsValid = machineOperationQueue.verifyResultToken(machineId, operationId, operationToken)
+      if (!currentTokenIsValid && !operationTokenIsValid) {
+        return sendJson(response, 401, { error: 'Runner 결과 인증에 실패했습니다.' })
+      }
       const body = await readJsonBody(request)
       try {
-        const settled = machineOperationQueue.settle(machine.machineId, machineRunnerResultRoute[2], body)
+        const settled = machineOperationQueue.settle(machineId, operationId, body)
         return sendJson(response, 200, settled)
       } catch (error) {
         if (error instanceof MachineOperationError) return sendJson(response, 409, { error: error.message, reasonCode: error.reasonCode })
@@ -6965,15 +7012,18 @@ const server = createServer(async (request, response) => {
       }
 
       if (request.method === 'POST') {
+        const machineId = normalizeMachineId(machineTokenRoute[1])
         const token = `mnprn_${randomBytes(32).toString('base64url')}`
         try {
-          machineRegistry = setMachineToken(machineRegistry, machineTokenRoute[1], token)
+          machineRegistry = setMachineToken(machineRegistry, machineId, token)
         } catch (error) {
           if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
           throw error
         }
+        // 대기 중인 구 토큰 long-poll을 즉시 깨워 재인증시킨다.
+        machineOperationQueue.wake(machineId)
         await persistMachineRegistry()
-        return sendJson(response, 200, { machineId: normalizeMachineId(machineTokenRoute[1]), token })
+        return sendJson(response, 200, { machineId, token })
       }
 
       if (request.method === 'DELETE') {
@@ -7006,16 +7056,19 @@ const server = createServer(async (request, response) => {
       if (request.method === 'POST') {
         const body = await readJsonBody(request)
         const targetMachineId = normalizeMachineId(body?.machineId)
+        const existingMachine = findMachine(machineRegistry, targetMachineId)
         // 이미 등록된 머신을 고치는 경우에는 소유자와 관리자만 허용한다.
-        if (findMachine(machineRegistry, targetMachineId)
+        if (existingMachine
           && !machineManageableBy(machineRegistry, targetMachineId, machineViewer(user))) {
           return sendJson(response, 403, { error: '본인이 등록한 서브 머신만 수정할 수 있습니다.' })
         }
         try {
           machineRegistry = upsertSubMachine(machineRegistry, {
             ...body,
-            // 관리자만 다른 사용자 소유로 등록할 수 있다.
-            ownerUserId: user.role === 'admin' && body?.ownerUserId ? body.ownerUserId : user.id,
+            // 기존 머신은 소유자 변경을 명시한 경우에만 이전한다.
+            ownerUserId: existingMachine
+              ? (user.role === 'admin' && body?.ownerUserId ? body.ownerUserId : existingMachine.ownerUserId)
+              : (user.role === 'admin' && body?.ownerUserId ? body.ownerUserId : user.id),
           })
         } catch (error) {
           if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
@@ -7278,11 +7331,15 @@ const server = createServer(async (request, response) => {
         if (users.some((candidate) => candidate.id !== editor.id && candidate.email.toLowerCase() === email)) {
           return sendJson(response, 409, { error: '이미 사용 중인 이메일입니다.' })
         }
+        const wasActive = editor.active !== false
         editor.name = name
         editor.email = email
         editor.active = active
         editor.updatedAt = new Date().toISOString()
-        if (!active) await invalidateUserSessions(editor.id)
+        if (!active) {
+          await invalidateUserSessions(editor.id)
+          if (wasActive) await decommissionEditorMachines(editor.id)
+        }
         await persistUsers()
         return sendJson(response, 200, { editor: accountUser(editor) })
       }
@@ -7290,6 +7347,7 @@ const server = createServer(async (request, response) => {
       if (request.method === 'DELETE') {
         users = users.filter((candidate) => candidate.id !== editor.id)
         await invalidateUserSessions(editor.id)
+        await decommissionEditorMachines(editor.id, { remove: true })
         aiWorkspaceHistories.delete(editor.id)
         distributedWorkSettings.delete(editor.id)
         await persistAiWorkspaceHistories()

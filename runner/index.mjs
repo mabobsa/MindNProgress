@@ -25,6 +25,7 @@ import {
   runnerResultUrl,
 } from './lib/runnerConfig.mjs'
 import { createRunnerLoop } from './lib/runnerLoop.mjs'
+import { createAionUiCaller } from './lib/aionUiClient.mjs'
 
 let config
 try {
@@ -74,51 +75,23 @@ async function aionUiCandidateBaseUrls() {
   return [...new Set([discovered, activeAionUiBaseUrl, ...RUNNER_FALLBACK_AIONUI_URLS].filter(Boolean))]
 }
 
-// 로컬 AionUi 호출 결과를 MnP가 기대하는 형태로 그대로 옮긴다.
-async function callAionUi(request) {
-  const candidates = await aionUiCandidateBaseUrls()
-  let lastError = null
+const callAionUi = createAionUiCaller({
+  candidateBaseUrls: aionUiCandidateBaseUrls,
+  onConnected: (baseUrl) => { activeAionUiBaseUrl = baseUrl },
+})
 
-  for (const baseUrl of candidates) {
-    try {
-      const response = await fetch(`${baseUrl}${request.pathname}`, {
-        method: request.method,
-        headers: {
-          Accept: 'application/json',
-          ...(request.body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        },
-        body: request.body === undefined ? undefined : JSON.stringify(request.body),
-        signal: AbortSignal.timeout(request.timeoutMs),
-      })
-      const responseBody = await response.json().catch(() => ({}))
-      activeAionUiBaseUrl = baseUrl
-
-      if (!response.ok || responseBody?.success === false) {
-        return {
-          ok: false,
-          status: response.status,
-          code: responseBody?.error?.code ?? responseBody?.code ?? null,
-        }
-      }
-      return { ok: true, data: responseBody?.data ?? responseBody }
-    } catch (error) {
-      lastError = error
-    }
-  }
-
-  throw lastError ?? new Error('로컬 AionUi에 연결하지 못했습니다.')
-}
-
-async function mnpRequest(url, body, timeoutMs) {
+async function mnpRequest(url, body, timeoutMs, { headers = {}, signal = null } = {}) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
   const response = await fetch(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.token}`,
       Accept: 'application/json',
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...headers,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
   })
   const responseBody = await response.json().catch(() => ({}))
   if (!response.ok) {
@@ -130,15 +103,23 @@ async function mnpRequest(url, body, timeoutMs) {
 }
 
 let longPollMs = 25_000
+const claimAbortController = new AbortController()
 
 async function claimOperations() {
   // long-poll이므로 대기 시간보다 넉넉한 타임아웃을 준다.
-  const body = await mnpRequest(runnerClaimUrl(config), { limit: config.concurrency, waitMs: longPollMs }, longPollMs + 10_000)
+  const body = await mnpRequest(
+    runnerClaimUrl(config),
+    { limit: config.concurrency, waitMs: longPollMs },
+    longPollMs + 10_000,
+    { signal: claimAbortController.signal },
+  )
   return Array.isArray(body?.operations) ? body.operations : []
 }
 
-function reportResult(operationId, result) {
-  return mnpRequest(runnerResultUrl(config, operationId), result, 30_000)
+function reportResult(operationId, result, resultToken) {
+  return mnpRequest(runnerResultUrl(config, operationId), result, 30_000, {
+    headers: { 'X-MnP-Operation-Token': resultToken },
+  })
 }
 
 async function heartbeat() {
@@ -153,11 +134,13 @@ const loop = createRunnerLoop({
   reportResult,
   concurrency: config.concurrency,
   retryDelayMs: config.retryDelayMs,
+  cancelClaim: () => claimAbortController.abort(),
   onEvent: (event) => {
     if (event.type === 'claimed') logVerbose(`오퍼레이션 ${event.count}건을 가져왔습니다.`)
     else if (event.type === 'operation-succeeded') logVerbose(`완료 ${event.pathname}`)
     else if (event.type === 'operation-failed') log(`실패 ${event.pathname}${event.status ? ` (${event.status})` : ''}`)
-    else if (event.type === 'report-failed') log(`결과 전달 실패 ${event.operationId}: ${event.error?.message ?? event.error}`)
+    else if (event.type === 'report-retrying') log(`결과 전달 재시도 ${event.operationId} (${event.attempt}회): ${event.error?.message ?? event.error}`)
+    else if (event.type === 'report-failed') log(`결과 전달 확정 실패 ${event.operationId}: ${event.error?.message ?? event.error}`)
     else if (event.type === 'claim-failed') {
       const status = event.error?.status
       log(`MnP 연결 실패${status ? ` (${status})` : ''}: ${event.error?.message ?? event.error}`)
@@ -188,8 +171,7 @@ function shutdown(signal) {
   log(`${signal} 수신, 종료합니다.`)
   clearInterval(heartbeatTimer)
   loop.stop()
-  // 진행 중인 오퍼레이션의 결과 전달을 기다린 뒤 종료한다.
-  setTimeout(() => process.exit(0), 1_000).unref()
+  // 진행 중인 AionUi 호출과 결과 전달은 loop.start()가 끝날 때까지 기다린다.
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'))

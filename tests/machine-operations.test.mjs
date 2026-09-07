@@ -9,9 +9,11 @@ import {
 function createQueue(overrides = {}) {
   let current = 1_000
   let sequence = 0
+  let resultSequence = 0
   const queue = new MachineOperationQueue({
     now: () => current,
     createOperationId: () => `op-${(sequence += 1)}`,
+    createResultToken: () => `result-${(resultSequence += 1)}`,
     ...overrides,
   })
   return {
@@ -55,6 +57,7 @@ test('Runner가 가져간 결과가 성공이면 요청자에게 응답 본문�
   const claimed = queue.claim('macbook')
   assert.deepEqual(claimed, [{
     operationId,
+    resultToken: 'result-1',
     request: { method: 'POST', pathname: '/api/conversations', body: { title: '테스트' }, timeoutMs: 8_000 },
   }])
 
@@ -87,7 +90,54 @@ test('가져가지 않았거나 이미 끝난 오퍼레이션은 결과를 받�
 
   queue.settle('macbook', operationId, { ok: true, data: {} })
   await completion
-  assert.throws(() => queue.settle('macbook', operationId, { ok: true }), MachineOperationError)
+  assert.deepEqual(queue.settle('macbook', operationId, { ok: true }), {
+    operationId,
+    state: 'succeeded',
+    duplicate: true,
+  })
+})
+
+test('오퍼레이션별 결과 토큰은 다른 머신과 다른 오퍼레이션에 사용할 수 없다', async () => {
+  const { queue } = createQueue()
+  const first = queue.enqueue('macbook', { pathname: '/api/first' })
+  const second = queue.enqueue('macbook', { pathname: '/api/second' })
+  const [claimedFirst, claimedSecond] = queue.claim('macbook', 2)
+
+  assert.equal(queue.verifyResultToken('macbook', first.operationId, claimedFirst.resultToken), true)
+  assert.equal(queue.verifyResultToken('macbook', first.operationId, claimedSecond.resultToken), false)
+  assert.equal(queue.verifyResultToken('other', first.operationId, claimedFirst.resultToken), false)
+
+  queue.settle('macbook', first.operationId, { ok: true, data: {} })
+  assert.equal(queue.verifyResultToken('macbook', first.operationId, claimedFirst.resultToken), true)
+  queue.settle('macbook', second.operationId, { ok: true, data: {} })
+  await Promise.all([first.completion, second.completion])
+})
+
+test('완료 확인 기록은 보존 시간 뒤 제거된다', async () => {
+  const { queue, advance } = createQueue({ completedRetentionMs: 1_000 })
+  const operation = queue.enqueue('macbook', { pathname: '/api/x' })
+  const [claimed] = queue.claim('macbook')
+  queue.settle('macbook', operation.operationId, { ok: true, data: {} })
+  await operation.completion
+
+  advance(1_001)
+  assert.equal(queue.verifyResultToken('macbook', operation.operationId, claimed.resultToken), false)
+  assert.throws(() => queue.settle('macbook', operation.operationId, { ok: true }), MachineOperationError)
+})
+
+test('long-poll 재개 직전에 인증이 바뀌면 오퍼레이션을 가져가지 않는다', async () => {
+  const { queue } = createQueue()
+  let authorized = true
+  const waiting = queue.waitForClaim('macbook', {
+    waitMs: 5_000,
+    shouldClaim: () => authorized,
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  authorized = false
+  queue.enqueue('macbook', { pathname: '/api/new-token-only' })
+
+  assert.deepEqual(await waiting, [])
+  assert.equal(queue.snapshot('macbook').pending, 1)
 })
 
 test('오퍼레이션은 머신별로 격리되고 등록 순서대로 전달한다', () => {

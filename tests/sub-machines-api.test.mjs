@@ -319,9 +319,37 @@ test('편집자는 본인 서브 머신만 등록·관리하고 위임 대상으
     assert.deepEqual(ownerTargets.body.settings, { enabled: true, defaultMachineId: 'first-mac' })
     assert.deepEqual(ownerTargets.body.targets.machines.map((machine) => machine.machineId), ['desk-win', 'first-mac'])
 
-    // 편집자는 메인 머신을 다룰 수 없지만 관리자는 남의 서브 머신도 정리할 수 있다.
-    assert.equal((await apiRequest(baseUrl, firstCookie, '/api/machines', 'DELETE', { machineId: 'desk-win' })).response.status, 403)
-    assert.equal((await apiRequest(baseUrl, adminCookie, '/api/machines', 'DELETE', { machineId: 'first-mac' })).response.status, 200)
+    // 관리자가 소유자를 생략하고 머신 정보를 고쳐도 관리자 소유로 이전되지 않는다.
+    const adminUpdated = await apiRequest(baseUrl, adminCookie, '/api/machines', 'POST', {
+      machineId: 'first-mac', label: '첫째 맥북 수정', platform: 'darwin',
+    })
+    assert.equal(adminUpdated.response.status, 200)
+    assert.equal(adminUpdated.body.machines.find((machine) => machine.machineId === 'first-mac').ownerUserId, first.body.editor.id)
+
+    // 편집자를 비활성화하면 세션뿐 아니라 소유 Runner 토큰과 기본 실행 머신도 즉시 회수한다.
+    const deactivated = await apiRequest(baseUrl, adminCookie, `/api/admin/editors/${first.body.editor.id}`, 'PATCH', { active: false })
+    assert.equal(deactivated.response.status, 200)
+    const afterDeactivate = await apiRequest(baseUrl, adminCookie, '/api/machines')
+    const disabledMachine = afterDeactivate.body.machines.find((machine) => machine.machineId === 'first-mac')
+    assert.equal(disabledMachine.enabled, false)
+    assert.equal(disabledMachine.hasToken, false)
+    const oldHeartbeat = await fetch(`${baseUrl}/api/machines/first-mac/runner/heartbeat`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${issued.body.token}` },
+    })
+    assert.equal(oldHeartbeat.status, 401)
+
+    const storedSettings = JSON.parse(await readFile(path.join(dataDirectory, '_distributed-work-settings.json'), 'utf8'))
+    assert.equal(storedSettings.find((settings) => settings.userId === first.body.editor.id)?.defaultMachineId, null)
+
+    // 계정을 삭제하면 소유자 없는 머신 레코드도 함께 제거한다.
+    const deleted = await apiRequest(baseUrl, adminCookie, `/api/admin/editors/${first.body.editor.id}`, 'DELETE')
+    assert.equal(deleted.response.status, 200)
+    const afterDelete = await apiRequest(baseUrl, adminCookie, '/api/machines')
+    assert.equal(afterDelete.body.machines.some((machine) => machine.machineId === 'first-mac'), false)
+
+    // 편집자는 메인 머신을 다룰 수 없다.
+    assert.equal((await apiRequest(baseUrl, secondCookie, '/api/machines', 'DELETE', { machineId: 'desk-win' })).response.status, 403)
   } finally {
     await stopServer(server)
     await rm(dataDirectory, { recursive: true, force: true })

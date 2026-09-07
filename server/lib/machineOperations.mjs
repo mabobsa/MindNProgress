@@ -6,6 +6,8 @@
 // 가져간 뒤 응답이 없는 오퍼레이션을 다시 내보내면 대화가 중복 생성된다.
 // 가져간 오퍼레이션이 제한 시간을 넘기면 재시도 없이 실패로 확정한다.
 
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+
 export const MACHINE_OPERATION_STATES = Object.freeze(['pending', 'dispatched', 'succeeded', 'failed'])
 
 export const MACHINE_OPERATION_METHODS = Object.freeze(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
@@ -22,6 +24,16 @@ export class MachineOperationError extends Error {
 
 function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function tokenHash(value) {
+  return createHash('sha256').update(String(value ?? '')).digest()
+}
+
+function tokenMatches(value, expectedHash) {
+  if (typeof value !== 'string' || !value || !Buffer.isBuffer(expectedHash)) return false
+  const candidate = tokenHash(value)
+  return candidate.length === expectedHash.length && timingSafeEqual(candidate, expectedHash)
 }
 
 export function normalizeMachineOperationRequest(value) {
@@ -52,14 +64,21 @@ export class MachineOperationQueue {
     resultTimeoutMs = 180_000,
     maxPendingPerMachine = 64,
     createOperationId = () => `op-${Math.random().toString(36).slice(2, 12)}`,
+    createResultToken = () => `mnop_${randomBytes(32).toString('base64url')}`,
+    completedRetentionMs = 10 * 60_000,
+    maxCompletedOperations = 1_024,
     now = () => Date.now(),
   } = {}) {
     this.dispatchTimeoutMs = dispatchTimeoutMs
     this.resultTimeoutMs = resultTimeoutMs
     this.maxPendingPerMachine = maxPendingPerMachine
     this.createOperationId = createOperationId
+    this.createResultToken = createResultToken
+    this.completedRetentionMs = completedRetentionMs
+    this.maxCompletedOperations = maxCompletedOperations
     this.now = now
     this.operations = new Map()
+    this.completedOperations = new Map()
     this.waiters = new Map()
     this.closed = false
   }
@@ -93,6 +112,7 @@ export class MachineOperationQueue {
     }
 
     const createdAt = this.now()
+    const resultToken = this.createResultToken()
     const operation = {
       operationId: this.createOperationId(),
       machineId,
@@ -106,6 +126,8 @@ export class MachineOperationQueue {
       resolve: null,
       reject: null,
       settled: false,
+      resultToken,
+      resultTokenHash: tokenHash(resultToken),
     }
 
     const completion = new Promise((resolve, reject) => {
@@ -131,13 +153,20 @@ export class MachineOperationQueue {
 
     return claimed.map((operation) => ({
       operationId: operation.operationId,
+      resultToken: operation.resultToken,
       request: operation.request,
     }))
   }
 
   // pending이 있으면 즉시 반환하고, 없으면 waitMs 동안 기다렸다가 빈 배열을 반환한다.
-  async waitForClaim(machineId, { limit = 1, waitMs = 25_000, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
-    const immediate = this.claim(machineId, limit)
+  async waitForClaim(machineId, {
+    limit = 1,
+    waitMs = 25_000,
+    setTimer = setTimeout,
+    clearTimer = clearTimeout,
+    shouldClaim = () => true,
+  } = {}) {
+    const immediate = shouldClaim() ? this.claim(machineId, limit) : []
     if (immediate.length > 0 || waitMs <= 0 || this.closed) return immediate
 
     await new Promise((resolve) => {
@@ -159,7 +188,7 @@ export class MachineOperationQueue {
       if (typeof timer?.unref === 'function') timer.unref()
     })
 
-    return this.claim(machineId, limit)
+    return shouldClaim() ? this.claim(machineId, limit) : []
   }
 
   // long-poll 응답이 Runner에 전달되지 못한 경우다.
@@ -183,6 +212,10 @@ export class MachineOperationQueue {
   settle(machineId, operationId, result) {
     const operation = this.operations.get(String(operationId ?? ''))
     if (!operation || operation.machineId !== machineId) {
+      const completed = this.completedOperations.get(String(operationId ?? ''))
+      if (completed?.machineId === machineId) {
+        return { operationId: completed.operationId, state: completed.state, duplicate: true }
+      }
       throw new MachineOperationError('오퍼레이션을 찾지 못했습니다.', { reasonCode: 'OPERATION_NOT_FOUND' })
     }
     if (operation.state !== 'dispatched') {
@@ -213,8 +246,41 @@ export class MachineOperationQueue {
     operation.settled = true
     if (error) operation.reject(error)
     else operation.resolve(value)
-    // 완료된 오퍼레이션은 promise가 해소된 뒤에는 보관할 이유가 없다.
+    // Runner가 결과를 올렸지만 성공 응답을 받지 못하면 같은 결과를 다시 보낸다.
+    // 짧은 완료 확인 기록을 남겨 재전송을 멱등하게 확인한다.
+    this.completedOperations.set(operation.operationId, {
+      operationId: operation.operationId,
+      machineId: operation.machineId,
+      state: operation.state,
+      resultTokenHash: operation.resultTokenHash,
+      expiresAt: this.now() + this.completedRetentionMs,
+    })
     this.operations.delete(operation.operationId)
+    this.sweepCompleted()
+  }
+
+  verifyResultToken(machineId, operationId, resultToken) {
+    const normalizedOperationId = String(operationId ?? '')
+    const operation = this.operations.get(normalizedOperationId)
+    if (operation?.machineId === machineId) return tokenMatches(resultToken, operation.resultTokenHash)
+    const completed = this.completedOperations.get(normalizedOperationId)
+    if (completed?.expiresAt <= this.now()) {
+      this.completedOperations.delete(normalizedOperationId)
+      return false
+    }
+    return completed?.machineId === machineId && tokenMatches(resultToken, completed.resultTokenHash)
+  }
+
+  sweepCompleted() {
+    const current = this.now()
+    for (const [operationId, operation] of this.completedOperations) {
+      if (operation.expiresAt <= current) this.completedOperations.delete(operationId)
+    }
+    while (this.completedOperations.size > this.maxCompletedOperations) {
+      const oldestOperationId = this.completedOperations.keys().next().value
+      if (oldestOperationId === undefined) break
+      this.completedOperations.delete(oldestOperationId)
+    }
   }
 
   // 제한 시간을 넘긴 오퍼레이션을 재시도 없이 실패로 확정한다.
@@ -235,6 +301,7 @@ export class MachineOperationQueue {
       ))
       expired += 1
     }
+    this.sweepCompleted()
     return expired
   }
 

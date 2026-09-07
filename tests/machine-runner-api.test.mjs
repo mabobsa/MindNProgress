@@ -69,12 +69,13 @@ async function userRequest(baseUrl, cookie, pathname, method = 'GET', body) {
   return { response, body: await response.json() }
 }
 
-async function runnerRequest(baseUrl, token, pathname, body) {
+async function runnerRequest(baseUrl, token, pathname, body, headers = {}) {
   const response = await fetch(`${baseUrl}${pathname}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       ...(body ? { 'Content-Type': 'application/json' } : {}),
+      ...headers,
     },
     body: body ? JSON.stringify(body) : undefined,
   })
@@ -157,9 +158,57 @@ test('Runner가 실패를 올리면 요청자에게 실패로 전달한다', { t
     assert.equal(probed.body.reachable, false)
     assert.match(probed.body.error, /AIONUI_REQUEST_FAILED:503/)
 
-    // 같은 오퍼레이션에 결과를 두 번 올리면 거부한다.
+    // 응답이 유실된 Runner가 같은 결과를 다시 올려도 멱등하게 확인한다.
     const duplicated = await runnerRequest(baseUrl, token, `/api/machines/macbook/runner/operations/${operationId}/result`, { ok: true })
-    assert.equal(duplicated.response.status, 409)
+    assert.equal(duplicated.response.status, 200)
+    assert.equal(duplicated.body.state, 'failed')
+    assert.equal(duplicated.body.duplicate, true)
+  } finally {
+    await stopServer(server)
+    await rm(dataDirectory, { recursive: true, force: true })
+  }
+})
+
+test('토큰 재발급은 구 long-poll을 끊되 이미 가져간 결과 토큰은 허용한다', { timeout: 60_000 }, async () => {
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-runner-reissue-'))
+  const port = 4_987
+  const baseUrl = `http://127.0.0.1:${port}`
+  const server = startServer(dataDirectory, port)
+
+  try {
+    await waitForServer(baseUrl)
+    const cookie = await login(baseUrl)
+    const oldToken = await registerMacbook(baseUrl, cookie)
+
+    const probe = userRequest(baseUrl, cookie, '/api/machines/macbook/probe', 'POST')
+    const claimed = await runnerRequest(baseUrl, oldToken, '/api/machines/macbook/runner/operations/claim', { waitMs: 10_000 })
+    const operation = claimed.body.operations[0]
+    assert.match(operation.resultToken, /^mnop_/)
+
+    const oldLongPoll = runnerRequest(baseUrl, oldToken, '/api/machines/macbook/runner/operations/claim', { waitMs: 10_000 })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const reissued = await userRequest(baseUrl, cookie, '/api/machines/macbook/token', 'POST')
+    assert.equal(reissued.response.status, 200)
+    assert.notEqual(reissued.body.token, oldToken)
+    assert.equal((await oldLongPoll).response.status, 401)
+
+    const settled = await runnerRequest(
+      baseUrl,
+      oldToken,
+      `/api/machines/macbook/runner/operations/${operation.operationId}/result`,
+      { ok: true, data: { schema_version: 1, items: [] } },
+      { 'X-MnP-Operation-Token': operation.resultToken },
+    )
+    assert.equal(settled.response.status, 200)
+    assert.equal((await probe).body.reachable, true)
+
+    const currentClaim = await runnerRequest(
+      baseUrl,
+      reissued.body.token,
+      '/api/machines/macbook/runner/operations/claim',
+      { waitMs: 0 },
+    )
+    assert.equal(currentClaim.response.status, 200)
   } finally {
     await stopServer(server)
     await rm(dataDirectory, { recursive: true, force: true })

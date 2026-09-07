@@ -173,23 +173,43 @@ test('머신 레지스트리와 사용자별 분산 작업 설정을 관리한�
   }
 })
 
-test('루프백 바인딩이면 Runner가 접속할 수 없다고 알린다', { timeout: 45_000 }, async () => {
-  const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-bind-'))
+test('Runner 실행 주소는 API 포트가 아니라 브라우저와 같은 공개 주소를 쓴다', { timeout: 45_000 }, async () => {
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-address-'))
   const port = 4_972
   const baseUrl = `http://127.0.0.1:${port}`
-  const server = startServer(dataDirectory, port)
+  // API는 루프백에만 바인딩된 상태다. 그래도 공개 주소로 접속하면 Runner가 동작해야 한다.
+  const server = startServer(dataDirectory, port, { MNP_API_HOST: '127.0.0.1' })
 
   try {
     await waitForServer(baseUrl)
     const cookie = await login(baseUrl, adminEmail, adminPassword)
     const listed = await apiRequest(baseUrl, cookie, '/api/machines')
 
-    // 테스트 서버는 127.0.0.1에 바인딩하므로 다른 장비의 Runner가 붙을 수 없다.
-    assert.equal(listed.body.runner.lanReachable, false)
-    assert.equal(listed.body.runner.bindHost, '127.0.0.1')
-    // 실행 명령에 쓸 주소는 루프백이 아니라 LAN 주소여야 한다.
+    assert.equal(listed.body.runner.lanReachable, true)
+    // 루프백이 아닌 실제 접근 주소여야 한다.
     assert.match(listed.body.runner.apiUrl, new RegExp(`^http://\\d+\\.\\d+\\.\\d+\\.\\d+:${port}$`))
+    assert.doesNotMatch(listed.body.runner.apiUrl, /127\.0\.0\.1|localhost/)
     assert.ok(listed.body.runner.onlineWithinMs > 0)
+  } finally {
+    await stopServer(server)
+    await rm(dataDirectory, { recursive: true, force: true })
+  }
+})
+
+test('공개 주소가 루프백이면 Runner가 접속할 수 없다고 알린다', { timeout: 45_000 }, async () => {
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-loopback-'))
+  const port = 4_977
+  const baseUrl = `http://127.0.0.1:${port}`
+  const server = startServer(dataDirectory, port, { MNP_PUBLIC_URL: `http://127.0.0.1:${port}` })
+
+  try {
+    await waitForServer(baseUrl)
+    const cookie = await login(baseUrl, adminEmail, adminPassword)
+    const listed = await apiRequest(baseUrl, cookie, '/api/machines')
+
+    // 이 주소로는 다른 장비의 Runner가 붙을 수 없으므로 화면에서 먼저 알려야 한다.
+    assert.equal(listed.body.runner.lanReachable, false)
+    assert.equal(listed.body.runner.apiUrl, `http://127.0.0.1:${port}`)
   } finally {
     await stopServer(server)
     await rm(dataDirectory, { recursive: true, force: true })
@@ -200,15 +220,13 @@ test('서브 머신 접속 상태는 하트비트 시각으로 판정하고 메�
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-online-'))
   const port = 4_973
   const baseUrl = `http://127.0.0.1:${port}`
-  const server = startServer(dataDirectory, port, { MNP_API_HOST: '0.0.0.0' })
+  const server = startServer(dataDirectory, port)
 
   try {
     await waitForServer(baseUrl)
     const cookie = await login(baseUrl, adminEmail, adminPassword)
 
-    // 0.0.0.0에 바인딩하면 경고가 사라진다.
     const bound = await apiRequest(baseUrl, cookie, '/api/machines')
-    assert.equal(bound.body.runner.lanReachable, true)
     assert.equal(bound.body.machines[0].online, null, '메인 머신은 Runner가 없어 접속 상태가 없다')
 
     await apiRequest(baseUrl, cookie, '/api/machines', 'POST', { machineId: 'macbook', label: '맥북' })

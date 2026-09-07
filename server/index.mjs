@@ -1370,14 +1370,22 @@ async function loadDistributedWorkSettings() {
 // 하트비트 기본 간격이 60초, long-poll이 25초이므로 이 정도면 정상 동작 중에는 끊김으로 보이지 않는다.
 const runnerOnlineWithinMs = 150_000
 
-function isLoopbackBindHost(value) {
+function isLoopbackHostname(value) {
   const normalized = String(value ?? '').trim().toLowerCase().replace(/^\[|\]$/g, '')
   return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.')
 }
 
-// 서브 머신의 Runner가 접속할 주소다. 루프백에만 바인딩되어 있으면 어떤 Runner도 붙을 수 없다.
-const runnerApiBaseUrl = `http://${detectedPublicIpv4()}:${port}`
-const runnerApiLanReachable = !isLoopbackBindHost(host)
+// Runner는 브라우저와 같은 공개 주소를 쓴다.
+// 개발 서버가 0.0.0.0에 바인딩되어 /api를 로컬 API로 프록시하므로 API 포트를 LAN에 열 필요가 없다.
+// 프록시에 timeout을 설정하지 않았기 때문에 long-poll도 그대로 통과한다.
+const runnerApiBaseUrl = publicBaseUrl
+const runnerApiLanReachable = (() => {
+  try {
+    return !isLoopbackHostname(new URL(runnerApiBaseUrl).hostname)
+  } catch {
+    return false
+  }
+})()
 
 function machineViewer(user) {
   return { userId: user.id, isAdmin: user.role === 'admin' }
@@ -1396,7 +1404,6 @@ function machineRegistryResponse(user) {
     runner: {
       apiUrl: runnerApiBaseUrl,
       lanReachable: runnerApiLanReachable,
-      bindHost: host,
       onlineWithinMs: runnerOnlineWithinMs,
     },
     machines: registry.machines.map((machine) => ({

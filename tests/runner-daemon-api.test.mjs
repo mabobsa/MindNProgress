@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { createServer } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -176,6 +176,78 @@ test('실제 Runner 프로세스가 메인 머신 요청을 로컬 AionUi로 중
   } finally {
     await stopProcess(runner)
     await stopProcess(mnpServer)
+    await new Promise((resolve) => fakeAionUi.close(resolve))
+    await rm(dataDirectory, { recursive: true, force: true })
+  }
+})
+
+// 개발 서버는 0.0.0.0에 바인딩되고 /api를 로컬 API로 프록시한다.
+// Runner도 브라우저와 같은 공개 주소를 쓰므로 API 포트를 LAN에 열지 않아도 된다.
+// Vite 프록시는 proxyTimeout을 설정하지 않아 timeout이 없으므로, 여기서도 timeout 없는 프록시로 재현한다.
+function startApiProxy(proxyPort, apiPort) {
+  const server = createServer((request, response) => {
+    const upstream = httpRequest({
+      host: '127.0.0.1',
+      port: apiPort,
+      method: request.method,
+      path: request.url,
+      // Vite가 xfwd로 실제 접속 주소를 전달하는 동작을 재현한다.
+      headers: { ...request.headers, 'x-forwarded-for': request.socket.remoteAddress ?? '' },
+    }, (upstreamResponse) => {
+      response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers)
+      upstreamResponse.pipe(response)
+    })
+    upstream.on('error', () => {
+      if (!response.headersSent) response.writeHead(502)
+      response.end()
+    })
+    request.pipe(upstream)
+  })
+  return new Promise((resolve) => server.listen(proxyPort, '127.0.0.1', () => resolve(server)))
+}
+
+test('Runner는 API 포트를 열지 않고 공개 주소의 프록시를 거쳐 동작한다', { timeout: 90_000 }, async () => {
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-runner-proxy-'))
+  const apiPort = 4_974
+  const proxyPort = 4_975
+  const aionUiPort = 4_976
+  const baseUrl = `http://127.0.0.1:${apiPort}`
+
+  const mnpServer = startMnpServer(dataDirectory, apiPort)
+  const proxy = await startApiProxy(proxyPort, apiPort)
+  const { server: fakeAionUi, received } = await startFakeAionUi(aionUiPort)
+  let runner = null
+
+  try {
+    await waitFor(async () => {
+      try {
+        return (await fetch(`${baseUrl}/api/health`)).ok
+      } catch {
+        return false
+      }
+    }, { label: 'MnP 서버 시작' })
+
+    const cookie = await login(baseUrl)
+    await apiRequest(baseUrl, cookie, '/api/machines', 'POST', { machineId: 'macbook', label: '맥북' })
+    const issued = await apiRequest(baseUrl, cookie, '/api/machines/macbook/token', 'POST')
+
+    // Runner는 API 포트가 아니라 프록시 주소만 알고 있다.
+    runner = startRunner(proxyPort, aionUiPort, 'macbook', issued.body.token)
+
+    await waitFor(async () => {
+      const listed = await apiRequest(baseUrl, cookie, '/api/machines')
+      return Boolean(listed.body.machines.find((machine) => machine.machineId === 'macbook').lastSeenAt)
+    }, { label: '프록시 경유 하트비트' })
+
+    // long-poll이 프록시를 통과해 유지되는지 확인한다.
+    const probed = await apiRequest(baseUrl, cookie, '/api/machines/macbook/probe', 'POST')
+    assert.equal(probed.body.reachable, true)
+    assert.equal(probed.body.conversationCount, 1)
+    assert.equal(received.filter((entry) => entry.url === '/api/internal/conversation-runtimes/active').length, 1)
+  } finally {
+    await stopProcess(runner)
+    await stopProcess(mnpServer)
+    await new Promise((resolve) => proxy.close(resolve))
     await new Promise((resolve) => fakeAionUi.close(resolve))
     await rm(dataDirectory, { recursive: true, force: true })
   }

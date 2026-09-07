@@ -563,7 +563,6 @@ type MachineSummary = {
 type RunnerConnectionInfo = {
   apiUrl: string
   lanReachable: boolean
-  bindHost: string
   onlineWithinMs: number
 }
 
@@ -2164,8 +2163,8 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
               <div className="distributed-work-warning" role="alert">
                 <strong>서브 머신에서 이 서버에 접속할 수 없습니다.</strong>
                 <span>
-                  MindNProgress가 <code>{runnerInfo.bindHost}</code>에만 바인딩되어 있어 다른 장비의 Runner가 연결하지 못합니다.
-                  메인 머신에서 <code>MNP_API_HOST=0.0.0.0</code>으로 서버를 다시 실행한 뒤 아래 절차를 진행하세요.
+                  현재 공개 주소가 <code>{runnerInfo.apiUrl}</code>로 잡혀 있어 다른 장비의 Runner가 연결하지 못합니다.
+                  메인 머신에서 <code>MNP_PUBLIC_URL</code>을 실제 접근 주소로 지정하거나 네트워크 연결을 확인하세요.
                 </span>
               </div>
             )}
@@ -2268,8 +2267,8 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
                   </div>
                   {!runnerInfo.lanReachable && (
                     <small className="distributed-work-token-warning">
-                      지금은 서버가 <code>{runnerInfo.bindHost}</code>에만 바인딩되어 있어 이 명령이 연결에 실패합니다.
-                      <code>MNP_API_HOST=0.0.0.0</code>으로 다시 실행한 뒤 사용하세요.
+                      위 주소는 다른 장비에서 접근할 수 없어 이 명령이 연결에 실패합니다.
+                      <code>MNP_PUBLIC_URL</code>을 실제 접근 주소로 지정한 뒤 사용하세요.
                     </small>
                   )}
                 </div>

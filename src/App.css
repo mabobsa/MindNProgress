@@ -669,7 +669,10 @@
 .password-actions button:disabled { opacity: .55; cursor: wait; }
 .distributed-work-modal { width: min(470px, calc(100vw - 48px)); }
 .distributed-work-loading { padding: 28px 18px; color: #918a97; font-size: 9px; text-align: center; }
-.distributed-work-body { display: flex; flex-direction: column; gap: 14px; padding: 18px; }
+/* 부모 .history-modal이 overflow: hidden이므로 본문이 스크롤 영역을 직접 가져야 한다. */
+.distributed-work-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: 18px; }
+.distributed-work-footer { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; padding: 12px 18px; border-top: 1px solid #ece9f0; background: #faf9fb; }
+.distributed-work-footer .password-actions { margin-top: 0; }
 .distributed-work-intro { margin: 0; color: #8c8592; font-size: 9px; line-height: 1.7; }
 .distributed-work-toggle { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid #e4e0ea; border-radius: 9px; background: #fbfafd; cursor: pointer; }
 .distributed-work-toggle input { margin: 1px 0 0; accent-color: #6657d9; }
@@ -1133,7 +1136,9 @@
 
   .history-modal-backdrop { padding: 10px; }
   .history-modal,
-  .password-modal { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); }
+  .password-modal,
+  .distributed-work-modal { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); }
+  .distributed-work-register-fields { grid-template-columns: 1fr; }
   .content-tooltip { max-width: calc(100vw - 16px); }
 }
 

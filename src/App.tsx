@@ -2213,15 +2213,19 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
               <small>머신 ID는 소문자, 숫자, 하이픈만 사용합니다. 내가 소유자가 되며, 위임은 본인 소유 머신에만 보낼 수 있습니다.</small>
               <button type="submit" disabled={submitting || !newMachineId.trim() || !newMachineLabel.trim()}>등록</button>
             </form>
+          </div>
+        )}
 
+        {/* 본문은 스크롤하고 오류·알림과 저장 버튼은 항상 보이도록 하단에 고정한다. */}
+        {!loading && (
+          <footer className="distributed-work-footer">
             {error && <div className="password-error" role="alert">{error}</div>}
             {notice && <div className="distributed-work-notice" role="status">{notice}</div>}
-
             <div className="password-actions">
               <button type="button" onClick={onClose}>닫기</button>
               <button type="button" onClick={() => void save()} disabled={submitting}>{submitting ? '저장 중…' : '설정 저장'}</button>
             </div>
-          </div>
+          </footer>
         )}
       </section>
     </div>

@@ -1034,6 +1034,11 @@
   background: var(--theme-surface-raised);
 }
 
+[data-theme="dark"] .distributed-work-footer {
+  border-color: var(--theme-border);
+  background: var(--theme-surface-raised);
+}
+
 [data-theme="dark"] .distributed-work-register {
   border-color: var(--theme-border-strong);
 }

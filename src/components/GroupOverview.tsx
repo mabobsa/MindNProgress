@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MindNodeData, AiConversationRuntime } from '../types/mindMap'
 import type { AiConversationExplicitTarget } from '../utils/aiConversationLaunch.mjs'
+import { buildGroupCoordinatorRequest, buildGroupDocumentRequest, buildGroupDocumentProposalRequest } from '../utils/aiApprovalInstructions.mjs'
 import './GroupOverview.css'
 
 type Project = { version: number; coordinatorMapId: string | null; source: string; sourceVersion: string; objective: string; instructions: string }
@@ -86,7 +87,7 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
       if (!mounted.current) return
       loadSequence.current++
       draftBase.current = value.project
-      setContext(value); setDraft(value.project); setNotice(prepare ? '총괄 문서를 연결했습니다. AI 대화에서 기획 분석을 시작할 수 있습니다.' : '그룹 정보를 저장했습니다.')
+      setContext(value); setDraft(value.project); setNotice(prepare ? '총괄 문서를 연결했습니다. AI에게 진행 방향을 제안받고 승인 후 실행할 수 있습니다.' : '그룹 정보를 저장했습니다.')
       setSettingsOpen(false)
       onLibraryChanged()
     } catch (reason) { if (mounted.current) setError(reason instanceof Error ? reason.message : '저장하지 못했습니다.') }
@@ -99,8 +100,8 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
       purpose: coordinator ? 'group-coordination' : 'card', mapId: document.id, cardId: document.root.id,
       documentTitle: document.title, cardTitle: document.root.data.label,
       initialRequest: coordinator
-        ? `그룹 총괄 업무입니다. mindnprogress_get_group_context를 groupId="${groupId}"로 먼저 조회하세요.\n\n${instruction ?? '그룹의 기획 원본과 목표를 확인하고, 원본 전수 분석·문서 분할·루트 실행 계약 작성·문서별 분석 위임·개발 및 검수 조정을 진행하세요. 기존 문서는 현재 요구사항과 구현을 감사하여 활용하세요. 필요한 원본이나 결정이 없으면 구체적으로 알리세요.'}\n\n${context.guide.coordinator}`
-        : `그룹 "${name}"의 문서 담당 업무입니다. mindnprogress_get_group_context를 groupId="${groupId}"로 조회하고 이 루트의 최신 실행 계약을 확인하세요. 담당 범위 분석과 하위 업무 구성을 진행하고, 실제 구현은 하위 카드로 위임하세요.`,
+        ? buildGroupCoordinatorRequest({ groupId, instruction })
+        : buildGroupDocumentRequest({ groupId, groupName: name }),
     }
   }
   function launch(document: GroupDocument, instruction?: string) {
@@ -150,13 +151,13 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
       </section>
       <section className="group-project-card">
         <div className="group-section-title"><h2>담당 문서 <span>{documents.length}</span></h2><small>문서를 그룹으로 드래그하여 추가</small></div>
-        <p className="group-muted">문서의 최상위 카드에 담당 범위와 완료 조건을 기록합니다. 업무 카드 집계와 요구사항 검증 현황은 별도로 확인합니다.</p>
+        <p className="group-muted">전체 방향 승인 후에도 문서별 실행 계획을 사용자에게 제안하고 승인받습니다. 업무 카드 집계와 요구사항 검증 현황은 별도로 확인합니다.</p>
         {documents.length === 0 ? <div className="group-empty">문서를 드래그해 넣거나 총괄 AI에게 기획 분석과 문서 구성을 요청하세요.</div> : <div className="group-document-list">{documents.map((document) => {
           const latest = context.delegations.find((item) => item.mapId === document.id)
           return <article key={document.id} className="group-document-row"><div className="group-document-heading"><button className="group-text-button" onClick={() => onNavigate(document.id, document.root?.id)}>{document.title}</button><span className="group-badge">{document.runtime ? runtimeLabels[document.runtime.state] ?? 'AI 상태 확인 불가' : linked(document) ? 'AI 상태 확인 불가' : '대화 미연결'}</span></div>
             <p className="group-scope">{document.root?.data.description || '담당 범위가 비어 있습니다. 최상위 카드에서 작성해 주세요.'}</p>
             <div className="group-row-meta"><span>하위 업무 {document.work.done}/{document.work.total} 완료 · 대기 {document.work.waiting}개</span>{latest && <span>{delegationLabels[latest.state] ?? latest.state}</span>}</div>
-            <div className="group-actions"><button onClick={() => onNavigate(document.id, document.root?.id)}>최상위 카드 열기</button>{linked(document) && <button onClick={() => openConversations(document)}>AI 대화</button>}{editable && coordinator && <button disabled={aiDisabled || !document.root} onClick={() => launch(coordinator, `문서 "${document.title}"(targetMapId: ${document.id}, targetCardId: ${document.root?.id})의 최신 루트와 AI 작업 상태를 확인하세요. 담당 범위와 분석·검수 조건을 보완한 뒤, 적절한 기존 대화를 이어가거나 새 대화로 문서 분석·조정을 실제 위임하세요. 이미 진행 중인 작업이 있으면 중복 위임하지 말고 상태와 다음 단계를 알려주세요.`)}>총괄 AI에 위임 요청</button>}</div>
+            <div className="group-actions"><button onClick={() => onNavigate(document.id, document.root?.id)}>최상위 카드 열기</button>{linked(document) && <button onClick={() => openConversations(document)}>AI 대화</button>}{editable && coordinator && <button disabled={aiDisabled || !document.root} onClick={() => launch(coordinator, buildGroupDocumentProposalRequest({ mapId: document.id, cardId: document.root?.id ?? '', title: document.title }))}>총괄 AI에 위임 제안 요청</button>}</div>
           </article>
         })}</div>}
         {editable && <details className="group-new-document"><summary>문서 직접 추가</summary><form onSubmit={(event) => { event.preventDefault(); void createDocument() }}><label>문서 이름<input value={newTitle} maxLength={80} required onChange={(event) => setNewTitle(event.target.value)} /></label><label>최상위 카드의 담당 범위와 완료 조건<textarea value={newDescription} maxLength={100000} rows={4} onChange={(event) => setNewDescription(event.target.value)} /></label><button disabled={busy || !newTitle.trim()}>문서 만들기</button></form></details>}

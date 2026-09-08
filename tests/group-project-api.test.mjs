@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, GROUP_COORDINATOR_INSTRUCTION, DOCUMENT_COORDINATOR_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 
 const projectDirectory = path.resolve(import.meta.dirname, '..')
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -100,6 +101,10 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     const prepared = await api('/api/groups/' + groupId, 'PATCH', { baseVersion: 0, source, sourceVersion: 'v0.3', objective: '전체 기획 구현', instructions: '첫 절\n\n마지막 절은 보존합니다.', createCoordinator: true })
     assert.equal(prepared.status, 200, JSON.stringify(prepared.body))
     let context = prepared.body
+    assert.equal(context.guide.coordinator, GROUP_COORDINATOR_INSTRUCTION)
+    assert.equal(context.guide.documentCoordinator, DOCUMENT_COORDINATOR_INSTRUCTION)
+    assert.equal(context.guide.approval, GROUP_APPROVAL_INSTRUCTION)
+    assert.equal(context.coordinator.root.data.description, GROUP_COORDINATOR_INSTRUCTION)
     const coordinatorId = context.coordinator.id
     const coordinatorRoot = context.coordinator.root.id
     assert.equal(context.coordinator.root.data.isWork, false)
@@ -153,6 +158,8 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     assert.equal(delegated.body.delegation.coordinationOnly, true)
     assert.equal(delegated.body.delegation.workspaceLease, null)
     assert.match(calls[0].instruction, /코드·Prefab은 직접 수정하지 마세요/)
+    assert.ok(calls[0].instruction.includes(AI_EXECUTION_APPROVAL_INSTRUCTION))
+    assert.ok(calls[0].instruction.includes(DOCUMENT_COORDINATOR_INSTRUCTION))
     assert.equal((await api(delegateUrl, 'POST', args, sourceHeaders)).body.repeated, true)
     assert.equal(calls.length, 1)
     const currentTarget = (await api(`/api/maps/${target.id}`)).body.map
@@ -180,6 +187,10 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     const recoveryCall = calls.find((call) => call.operationId === operationId)
     assert.match(recoveryCall.instruction, /코드·Prefab은 직접 수정하지 마세요/)
     assert.match(recoveryCall.instruction, /worker 배정 없음/)
+    assert.ok(recoveryCall.instruction.includes(AI_EXECUTION_APPROVAL_INSTRUCTION))
+    assert.ok(recoveryCall.instruction.includes(DOCUMENT_COORDINATOR_INSTRUCTION))
+    assert.match(recoveryCall.instruction, /복구 요청은 새로운 실행 범위의 승인이 아닙니다/)
+    assert.match(recoveryCall.instruction, /분석·제안 위임의 복구는 계속 분석·제안만 허용/)
     assert.doesNotMatch(recoveryCall.instruction, /먼저 `\.ai-session\.json`/)
     const documentConversationId = delegated.body.delegation.targetConversationId
     const childHeaders = { 'X-MNP-AI-Map-Id': target.id, 'X-MNP-AI-Card-Id': targetRoot, 'X-MNP-AI-Conversation-Id': documentConversationId, 'X-MNP-AI-Editor-Id': attribution.body.editorId }
@@ -197,6 +208,7 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
       targetCardId: leafId, sourceRevision: withLeaf.body.map.version, strategy: 'new', instruction: '하위 구현을 검증하세요.', decisionReason: '독립 하위 업무입니다.', idempotencyKey: 'nested-leaf', newConversation: { agentId: 'claude', modelId: 'opus', workspace: projectDirectory },
     }, childHeaders)
     assert.equal(leaf.status, 202, JSON.stringify(leaf.body))
+    assert.ok(calls.find((call) => call.operationId === 'nested-leaf').instruction.includes(AI_EXECUTION_APPROVAL_INSTRUCTION))
     dispatches.get(operationId).state = 'completed'
     await until(async () => (await api(`/api/groups/${groupId}`)).body.delegations.some((item) => item.state === 'waiting-document-work'), '하위 구현을 기다리지 않고 총괄에 완료를 보고했습니다.')
     assert.equal(calls.some((call) => /^group-first-wake-/.test(call.operationId)), false)
@@ -208,6 +220,9 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     assert.equal(wake.targetConversationId, 'group-parent')
     assert.ok(wake.instruction.includes(target.id))
     assert.ok(wake.instruction.includes(coordinatorId))
+    assert.ok(wake.instruction.includes(AI_EXECUTION_APPROVAL_INSTRUCTION))
+    assert.ok(wake.instruction.includes(AI_DELEGATION_FOLLOWUP_INSTRUCTION))
+    assert.ok(calls.find((call) => /^nested-leaf-wake-/.test(call.operationId)).instruction.includes(AI_DELEGATION_FOLLOWUP_INSTRUCTION))
     assert.equal((await api('/api/maps/layout', 'PATCH', { documentLayout: movedLayout })).status, 200)
     assert.equal((await api(`/api/maps/${target.id}`)).body.groupProject, null)
   } finally {

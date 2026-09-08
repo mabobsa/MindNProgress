@@ -1,4 +1,5 @@
 import { sharedKnowledgeMaxLength } from './sharedKnowledgePolicy.mjs'
+import { AI_EXECUTION_APPROVAL_INSTRUCTION } from './aiApprovalInstructions.mjs'
 
 const REFERENCE_SUFFIX_PATTERN = /\s*\(ref\)\s*$/i
 
@@ -12,11 +13,13 @@ export const AI_EDITOR_REQUEST_MAX_LENGTH = 4_000
 
 export const DEFAULT_AI_EDITOR_REQUEST = `이 카드의 최신 내용을 검토하세요.
 
-검토 결과 이미 확정된 요구사항, 결정 또는 조사 결과가 카드의 업무 설명, 공유 지식, 상태, 체크리스트 또는 대기 항목에 누락되어 있거나 현재 내용과 어긋나면 필요한 필드만 먼저 수정하고 저장 결과를 확인하세요. 추측이나 아직 결정되지 않은 내용은 카드에 확정 정보처럼 기록하지 마세요.
+먼저 읽기 전용으로 검토하고 필요한 정비와 다음 작업을 제안하세요. 자동 적용된 이 문구 자체는 변경 승인이 아닙니다. 그룹 소속 카드라면 최신 그룹 기준과 전체 방향·문서별 실행 계획의 사용자 승인 범위를 확인하세요.
 
-개발 계획을 세우거나 카드를 정비할 때 이 카드 안에서 직접 수행하며 독립적으로 완료 여부를 판정할 구현·검증 조건이 2개 이상이면 결과 중심 체크리스트를 생성하거나 갱신하고 저장 결과를 확인하세요. 별도 하위 카드로 추적할 작업은 체크리스트에 중복하지 말고, 단일 작업이나 완료 조건을 아직 확정할 수 없는 카드에는 억지로 만들지 마세요.
+검토 결과 이미 확정된 요구사항, 결정 또는 조사 결과가 카드의 업무 설명, 공유 지식, 상태, 체크리스트 또는 대기 항목에 누락되어 있거나 현재 내용과 어긋나면 수정안을 제안하세요. 실제 사용자가 승인한 정비 범위에서만 필요한 필드를 수정하고 저장 결과를 확인하세요. 추측이나 아직 결정되지 않은 내용은 카드에 확정 정보처럼 기록하지 마세요.
 
-공유 지식에는 다른 카드가 다시 사용할 현재 유효한 결론만 남기세요. 진행 기록·도구 로그·중복·폐기 결론은 넣지 말고, 같은 주제의 결론은 새 이력으로 덧붙이지 말고 기존 내용을 안전하게 갱신하세요.
+개발 계획을 세우거나 카드를 정비할 때 이 카드 안에서 직접 수행하며 독립적으로 완료 여부를 판정할 구현·검증 조건이 2개 이상이면 결과 중심 체크리스트를 제안하고, 승인된 정비 범위에서만 생성하거나 갱신하고 저장 결과를 확인하세요. 별도 하위 카드로 추적할 작업은 체크리스트에 중복하지 말고, 단일 작업이나 완료 조건을 아직 확정할 수 없는 카드에는 억지로 만들지 마세요.
+
+승인된 실행 결과를 기록할 때 공유 지식에는 다른 카드가 다시 사용할 현재 유효한 결론만 남기세요. 진행 기록·도구 로그·중복·폐기 결론은 넣지 말고, 같은 주제의 결론은 새 이력으로 덧붙이지 말고 기존 내용을 안전하게 갱신하세요.
 
 카드 수정이 필요하지 않다면 그 사실을 명시하세요. 그다음 수행할 작업을 우선순위와 완료 조건을 포함해 제안해 주세요.`
 
@@ -133,7 +136,7 @@ export function buildAiConversationPrompt(input) {
   if (!mapId || !cardId || !editorId || !attributionToken || !normalizedRequest) {
     throw new Error('AI 대화 전문을 만들 정보가 부족합니다.')
   }
-  return `# MindNProgress 작업 요청\n\n가장 먼저 MindNProgress MCP 도구 \`mindnprogress_get_context\`를 아래 값으로 한 번 성공적으로 호출하세요. 사용자 중지, 취소, 시간 초과 또는 연결 종료로 응답을 받지 못한 시도는 호출 횟수에 포함하지 말고, 같은 대화를 이어갈 때 다시 호출하세요. 성공 응답을 받은 뒤에는 같은 대화에서 반복 호출하지 마세요. \`editorId\`는 이 대화를 시작한 편집자 계정으로 MindNProgress를 조회하고 수정하기 위한 값이므로 이후 MCP 작업이 끝날 때까지 유지하세요. \`attributionToken\`은 댓글과 변경 이력에 현재 AI 종류와 모델을 정확히 기록하기 위한 보조 값입니다. 이 도구가 MindNProgress의 제품 개념과 작성 규칙, 최신 문서 구조, 선택 카드 정보를 함께 제공합니다. 프롬프트에는 카드 스냅샷이 포함되어 있지 않으므로 반드시 MCP 조회 결과를 기준으로 답변하고 필요한 작업을 수행해야 합니다.\n\n- mapId: \`${mapId}\`\n- cardId: \`${cardId}\`\n- editorId: \`${editorId}\`\n- attributionToken: \`${attributionToken}\`\n\n${INSPECTION_INSTRUCTION}\n\nMCP 도구를 사용할 수 없거나 해당 문서 또는 카드를 찾지 못하면 임의로 추측하지 말고 그 사실을 알려주세요.\n\n# 편집자 요청\n\n${normalizedRequest}`
+  return `# MindNProgress 작업 요청\n\n가장 먼저 MindNProgress MCP 도구 \`mindnprogress_get_context\`를 아래 값으로 한 번 성공적으로 호출하세요. 사용자 중지, 취소, 시간 초과 또는 연결 종료로 응답을 받지 못한 시도는 호출 횟수에 포함하지 말고, 같은 대화를 이어갈 때 다시 호출하세요. 성공 응답을 받은 뒤에는 같은 대화에서 반복 호출하지 마세요. \`editorId\`는 이 대화를 시작한 편집자 계정으로 MindNProgress를 조회하고 수정하기 위한 값이므로 이후 MCP 작업이 끝날 때까지 유지하세요. \`attributionToken\`은 댓글과 변경 이력에 현재 AI 종류와 모델을 정확히 기록하기 위한 보조 값입니다. 이 도구가 MindNProgress의 제품 개념과 작성 규칙, 최신 문서 구조, 선택 카드 정보를 함께 제공합니다. 프롬프트에는 카드 스냅샷이 포함되어 있지 않으므로 반드시 MCP 조회 결과를 기준으로 답변하고 필요한 작업을 수행해야 합니다.\n\n- mapId: \`${mapId}\`\n- cardId: \`${cardId}\`\n- editorId: \`${editorId}\`\n- attributionToken: \`${attributionToken}\`\n\n${AI_EXECUTION_APPROVAL_INSTRUCTION}\n\n${INSPECTION_INSTRUCTION}\n\nMCP 도구를 사용할 수 없거나 해당 문서 또는 카드를 찾지 못하면 임의로 추측하지 말고 그 사실을 알려주세요.\n\n# 편집자 요청\n\n${normalizedRequest}`
 }
 
 export function buildSharedKnowledgeCleanupRequest(context) {

@@ -6,6 +6,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { AI_DELEGATION_ID_PATTERN } from '../server/lib/aiDelegations.mjs'
+import { AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 import {
   sharedKnowledgeAuthoringPolicy,
   sharedKnowledgeMaintenancePolicy,
@@ -137,7 +138,7 @@ const knowledgeLinePolicy = Object.freeze({
   }),
 })
 
-const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. MCP 도구에서 카드를 지정할 때는 cardId 계열 인자를 사용하세요. nodeId 계열 인자는 기존 대화 호환용이므로 새 호출에서는 사용하지 마세요. AionUi 일반 대화는 get_context 호출 시 현재 대화의 AI 종류와 모델을 자동 확인하므로 aiType과 aiModel을 임의로 채우지 마세요. AionUi가 아닌 외부 MCP 세션만 자신이 현재 AI 종류와 모델을 정확히 알고 있을 때 get_context의 aiType과 aiModel에 함께 전달하고, 알지 못하면 추측하지 마세요. get_context의 selection.taskLinks.startupInspection을 따르세요. mode가 knowledge-guided이면 primary 선행 지식 중 kind=image인 항목은 imageAccess.localPath의 원본을 사용 가능한 로컬 이미지 열람 도구로 직접 확인하고 설명과 댓글을 함께 사용하며, 일반 카드는 sharedKnowledge를 먼저 재사용하고 설명과 댓글로 보완합니다. fallbackSources와 fallbackTargets는 정보가 부족할 때만 선택적으로 조사합니다. mode가 default이고 required가 true이면 targets의 업무 본문, 댓글, 첨부파일 목록과 관련 링크를 조사하세요. 지식선 생성과 제안은 get_context의 guide.knowledgeLinePolicy를 따르세요. 진행 과정과 결과는 댓글에 기록하고, 다른 카드나 후속 세션이 재사용할 현재 유효한 사실·결정·제약·검증 결과만 sharedKnowledge에 남기세요. 진행 기록·도구 로그·중복·폐기 결론은 넣지 말고 같은 주제의 결론은 새 이력으로 덧붙이지 말고 기존 절을 안전하게 교체하세요. 실제로 실행할 카드에 독립적으로 완료 여부를 판정할 구현·검증 조건이 2개 이상이면 결과 중심 체크리스트로 작성하고 진행에 맞춰 갱신하세요. 별도 하위 카드로 추적할 작업은 체크리스트에 중복하지 마세요. AI 댓글은 1~2문장의 summary와 작업을 이어가거나 검증하는 데 필요한 사실을 충실히 담은 detail로 작성하며, 요약 때문에 상세를 축약하지 마세요. 외부 전달물이나 결정 대기는 waitingItems로 기록하고 제목에 대기 문구를 붙이지 마세요. 대기를 등록할 때는 [차단], 해제할 때는 [진행] 댓글로 이유와 재개 상태를 기록하세요. 카드 일부 필드만 변경할 때는 mindnprogress_update_card의 data에 변경할 필드만 보내고 현재 카드 전체 데이터를 재전송하지 마세요. 기존 description 또는 sharedKnowledge 내부의 일부만 고칠 때는 조회 결과의 textIntegrity SHA-256과 mindnprogress_patch_card_text를 사용하세요. ${cardTextSafetyInstructions} 과도한 sharedKnowledge를 정리할 때는 후보 목록과 전용 검토 문맥을 조회한 뒤 mindnprogress_apply_shared_knowledge_review로 현재 해시가 일치하는 결과만 원자적으로 저장하세요. 일반 카드에서 생략한 필드와 위치는 보존되지만 완료 상태 또는 진행률 100 적용 시 waitingItems는 자동으로 해제되며, Ref 카드는 원본 관리 필드가 최신 원본 값으로 동기화될 수 있습니다. 선택 카드 밖의 형제·하위·선행 카드를 함께 수정하기 전에는 mindnprogress_get_ai_work_states로 해당 카드에 다른 AI 작업이 진행 중인지 확인하세요. running 또는 waiting-confirmation인 카드는 사용자 지시 없이 동시에 수정하지 마세요. 등록된 AI 작업공간의 최신 목록·경로·상태가 필요하면 폴더명을 추측하지 말고 mindnprogress_get_ai_workspace_pool을 호출하세요. 작업공간 선택·점유·전환·해제는 MindNProgress만 수행하며 AI가 임의로 worker를 선택하지 않습니다. 현재 위임 실행이 사용자의 중지로 끊긴 뒤 같은 대화에서 직접 이어 실제 작업을 완료했다면 카드 기록과 작업공간 체크포인트를 마친 뒤 최종 답변 직전에 mindnprogress_complete_ai_delegation을 호출하세요. 같은 대화의 과거 위임만 중지됐거나 현재 위임이 중단 없이 진행됐다면 호출하지 마세요. 도구가 required=false를 반환하면 오류가 아니며 최종 답변을 마치면 자동으로 상위 AI에 보고됩니다. 지식선만 변경할 때는 전체 문서를 다시 보내지 말고 지식선 전용 도구를 사용하세요. 조회 도구는 문서 version을 변경하지 않지만 카드·관계 편집과 AI 대화 ID 연결은 version을 증가시킬 수 있습니다. 특정 자료가 있다고 가정하지 마세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
+const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. MCP 도구에서 카드를 지정할 때는 cardId 계열 인자를 사용하세요. nodeId 계열 인자는 기존 대화 호환용이므로 새 호출에서는 사용하지 마세요. AionUi 일반 대화는 get_context 호출 시 현재 대화의 AI 종류와 모델을 자동 확인하므로 aiType과 aiModel을 임의로 채우지 마세요. AionUi가 아닌 외부 MCP 세션만 자신이 현재 AI 종류와 모델을 정확히 알고 있을 때 get_context의 aiType과 aiModel에 함께 전달하고, 알지 못하면 추측하지 마세요. get_context의 selection.taskLinks.startupInspection을 따르세요. mode가 knowledge-guided이면 primary 선행 지식 중 kind=image인 항목은 imageAccess.localPath의 원본을 사용 가능한 로컬 이미지 열람 도구로 직접 확인하고 설명과 댓글을 함께 사용하며, 일반 카드는 sharedKnowledge를 먼저 재사용하고 설명과 댓글로 보완합니다. fallbackSources와 fallbackTargets는 정보가 부족할 때만 선택적으로 조사합니다. mode가 default이고 required가 true이면 targets의 업무 본문, 댓글, 첨부파일 목록과 관련 링크를 조사하세요. 지식선 생성과 제안은 get_context의 guide.knowledgeLinePolicy를 따르세요. ${AI_EXECUTION_APPROVAL_INSTRUCTION} 이하 변경·기록·위임 안내는 사용자에게 승인된 실행 범위에서만 적용합니다. 승인된 진행 과정과 결과는 댓글에 기록하고, 다른 카드나 후속 세션이 재사용할 현재 유효한 사실·결정·제약·검증 결과만 sharedKnowledge에 남기세요. 진행 기록·도구 로그·중복·폐기 결론은 넣지 말고 같은 주제의 결론은 새 이력으로 덧붙이지 말고 기존 절을 안전하게 교체하세요. 실제로 실행할 카드에 독립적으로 완료 여부를 판정할 구현·검증 조건이 2개 이상이면 결과 중심 체크리스트로 작성하고 진행에 맞춰 갱신하세요. 별도 하위 카드로 추적할 작업은 체크리스트에 중복하지 마세요. AI 댓글은 1~2문장의 summary와 작업을 이어가거나 검증하는 데 필요한 사실을 충실히 담은 detail로 작성하며, 요약 때문에 상세를 축약하지 마세요. 외부 전달물이나 결정 대기는 waitingItems로 기록하고 제목에 대기 문구를 붙이지 마세요. 대기를 등록할 때는 [차단], 해제할 때는 [진행] 댓글로 이유와 재개 상태를 기록하세요. 카드 일부 필드만 변경할 때는 mindnprogress_update_card의 data에 변경할 필드만 보내고 현재 카드 전체 데이터를 재전송하지 마세요. 기존 description 또는 sharedKnowledge 내부의 일부만 고칠 때는 조회 결과의 textIntegrity SHA-256과 mindnprogress_patch_card_text를 사용하세요. ${cardTextSafetyInstructions} 과도한 sharedKnowledge를 정리할 때는 후보 목록과 전용 검토 문맥을 조회한 뒤 mindnprogress_apply_shared_knowledge_review로 현재 해시가 일치하는 결과만 원자적으로 저장하세요. 일반 카드에서 생략한 필드와 위치는 보존되지만 완료 상태 또는 진행률 100 적용 시 waitingItems는 자동으로 해제되며, Ref 카드는 원본 관리 필드가 최신 원본 값으로 동기화될 수 있습니다. 선택 카드 밖의 형제·하위·선행 카드를 함께 수정하기 전에는 mindnprogress_get_ai_work_states로 해당 카드에 다른 AI 작업이 진행 중인지 확인하세요. running 또는 waiting-confirmation인 카드는 사용자 지시 없이 동시에 수정하지 마세요. 등록된 AI 작업공간의 최신 목록·경로·상태가 필요하면 폴더명을 추측하지 말고 mindnprogress_get_ai_workspace_pool을 호출하세요. 작업공간 선택·점유·전환·해제는 MindNProgress만 수행하며 AI가 임의로 worker를 선택하지 않습니다. 현재 위임 실행이 사용자의 중지로 끊긴 뒤 같은 대화에서 직접 이어 실제 작업을 완료했다면 카드 기록과 작업공간 체크포인트를 마친 뒤 최종 답변 직전에 mindnprogress_complete_ai_delegation을 호출하세요. 같은 대화의 과거 위임만 중지됐거나 현재 위임이 중단 없이 진행됐다면 호출하지 마세요. 도구가 required=false를 반환하면 오류가 아니며 최종 답변을 마치면 자동으로 상위 AI에 보고됩니다. 지식선만 변경할 때는 전체 문서를 다시 보내지 말고 지식선 전용 도구를 사용하세요. 조회 도구는 문서 version을 변경하지 않지만 카드·관계 편집과 AI 대화 ID 연결은 version을 증가시킬 수 있습니다. 특정 자료가 있다고 가정하지 마세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
 const productGuide = {
   version: '4.13',
   product: {
@@ -211,6 +212,7 @@ const productGuide = {
     '최상위 카드와 하위 업무가 있는 일반 isWork=false 묶음 카드의 진행률·상태는 서버가 모든 실제 isWork=true 후손에서 자동 계산하므로 수동으로 덮어쓰지 않음. 각 업무는 동일 가중치이며 중간 묶음의 요약값은 상위 집계에 다시 포함하지 않음. 이미지·Ref·Dooray 지식 카드와 하위 업무가 없는 비업무 카드는 자동 집계하지 않음',
   ],
   operationRules: [
+    AI_EXECUTION_APPROVAL_INSTRUCTION,
     '분석과 편집 전에 mindnprogress_get_context로 최신 버전과 제품 규칙을 확인',
     'AionUi에서 시작한 대화에 attributionToken이 없으면 mindnprogress_get_context가 현재 대화의 AI 종류와 모델을 AionUi에서 확인해 임시 귀속함. 조회 실패 중에는 읽기 도구를 계속 사용할 수 있지만 모델 미지정 기록을 막기 위해 편집 도구는 AI_ATTRIBUTION_UNRESOLVED로 거부됨',
     'mindnprogress_get_context를 한 번 호출하라는 지침은 성공 응답 기준임. 사용자 중지, 취소, 시간 초과 또는 연결 종료로 응답을 받지 못한 시도는 횟수에 포함하지 않고 같은 대화를 이어갈 때 다시 호출하며, 성공 응답 뒤에는 같은 대화에서 반복 호출하지 않음',
@@ -234,7 +236,7 @@ const productGuide = {
     'mindnprogress_delegate_ai_work의 위임 기준은 AionUi 대화 ID에 영속 기록된 시작 카드로 고정되며, MCP 재연결·프로세스 재생성이나 다른 카드의 get_context 추가 조회에도 바뀌지 않음. 직계 자식뿐 아니라 모든 깊이의 계층상 하위 카드에 위임 가능',
     'AI 위임이 recovery-required 또는 integration-recovery-required이면 AionCore 재시작, 재시도 가능한 연결 끊김 또는 필수 체크포인트·통합 실패로 이전 실행을 명시적으로 이어야 하는 상태임. 원 지시를 자동 반복하거나 새 위임을 만들지 말고 mindnprogress_recover_ai_delegation으로 기존 대화와 작업공간을 재개함',
     '현재 위임 실행이 사용자의 중지로 끊긴 뒤 같은 AI 대화에서 직접 이어 실제 작업을 완료했다면 카드 결과와 필요한 작업공간 체크포인트까지 마친 마지막 턴에서 최종 답변 직전에 mindnprogress_complete_ai_delegation을 호출함. 같은 대화의 과거 위임이 중지된 적이 있더라도 현재 위임이 중단 없이 진행됐다면 호출하지 않음. 도구가 required=false를 반환하면 오류가 아니며 최종 답변을 마치면 자동으로 상위 AI에 보고됨. mindnprogress_recover_ai_delegation으로 시작한 복구 operation도 다시 중지된 경우에만 같은 규칙을 적용함',
-    '하위 작업 결과로 자동 재개된 턴에서 다음 작업을 위임하기로 판단하면 최종 응답 전에 mindnprogress_delegate_ai_work를 실제로 호출하고 성공 결과를 확인함. 실제 호출 없이 “위임하겠습니다” 또는 “이어서 진행하겠습니다”와 같은 미래형 약속으로 턴을 끝내지 않으며, 위임할 수 없으면 차단 원인과 필요한 조치를 현재 응답에 명시함',
+    AI_DELEGATION_FOLLOWUP_INSTRUCTION,
     'AI 작업공간 pool에 등록된 Unity 프로젝트의 독립 하위 작업은 MindNProgress가 서로 다른 worker, 브랜치와 lease를 배정하므로 병렬 위임할 수 있음. 가용 worker가 없으면 위임은 waiting-workspace로 서버에 보존되고 worker 회수 후 FIFO로 자동 시작되므로 같은 요청을 재시도하지 않음. 통합 작업공간에 커밋되지 않은 추적 변경이 있으면 waiting-integration-clean으로 보존되며 이 상태에서는 하위 AI 전문이 아직 전달되지 않음. 차단 파일을 사용자와 상위 AI에 알리고 작업공간이 깨끗해지면 같은 위임을 자동 시작하므로 재위임하지 않음. 등록된 pool 작업은 lease 없이 AionCore에 전달되지 않음. 중지된 위임을 resume하면 같은 AI 대화와 기존 worker lease 및 변경을 이어서 사용하고, 같은 카드·대화에 다른 활성 위임이 있으면 중복 실행하지 않음. 완료 결과는 체크포인트 후 main에 직렬 통합됨. 통합 충돌은 main을 건드리지 않고 해당 작업을 수행한 같은 AI 대화를 worker 통합 브랜치에서 재개해 해결·검증하며, 통합이 끝난 뒤에만 상위 대화를 재개함. pool 미등록 프로젝트만 같은 작업공간 충돌을 피하도록 순차 위임함',
     'AI worker에서 Unity Play, 재임포트, 동적 폰트·Atlas 생성 등 검증을 시작하기 전에 mindnprogress_checkpoint_ai_workspace로 의도한 변경 경로와 실제 변경을 설명하는 구조화 commitMessage를 함께 고정함. summary에는 [김용민] prefix나 [MnP] 출처를 넣지 않고 background, cause, changes를 구체적으로 작성하며 scope는 필요한 경우에만 작성함. 서버가 현재 문서·카드 제목과 안정적인 mapId·cardId 및 상대 경로로 [MnP] 섹션을 생성함. 파일 변경이 없는 조사·검증 작업은 mindnprogress_confirm_ai_workspace_no_changes로 확인함. 검증 후 보완했다면 새 변경 내용에 맞는 commitMessage로 다시 체크포인트를 만들고 검증함. 체크포인트 이후 자동 변경은 main 통합에서 제외됨',
     '조회 도구는 문서 version을 변경하지 않으며 카드·관계 편집과 AI 대화 ID 연결 같은 저장 작업만 version을 증가시킴',
@@ -1354,7 +1356,7 @@ async function main() {
       detailLevel,
       groupProject: documentResult.groupProject ? {
         ...documentResult.groupProject,
-        instruction: '먼저 mindnprogress_get_group_context로 이 그룹의 원본 기준·목표·공통 지침·소유 범위·실행 상태를 확인하세요. 총괄 문서의 루트는 같은 그룹 소속 문서 루트에 targetMapId와 targetRevision을 지정하여 분석·조정을 위임할 수 있습니다. 문서 AI는 실제 구현을 자신의 하위 카드로 위임하세요.',
+        instruction: `${GROUP_APPROVAL_INSTRUCTION}\n\n먼저 mindnprogress_get_group_context로 최신 기획 기준·목표·공통 지침과 실행 상태를 확인하세요. 총괄 루트는 사용자에게 승인받은 문서별 계획과 실제 승인 근거를 전달하여 같은 그룹 문서 루트에 targetMapId와 targetRevision을 지정해 위임할 수 있습니다. 문서 AI는 하위 구현 위임까지 승인받은 범위만 자신의 하위 카드로 위임하세요.`,
       } : null,
       ...(resolvedConversationAttribution ? {
         aiAttribution: {
@@ -1423,7 +1425,7 @@ async function main() {
             statusTool: 'mindnprogress_list_ai_delegations',
             recoveryTool: 'mindnprogress_recover_ai_delegation',
             waitStateInstruction: 'delegateTool 응답이 waiting-integration-clean이면 통합 작업공간의 추적 변경 때문에 하위 AI 전문이 아직 전달되지 않은 상태입니다. 차단 파일을 사용자에게 알리고 같은 위임의 자동 시작을 기다리며 재위임하지 마세요.',
-            instruction: '이 대화가 시작된 카드의 계층상 하위 카드에 작업을 맡길 때는 후보 목록과 필요한 대화 전문을 근거로 resume 또는 new를 선택하고 실행 가능한 지시를 전달하세요. 위임 기준은 AionUi 대화 ID에 영속 기록되므로 MCP 재연결·프로세스 재생성이나 다른 카드의 get_context 조회와 무관하게 유지되며, 직계 자식뿐 아니라 모든 깊이의 하위 카드에 위임할 수 있습니다. AI 작업공간 pool에 등록된 Unity 프로젝트의 독립 하위 작업은 MindNProgress가 서로 다른 worker와 브랜치를 배정하므로 병렬 위임할 수 있습니다. 가용 worker가 없어 waiting-workspace로 접수되면 서버가 대기열을 보존하고 자동 시작하므로 동일 위임을 재호출하거나 순차 우회하지 마세요. 중지된 위임을 resume하면 같은 AI 대화뿐 아니라 기존 worker lease와 변경도 이어서 사용하며, 같은 카드·대화에 다른 활성 위임이 있으면 중복 실행하지 않습니다. 완료 변경의 통합 충돌은 main이 아닌 같은 worker에서 해당 하위 AI 대화를 자동 재개해 해결하며, 통합과 최종 검증이 끝난 뒤에만 상위 대화가 재개됩니다. recovery-required 또는 integration-recovery-required는 AionCore 재시작, 재시도 가능한 연결 끊김 또는 필수 체크포인트·통합 실패로 명시적 재개가 필요한 상태이므로 새 위임이나 원 지시 자동 반복 대신 recoveryTool로 기존 대화·작업공간을 이어가세요. pool 미등록 프로젝트만 같은 작업공간 충돌을 피하도록 순차 위임하세요. 하위 AI 턴이 사용자에 의해 중지되거나 재시도 가능한 Agent 연결 끊김이 발생하면 위임은 재개 대기 상태를 유지하고, 같은 하위 대화에서 이어진 턴이 실제 완료된 뒤에만 현재 대화를 자동으로 다시 시작합니다. 주기적으로 확인하거나 일반적인 다음 작업 제안 문구를 보내지 마세요. 자동 재개된 턴에서 다음 작업을 위임하기로 판단했다면 최종 응답 전에 mindnprogress_delegate_ai_work를 실제로 호출하고 성공 결과를 확인하세요. 실제 호출 없이 “위임하겠습니다” 또는 “이어서 진행하겠습니다”와 같은 미래형 약속으로 턴을 끝내지 말고, 위임할 수 없다면 차단 원인과 필요한 조치를 현재 응답에 명시하세요.',
+            instruction: `사용자 승인 근거와 허용 범위가 확인된 하위 작업만 위임하세요. 이 대화가 시작된 카드의 계층상 하위 카드에 작업을 맡길 때는 후보 목록과 필요한 대화 전문을 근거로 resume 또는 new를 선택하고 실행 가능한 지시를 전달하세요. 위임 기준은 AionUi 대화 ID에 영속 기록되므로 MCP 재연결·프로세스 재생성이나 다른 카드의 get_context 조회와 무관하게 유지되며, 직계 자식뿐 아니라 모든 깊이의 하위 카드에 위임할 수 있습니다. AI 작업공간 pool에 등록된 Unity 프로젝트의 독립 하위 작업은 MindNProgress가 서로 다른 worker와 브랜치를 배정하므로 병렬 위임할 수 있습니다. 가용 worker가 없어 waiting-workspace로 접수되면 서버가 대기열을 보존하고 자동 시작하므로 동일 위임을 재호출하거나 순차 우회하지 마세요. 중지된 위임을 resume하면 같은 AI 대화뿐 아니라 기존 worker lease와 변경도 이어서 사용하며, 같은 카드·대화에 다른 활성 위임이 있으면 중복 실행하지 않습니다. 완료 변경의 통합 충돌은 main이 아닌 같은 worker에서 해당 하위 AI 대화를 자동 재개해 해결하며, 통합과 최종 검증이 끝난 뒤에만 상위 대화가 재개됩니다. recovery-required 또는 integration-recovery-required는 AionCore 재시작, 재시도 가능한 연결 끊김 또는 필수 체크포인트·통합 실패로 명시적 재개가 필요한 상태이므로 새 위임이나 원 지시 자동 반복 대신 recoveryTool로 기존 대화·작업공간을 이어가세요. pool 미등록 프로젝트만 같은 작업공간 충돌을 피하도록 순차 위임하세요. 하위 AI 턴이 사용자에 의해 중지되거나 재시도 가능한 Agent 연결 끊김이 발생하면 위임은 재개 대기 상태를 유지하고, 같은 하위 대화에서 이어진 턴이 실제 완료된 뒤에만 현재 대화를 자동으로 다시 시작합니다. ${AI_DELEGATION_FOLLOWUP_INSTRUCTION}`,
           },
         },
         taskLinks,
@@ -1431,22 +1433,22 @@ async function main() {
         ...(full ? {} : { commentsPage: focusedSelectedComments.commentsPage }),
       },
       teamMembers: full ? (usersResult.users ?? []) : (usersResult.users ?? []).map(compactTeamMember),
-      nextStep: '사용자 요청을 수행한 뒤 의미 있는 진행과 결과는 1~2문장의 summary와 작업을 이어가거나 검증하는 데 필요한 사실을 담은 detail 댓글로 기록하고, 재사용할 결론은 sharedKnowledge에 요약한 다음 mindnprogress_get_document로 결과를 다시 확인하세요. 작업 중 선택 카드 이외의 MindNProgress 카드를 실제 근거로 사용했다면 guide.knowledgeLinePolicy에 따라 작업 종료 전에 연결 또는 제안 여부를 판단하세요. 외부 전달물이나 결정 때문에 멈추면 제목을 바꾸지 말고 waitingItems와 [차단] 댓글을 추가하며, 재개할 때 해당 항목을 제거하고 [진행] 댓글을 남기세요.',
+      nextStep: '미승인 분석·제안은 대화로 보고하고 사용자 승인을 기다리세요. 이때 댓글·공유 지식·상태를 변경하지 마세요. 승인된 작업을 실제 수행한 경우에만 의미 있는 진행과 결과는 1~2문장의 summary와 작업을 이어가거나 검증하는 데 필요한 사실을 담은 detail 댓글로 기록하고, 재사용할 결론은 sharedKnowledge에 요약한 다음 mindnprogress_get_document로 결과를 다시 확인하세요. 작업 중 선택 카드 이외의 MindNProgress 카드를 실제 근거로 사용했다면 guide.knowledgeLinePolicy에 따라 작업 종료 전에 연결 또는 제안 여부를 판단하세요. 외부 전달물이나 결정 때문에 멈추면 제목을 바꾸지 말고 waitingItems와 [차단] 댓글을 추가하며, 재개할 때 해당 항목을 제거하고 [진행] 댓글을 남기세요.',
     }
   })
 
-  registerTool(server, 'mindnprogress_get_group_context', '그룹의 최신 기획 원본·버전, 목표·공통 지침, 통합 관리 문서, 소속 문서의 루트 업무 설명·대화와 그룹→문서 위임 현황을 조회합니다. 총괄 AI는 이 문맥을 먼저 읽고 원본 전수 분석, 요구사항 주 소유권, 문서 경계와 실행 순서를 관리하세요. 카드 완료 수는 기획 구현률이 아닙니다.', {
+  registerTool(server, 'mindnprogress_get_group_context', '그룹의 최신 기획 원본·버전, 목표·공통 지침, 통합 관리 문서, 소속 문서의 루트 업무 설명·대화와 그룹→문서 위임 현황을 조회합니다. 총괄 AI는 이 문맥의 guide.approval에 있는 전체 방향·문서별 실행 계획의 두 단계 사용자 승인을 확인하세요. 미승인 상태에서는 읽기 전용 분석과 제안만 합니다. 이 문맥을 먼저 읽고 원본 전수 분석, 요구사항 주 소유권, 문서 경계와 실행 순서를 관리하세요. 카드 완료 수는 기획 구현률이 아닙니다.', {
     groupId: z.string().min(1),
   }, async ({ groupId }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}`))
 
-  registerTool(server, 'mindnprogress_update_group_project', '그룹의 기획 원본·버전, 목표와 공통 지침을 부분 수정합니다. get_group_context의 project.version을 baseVersion으로 전달하세요. createCoordinator=true는 총괄 문서가 없을 때 통합 관리 문서와 집계 루트를 만들며 AI 실행을 시작하지 않습니다. 기존 문서는 coordinatorMapId로 연결합니다. 장문은 원문을 보존하고 수정 후 재조회해 비교하세요.', {
+  registerTool(server, 'mindnprogress_update_group_project', '사용자가 승인한 설정·정비 범위에서만 그룹의 기획 원본·버전, 목표와 공통 지침을 부분 수정합니다. 미승인 방향을 설정에 확정하려고 호출하지 마세요. get_group_context의 project.version을 baseVersion으로 전달하세요. createCoordinator=true는 총괄 문서가 없을 때 통합 관리 문서와 집계 루트를 만들며 AI 실행을 시작하지 않습니다. 기존 문서는 coordinatorMapId로 연결합니다. 장문은 원문을 보존하고 수정 후 재조회해 비교하세요.', {
     groupId: z.string().min(1), baseVersion: z.number().int().nonnegative(),
     source: z.string().max(4096).optional(), sourceVersion: z.string().max(240).optional(),
     objective: z.string().max(10000).optional(), instructions: z.string().max(20000).optional(),
     coordinatorMapId: z.string().min(1).optional(), createCoordinator: z.boolean().optional(),
   }, async ({ groupId, ...body }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}`, { method: 'PATCH', body: JSON.stringify(body) }))
 
-  registerTool(server, 'mindnprogress_create_group_document', '그룹에 기능 문서와 집계 전용 루트를 생성합니다. description에 담당 원본 범위, 요구사항 소유권, 분석·감사 순서, 정책 Ref와 완료 조건을 기록하세요. 이 호출은 AI를 실행하지 않습니다. 하위 카드는 기존 카드 도구로 구성하고 준비 후 그룹 총괄에서 delegate_ai_work의 targetMapId와 targetRevision을 지정해 위임하세요.', {
+  registerTool(server, 'mindnprogress_create_group_document', '사용자가 승인한 문서 구성 범위에서만 그룹에 기능 문서와 집계 전용 루트를 생성합니다. 미승인 분할안은 대화로 제안하고 이 도구를 호출하지 마세요. description에 담당 원본 범위, 요구사항 소유권, 분석·감사 순서, 정책 Ref와 완료 조건을 기록하세요. 이 호출은 AI를 실행하지 않습니다. 하위 카드는 기존 카드 도구로 구성하고 문서별 실행 계획까지 사용자에게 승인받은 뒤 그룹 총괄에서 delegate_ai_work의 targetMapId와 targetRevision을 지정해 위임하세요.', {
     groupId: z.string().min(1), baseVersion: z.number().int().nonnegative(),
     title: z.string().min(1).max(80), description: z.string().max(100000),
   }, async ({ groupId, ...body }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}/documents`, { method: 'POST', body: JSON.stringify(body) }))
@@ -1581,7 +1583,7 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_delegate_ai_work', '이 대화가 시작된 카드의 계층상 하위 카드 AI 대화에 구체적인 작업을 위임합니다. 그룹에 연결된 총괄 문서의 루트는 targetMapId와 targetRevision을 지정하여 같은 그룹의 다른 문서 루트에 분석·조정을 위임할 수 있으며, 이 문서 담당 위임은 worker를 점유하지 않습니다. 직계 자식뿐 아니라 모든 깊이의 하위 카드를 지원하며, 다른 카드를 get_context로 조회해도 위임 기준 카드는 바뀌지 않습니다. 기존 대화를 이어가거나 새 대화를 만들 수 있습니다. 중지된 위임을 resume하면 같은 AI 대화와 기존 작업공간 lease를 함께 이어가며, 같은 카드·대화의 활성 위임은 중복 생성하지 않습니다. 풀 lease가 없는 일반 위임은 machineId 또는 편집자의 기본 머신으로 라우팅하지만, 등록된 Unity 작업공간 pool 위임은 원격 풀 Tier 2 전까지 메인 머신에서만 실행합니다. 등록된 AI 작업공간 pool은 독립 worker를 자동 배정하고 lease 없이 실행하지 않으며, 가용 worker가 없으면 waiting-workspace로 접수해 FIFO 대기 후 자동 시작합니다. waiting-integration-clean은 통합 작업공간의 추적 변경 때문에 하위 전문을 아직 전달하지 않은 대기 상태이며, 변경이 정리되면 같은 위임을 자동 시작하므로 재위임하지 마세요. 완료 변경은 main에 직렬 통합합니다. 통합 충돌은 같은 하위 AI가 worker에서 해결하며, 실제 통합과 최종 검증이 끝난 뒤에만 결과를 포함한 메시지로 현재 상위 AI 대화를 자동 재개합니다. 먼저 후보 목록과 작업 상태를 확인하고, 현재 문서 version을 sourceRevision으로 전달하세요.', {
+  registerTool(server, 'mindnprogress_delegate_ai_work', '사용자가 승인한 계획·허용 범위와 실제 승인 근거가 확인된 작업만 이 대화가 시작된 카드의 계층상 하위 카드 AI 대화에 위임합니다. 승인 근거가 없으면 제안 후 승인 대기로 마치고 호출하지 마세요. 그룹 작업은 전체 방향과 문서별 실행 계획의 두 단계 승인을 구분하며 총괄 AI가 사용자 승인을 대신하지 않습니다. 그룹에 연결된 총괄 문서의 루트는 targetMapId와 targetRevision을 지정하여 같은 그룹의 다른 문서 루트에 분석·조정을 위임할 수 있으며, 이 문서 담당 위임은 worker를 점유하지 않습니다. 직계 자식뿐 아니라 모든 깊이의 하위 카드를 지원하며, 다른 카드를 get_context로 조회해도 위임 기준 카드는 바뀌지 않습니다. 기존 대화를 이어가거나 새 대화를 만들 수 있습니다. 중지된 위임을 resume하면 같은 AI 대화와 기존 작업공간 lease를 함께 이어가며, 같은 카드·대화의 활성 위임은 중복 생성하지 않습니다. 풀 lease가 없는 일반 위임은 machineId 또는 편집자의 기본 머신으로 라우팅하지만, 등록된 Unity 작업공간 pool 위임은 원격 풀 Tier 2 전까지 메인 머신에서만 실행합니다. 등록된 AI 작업공간 pool은 독립 worker를 자동 배정하고 lease 없이 실행하지 않으며, 가용 worker가 없으면 waiting-workspace로 접수해 FIFO 대기 후 자동 시작합니다. waiting-integration-clean은 통합 작업공간의 추적 변경 때문에 하위 전문을 아직 전달하지 않은 대기 상태이며, 변경이 정리되면 같은 위임을 자동 시작하므로 재위임하지 마세요. 완료 변경은 main에 직렬 통합합니다. 통합 충돌은 같은 하위 AI가 worker에서 해결하며, 실제 통합과 최종 검증이 끝난 뒤에만 결과를 포함한 메시지로 현재 상위 AI 대화를 자동 재개합니다. 먼저 후보 목록과 작업 상태를 확인하고, 현재 문서 version을 sourceRevision으로 전달하세요.', {
     mapId: z.string().min(1).describe('이 대화가 시작된 상위 카드가 속한 문서 ID'),
     targetMapId: z.string().min(1).optional().describe('그룹 총괄 루트에서 같은 그룹 소속 문서 루트에 분석·조정을 위임할 때만 지정합니다. 먼저 mindnprogress_get_group_context로 범위를 확인하세요. 생략하면 같은 문서의 하위 카드 위임입니다.'),
     targetRevision: z.number().int().positive().optional().describe('targetMapId 지정 시 대상 문서의 최신 version. 그룹→문서 위임은 worker를 점유하지 않으며 실제 구현은 문서의 하위 업무로 위임합니다.'),
@@ -1589,7 +1591,7 @@ async function main() {
     strategy: z.enum(['resume', 'new']).describe('resume은 연결된 기존 대화 이어가기, new는 새 대화 생성'),
     conversationId: z.string().min(1).max(120).optional().describe('resume일 때 이어갈 대상 카드의 conversationId'),
     machineId: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/).optional().describe('new일 때 풀 lease 없는 일반 작업을 실행할 머신 ID. 생략하면 편집자의 기본 머신을 사용합니다. resume은 기존 대화의 homeMachineId로 고정되며, 등록된 Unity 작업공간 pool 위임은 현재 메인 머신만 지원합니다.'),
-    instruction: z.string().min(1).max(100000).describe('하위 AI가 제안에 그치지 않고 실제로 수행할 구체적인 지시와 완료 조건'),
+    instruction: z.string().min(1).max(100000).describe('사용자가 승인한 계획·대상·변경 범위·허용 작업·제외 범위·완료 조건과 실제 승인 발언 및 확인 가능한 대화·메시지 출처. 분석·제안만 허용되면 구현·추가 위임 금지를 명시하며 승인 근거를 만들거나 추측하지 않습니다.'),
     decisionReason: z.string().min(1).max(1000).describe('이 기존 대화를 선택했거나 새 대화가 필요하다고 판단한 근거'),
     sourceRevision: z.number().int().positive().describe('get_context 또는 get_document에서 확인한 현재 문서 version'),
     idempotencyKey: z.string().regex(AI_DELEGATION_ID_PATTERN).describe('같은 위임의 중복 실행을 막는 안정적인 키. 영문·숫자로 시작하고 영문·숫자·밑줄·하이픈·콜론을 사용해 sourceRevision과 targetCardId를 포함하는 형식을 권장'),
@@ -1937,7 +1939,7 @@ async function main() {
     },
   ))
 
-  registerTool(server, 'mindnprogress_recover_ai_delegation', 'AionCore 재시작, 연결 끊김 또는 필수 체크포인트·통합 실패로 recovery-required 또는 integration-recovery-required가 된 AI 위임을 기존 대화와 기존 작업공간에서 명시적으로 재개합니다. 원래 지시를 자동 재생하지 않으며, 현재 카드·Git·작업공간 상태를 확인한 뒤 미완료 부분만 수행하도록 새 복구 지시를 전달합니다.', {
+  registerTool(server, 'mindnprogress_recover_ai_delegation', '복구 전에 기존 사용자 승인 근거와 현재 허용 범위를 확인하세요. 복구는 새 실행 범위의 승인이 아니며 계획·기획 기준 변경 또는 승인 불명확 시 제안 후 재승인을 기다립니다. AionCore 재시작, 연결 끊김 또는 필수 체크포인트·통합 실패로 recovery-required 또는 integration-recovery-required가 된 AI 위임을 기존 대화와 기존 작업공간에서 명시적으로 재개합니다. 원래 지시를 자동 재생하지 않으며, 현재 카드·Git·작업공간 상태를 확인한 뒤 미완료 부분만 수행하도록 새 복구 지시를 전달합니다.', {
     mapId: z.string().min(1).describe('복구할 위임이 속한 문서 ID'),
     delegationId: z.string().regex(AI_DELEGATION_ID_PATTERN).describe('mindnprogress_list_ai_delegations에서 확인한 복구 대상 위임 ID'),
     instruction: z.string().min(1).max(100000).describe('현재 상태를 확인한 뒤 이어서 수행할 범위와 완료 조건. 원래 지시의 단순 복사 대신 중복 실행을 피할 확인 기준을 포함'),

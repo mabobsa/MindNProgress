@@ -479,7 +479,9 @@ async function main() {
     assert.match(toolDescription('mindnprogress_update_card'), /checklist.*완료 비율로 progress와 status를 자동 계산/)
     assert.match(toolSchema('mindnprogress_update_card')?.properties?.data?.properties?.checklist?.description ?? '', /전체 배열.*완료 비율로 progress와 status를 자동 계산/)
     assert.match(guide.guide.operationRules.join('\n'), /위임 기준.*AionUi 대화 ID.*MCP 재연결.*모든 깊이/)
-    assert.match(guide.guide.operationRules.join('\n'), /자동 재개된 턴.*mindnprogress_delegate_ai_work.*미래형 약속/)
+    assert.match(guide.guide.operationRules.join('\n'), /자동 재개는 다음 작업의 사용자 승인이 아닙니다/)
+    assert.match(guide.guide.operationRules.join('\n'), /이미 사용자에게 승인된 범위.*게이트가 충족된 경우에만 mindnprogress_delegate_ai_work/)
+    assert.match(guide.guide.operationRules.join('\n'), /실제 위임을 수행했다면 성공 결과를 확인한 뒤에만/)
     assert.match(guide.guide.operationRules.join('\n'), /waiting-integration-clean.*하위 AI 전문이 아직 전달되지 않음.*자동 시작.*재위임하지 않음/)
     assert.match(guide.guide.operationRules.join('\n'), /recovery-required.*mindnprogress_recover_ai_delegation/)
     assert.match(guide.guide.operationRules.join('\n'), /mindnprogress_update_card.*responseMode.*full.*기본값.*AI 대화 상세 목록.*affected/)
@@ -1100,6 +1102,8 @@ async function main() {
     )
     assert.match(mockAionUi.dispatchRequests[0].instruction, /MindNProgress 하위 카드 위임 작업 요청/)
     assert.match(mockAionUi.dispatchRequests[0].instruction, /실제로 수행/)
+    assert.match(mockAionUi.dispatchRequests[0].instruction, /상위 AI의 요청을 받았다는 사실만으로 사용자 승인이 확인된 것은 아닙니다/)
+    assert.match(mockAionUi.dispatchRequests[0].instruction, /승인 대기는 정상적인 종료 지점/)
     assert.match(mockAionUi.dispatchRequests[0].instruction, /한 번 성공적으로 호출/)
     assert.match(mockAionUi.dispatchRequests[0].instruction, /응답을 받지 못한 시도는 호출 횟수에 포함하지 말고/)
     assert.match(mockAionUi.dispatchRequests[0].instruction, /mindnprogress_complete_ai_delegation/)
@@ -1206,6 +1210,7 @@ async function main() {
     assert.equal(mockAionUi.dispatchRequests.length, 2)
     assert.equal(mockAionUi.dispatchRequests[1].targetConversationId, 'conversation-delegated')
     assert.match(mockAionUi.dispatchRequests[1].instruction, /원래 지시를 처음부터 반복하지 말고/)
+    assert.match(mockAionUi.dispatchRequests[1].instruction, /복구 요청은 새로운 실행 범위의 승인이 아닙니다/)
     const recoveryOperationId = recoveredRun.recovery.operationId
     mockAionUi.setDispatchState(recoveryOperationId, 'waiting_resource', {
       kind: 'unity_project',
@@ -1285,6 +1290,7 @@ async function main() {
     assert.equal(mockAionUi.dispatchRequests.length, 3)
     assert.equal(mockAionUi.dispatchRequests[2].targetConversationId, 'conversation-test')
     assert.match(mockAionUi.dispatchRequests[2].instruction, /하위 카드 작업을 완료하고 결과를 기록했습니다/)
+    assert.match(mockAionUi.dispatchRequests[2].instruction, /자동 재개는 다음 작업의 사용자 승인이 아닙니다/)
 
     const unlinkedAttributionResponse = await fetch(`${apiBaseUrl}/api/integrations/aionui/attributions`, {
       method: 'POST',
@@ -2301,6 +2307,13 @@ async function main() {
     const savedGroup = await invoke('mindnprogress_get_group_context', { groupId: groupTestId })
     assert.ok(savedGroup.documents.some((document) => document.id === groupDocument.map.id))
     assert.equal(savedGroup.delegations.length, 0)
+    assert.match(savedGroup.guide.approval, /전체 방향 승인은 문서별 실행의 일괄 승인이 아닙니다/)
+    assert.match(savedGroup.guide.documentCoordinator, /총괄 AI의 요청만으로 사용자 승인을 대신하지 마세요/)
+    const groupCoordinatorContext = await invoke('mindnprogress_get_context', { mapId: managedGroup.coordinator.id, cardId: managedGroup.coordinator.root.id })
+    assert.match(groupCoordinatorContext.groupProject.instruction, /두 단계 모두 승인자는 사용자/)
+    assert.ok(groupCoordinatorContext.guide.operationRules.some((rule) => rule.includes('승인 대기는 정상적인 종료 지점')))
+    assert.match(groupCoordinatorContext.nextStep, /미승인 분석·제안은 대화로 보고/)
+    assert.match(groupCoordinatorContext.selection.aiWorkCoordination.childDelegation.instruction, /사용자 승인 근거와 허용 범위가 확인된 하위 작업만/)
     await invokeExpectError('mindnprogress_update_group_project', {
       groupId: groupTestId, baseVersion: 0, objective: '오래된 설정으로 변경',
     }, /그룹 설정이 변경/)

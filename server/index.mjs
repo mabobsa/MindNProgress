@@ -1,5 +1,6 @@
 import { createServer } from 'node:http'
 import { createGroupProjects, documentRoot, DOCUMENT_COORDINATOR_INSTRUCTION } from './lib/groupProjects.mjs'
+import { AI_EXECUTION_APPROVAL_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { hostname, networkInterfaces, tmpdir } from 'node:os'
@@ -1980,14 +1981,16 @@ function buildDelegatedInstruction({ mapId, cardId, editorId, attributionToken, 
   const workspaceInstruction = buildWorkspaceInstruction(workspaceLease)
   return `# MindNProgress 하위 카드 위임 작업 요청
 
-가장 먼저 MindNProgress MCP 도구 \`mindnprogress_get_context\`를 아래 값으로 한 번 성공적으로 호출하세요. 사용자 중지, 취소, 시간 초과 또는 연결 종료로 응답을 받지 못한 시도는 호출 횟수에 포함하지 말고, 같은 대화를 이어갈 때 다시 호출하세요. 성공 응답을 받은 뒤에는 같은 대화에서 반복 호출하지 마세요. 이 요청은 상위 카드의 AI가 현재 하위 카드에 실행을 위임한 것이므로, 일반적인 다음 작업 제안에 그치지 말고 아래 "상위 AI 지시"를 실제로 수행하세요. \`editorId\`와 \`attributionToken\`은 이후 MindNProgress MCP 작업이 끝날 때까지 유지하세요.
+가장 먼저 MindNProgress MCP 도구 \`mindnprogress_get_context\`를 아래 값으로 한 번 성공적으로 호출하세요. 사용자 중지, 취소, 시간 초과 또는 연결 종료로 응답을 받지 못한 시도는 호출 횟수에 포함하지 말고, 같은 대화를 이어갈 때 다시 호출하세요. 성공 응답을 받은 뒤에는 같은 대화에서 반복 호출하지 마세요. 상위 AI의 요청을 받았다는 사실만으로 사용자 승인이 확인된 것은 아닙니다. 아래 승인 규칙에 따라 근거와 허용 범위를 먼저 확인하고, 승인된 "상위 AI 지시"만 실제로 수행하세요. \`editorId\`와 \`attributionToken\`은 이후 MindNProgress MCP 작업이 끝날 때까지 유지하세요.
 
 - mapId: \`${mapId}\`
 - cardId: \`${cardId}\`
 - editorId: \`${editorId}\`
 - attributionToken: \`${attributionToken}\`
 
-MCP 조회 결과의 \`guide\`, \`selection.taskLinks.startupInspection\`, \`selection.aiWorkCoordination\`과 \`nextStep\`을 확인하고 따르세요. 관련 카드를 수정하기 전에는 AI 작업 상태를 확인하고, 실행 결과를 카드 댓글과 공유 지식에 알맞게 기록하세요.
+${AI_EXECUTION_APPROVAL_INSTRUCTION}
+
+MCP 조회 결과의 \`guide\`, \`selection.taskLinks.startupInspection\`, \`selection.aiWorkCoordination\`과 \`nextStep\`을 확인하고 따르세요. 그룹 소속이면 mindnprogress_get_group_context로 최신 기준과 두 단계 사용자 승인 범위를 확인하세요. 관련 카드를 수정하기 전에는 AI 작업 상태를 확인하고, 승인된 실행 결과만 카드 댓글과 공유 지식에 알맞게 기록하세요. 미승인 제안은 대화로만 보고하세요.
 
 이 위임 실행이 사용자의 중지로 끊긴 뒤 같은 대화에서 직접 이어진 경우, 단순 질의 응답이나 중간 보고는 위임 완료가 아닙니다. 실제 위임 작업과 카드 기록, 필요한 작업공간 체크포인트까지 모두 끝낸 마지막 턴에서만 최종 답변 직전에 \`mindnprogress_complete_ai_delegation\`을 호출하세요. 중단 없이 진행된 최초 실행에는 이 완료 신호가 필요하지 않습니다.
 
@@ -2014,6 +2017,7 @@ AionCore 또는 MindNProgress 재시작으로 이전 실행의 메모리 상태�
 - 작업공간: ${delegation.coordinationOnly ? '문서 조정 전용 · worker 배정 없음' : delegation.workspaceLease?.projectRoot ?? '기존 대화 작업공간'}
 
 ${inspection}
+복구 요청은 새로운 실행 범위의 승인이 아닙니다. 이전 계획에 대한 사용자 승인 근거와 현재 허용 범위를 다시 확인하세요. 근거가 없거나 기획 기준·진행 방향·범위가 바뀌었다면 미완료 작업을 자동 반복하지 말고 수정안을 제안한 뒤 사용자 승인을 기다리세요. 분석·제안 위임의 복구는 계속 분석·제안만 허용됩니다.
 이미 완료된 변경이나 외부 처리는 중복 실행하지 말고 검증과 결과 보고만 하세요.
 
 # 복구 후 수행 지시
@@ -2717,9 +2721,9 @@ function parentWakeInstruction(delegation, result) {
 - 선택 이유: ${delegation.decisionReason}
 ${workspaceResult}
 
-${result ? `## 하위 AI의 마지막 응답\n\n${result}\n\n` : ''}MindNProgress에서 하위 카드의 최신 설명·공유 지식·댓글·상태를 다시 확인하고, 결과가 상위 업무와 다른 하위 업무에 미치는 영향을 판단해 다음 작업을 이어가세요. 하위 AI의 응답은 참고 자료이므로 실제 카드와 산출물을 기준으로 검증하세요.
+${AI_EXECUTION_APPROVAL_INSTRUCTION}
 
-다음 작업을 위임하기로 판단했다면 이번 턴의 최종 응답 전에 mindnprogress_delegate_ai_work를 실제로 호출하고 성공 결과를 확인하세요. 성공을 확인하기 전에는 “위임했습니다”라고 쓰지 말고, 실제 호출 없이 “위임하겠습니다” 또는 “이어서 진행하겠습니다”와 같은 미래형 약속으로 턴을 끝내지 마세요. 위임할 수 없다면 실행을 약속하지 말고 차단 원인과 필요한 조치를 현재 응답에 명시하세요.`
+${result ? `## 하위 AI의 마지막 응답\n\n${result}\n\n` : ''}${AI_DELEGATION_FOLLOWUP_INSTRUCTION}`
 }
 
 function aiDelegationRecoveryKey(delegation) {

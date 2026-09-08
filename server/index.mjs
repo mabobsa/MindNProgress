@@ -5673,6 +5673,34 @@ const server = createServer(async (request, response) => {
     const aiWorkspacesRoute = url.pathname === '/api/ai-workspaces'
     const aiWorkspaceCheckpointRoute = url.pathname.match(/^\/api\/ai-workspaces\/([^/]+)\/checkpoint$/)
 
+    if (request.method === 'POST' && url.pathname === '/api/internal/ai-workspaces/synchronize-idle') {
+      if (!hasValidIntegrationBearer(request)) {
+        return sendJson(response, 401, { error: '올바른 MindNProgress 연동 토큰이 필요합니다.' })
+      }
+      const body = await readJsonBody(request)
+      if (body.workspaceIds !== undefined && (!Array.isArray(body.workspaceIds) || body.workspaceIds.length > 100)) {
+        return sendJson(response, 400, {
+          error: 'workspaceIds는 최대 100개의 작업공간 ID 배열이어야 합니다.',
+          code: 'AI_WORKSPACE_SYNC_INPUT_INVALID',
+        })
+      }
+      try {
+        const result = await workspacePoolManager.synchronizeIdleWorkersToIntegration({
+          workspaceIds: body.workspaceIds,
+        })
+        return sendJson(response, 200, result)
+      } catch (error) {
+        if (error instanceof WorkspacePoolUnavailableError) {
+          return sendJson(response, 409, {
+            error: error.message,
+            code: error.reasonCode ?? error.code,
+            details: error.details,
+          })
+        }
+        throw error
+      }
+    }
+
     if (aiWorkspacesRoute && request.method === 'GET') {
       const user = requireUser(request, response)
       if (!user) return

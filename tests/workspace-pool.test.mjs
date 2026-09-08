@@ -98,6 +98,125 @@ test('회수 기준 커밋 객체가 없으면 두 번 fetch한 뒤 worker 전�
   assert.equal(commands.some(({ cwd, args }) => cwd === workerRoot && args[0] === 'switch'), false)
 })
 
+test('실행 중인 풀에서 idle worker만 main 추적 기준으로 동기화한다', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'mnp-idle-sync-'))
+  try {
+    const integrationRoot = path.join(root, 'main')
+    const workerRoot = path.join(root, 'fork1')
+    const sharedRoot = path.join(root, 'shared')
+    await Promise.all([mkdir(integrationRoot), mkdir(workerRoot), mkdir(sharedRoot)])
+    const registryFile = path.join(sharedRoot, 'workspaces.json')
+    const stateFile = path.join(root, 'state.json')
+    await writeFile(registryFile, JSON.stringify({
+      schemaVersion: 1,
+      poolId: 'holdem',
+      sharedRoot,
+      workspaces: [
+        { id: 'main', root: integrationRoot, role: 'integration', enabled: true },
+        { id: 'fork1', root: workerRoot, role: 'worker', enabled: true },
+      ],
+    }), 'utf8')
+    await writeFile(stateFile, JSON.stringify({
+      schemaVersion: 1,
+      poolId: 'holdem',
+      integrationLeaseId: null,
+      workspaces: {
+        main: { status: 'integration' },
+        fork1: { status: 'idle', idleBranch: 'mnp/idle/fork1', idleCommit: 'old123' },
+      },
+      leases: {},
+    }), 'utf8')
+
+    let workerBranch = 'mnp/idle/fork1'
+    let workerCommit = 'old123'
+    const commands = []
+    const manager = new WorkspacePoolManager({
+      registryFile,
+      stateFile,
+      gitRunner: async (cwd, args) => {
+        commands.push({ cwd, args })
+        if (args[0] === 'status') return ''
+        if (args[0] === 'branch') return cwd === integrationRoot ? 'japan-master' : workerBranch
+        if (args[0] === 'rev-parse' && args[1] === 'HEAD') return cwd === integrationRoot ? 'main456' : workerCommit
+        if (args[0] === 'rev-parse' && args[1] === 'HEAD^{tree}') return 'tree456'
+        if (args[0] === 'switch') {
+          workerBranch = args[2]
+          workerCommit = args[3]
+        }
+        return ''
+      },
+    })
+    assert.equal(await manager.initialize(), true)
+    const result = await manager.synchronizeIdleWorkersToIntegration()
+    assert.equal(result.baseBranch, 'japan-master')
+    assert.equal(result.baseCommit, 'main456')
+    assert.deepEqual(result.workspaces, [{
+      workspaceId: 'fork1',
+      branch: 'mnp/idle/fork1',
+      previousCommit: 'old123',
+      commit: 'main456',
+      changed: true,
+    }])
+    assert.equal(manager.state.workspaces.fork1.idleCommit, 'main456')
+    assert.equal(commands.some(({ cwd, args }) => cwd === workerRoot && args[0] === 'switch'), true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('idle이 아닌 worker가 하나라도 있으면 어떤 작업공간도 동기화하지 않는다', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'mnp-idle-sync-busy-'))
+  try {
+    const integrationRoot = path.join(root, 'main')
+    const workerRoot = path.join(root, 'fork1')
+    const sharedRoot = path.join(root, 'shared')
+    await Promise.all([mkdir(integrationRoot), mkdir(workerRoot), mkdir(sharedRoot)])
+    const registryFile = path.join(sharedRoot, 'workspaces.json')
+    const stateFile = path.join(root, 'state.json')
+    await writeFile(registryFile, JSON.stringify({
+      schemaVersion: 1,
+      poolId: 'holdem',
+      sharedRoot,
+      workspaces: [
+        { id: 'main', root: integrationRoot, role: 'integration', enabled: true },
+        { id: 'fork1', root: workerRoot, role: 'worker', enabled: true },
+      ],
+    }), 'utf8')
+    await writeFile(stateFile, JSON.stringify({
+      schemaVersion: 1,
+      poolId: 'holdem',
+      integrationLeaseId: null,
+      workspaces: {
+        main: { status: 'integration' },
+        fork1: { status: 'leased', leaseId: 'lease-1' },
+      },
+      leases: {},
+    }), 'utf8')
+    const commands = []
+    const manager = new WorkspacePoolManager({
+      registryFile,
+      stateFile,
+      gitRunner: async (cwd, args) => {
+        commands.push({ cwd, args })
+        if (args[0] === 'status') return ''
+        if (args[0] === 'branch') return 'japan-master'
+        if (args[0] === 'rev-parse' && args[1] === 'HEAD') return 'main456'
+        if (args[0] === 'rev-parse') return 'tree456'
+        return ''
+      },
+    })
+    assert.equal(await manager.initialize(), true)
+    await assert.rejects(
+      () => manager.synchronizeIdleWorkersToIntegration(),
+      (error) => error instanceof WorkspacePoolUnavailableError
+        && error.reasonCode === 'AI_WORKSPACE_SYNC_WORKER_BUSY',
+    )
+    assert.equal(commands.some(({ cwd, args }) => cwd === workerRoot && args[0] === 'switch'), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('서버 재시작 후 finalizing lease는 같은 AI 대화에만 다시 연결한다', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'mnp-finalizing-rebind-'))
   try {

@@ -594,6 +594,173 @@ export class WorkspacePoolManager {
     )
   }
 
+  async synchronizeIdleWorkersToIntegration({ workspaceIds } = {}) {
+    return this.runExclusive(async () => {
+      if (!this.registry || !this.state) {
+        throw new WorkspacePoolUnavailableError(
+          'AI 작업공간 풀이 준비되지 않았습니다.',
+          [],
+          'AI_WORKSPACE_SYNC_POOL_UNAVAILABLE',
+        )
+      }
+      if (this.state.integrationLeaseId) {
+        throw new WorkspacePoolUnavailableError(
+          '통합 작업공간을 사용하는 작업이 진행 중이어서 동기화할 수 없습니다.',
+          [{ integrationLeaseId: this.state.integrationLeaseId }],
+          'AI_WORKSPACE_SYNC_INTEGRATION_BUSY',
+        )
+      }
+
+      const requestedIds = workspaceIds === undefined
+        ? this.registry.workers.map((workspace) => workspace.id)
+        : [...new Set((Array.isArray(workspaceIds) ? workspaceIds : [])
+          .map((id) => String(id ?? '').trim()).filter(Boolean))]
+      if (requestedIds.length === 0) {
+        throw new WorkspacePoolUnavailableError(
+          '동기화할 worker 작업공간이 없습니다.',
+          [],
+          'AI_WORKSPACE_SYNC_TARGET_REQUIRED',
+        )
+      }
+      const workersById = new Map(this.registry.workers.map((workspace) => [workspace.id, workspace]))
+      const unknownIds = requestedIds.filter((id) => !workersById.has(id))
+      if (unknownIds.length > 0) {
+        throw new WorkspacePoolUnavailableError(
+          `등록된 worker가 아닌 작업공간이 포함되어 있습니다: ${unknownIds.join(', ')}`,
+          unknownIds.map((workspaceId) => ({ workspaceId })),
+          'AI_WORKSPACE_SYNC_TARGET_INVALID',
+        )
+      }
+
+      const integration = this.registry.integration
+      const integrationStatus = nullSeparated(await this.git(integration.root, [
+        'status', '--porcelain=v1', '-z', '--untracked-files=no',
+      ], { timeoutMs: integrationGitProbeTimeoutMs }))
+      if (integrationStatus.length > 0) {
+        throw new WorkspacePoolUnavailableError(
+          integrationWorktreeDirtyMessage,
+          integrationStatus.map((entry) => ({ entry })),
+          'AI_WORKSPACE_SYNC_INTEGRATION_DIRTY',
+        )
+      }
+
+      const [baseBranch, baseCommit, baseTree] = await Promise.all([
+        this.git(integration.root, ['branch', '--show-current']),
+        this.git(integration.root, ['rev-parse', 'HEAD']),
+        this.git(integration.root, ['rev-parse', 'HEAD^{tree}']),
+      ])
+      if (!baseBranch || !baseCommit || !baseTree) {
+        throw new WorkspacePoolUnavailableError(
+          '통합 작업공간의 현재 브랜치와 커밋을 확인하지 못했습니다.',
+          [],
+          'AI_WORKSPACE_SYNC_INTEGRATION_INVALID',
+        )
+      }
+
+      const preflight = []
+      for (const id of requestedIds) {
+        const workspace = workersById.get(id)
+        const current = this.state.workspaces[workspace.id]
+        if (current?.status !== 'idle') {
+          throw new WorkspacePoolUnavailableError(
+            `${workspace.id} 작업공간이 idle 상태가 아니어서 동기화할 수 없습니다.`,
+            [{ workspaceId: workspace.id, status: current?.status ?? null }],
+            'AI_WORKSPACE_SYNC_WORKER_BUSY',
+          )
+        }
+        if (await exists(path.join(workspace.root, '.ai-session.json'))) {
+          throw new WorkspacePoolUnavailableError(
+            `${workspace.id} 작업공간에 활성 세션 파일이 남아 있어 동기화할 수 없습니다.`,
+            [{ workspaceId: workspace.id }],
+            'AI_WORKSPACE_SYNC_SESSION_PRESENT',
+          )
+        }
+        const trackedStatus = nullSeparated(await this.git(workspace.root, [
+          'status', '--porcelain=v1', '-z', '--untracked-files=no',
+        ]))
+        if (trackedStatus.length > 0) {
+          throw new WorkspacePoolUnavailableError(
+            `${workspace.id} 작업공간에 커밋되지 않은 추적 파일 변경이 있습니다.`,
+            trackedStatus.map((entry) => ({ workspaceId: workspace.id, entry })),
+            'AI_WORKSPACE_SYNC_WORKER_DIRTY',
+          )
+        }
+        const [branch, commit] = await Promise.all([
+          this.git(workspace.root, ['branch', '--show-current']),
+          this.git(workspace.root, ['rev-parse', 'HEAD']),
+        ])
+        if (current.idleBranch && branch !== current.idleBranch) {
+          throw new WorkspacePoolUnavailableError(
+            `${workspace.id}의 실제 브랜치가 풀에 기록된 idle 브랜치와 다릅니다.`,
+            [{ workspaceId: workspace.id, expected: current.idleBranch, actual: branch }],
+            'AI_WORKSPACE_SYNC_STATE_MISMATCH',
+          )
+        }
+        if (current.idleCommit && commit !== current.idleCommit) {
+          throw new WorkspacePoolUnavailableError(
+            `${workspace.id}의 실제 커밋이 풀에 기록된 idle 커밋과 다릅니다.`,
+            [{ workspaceId: workspace.id, expected: current.idleCommit, actual: commit }],
+            'AI_WORKSPACE_SYNC_STATE_MISMATCH',
+          )
+        }
+        preflight.push({ workspace, previousCommit: commit })
+      }
+
+      const synchronized = []
+      for (const { workspace, previousCommit } of preflight) {
+        const idleBranch = await this.switchWorkspaceToIdleCommit(workspace, baseBranch, baseCommit)
+        const [actualBranch, actualCommit, actualTree, trackedStatus] = await Promise.all([
+          this.git(workspace.root, ['branch', '--show-current']),
+          this.git(workspace.root, ['rev-parse', 'HEAD']),
+          this.git(workspace.root, ['rev-parse', 'HEAD^{tree}']),
+          this.git(workspace.root, ['status', '--porcelain=v1', '-z', '--untracked-files=no']),
+        ])
+        if (actualBranch !== idleBranch || actualCommit !== baseCommit || actualTree !== baseTree || trackedStatus) {
+          throw new WorkspacePoolUnavailableError(
+            `${workspace.id} 작업공간의 동기화 사후 검증에 실패했습니다.`,
+            [{ workspaceId: workspace.id, actualBranch, actualCommit, actualTree }],
+            'AI_WORKSPACE_SYNC_VERIFICATION_FAILED',
+          )
+        }
+        const previous = this.state.workspaces[workspace.id]
+        this.state.workspaces[workspace.id] = {
+          ...previous,
+          status: 'idle',
+          idleCommit: baseCommit,
+          idleBranch,
+          updatedAt: new Date().toISOString(),
+        }
+        delete this.state.workspaces[workspace.id].recoveryError
+        await this.persist()
+        synchronized.push({
+          workspaceId: workspace.id,
+          branch: idleBranch,
+          previousCommit,
+          commit: baseCommit,
+          changed: previousCommit !== baseCommit,
+        })
+      }
+
+      const currentIntegrationCommit = await this.git(integration.root, ['rev-parse', 'HEAD'])
+      if (currentIntegrationCommit !== baseCommit) {
+        throw new WorkspacePoolUnavailableError(
+          '동기화 도중 main 커밋이 변경되었습니다. 현재 main을 기준으로 다시 실행해 주세요.',
+          [{ synchronizedCommit: baseCommit, currentIntegrationCommit }],
+          'AI_WORKSPACE_SYNC_INTEGRATION_MOVED',
+        )
+      }
+
+      return {
+        poolId: this.registry.poolId,
+        integrationWorkspaceId: integration.id,
+        baseBranch,
+        baseCommit,
+        baseTree,
+        workspaces: synchronized,
+      }
+    })
+  }
+
   async recoverCleanFailureWorkspace(workspace, current) {
     const lease = current.leaseId ? this.state?.leases?.[current.leaseId] : null
     if (!this.recoverableCleanFailureLease(lease)) return false

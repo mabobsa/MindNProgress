@@ -541,6 +541,12 @@ type RunnerConnectionInfo = {
   onlineWithinMs: number
 }
 
+type RunnerPairingResponse = {
+  machineId: string
+  expiresAt: string
+  launchUrl: string
+}
+
 type MachineRegistryResponse = {
   mainMachineId: string
   machines: MachineSummary[]
@@ -1935,16 +1941,6 @@ function machineSeenLabel(lastSeenAt: string | null) {
   return `${Math.floor(elapsedSeconds / 86_400)}일 전`
 }
 
-// 발급 직후에만 평문 토큰이 있으므로 실행 명령도 이 시점에만 만들 수 있다.
-function runnerStartCommand(apiUrl: string, machineId: string, token: string) {
-  return [
-    `MNP_RUNNER_API_URL=${apiUrl}`,
-    `MNP_RUNNER_MACHINE_ID=${machineId}`,
-    `MNP_RUNNER_TOKEN=${token}`,
-    'node runner/index.mjs',
-  ].join(' \\\n')
-}
-
 function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLElement>(null)
   const [targets, setTargets] = useState<DistributedWorkTargets | null>(null)
@@ -1961,7 +1957,7 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
   const [notice, setNotice] = useState('')
   const [probingMachineId, setProbingMachineId] = useState('')
   const [probeResults, setProbeResults] = useState<Record<string, MachineProbeResult>>({})
-  const [issuedToken, setIssuedToken] = useState<{ machineId: string; token: string } | null>(null)
+  const [pairing, setPairing] = useState<RunnerPairingResponse | null>(null)
 
   const applySettings = useCallback((payload: { settings: DistributedWorkSettings; targets: DistributedWorkTargets }) => {
     setTargets(payload.targets)
@@ -2069,19 +2065,6 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
-  // LAN 주소로 접속하면 보안 컨텍스트가 아니어서 navigator.clipboard가 없다.
-  // 공용 헬퍼가 선택 영역 복사로 폴백하며, 그마저 막히면 실패를 알려 직접 선택하도록 안내한다.
-  async function copyText(text: string, label: string) {
-    setError('')
-    setNotice('')
-    try {
-      await copyTextToClipboard(text)
-      setNotice(`${label}을 클립보드에 복사했습니다.`)
-    } catch {
-      setError(`${label}을 클립보드에 복사하지 못했습니다. 아래 내용을 직접 선택해 복사해 주세요.`)
-    }
-  }
-
   async function probeMachine(machineId: string) {
     setError('')
     setNotice('')
@@ -2096,33 +2079,41 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function issueToken(machineId: string) {
+  function openAionUiPairing(launchUrl: string) {
+    if (!launchUrl.startsWith('aionui://mindnprogress/runner-pair?')) {
+      throw new Error('AionUi 연결 주소가 올바르지 않습니다.')
+    }
+    window.location.assign(launchUrl)
+  }
+
+  async function pairWithAionUi(machineId: string) {
     setError('')
     setNotice('')
     setSubmitting(true)
     try {
-      const issued = await apiRequest<{ machineId: string; token: string }>(`/api/machines/${encodeURIComponent(machineId)}/token`, { method: 'POST' })
-      setIssuedToken(issued)
-      await reload()
-    } catch (tokenError) {
-      setError(tokenError instanceof Error ? tokenError.message : 'Runner 토큰을 발급하지 못했습니다.')
+      const issued = await apiRequest<RunnerPairingResponse>(`/api/machines/${encodeURIComponent(machineId)}/pairing`, { method: 'POST' })
+      setPairing(issued)
+      openAionUiPairing(issued.launchUrl)
+      setNotice('AionUi에서 연결 화면을 열었습니다. 표시된 내용을 확인해 주세요.')
+    } catch (pairingError) {
+      setError(pairingError instanceof Error ? pairingError.message : 'AionUi Runner 연결을 시작하지 못했습니다.')
     } finally {
       setSubmitting(false)
     }
   }
 
   async function revokeToken(machineId: string) {
-    if (!window.confirm(`'${machineId}' 머신의 Runner 토큰을 폐기할까요? 해당 Runner는 즉시 연결이 끊깁니다.`)) return
+    if (!window.confirm(`'${machineId}' 머신의 Runner 서버 권한을 폐기할까요? 해당 Runner는 즉시 연결이 끊깁니다.`)) return
     setError('')
     setNotice('')
     setSubmitting(true)
     try {
       await apiRequest(`/api/machines/${encodeURIComponent(machineId)}/token`, { method: 'DELETE' })
-      if (issuedToken?.machineId === machineId) setIssuedToken(null)
+      if (pairing?.machineId === machineId) setPairing(null)
       await reload()
-      setNotice('Runner 토큰을 폐기했습니다.')
+      setNotice('Runner 서버 권한을 폐기했습니다. AionUi에 남은 연결 정보는 AionUi 설정의 연동 화면에서 삭제할 수 있습니다.')
     } catch (revokeError) {
-      setError(revokeError instanceof Error ? revokeError.message : 'Runner 토큰을 폐기하지 못했습니다.')
+      setError(revokeError instanceof Error ? revokeError.message : 'Runner 서버 권한을 폐기하지 못했습니다.')
     } finally {
       setSubmitting(false)
     }
@@ -2196,7 +2187,7 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
                         <small>
                           {machine.machineId}
                           {machine.platform ? ` · ${machinePlatformLabel(machine.platform)}` : ''}
-                          {machine.role === 'sub' && (machine.hasToken ? ' · 토큰 발급됨' : ' · 토큰 없음')}
+                          {machine.role === 'sub' && (machine.hasToken ? ' · Runner 설정됨' : ' · Runner 연결 안 됨')}
                           {machine.role === 'sub' && machine.ownerName ? ` · ${machine.ownerName}` : ''}
                         </small>
                         {probe && (
@@ -2215,11 +2206,16 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
                         )}
                         {machine.role === 'sub' && machine.manageable && (
                           <>
-                            <button type="button" onClick={() => void issueToken(machine.machineId)} disabled={submitting}>
-                              {machine.hasToken ? '토큰 재발급' : '토큰 발급'}
+                            <button
+                              type="button"
+                              onClick={() => void pairWithAionUi(machine.machineId)}
+                              disabled={submitting || runnerInfo?.lanReachable === false}
+                              title={runnerInfo?.lanReachable === false ? '먼저 다른 장비에서 접근할 수 있는 MNP_PUBLIC_URL을 설정하세요.' : undefined}
+                            >
+                              {machine.hasToken ? 'AionUi 재연결' : 'AionUi 연결'}
                             </button>
                             {machine.hasToken && (
-                              <button type="button" onClick={() => void revokeToken(machine.machineId)} disabled={submitting}>토큰 폐기</button>
+                              <button type="button" onClick={() => void revokeToken(machine.machineId)} disabled={submitting}>서버 권한 폐기</button>
                             )}
                             <button type="button" className="machine-remove" onClick={() => void removeMachine(machine.machineId)} disabled={submitting} aria-label={`${machine.label} 등록 삭제`}>
                               <Icon name="trash" size={13} />
@@ -2232,30 +2228,24 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
                 })}
               </ul>
               {subMachines.length === 0 && <p className="distributed-work-empty">등록된 서브 머신이 없습니다.</p>}
-              {issuedToken && runnerInfo && (
+              {pairing && (
                 <div className="distributed-work-token" role="status">
-                  <strong>{issuedToken.machineId} Runner 실행 명령</strong>
+                  <strong>{pairing.machineId} AionUi 연결 대기 중</strong>
                   <small>
-                    아래 명령을 <b>{issuedToken.machineId}</b> 머신의 MindNProgress 저장소 폴더에서 실행하세요.
-                    토큰은 지금만 표시되므로 창을 닫기 전에 복사해 두세요.
+                    AionUi가 열리지 않았다면 아래 버튼을 누르세요. 이 링크는 {new Date(pairing.expiresAt).toLocaleTimeString()}까지 한 번만 사용할 수 있습니다.
                   </small>
-                  <code>{runnerStartCommand(runnerInfo.apiUrl, issuedToken.machineId, issuedToken.token)}</code>
                   <div className="distributed-work-token-actions">
                     <button
                       type="button"
-                      onClick={() => void copyText(runnerStartCommand(runnerInfo.apiUrl, issuedToken.machineId, issuedToken.token), '실행 명령')}
-                    >실행 명령 복사</button>
-                    <button
-                      type="button"
-                      onClick={() => void copyText(issuedToken.token, '토큰')}
-                    >토큰만 복사</button>
+                      onClick={() => {
+                        try {
+                          openAionUiPairing(pairing.launchUrl)
+                        } catch (launchError) {
+                          setError(launchError instanceof Error ? launchError.message : 'AionUi를 열지 못했습니다.')
+                        }
+                      }}
+                    >AionUi 다시 열기</button>
                   </div>
-                  {!runnerInfo.lanReachable && (
-                    <small className="distributed-work-token-warning">
-                      위 주소는 다른 장비에서 접근할 수 없어 이 명령이 연결에 실패합니다.
-                      <code>MNP_PUBLIC_URL</code>을 실제 접근 주소로 지정한 뒤 사용하세요.
-                    </small>
-                  )}
                 </div>
               )}
             </div>

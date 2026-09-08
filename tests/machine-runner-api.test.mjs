@@ -95,6 +95,66 @@ async function registerMacbook(baseUrl, cookie) {
   return issued.body.token
 }
 
+test('AionUi 페어링 링크는 일회용 코드로 Runner 토큰을 교환하고 즉시 연결된다', { timeout: 60_000 }, async () => {
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-runner-pairing-'))
+  const port = 4_991
+  const baseUrl = `http://127.0.0.1:${port}`
+  const server = startServer(dataDirectory, port, { MNP_PUBLIC_URL: baseUrl })
+
+  try {
+    await waitForServer(baseUrl)
+    const cookie = await login(baseUrl)
+    const registered = await userRequest(baseUrl, cookie, '/api/machines', 'POST', {
+      machineId: 'macbook',
+      label: '맥북',
+      platform: 'darwin',
+    })
+    assert.equal(registered.response.status, 200)
+
+    const issued = await userRequest(baseUrl, cookie, '/api/machines/macbook/pairing', 'POST')
+    assert.equal(issued.response.status, 200)
+    const launchUrl = new URL(issued.body.launchUrl)
+    assert.equal(launchUrl.protocol, 'aionui:')
+    assert.equal(launchUrl.hostname, 'mindnprogress')
+    assert.equal(launchUrl.pathname, '/runner-pair')
+    assert.equal(launchUrl.searchParams.get('api_url'), baseUrl)
+    assert.equal(launchUrl.searchParams.get('machine_id'), 'macbook')
+    const pairingCode = launchUrl.searchParams.get('pairing_code')
+    assert.match(pairingCode, /^mnppair_[A-Za-z0-9_-]{20,}$/)
+
+    const exchange = await fetch(`${baseUrl}/api/machines/runner/pairing/exchange`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pairingCode }),
+    })
+    assert.equal(exchange.status, 200)
+    const credential = await exchange.json()
+    assert.equal(credential.schemaVersion, 1)
+    assert.equal(credential.apiUrl, baseUrl)
+    assert.equal(credential.machineId, 'macbook')
+    assert.equal(credential.label, '맥북')
+    assert.match(credential.token, /^mnprn_[A-Za-z0-9_-]{20,}$/)
+
+    const replay = await fetch(`${baseUrl}/api/machines/runner/pairing/exchange`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pairingCode }),
+    })
+    assert.equal(replay.status, 401)
+
+    const heartbeat = await runnerRequest(
+      baseUrl,
+      credential.token,
+      '/api/machines/macbook/runner/heartbeat',
+      {},
+    )
+    assert.equal(heartbeat.response.status, 200)
+  } finally {
+    await stopServer(server)
+    await rm(dataDirectory, { recursive: true, force: true })
+  }
+})
+
 test('Runner가 오퍼레이션을 가져가 결과를 올리면 요청자에게 응답이 전달된다', { timeout: 60_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-runner-'))
   const port = 4_962

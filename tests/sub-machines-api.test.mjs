@@ -298,6 +298,7 @@ test('편집자는 본인 서브 머신만 등록·관리하고 위임 대상으
     for (const [method, pathname] of [
       ['POST', '/api/machines/first-mac/token'],
       ['DELETE', '/api/machines/first-mac/token'],
+      ['POST', '/api/machines/first-mac/pairing'],
     ]) {
       assert.equal((await apiRequest(baseUrl, secondCookie, pathname, method)).response.status, 403)
     }

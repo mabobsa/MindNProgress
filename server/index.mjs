@@ -105,6 +105,11 @@ import {
 } from './lib/subMachines.mjs'
 import { MachineOperationError, MachineOperationQueue } from './lib/machineOperations.mjs'
 import {
+  MachinePairingError,
+  MachinePairingStore,
+  createAionUiRunnerPairingUrl,
+} from './lib/machinePairings.mjs'
+import {
   SharedKnowledgeMaintenanceError,
   buildSharedKnowledgeReviewContext,
   prepareSharedKnowledgeReviewBatch,
@@ -344,6 +349,7 @@ const machineOperationQueue = new MachineOperationQueue({
   resultTimeoutMs: Math.max(10_000, Number(process.env.MNP_MACHINE_RESULT_TIMEOUT_MS) || 180_000),
   createOperationId: () => randomBytes(12).toString('base64url'),
 })
+const machinePairingStore = new MachinePairingStore()
 const aiAttributionContinuationToken = Symbol('aiAttributionContinuationToken')
 let aiAttributionWriteQueue = Promise.resolve()
 let aiConversationAttributionWriteQueue = Promise.resolve()
@@ -7106,6 +7112,44 @@ const server = createServer(async (request, response) => {
       return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
     }
 
+    // AionUi는 짧게 살아 있는 일회용 코드로 영구 Runner 토큰을 한 번만 교환한다.
+    // 이 요청 자체에는 브라우저 세션이 없지만, 256-bit 코드를 가진 클라이언트만 성공한다.
+    if (request.method === 'POST' && url.pathname === '/api/machines/runner/pairing/exchange') {
+      const body = await readJsonBody(request)
+      let pairing
+      try {
+        pairing = machinePairingStore.consume(body?.pairingCode)
+      } catch (error) {
+        if (error instanceof MachinePairingError) {
+          return sendJson(response, 401, { error: error.message, reasonCode: error.reasonCode })
+        }
+        throw error
+      }
+
+      const machine = findMachine(machineRegistry, pairing.machineId)
+      const requestingUser = users.find((candidate) => candidate.id === pairing.requestedByUserId)
+      if (!machine
+        || machine.machineId === machineRegistry.mainMachineId
+        || !machine.enabled
+        || !requestingUser
+        || !canEdit(requestingUser)
+        || !machineManageableBy(machineRegistry, machine.machineId, machineViewer(requestingUser))) {
+        return sendJson(response, 409, { error: '페어링할 수 있는 서브 머신이 아닙니다.', reasonCode: 'PAIRING_MACHINE_UNAVAILABLE' })
+      }
+
+      const token = `mnprn_${randomBytes(32).toString('base64url')}`
+      machineRegistry = setMachineToken(machineRegistry, machine.machineId, token)
+      machineOperationQueue.wake(machine.machineId)
+      await persistMachineRegistry()
+      return sendJson(response, 200, {
+        schemaVersion: 1,
+        apiUrl: runnerApiBaseUrl,
+        machineId: machine.machineId,
+        label: machine.label,
+        token,
+      })
+    }
+
     // Runner는 사용자 세션이 아니라 머신 토큰으로 인증한다.
     const machineRunnerClaimRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/runner\/operations\/claim$/)
     if (request.method === 'POST' && machineRunnerClaimRoute) {
@@ -7216,7 +7260,29 @@ const server = createServer(async (request, response) => {
       }
     }
 
-    // Runner 토큰은 발급 시점에 한 번만 평문으로 보여 준다.
+    const machinePairingRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/pairing$/)
+    if (request.method === 'POST' && machinePairingRoute) {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 Runner를 연결할 수 있습니다.' })
+      const machineId = normalizeMachineId(machinePairingRoute[1])
+      if (!machineManageableBy(machineRegistry, machineId, machineViewer(user))) {
+        return sendJson(response, 403, { error: '본인이 등록한 서브 머신의 Runner만 연결할 수 있습니다.' })
+      }
+      const machine = findMachine(machineRegistry, machineId)
+      if (!machine || machine.machineId === machineRegistry.mainMachineId || !machine.enabled) {
+        return sendJson(response, 409, { error: '활성화된 서브 머신만 Runner를 연결할 수 있습니다.' })
+      }
+
+      const pairing = machinePairingStore.issue({ machineId, requestedByUserId: user.id })
+      return sendJson(response, 200, {
+        machineId,
+        expiresAt: pairing.expiresAt,
+        launchUrl: createAionUiRunnerPairingUrl(runnerApiBaseUrl, pairing.code, machineId),
+      })
+    }
+
+    // 기존 CLI Runner와의 호환을 위해 직접 토큰 API는 유지하되 UI에서는 노출하지 않는다.
     const machineTokenRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/token$/)
     if (machineTokenRoute) {
       const user = requireSignedInUser(request, response)
@@ -7228,6 +7294,7 @@ const server = createServer(async (request, response) => {
 
       if (request.method === 'POST') {
         const machineId = normalizeMachineId(machineTokenRoute[1])
+        machinePairingStore.revokeMachine(machineId)
         const token = `mnprn_${randomBytes(32).toString('base64url')}`
         try {
           machineRegistry = setMachineToken(machineRegistry, machineId, token)
@@ -7243,6 +7310,7 @@ const server = createServer(async (request, response) => {
 
       if (request.method === 'DELETE') {
         const machineId = normalizeMachineId(machineTokenRoute[1])
+        machinePairingStore.revokeMachine(machineId)
         try {
           machineRegistry = setMachineToken(machineRegistry, machineId, null)
         } catch (error) {
@@ -7306,6 +7374,7 @@ const server = createServer(async (request, response) => {
           if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
           throw error
         }
+        machinePairingStore.revokeMachine(removedMachineId)
         // 등록이 사라진 머신으로 향하던 요청은 영원히 전달될 수 없으므로 즉시 실패로 확정한다.
         machineOperationQueue.cancelMachine(removedMachineId)
         // 삭제한 머신을 기본값으로 쓰던 사용자는 조회 시 자동으로 해제되지만 저장값도 함께 정리한다.

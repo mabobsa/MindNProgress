@@ -4,6 +4,8 @@ export const AI_DELEGATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$/
 export const AI_DELEGATION_WAIT_POLL_DELAYS_MS = Object.freeze([3_000, 5_000, 10_000, 30_000])
 
 export const ACTIVE_AI_DELEGATION_STATES = new Set([
+  'waiting-usage-limit',
+  'waiting-rate-limit',
   'waiting-document-work',
   'waiting-workspace',
   'waiting-integration-clean',
@@ -212,10 +214,85 @@ export function failedAiIntegrationRecoveryRuntime(dispatch, recoveredAt = new D
 }
 
 export function aiDelegationSucceeded(delegation) {
+  if (delegation?.state === 'waiting-document-work') return false
   if (delegation?.childStatus !== 'completed' || delegation?.workspaceError) return false
   if (delegation?.integrationOperationId && delegation?.integrationStatus !== 'completed') return false
   if (delegation?.workspaceLease?.leaseId && delegation?.workspaceResult?.status !== 'completed') return false
   return true
+}
+
+export function retryableExternalLimitCategory(error) {
+  const message = String(error ?? '').trim()
+  if (!message) return null
+  if (/usage limit|usage cap|credit limit|insufficient credits?|사용량.{0,12}(제한|한도|초과)|크레딧.{0,12}(부족|소진)/iu.test(message)) {
+    return 'usage-limit'
+  }
+  if (/rate.?limit|too many requests|요청.{0,12}(제한|한도|초과)/iu.test(message)) return 'rate-limit'
+  return null
+}
+
+export function aiDelegationRecoveryAvailability(delegation) {
+  if (delegation?.pendingRecovery) return { failurePhase: 'dispatch', failureCategory: 'unknown', recoveryAvailable: false, recommendedAction: 'refresh-status', recoveryTool: 'mindnprogress_refresh_ai_delegation' }
+  if (!['parent-wake-failed', 'failed', 'waiting-usage-limit', 'waiting-rate-limit', 'recovery-required', 'integration-recovery-required', 'waiting-child-resume'].includes(delegation?.state)) return null
+  if (['recovery-required', 'integration-recovery-required', 'waiting-child-resume'].includes(delegation.state)) {
+    return { failurePhase: 'child', failureCategory: delegation.state === 'waiting-child-resume' ? 'user-stop' : 'restart', recoveryAvailable: true, recommendedAction: 'resume-existing', recoveryTool: 'mindnprogress_recover_ai_delegation' }
+  }
+  if (aiDelegationSucceeded(delegation)) {
+    return {
+      failurePhase: 'parent-wake',
+      failureCategory: 'parent-notification',
+      recoveryAvailable: false,
+      recommendedAction: 'review-existing-result',
+      reportRetryAvailable: delegation.state === 'parent-wake-failed',
+    }
+  }
+
+  const childFailure = delegation?.workspaceResult?.childError ?? delegation?.childError
+  const failureCategory = retryableExternalLimitCategory(childFailure)
+  const hasRecoverableWorkspace = Boolean(
+    delegation?.workspaceLease?.leaseId
+    && delegation?.workspaceResult?.status === 'quarantined'
+    && delegation?.workspaceResult?.childStatus === 'failed',
+  )
+  const canResume = Boolean(failureCategory && (hasRecoverableWorkspace || !delegation?.workspaceLease?.leaseId))
+  return {
+    failurePhase: 'child',
+    failureCategory: failureCategory ?? 'non-retryable',
+    recoveryAvailable: canResume,
+    recommendedAction: canResume
+      ? 'resume-existing'
+      : 'inspect-failure',
+    ...(canResume
+      ? { recoveryTool: 'mindnprogress_recover_ai_delegation' }
+      : {}),
+  }
+}
+
+export function aiDelegationLimitState(delegation) {
+  if (aiDelegationSucceeded(delegation) || delegation?.childStatus !== 'failed') return null
+  const category = retryableExternalLimitCategory(delegation.childError ?? delegation.workspaceResult?.childError)
+  return category === 'usage-limit' ? 'waiting-usage-limit' : category === 'rate-limit' ? 'waiting-rate-limit' : null
+}
+
+export function aiDelegationAttemptHistory(delegation, reason, at = new Date().toISOString()) {
+  // 직전 시도의 결과와 전달 실패를 보존한다. 현재 결과에는 새 시도의 결과만 표시한다.
+  return [...(delegation.attemptHistory ?? []), {
+    at, reason, state: delegation.state, operationId: delegation.childOperationId,
+    childTurnId: delegation.childTurnId, childStatus: delegation.childStatus,
+    childError: delegation.childError ?? null, parentError: delegation.parentError ?? null,
+    parentDispatchState: delegation.parentDispatchState, wakeOperationId: delegation.wakeOperationId,
+    result: delegation.childResultSnapshot ?? '', resultCapturedAt: delegation.childResultCapturedAt ?? null,
+  }]
+}
+
+export function aiDelegationWorkPending(delegation) {
+  // 업무 성공과 상위 결과 전달을 구분한다. 보고 실패만으로 하위 업무를 미완료 처리하지 않는다.
+  return !aiDelegationSucceeded(delegation) && !['completed', 'failed', 'superseded'].includes(delegation.state)
+}
+
+export function aiDelegationDisplayState(delegation) {
+  if (delegation.pendingRecovery) return 'recovery-dispatch-pending'
+  return aiDelegationLimitState(delegation) ?? delegation.state
 }
 
 export function aiDelegationStateAfterParentWake(delegation, parentDispatchState) {
@@ -278,7 +355,7 @@ export function initialAiDelegationRuntime(dispatch, completedAt = new Date().to
     : null
   if (state === 'completed' || state === 'failed') {
     return {
-      state: 'waiting-parent',
+      state: aiDelegationLimitState({ childStatus: state, childError: dispatch?.errorMessage }) ?? 'waiting-parent',
       childStatus: state,
       childTurnId,
       childError: String(dispatch?.errorMessage ?? '').trim() || null,

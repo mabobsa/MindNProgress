@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -33,6 +33,8 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
   const conversations = new Map()
   const dispatches = new Map()
   const calls = []
+  let failWake = false
+  let holdRecoveryResponse = false
   let child
   const fake = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1')
@@ -51,8 +53,9 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
       calls.push(body)
       const id = body.strategy === 'new' ? `conversation-${calls.length}` : body.targetConversationId
       conversations.set(id, { ...(conversations.get(id) ?? {}), id, name: body.newConversation?.name ?? '문서 담당', extra: { agent_id: 'claude', current_model_id: 'opus', backend: 'claude' } })
-      const dispatch = { operationId: body.operationId, conversationId: id, state: /-wake-\d+$/.test(body.operationId) ? 'completed' : 'running', turnId: `turn-${calls.length}` }
+      const dispatch = { operationId: body.operationId, conversationId: id, state: /-wake-\d+$/.test(body.operationId) ? failWake ? 'failed' : 'completed' : 'running', turnId: `turn-${calls.length}`, ...(failWake && /-wake-\d+$/.test(body.operationId) ? { errorMessage: "You've hit your usage limit" } : {}) }
       dispatches.set(body.operationId, dispatch)
+      if (holdRecoveryResponse && /recover-\d+$/.test(body.operationId)) return
       return send({ ...dispatch, state: 'starting' }, 202)
     }
     const operation = url.pathname.match(/^\/api\/internal\/external-conversation-dispatches\/([^/]+)$/)
@@ -79,6 +82,7 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
       ...process.env, MNP_DATA_DIR: directory, MNP_API_HOST: '127.0.0.1', MNP_API_PORT: String(port), MNP_WEB_PORT: String(port),
       MNP_AIONUI_URL: `http://127.0.0.1:${fakePort}`, MNP_AI_DELEGATION_POLL_INTERVAL_MS: '100',
       MNP_WORKSPACE_POOL_REGISTRY: path.join(directory, 'no-workspace-pool.json'),
+      MNP_ADMIN_EMAIL: 'group-test@mind.local', MNP_ADMIN_PASSWORD: 'GroupTest!2026',
     }, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
     child.stderr.on('data', (chunk) => { errors += chunk })
     await until(async () => { try { return (await fetch(baseUrl + '/api/health')).ok } catch { return false } }, `서버를 시작하지 못했습니다. ${errors}`)
@@ -223,8 +227,119 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     assert.ok(wake.instruction.includes(AI_EXECUTION_APPROVAL_INSTRUCTION))
     assert.ok(wake.instruction.includes(AI_DELEGATION_FOLLOWUP_INSTRUCTION))
     assert.ok(calls.find((call) => /^nested-leaf-wake-/.test(call.operationId)).instruction.includes(AI_DELEGATION_FOLLOWUP_INSTRUCTION))
+
+    // 사용량 제한은 완료 보고를 만들지 않고 보존한다. UI는 실행 재개와 보고 재시도를 구분한다.
+    const currentVersion = (await api(`/api/maps/${target.id}`)).body.map.version
+    const limited = await api(delegateUrl, 'POST', { ...args, targetRevision: currentVersion, strategy: 'resume', conversationId: documentConversationId, idempotencyKey: 'usage-run' }, sourceHeaders)
+    assert.equal(limited.status, 202, JSON.stringify(limited.body))
+    Object.assign(dispatches.get('usage-run'), { state: 'failed', errorMessage: "You've hit your usage limit" })
+    const latestUsage = async () => (await api(`/api/groups/${groupId}`)).body.delegations.find((item) => item.id === 'usage-run')
+    await until(async () => (await latestUsage()).state === 'waiting-usage-limit', '사용량 대기로 전환되지 않았습니다.')
+    assert.equal((await latestUsage()).recovery.recoveryAvailable, true, 'worker 없는 총괄 위임도 복구해야 합니다.')
+    const stoppedCallCount = calls.length
+    await pause(500)
+    assert.equal(calls.length, stoppedCallCount, '사용량 대기 중 AI를 자동 호출했습니다.')
+    await stop(child)
+    // 테스트 저장소에 구버전 실패 기록을 재현한다. 실제 사용자 데이터는 접근하지 않는다.
+    const storedPath = path.join(directory, '_ai-delegations.json')
+    const stored = JSON.parse(await readFile(storedPath, 'utf8'))
+    Object.assign(stored.find((item) => item.id === 'usage-run'), { state: 'parent-wake-failed', parentError: 'usage limit', childResultSnapshot: '과거 중단 결과입니다.' })
+    await writeFile(storedPath, JSON.stringify(stored))
+    await start()
+    assert.equal((await latestUsage()).state, 'waiting-usage-limit')
+    assert.equal(calls.length, stoppedCallCount, '구버전 상태 보정에서 AI를 호출했습니다.')
+    assert.ok((await latestUsage()).attemptHistory.some((item) => item.state === 'parent-wake-failed' && item.result === '과거 중단 결과입니다.'))
+    const login = await api('/api/auth/login', 'POST', { email: 'group-test@mind.local', password: 'GroupTest!2026' })
+    assert.equal(login.status, 200)
+    const loginResponse = await fetch(baseUrl + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'group-test@mind.local', password: 'GroupTest!2026' }) })
+    let editorCookie = loginResponse.headers.get('set-cookie').split(';')[0]
+    const actionBody = async () => {
+      const context = (await api(`/api/groups/${groupId}`)).body
+      return { expectedUpdatedAt: context.delegations.find((item) => item.id === 'usage-run').updatedAt, sourceRevision: context.coordinator.version, targetRevision: context.documents.find((item) => item.id === target.id).version, groupVersion: context.project.version, instruction: '기존 승인 범위만 재개하고 완료 결과는 중복 실행하지 마세요.', confirmApprovedScope: true }
+    }
+    const humanAction = async (action, body, sessionCookie = editorCookie) => {
+      const response = await fetch(`${baseUrl}${delegateUrl}/usage-run/${action}`, { method: 'POST', headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      return { status: response.status, body: await response.json() }
+    }
+    assert.equal((await humanAction('recover', { ...await actionBody(), confirmApprovedScope: false })).status, 400)
+    assert.equal((await humanAction('recover', { ...await actionBody(), expectedUpdatedAt: '오래된 값' })).status, 409)
+    assert.ok([401, 403].includes((await humanAction('recover', await actionBody(), cookie)).status))
+    assert.equal((await humanAction('refresh', await actionBody())).body.executionRequested, false)
+    const concurrentBody = await actionBody()
+    const concurrent = await Promise.all([humanAction('recover', concurrentBody), humanAction('recover', concurrentBody)])
+    assert.deepEqual(concurrent.map((result) => result.status).sort(), [202, 409])
+    const firstRecoveryId = concurrent.find((result) => result.status === 202).body.recovery.operationId
+    assert.equal(calls.filter((call) => call.operationId === firstRecoveryId).length, 1)
+    assert.equal((await latestUsage()).result, '', '새 시도에 과거 중단 결과가 남았습니다.')
+    Object.assign(dispatches.get(firstRecoveryId), { state: 'failed', errorMessage: 'too many requests: rate limit' })
+    await until(async () => (await latestUsage()).state === 'waiting-rate-limit', '반복 요청 제한을 보존하지 못했습니다.')
+
+    // 복구 POST가 접수된 뒤 MnP가 재시작돼도 같은 operation만 회수하고 재실행하지 않는다.
+    holdRecoveryResponse = true
+    const beforeHeld = calls.length
+    const held = humanAction('recover', await actionBody()).catch(() => null)
+    await until(async () => calls.length > beforeHeld, '복구 요청이 접수되지 않았습니다.')
+    const secondRecoveryId = calls.at(-1).operationId
+    await stop(child)
+    await held
+    holdRecoveryResponse = false
+    failWake = true
+    dispatches.get(secondRecoveryId).state = 'completed'
+    await start()
+    const restartedLogin = await fetch(baseUrl + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'group-test@mind.local', password: 'GroupTest!2026' }) })
+    editorCookie = restartedLogin.headers.get('set-cookie').split(';')[0]
+    await until(async () => { const value = await latestUsage(); return value.childOperationId === secondRecoveryId && !value.pendingRecovery }, '재시작 뒤 복구 요청을 회수하지 못했습니다.')
+    assert.equal(calls.filter((call) => call.operationId === secondRecoveryId).length, 1)
+    assert.ok((await latestUsage()).attemptHistory.length >= 3)
+    await until(async () => (await latestUsage()).state === 'parent-wake-failed', '보고 실패 상태가 되지 않았습니다.')
+    const reportFailed = await latestUsage()
+    assert.equal(reportFailed.workCompleted, true)
+    assert.equal(reportFailed.reportPending, true)
+    assert.equal(reportFailed.recovery.recoveryAvailable, false)
+    assert.equal(reportFailed.recovery.reportRetryAvailable, true)
+    assert.equal(reportFailed.childError, null)
+    const completedCallCount = calls.length
+    await pause(400)
+    assert.equal(calls.length, completedCallCount, '보고 실패를 무제한 재시도했습니다.')
+    assert.equal((await humanAction('refresh', await actionBody())).body.executionRequested, false)
+    failWake = false
+    const reportRetryBody = await actionBody()
+    const reports = await Promise.all([humanAction('retry-report', reportRetryBody), humanAction('retry-report', reportRetryBody)])
+    assert.deepEqual(reports.map((result) => result.status).sort(), [202, 409])
+    await until(async () => (await latestUsage()).state === 'completed', '기존 결과 재전달이 완료되지 않았습니다.')
+    assert.ok(calls.slice(completedCallCount).every((call) => /-wake-\d+$/.test(call.operationId)), '보고 재시도에서 하위 작업을 다시 실행했습니다.')
+    assert.equal((await latestUsage()).childOperationId, secondRecoveryId)
+
+    // 같은 실행이 실제로 완료된 경우만 조회로 갱신하고, 상위 재개는 별도 요청을 기다린다.
+    const passive = await api(delegateUrl, 'POST', { ...args, targetRevision: (await api(`/api/maps/${target.id}`)).body.map.version, strategy: 'resume', conversationId: documentConversationId, idempotencyKey: 'passive-run' }, sourceHeaders)
+    assert.equal(passive.status, 202)
+    const latestPassive = async () => (await api(delegateUrl)).body.delegations.find((item) => item.id === 'passive-run')
+    Object.assign(dispatches.get('passive-run'), { state: 'failed', errorMessage: 'usage limit' })
+    await until(async () => (await latestPassive()).state === 'waiting-usage-limit', '상태 확인 검증용 대기에 들어가지 못했습니다.')
+    const passiveCallCount = calls.length
+    Object.assign(dispatches.get('passive-run'), { state: 'completed', errorMessage: null })
+    const refreshed = await api(`${delegateUrl}/passive-run/refresh`, 'POST', { expectedUpdatedAt: (await latestPassive()).updatedAt }, sourceHeaders)
+    assert.equal(refreshed.status, 200)
+    assert.equal(refreshed.body.delegation.workCompleted, true)
+    assert.equal(refreshed.body.delegation.reportPending, true)
+    await pause(400)
+    assert.equal(calls.length, passiveCallCount, '상태 확인이 AI를 재개했습니다.')
+    const passiveReport = await api(`${delegateUrl}/passive-run/retry-report`, 'POST', { expectedUpdatedAt: (await latestPassive()).updatedAt }, sourceHeaders)
+    assert.equal(passiveReport.status, 202)
+    await until(async () => (await latestPassive()).state === 'completed', '확인된 결과를 재전달하지 못했습니다.')
+
     assert.equal((await api('/api/maps/layout', 'PATCH', { documentLayout: movedLayout })).status, 200)
     assert.equal((await api(`/api/maps/${target.id}`)).body.groupProject, null)
+    assert.equal((await api('/api/maps/layout', 'PATCH', { documentLayout: library.documentLayout })).status, 200)
+    const newLimited = await api(delegateUrl, 'POST', { ...args, targetRevision: (await api(`/api/maps/${target.id}`)).body.map.version, strategy: 'resume', conversationId: documentConversationId, idempotencyKey: 'changed-plan' }, sourceHeaders)
+    assert.equal(newLimited.status, 202)
+    Object.assign(dispatches.get('changed-plan'), { state: 'failed', errorMessage: "You've hit your usage limit" })
+    await until(async () => (await api(delegateUrl)).body.delegations.find((item) => item.id === 'changed-plan').state === 'waiting-usage-limit', '기준 변경 검사 전 대기에 들어가지 못했습니다.')
+    const beforeChanged = (await api(`/api/groups/${groupId}`)).body
+    assert.equal((await api(`/api/groups/${groupId}`, 'PATCH', { baseVersion: beforeChanged.project.version, sourceVersion: 'v0.5' })).status, 200)
+    const changedRecovery = await api(`${delegateUrl}/changed-plan/recover`, 'POST', { sourceRevision: parent.version, instruction: '기존 작업 재개' }, sourceHeaders)
+    assert.equal(changedRecovery.status, 409)
+    assert.match(changedRecovery.body.error, /기획 기준이 변경/)
   } finally {
     await stop(child)
     await new Promise((resolve) => fake.close(resolve))

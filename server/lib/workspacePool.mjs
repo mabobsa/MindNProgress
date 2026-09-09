@@ -1211,6 +1211,182 @@ export class WorkspacePoolManager {
     })
   }
 
+  async reactivateQuarantinedLease(leaseId, {
+    mapId,
+    cardId,
+    conversationId,
+    failureCategory,
+  } = {}) {
+    return this.runExclusive(async () => {
+      const normalizedLeaseId = String(leaseId ?? '').trim()
+      const normalizedConversationId = String(conversationId ?? '').trim()
+      if (!['usage-limit', 'rate-limit'].includes(String(failureCategory ?? '').trim())) {
+        throw new WorkspacePoolUnavailableError(
+          '외부 사용량 또는 요청 한도로 확인된 격리 lease만 재활성화할 수 있습니다.',
+          [],
+          'QUARANTINED_LEASE_FAILURE_NOT_RETRYABLE',
+        )
+      }
+      const lease = this.state?.leases?.[normalizedLeaseId]
+      if (!lease || lease.status !== 'quarantined' || lease.result?.status !== 'quarantined'
+        || lease.result?.childStatus !== 'failed') {
+        throw new WorkspacePoolUnavailableError(
+          '재개할 격리 AI 작업공간 lease를 찾지 못했습니다.',
+          [],
+          'QUARANTINED_LEASE_NOT_FOUND',
+        )
+      }
+      if (lease.mapId !== String(mapId ?? '') || lease.cardId !== String(cardId ?? '')) {
+        throw new WorkspacePoolUnavailableError(
+          '재개할 격리 AI 작업공간 lease의 문서 또는 카드가 일치하지 않습니다.',
+          [],
+          'QUARANTINED_LEASE_SCOPE_MISMATCH',
+        )
+      }
+      if (!normalizedConversationId || lease.conversationId !== normalizedConversationId) {
+        throw new WorkspacePoolUnavailableError(
+          '재개할 격리 AI 작업공간 lease의 대화가 일치하지 않습니다.',
+          [],
+          'QUARANTINED_LEASE_CONVERSATION_MISMATCH',
+        )
+      }
+      if (lease.integrationBranch || lease.result?.integrationBranch
+        || (Array.isArray(lease.result?.unmergedFiles) && lease.result.unmergedFiles.length > 0)) {
+        throw new WorkspacePoolUnavailableError(
+          '통합이 시작됐거나 충돌이 남은 격리 작업공간은 하위 작업 재개 방식으로 복구할 수 없습니다.',
+          [],
+          'QUARANTINED_LEASE_INTEGRATION_PRESENT',
+        )
+      }
+
+      const workspace = this.registry?.workspaces.find((candidate) => candidate.id === lease.workspaceId)
+      const workspaceState = this.state?.workspaces?.[lease.workspaceId]
+      if (!workspace || workspaceState?.status !== 'quarantined'
+        || workspaceState?.leaseId !== normalizedLeaseId) {
+        throw new WorkspacePoolUnavailableError(
+          '격리 작업공간의 점유 상태가 lease와 일치하지 않습니다.',
+          [],
+          'QUARANTINED_LEASE_STATE_MISMATCH',
+        )
+      }
+      const conflictingLease = Object.values(this.state.leases).find((candidate) =>
+        candidate?.leaseId !== normalizedLeaseId
+        && candidate?.conversationId === normalizedConversationId
+        && !['completed', 'cancelled', 'quarantined'].includes(candidate?.status))
+      if (conflictingLease) {
+        throw new WorkspacePoolUnavailableError(
+          '같은 AI 대화가 이미 다른 활성 작업공간 lease에 연결되어 있습니다.',
+          [{
+            conversationId: normalizedConversationId,
+            leaseId: conflictingLease.leaseId,
+            workspaceId: conflictingLease.workspaceId,
+          }],
+          'CONVERSATION_ALREADY_LEASED',
+        )
+      }
+
+      const sessionFile = path.join(workspace.root, '.ai-session.json')
+      const session = await readJson(sessionFile, null)
+      if (!session
+        || session.workspaceId !== lease.workspaceId
+        || session.jobId !== lease.jobId
+        || session.leaseId !== normalizedLeaseId
+        || session.conversationId !== normalizedConversationId
+        || session.branch !== lease.branch
+        || session.baseCommit !== lease.baseCommit) {
+        throw new WorkspacePoolUnavailableError(
+          '격리 작업공간의 세션 파일이 lease와 일치하지 않습니다.',
+          [],
+          'QUARANTINED_LEASE_SESSION_MISMATCH',
+        )
+      }
+
+      const [dirty, currentBranch, currentHead, mergeHead, cherryPickHead, rebaseApply, rebaseMerge] = await Promise.all([
+        this.git(workspace.root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']),
+        this.git(workspace.root, ['branch', '--show-current']),
+        this.git(workspace.root, ['rev-parse', 'HEAD']),
+        this.gitPathExists(workspace.root, 'MERGE_HEAD'),
+        this.gitPathExists(workspace.root, 'CHERRY_PICK_HEAD'),
+        this.gitPathExists(workspace.root, 'rebase-apply'),
+        this.gitPathExists(workspace.root, 'rebase-merge'),
+      ])
+      if (dirty) {
+        throw new WorkspacePoolUnavailableError(
+          '격리 작업공간에 커밋되지 않은 변경이 남아 있어 자동 재개하지 않았습니다.',
+          [],
+          'QUARANTINED_LEASE_WORKTREE_DIRTY',
+        )
+      }
+      if (currentBranch !== lease.branch) {
+        throw new WorkspacePoolUnavailableError(
+          `격리 작업공간 브랜치가 ${lease.branch}가 아닙니다.`,
+          [{ expected: lease.branch, actual: currentBranch }],
+          'QUARANTINED_LEASE_BRANCH_MISMATCH',
+        )
+      }
+      const expectedHead = String(lease.result?.headCommit ?? lease.headCommit ?? lease.baseCommit).trim()
+      if (!expectedHead || currentHead !== expectedHead) {
+        throw new WorkspacePoolUnavailableError(
+          '격리 작업공간 HEAD가 서버에 기록된 커밋과 일치하지 않습니다.',
+          [{ expected: expectedHead || null, actual: currentHead }],
+          'QUARANTINED_LEASE_HEAD_MISMATCH',
+        )
+      }
+      if (mergeHead || cherryPickHead || rebaseApply || rebaseMerge) {
+        throw new WorkspacePoolUnavailableError(
+          '격리 작업공간에 완료되지 않은 Git 작업이 남아 있어 자동 재개하지 않았습니다.',
+          [],
+          'QUARANTINED_LEASE_GIT_OPERATION_PRESENT',
+        )
+      }
+      for (const checkpoint of Array.isArray(lease.checkpoints) ? lease.checkpoints : []) {
+        const commit = String(checkpoint?.commit ?? '').trim()
+        if (!commit) continue
+        try {
+          await this.git(workspace.root, ['merge-base', '--is-ancestor', commit, currentHead])
+        } catch {
+          throw new WorkspacePoolUnavailableError(
+            '격리 작업공간 HEAD에 기록된 체크포인트가 포함되어 있지 않습니다.',
+            [{ checkpoint: commit, head: currentHead }],
+            'QUARANTINED_LEASE_CHECKPOINT_MISMATCH',
+          )
+        }
+      }
+
+      const recoveredAt = new Date().toISOString()
+      lease.recoveryHistory ??= []
+      lease.recoveryHistory.push({
+        type: 'retryable-child-failure',
+        previousStatus: lease.status,
+        previousResult: lease.result,
+        recoveredAt,
+      })
+      lease.recoveryHistory = lease.recoveryHistory.slice(-20)
+      lease.status = 'leased'
+      lease.updatedAt = recoveredAt
+      delete lease.result
+      delete lease.headCommit
+      delete lease.commits
+      this.state.workspaces[workspace.id] = {
+        ...workspaceState,
+        status: 'leased',
+        reason: null,
+        recoveryError: null,
+        updatedAt: recoveredAt,
+      }
+      await atomicJson(sessionFile, {
+        ...session,
+        recovery: {
+          type: 'retryable-child-failure',
+          recoveredAt,
+        },
+        updatedAt: recoveredAt,
+      })
+      await this.persist()
+      return publicLease(lease)
+    })
+  }
+
   async reuseLease(leaseId, { mapId, cardId, conversationId } = {}) {
     return this.runExclusive(async () => {
       const normalizedLeaseId = String(leaseId ?? '').trim()

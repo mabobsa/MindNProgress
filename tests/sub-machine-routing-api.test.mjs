@@ -285,6 +285,8 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
     assert.equal(workStates.response.status, 200)
     assert.equal(workStates.body.cards[0].state, 'idle')
 
+    // 대화 목록 조회에서 링크 메타데이터가 갱신될 수 있으므로 위임 직전 버전을 쓴다.
+    const delegationMap = (await request(baseUrl, cookie, `/api/maps/${mapId}`)).body.map
     let delegatedDispatch = null
     const delegationRequest = request(
       baseUrl,
@@ -293,7 +295,7 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
       'POST',
       {
         targetCardId: 'child-card',
-        sourceRevision: map.version,
+        sourceRevision: delegationMap.version,
         strategy: 'new',
         machineId: 'macbook',
         instruction: '서브 머신에서 하위 작업을 진행하세요.',
@@ -310,6 +312,12 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
     const delegated = await requestWithRunner(baseUrl, runnerToken, delegationRequest, (operation) => {
       if (operation.pathname === '/api/internal/external-conversation-dispatches' && operation.method === 'POST') {
         delegatedDispatch = operation.body
+      }
+      // 응답을 회수하는 사이 시작된 폴링도 선택한 서브 머신에서 처리한다.
+      // POST 전 상태 조회는 허용하지 않아 오래된 문서 버전 오류를 숨기지 않는다.
+      if (delegatedDispatch && operation.method === 'GET'
+        && operation.pathname === '/api/internal/external-conversation-dispatches/sub-machine-routing-delegation') {
+        return { operationId: delegatedDispatch.operationId, conversationId: 'delegated-on-mac', state: 'running', turnId: 'turn-1' }
       }
       return subMachineResponse(operation, conversationId)
     })

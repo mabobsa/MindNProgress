@@ -375,7 +375,7 @@ async function main() {
     await client.connect(transport)
     const listedTools = await client.listTools()
     const registeredToolNames = listedTools.tools.map((tool) => tool.name).sort()
-    assert.equal(registeredToolNames.length, 52, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
+    assert.equal(registeredToolNames.length, 54, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
     const toolSchema = (name) => listedTools.tools.find((tool) => tool.name === name)?.inputSchema
     const toolDescription = (name) => listedTools.tools.find((tool) => tool.name === name)?.description ?? ''
     for (const name of ['mindnprogress_update_card', 'mindnprogress_move_card', 'mindnprogress_delete_card', 'mindnprogress_list_comments', 'mindnprogress_add_comment']) {
@@ -433,7 +433,7 @@ async function main() {
 
     const guide = await invoke('mindnprogress_read_me_first')
     assert.equal(guide.guide.product.name, 'MindNProgress')
-    assert.equal(guide.guide.version, '4.13')
+    assert.equal(guide.guide.version, '4.14')
     assert.match(guide.guide.operationRules.join('\n'), /AionUi에서 시작한 대화.*임시 귀속.*AI_ATTRIBUTION_UNRESOLVED/)
     assert.match(guide.guide.operationRules.join('\n'), /응답을 받지 못한 시도는 횟수에 포함하지 않고/)
     assert.match(guide.guide.operationRules.join('\n'), /mindnprogress_complete_ai_delegation/)
@@ -484,6 +484,9 @@ async function main() {
     assert.match(guide.guide.operationRules.join('\n'), /실제 위임을 수행했다면 성공 결과를 확인한 뒤에만/)
     assert.match(guide.guide.operationRules.join('\n'), /waiting-integration-clean.*하위 AI 전문이 아직 전달되지 않음.*자동 시작.*재위임하지 않음/)
     assert.match(guide.guide.operationRules.join('\n'), /recovery-required.*mindnprogress_recover_ai_delegation/)
+    assert.match(guide.guide.operationRules.join('\n'), /parent-wake-failed.*recovery\.recoveryAvailable=true.*사용량 또는 요청 한도.*mindnprogress_recover_ai_delegation/)
+    assert.match(toolDescription('mindnprogress_list_ai_delegations'), /recovery\.failureCategory.*recoveryAvailable.*recommendedAction.*recoveryTool/)
+    assert.match(toolDescription('mindnprogress_recover_ai_delegation'), /parent-wake-failed.*recoveryAvailable=true.*사용량·요청 한도/)
     assert.match(guide.guide.operationRules.join('\n'), /mindnprogress_update_card.*responseMode.*full.*기본값.*AI 대화 상세 목록.*affected/)
     assert.match(guide.guide.operationRules.join('\n'), /댓글 summary는 \[진행\].*\[차단\].*\[결과\]/)
     assert.match(guide.guide.commentRules.detail, /작업을 이어가거나 결과를 검증/)
@@ -1207,6 +1210,8 @@ async function main() {
     })
     assert.equal(recoveredRun.delegation.state, 'starting')
     assert.equal(recoveredRun.recovery.reusedConversation, true)
+    await invoke('mindnprogress_refresh_ai_delegation', { mapId, delegationId: recoveredRun.delegation.id, expectedUpdatedAt: recoveredRun.delegation.updatedAt })
+    await invokeExpectError('mindnprogress_retry_ai_delegation_report', { mapId, delegationId: recoveredRun.delegation.id, expectedUpdatedAt: recoveredRun.delegation.updatedAt }, /작업 완료|상태가 변경/)
     assert.equal(mockAionUi.dispatchRequests.length, 2)
     assert.equal(mockAionUi.dispatchRequests[1].targetConversationId, 'conversation-delegated')
     assert.match(mockAionUi.dispatchRequests[1].instruction, /원래 지시를 처음부터 반복하지 말고/)

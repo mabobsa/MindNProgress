@@ -6,12 +6,14 @@ import './GroupOverview.css'
 
 type Project = { version: number; coordinatorMapId: string | null; source: string; sourceVersion: string; objective: string; instructions: string }
 type GroupDocument = { id: string; title: string; version: number; root: { id: string; data: MindNodeData } | null; runtime: AiConversationRuntime | null; work: { total: number; done: number; waiting: number } }
-type Delegation = { id: string; mapId: string; targetCardId: string; targetCardLabel: string; state: string; instructionPreview: string; childError?: string; recoveryWakeError?: string; linkError?: string; createdAt: string; result?: string }
+type Delegation = { id: string; mapId: string; targetCardId: string; targetCardLabel: string; state: string; displayState?: string; instructionPreview: string; childError?: string; parentError?: string; recoveryWakeError?: string; linkError?: string; createdAt: string; updatedAt: string; result?: string; workCompleted?: boolean; reportPending?: boolean; recovery?: { recoveryAvailable: boolean; reportRetryAvailable?: boolean; failureCategory?: string }; attemptHistory?: Array<{ at: string; reason: string; childError?: string; parentError?: string; result?: string }> }
 type GroupContext = { group: { id: string; name: string; mapIds: string[] }; project: Project; coordinator: GroupDocument | null; documents: GroupDocument[]; delegations: Delegation[]; guide: { coordinator: string } }
 export type GroupAiTarget = AiConversationExplicitTarget & { initialRequest: string }
 
 const runtimeLabels: Record<string, string> = { running: 'AI 실행 중', 'waiting-confirmation': 'AI 확인 대기', idle: 'AI 대기', unknown: 'AI 상태 확인 불가' }
 const delegationLabels: Record<string, string> = {
+  'recovery-dispatch-pending': '복구 요청 전달 확인 대기',
+  'waiting-usage-limit': '사용량 회복 대기', 'waiting-rate-limit': '요청 제한 해제 대기', 'parent-wake-failed': '총괄 보고 실패 · 확인 필요',
   running: '문서 AI 실행 중', 'waiting-document-work': '하위 업무와 문서 검수 대기',
   starting: '실행 준비', 'running-child': '문서 AI 실행 중', 'waiting-child': '문서 AI 실행 중', 'waiting-resource': '실행 자원 대기',
   'waiting-child-resume': '문서 AI 재개 대기', 'waiting-parent': '총괄 보고 대기', 'waking-parent': '총괄 AI 검토 중',
@@ -19,6 +21,9 @@ const delegationLabels: Record<string, string> = {
   'recovery-required': '복구 필요', 'integration-recovery-required': '통합 복구 필요', 'waiting-workspace': '작업공간 대기',
   'waiting-integration-clean': '통합 준비 대기', resuming: '재개 중',
 }
+const delegationLabel = (item: Delegation) => item.workCompleted && item.reportPending
+  ? '작업 완료 · 총괄 보고 대기'
+  : delegationLabels[item.displayState ?? item.state] ?? item.state
 
 async function request<T>(url: string, clientId: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', 'X-MNP-Client': clientId, ...options.headers } })
@@ -127,6 +132,27 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
   const coordinator = context?.coordinator
   const linked = (document: GroupDocument) => Boolean(document.root?.data.aiConversations?.length || document.root?.data.aiConversationId)
   const aiDisabled = busy || changed || Boolean(stale)
+  async function delegationAction(item: Delegation, action: 'refresh' | 'recover' | 'retry-report') {
+    if (!context || !coordinator) return
+    const target = context.documents.find((document) => document.id === item.mapId)
+    if (!target) return
+    if (action !== 'refresh' && !window.confirm(action === 'recover'
+      ? '중단 원인이 해소되었고 현재 기획 기준·범위가 기존 사용자 승인 계획과 같음을 확인했나요? 같은 대화에서 현재 결과를 확인하고 미완료 부분만 이어갑니다. 이미 끝난 작업은 반복하지 않습니다. 기준이나 방향이 달라졌다면 취소하고 새 계획을 승인해 주세요.'
+      : '하위 작업은 재실행하지 않고 기존 완료 결과를 총괄 AI에 전달합니다. 총괄 AI가 실행 중이면 전달 순서를 기다립니다. 기존 승인 범위에서 결과를 검토하도록 재개할까요?')) return
+    setBusy(true); setError(''); setNotice('')
+    try {
+      await request(`/api/maps/${encodeURIComponent(coordinator.id)}/ai-delegations/${encodeURIComponent(item.id)}/${action}`, clientId, { method: 'POST', body: JSON.stringify({
+        expectedUpdatedAt: item.updatedAt, sourceRevision: coordinator.version, targetRevision: target.version,
+        groupVersion: context.project.version, confirmApprovedScope: action !== 'refresh',
+        ...(action === 'recover' ? { instruction: '사용자가 총괄 화면에서 기존 승인 범위의 재개를 요청했습니다. 최신 그룹 기준과 원래 사용자 승인 근거·계획을 먼저 대조하세요. 같은 대화에서 이미 진행된 문서·하위 위임·검수 결과를 확인하고, 완료된 작업은 반복하지 말고 결과를 보고하세요. 남은 작업만 기존 승인 범위에서 이어가며 기준·방향·범위가 달라졌으면 제안 후 재승인을 기다리세요. 새 작업공간을 임의 점유하거나 새 위임으로 우회하지 마세요.' } : {}),
+      }) })
+      await refresh()
+      setNotice(action === 'refresh' ? '실행 요청 없이 기존 위임 상태를 확인했습니다. 다른 턴에서 이어진 작업은 재개 기능으로 기존 결과부터 확인할 수 있습니다.' : action === 'recover' ? '기존 대화에 재개 요청을 전달했습니다. 완료된 작업은 재검토하고 미완료 부분만 이어갑니다.' : '결과 재전달을 접수했습니다. 하위 작업은 재실행하지 않습니다.')
+    } catch (reason) {
+      await refresh()
+      setError(reason instanceof Error ? reason.message : '위임 상태를 처리하지 못했습니다.')
+    } finally { setBusy(false) }
+  }
 
   return <section className="group-overview" aria-label={`${name} 그룹 개요`}>
     <header className="group-overview-header"><div><small>그룹 · 기획과 개발</small><h1>{name}</h1><p>기획 기준과 담당 범위를 공유하고, 문서별 분석·개발 결과를 모읍니다.</p></div><button onClick={() => void refresh()} disabled={busy}>새로고침</button></header>
@@ -156,14 +182,26 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
           const latest = context.delegations.find((item) => item.mapId === document.id)
           return <article key={document.id} className="group-document-row"><div className="group-document-heading"><button className="group-text-button" onClick={() => onNavigate(document.id, document.root?.id)}>{document.title}</button><span className="group-badge">{document.runtime ? runtimeLabels[document.runtime.state] ?? 'AI 상태 확인 불가' : linked(document) ? 'AI 상태 확인 불가' : '대화 미연결'}</span></div>
             <p className="group-scope">{document.root?.data.description || '담당 범위가 비어 있습니다. 최상위 카드에서 작성해 주세요.'}</p>
-            <div className="group-row-meta"><span>하위 업무 {document.work.done}/{document.work.total} 완료 · 대기 {document.work.waiting}개</span>{latest && <span>{delegationLabels[latest.state] ?? latest.state}</span>}</div>
+            <div className="group-row-meta"><span>하위 업무 {document.work.done}/{document.work.total} 완료 · 대기 {document.work.waiting}개</span>{latest && <span>{delegationLabel(latest)}</span>}</div>
             <div className="group-actions"><button onClick={() => onNavigate(document.id, document.root?.id)}>최상위 카드 열기</button>{linked(document) && <button onClick={() => openConversations(document)}>AI 대화</button>}{editable && coordinator && <button disabled={aiDisabled || !document.root} onClick={() => launch(coordinator, buildGroupDocumentProposalRequest({ mapId: document.id, cardId: document.root?.id ?? '', title: document.title }))}>총괄 AI에 위임 제안 요청</button>}</div>
           </article>
         })}</div>}
         {editable && <details className="group-new-document"><summary>문서 직접 추가</summary><form onSubmit={(event) => { event.preventDefault(); void createDocument() }}><label>문서 이름<input value={newTitle} maxLength={80} required onChange={(event) => setNewTitle(event.target.value)} /></label><label>최상위 카드의 담당 범위와 완료 조건<textarea value={newDescription} maxLength={100000} rows={4} onChange={(event) => setNewDescription(event.target.value)} /></label><button disabled={busy || !newTitle.trim()}>문서 만들기</button></form></details>}
       </section>
       <section className="group-project-card"><div className="group-section-title"><h2>문서 위임과 결과</h2><small>{context.delegations.length}건</small></div>
-        {context.delegations.length === 0 ? <p className="group-muted">총괄 AI가 문서 루트에 위임하면 실행 상태와 결과가 여기에 표시됩니다.</p> : context.delegations.map((item) => <details className="group-delegation" key={item.id}><summary><strong>{item.targetCardLabel}</strong><span>{delegationLabels[item.state] ?? item.state}</span></summary><p>{item.instructionPreview}</p>{(item.childError || item.linkError || item.recoveryWakeError) && <p className="group-message error">{item.childError || item.linkError || item.recoveryWakeError}</p>}{item.result && <pre>{item.result}</pre>}<button onClick={() => onNavigate(item.mapId, item.targetCardId)}>문서와 검증 근거 확인</button></details>)}
+        <p className="group-muted">사용량 제한은 실행 실패와 구분합니다. 작업 재개는 기존 승인 범위에서만 수행하며, 보고 재시도는 하위 작업을 다시 실행하지 않습니다.</p>
+        {context.delegations.length === 0 ? <p className="group-muted">총괄 AI가 문서 루트에 위임하면 실행 상태와 결과가 여기에 표시됩니다.</p> : context.delegations.map((item) => <details className="group-delegation" key={item.id}>
+          <summary><strong>{item.targetCardLabel}</strong><span>{delegationLabel(item)}</span></summary>
+          <p>{item.instructionPreview}</p><p className="group-muted">마지막 상태 변경: {new Date(item.updatedAt ?? item.createdAt).toLocaleString()}</p>
+          {(item.childError || item.parentError || item.linkError || item.recoveryWakeError) && <p className="group-message error">{item.childError || item.parentError || item.linkError || item.recoveryWakeError}</p>}
+          {item.result && <><small>{item.workCompleted ? '실행 결과 요약 · 요구사항 검증 근거는 문서에서 확인' : '중단 시점 결과 · 완료 근거가 아닙니다'}</small><pre>{item.result}</pre></>}
+          <div className="group-actions"><button onClick={() => onNavigate(item.mapId, item.targetCardId)}>문서와 검증 근거 확인</button>
+            {editable && item.displayState && <button disabled={aiDisabled} onClick={() => void delegationAction(item, 'refresh')}>상태 다시 확인</button>}
+            {editable && item.displayState && item.recovery?.recoveryAvailable && <button disabled={aiDisabled} onClick={() => void delegationAction(item, 'recover')}>승인 범위 작업 재개</button>}
+            {editable && item.recovery?.reportRetryAvailable && <button disabled={aiDisabled} onClick={() => void delegationAction(item, 'retry-report')}>결과 전달 재시도</button>}
+          </div>
+          {!!item.attemptHistory?.length && <details><summary>이전 실행·복구 이력 {item.attemptHistory.length}건</summary>{item.attemptHistory.map((attempt, index) => <div key={index}><p>{new Date(attempt.at).toLocaleString()} · {attempt.reason}</p>{(attempt.childError || attempt.parentError) && <p>{attempt.childError || attempt.parentError}</p>}{attempt.result && <pre>{attempt.result}</pre>}</div>)}</details>}
+        </details>)}
       </section>
     </>}
   </section>

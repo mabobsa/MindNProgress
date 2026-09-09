@@ -786,6 +786,124 @@ test('변경과 체크포인트 없이 종료된 하위 AI 작업은 worker를 �
   }
 })
 
+test('외부 한도로 중단된 격리 lease는 동일 세션과 깨끗한 체크포인트 HEAD일 때만 재활성화한다', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'mnp-workspace-reactivate-limit-'))
+  try {
+    const integrationRoot = path.join(root, 'main')
+    const workerRoot = path.join(root, 'fork2')
+    const sharedRoot = path.join(root, 'shared')
+    await Promise.all([mkdir(integrationRoot), mkdir(workerRoot), mkdir(sharedRoot)])
+    const registryFile = path.join(sharedRoot, 'workspaces.json')
+    const stateFile = path.join(root, 'state.json')
+    const lease = {
+      schemaVersion: 1,
+      poolId: 'holdem',
+      workspaceId: 'fork2',
+      projectRoot: workerRoot,
+      jobId: 'job-limit',
+      leaseId: 'lease-limit',
+      mapId: 'map-a',
+      cardId: 'card-a',
+      conversationId: 'conversation-a',
+      branch: 'mnp/job-limit',
+      baseBranch: 'japan-master',
+      baseCommit: 'base123',
+      headCommit: 'checkpoint456',
+      commits: ['checkpoint456'],
+      checkpoints: [{ commit: 'checkpoint456', noCodeChanges: true }],
+      status: 'quarantined',
+      result: {
+        status: 'quarantined',
+        childStatus: 'failed',
+        childError: 'usage limit exceeded',
+        headCommit: 'checkpoint456',
+        integrationBranch: null,
+        unmergedFiles: [],
+      },
+    }
+    await writeFile(registryFile, JSON.stringify({
+      schemaVersion: 1,
+      poolId: 'holdem',
+      sharedRoot,
+      workspaces: [
+        { id: 'main', root: integrationRoot, role: 'integration', enabled: true },
+        { id: 'fork2', root: workerRoot, role: 'worker', enabled: true },
+      ],
+    }), 'utf8')
+    await writeFile(stateFile, JSON.stringify({
+      schemaVersion: 1,
+      poolId: 'holdem',
+      integrationLeaseId: null,
+      workspaces: {
+        main: { status: 'integration' },
+        fork2: {
+          status: 'quarantined',
+          reason: 'usage limit exceeded',
+          jobId: lease.jobId,
+          leaseId: lease.leaseId,
+        },
+      },
+      leases: { [lease.leaseId]: lease },
+    }), 'utf8')
+    await writeFile(path.join(workerRoot, '.ai-session.json'), JSON.stringify({
+      schemaVersion: 1,
+      workspaceId: lease.workspaceId,
+      jobId: lease.jobId,
+      leaseId: lease.leaseId,
+      projectRoot: workerRoot,
+      conversationId: lease.conversationId,
+      branch: lease.branch,
+      baseCommit: lease.baseCommit,
+    }), 'utf8')
+
+    let dirty = true
+    const manager = new WorkspacePoolManager({
+      registryFile,
+      stateFile,
+      gitRunner: async (_cwd, args) => {
+        if (args[0] === 'status') return dirty ? ' M Assets/Changed.cs' : ''
+        if (args[0] === 'branch') return lease.branch
+        if (args[0] === 'rev-parse' && args[1] === '--git-path') return path.join('.git', args[2])
+        if (args[0] === 'rev-parse') return 'checkpoint456'
+        if (args[0] === 'merge-base') return ''
+        return ''
+      },
+    })
+    await manager.initialize()
+
+    await assert.rejects(
+      () => manager.reactivateQuarantinedLease(lease.leaseId, {
+        mapId: lease.mapId,
+        cardId: lease.cardId,
+        conversationId: lease.conversationId,
+        failureCategory: 'usage-limit',
+      }),
+      (error) => error instanceof WorkspacePoolUnavailableError
+        && error.reasonCode === 'QUARANTINED_LEASE_WORKTREE_DIRTY',
+    )
+    assert.equal(manager.state.leases[lease.leaseId].status, 'quarantined')
+
+    dirty = false
+    const reactivated = await manager.reactivateQuarantinedLease(lease.leaseId, {
+      mapId: lease.mapId,
+      cardId: lease.cardId,
+      conversationId: lease.conversationId,
+      failureCategory: 'usage-limit',
+    })
+    assert.equal(reactivated.leaseId, lease.leaseId)
+    assert.equal(manager.state.leases[lease.leaseId].status, 'leased')
+    assert.equal(manager.state.leases[lease.leaseId].result, undefined)
+    assert.equal(manager.state.leases[lease.leaseId].headCommit, undefined)
+    assert.equal(manager.state.leases[lease.leaseId].commits, undefined)
+    assert.equal(manager.state.leases[lease.leaseId].recoveryHistory.length, 1)
+    assert.equal(manager.state.workspaces.fork2.status, 'leased')
+    const session = JSON.parse(await readFile(path.join(workerRoot, '.ai-session.json'), 'utf8'))
+    assert.equal(session.recovery.type, 'retryable-child-failure')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('변경 없이 격리된 과거 실패 lease는 다음 배정 전에 안전하게 자동 회수한다', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'mnp-workspace-recover-clean-quarantine-'))
   try {

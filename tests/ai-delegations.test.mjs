@@ -5,6 +5,11 @@ import {
   activeAiDelegationsForConversation,
   aiDelegationWaitPollDue,
   aiDelegationBlocksResume,
+  aiDelegationRecoveryAvailability,
+  aiDelegationLimitState,
+  aiDelegationAttemptHistory,
+  aiDelegationWorkPending,
+  aiDelegationDisplayState,
   aiDelegationStateAfterParentWake,
   aiDelegationSucceeded,
   aiDelegationWorkspaceLeaseMatches,
@@ -18,6 +23,100 @@ import {
   nextAiDelegationWaitPoll,
   shouldReconcileAiDelegationChildWorkspace,
 } from '../server/lib/aiDelegations.mjs'
+
+test('사용량 또는 요청 한도로 격리된 parent-wake-failed 위임은 기존 실행 재개 대상으로 안내한다', () => {
+  const base = {
+    state: 'parent-wake-failed',
+    childStatus: 'failed',
+    workspaceLease: { leaseId: 'lease-a' },
+    workspaceResult: {
+      status: 'quarantined',
+      childStatus: 'failed',
+      childError: 'You have 0 weighted tokens left because you hit your usage limit',
+    },
+  }
+
+  assert.deepEqual(aiDelegationRecoveryAvailability(base), {
+    failurePhase: 'child',
+    failureCategory: 'usage-limit',
+    recoveryAvailable: true,
+    recommendedAction: 'resume-existing',
+    recoveryTool: 'mindnprogress_recover_ai_delegation',
+  })
+  assert.deepEqual(aiDelegationRecoveryAvailability({
+    ...base,
+    workspaceResult: { ...base.workspaceResult, childError: 'Too many requests: rate limit exceeded' },
+  }), {
+    failurePhase: 'child',
+    failureCategory: 'rate-limit',
+    recoveryAvailable: true,
+    recommendedAction: 'resume-existing',
+    recoveryTool: 'mindnprogress_recover_ai_delegation',
+  })
+})
+
+test('작업 실패 원인이 외부 한도가 아니거나 상위 통지만 실패한 위임은 하위 작업을 재실행하지 않는다', () => {
+  assert.deepEqual(aiDelegationRecoveryAvailability({
+    state: 'parent-wake-failed',
+    childStatus: 'failed',
+    workspaceLease: { leaseId: 'lease-a' },
+    workspaceResult: {
+      status: 'quarantined',
+      childStatus: 'failed',
+      childError: '컴파일 오류가 발생했습니다.',
+    },
+  }), {
+    failurePhase: 'child',
+    failureCategory: 'non-retryable',
+    recoveryAvailable: false,
+    recommendedAction: 'inspect-failure',
+  })
+
+  assert.deepEqual(aiDelegationRecoveryAvailability({
+    state: 'parent-wake-failed',
+    childStatus: 'completed',
+    workspaceLease: { leaseId: 'lease-a' },
+    workspaceResult: { status: 'completed' },
+  }), {
+    failurePhase: 'parent-wake',
+    failureCategory: 'parent-notification',
+    recoveryAvailable: false,
+    recommendedAction: 'review-existing-result',
+    reportRetryAvailable: true,
+  })
+  assert.equal(aiDelegationRecoveryAvailability({ state: 'running' }), null)
+})
+
+test('사용량 제한은 worker가 없는 문서 조정도 같은 위임으로 재개할 수 있다', () => {
+  for (const state of ['failed', 'parent-wake-failed', 'waiting-usage-limit']) {
+    const record = { state, coordinationOnly: true, childStatus: 'failed', childError: "You've hit your usage limit", workspaceLease: null }
+    assert.equal(aiDelegationRecoveryAvailability(record).recoveryAvailable, true)
+    assert.equal(aiDelegationDisplayState(record), 'waiting-usage-limit')
+  }
+  assert.equal(initialAiDelegationRuntime({ state: 'failed', errorMessage: 'too many requests' }).state, 'waiting-rate-limit')
+  assert.equal(aiDelegationLimitState({ childStatus: 'failed', childError: '컴파일 실패' }), null)
+  assert.equal(aiDelegationLimitState({ childStatus: 'interrupted', childError: 'user stopped' }), null)
+})
+
+test('보고 실패는 작업 완료를 뒤집지 않고 이전 결과와 오류를 이력에 보존한다', () => {
+  const record = { state: 'parent-wake-failed', childStatus: 'completed', childResultSnapshot: '검증한 결과', parentError: 'usage limit', attemptHistory: [] }
+  assert.equal(aiDelegationWorkPending(record), false)
+  assert.equal(aiDelegationWorkPending({ state: 'waiting-usage-limit', childStatus: 'failed' }), true)
+  assert.equal(aiDelegationWorkPending({ state: 'waiting-child-resume', childStatus: 'interrupted' }), true)
+  assert.equal(aiDelegationWorkPending({ state: 'waiting-document-work', childStatus: 'completed' }), true)
+  assert.equal(aiDelegationRecoveryAvailability(record).recoveryAvailable, false)
+  const history = aiDelegationAttemptHistory(record, '결과 전달 재시도', '2026-09-09T00:00:00Z')
+  assert.equal(history[0].result, '검증한 결과')
+  assert.equal(history[0].parentError, 'usage limit')
+  assert.deepEqual(record.attemptHistory, [])
+})
+
+test('복구 접수 확인 전에는 새 재개를 막고 상태 조회로 안내한다', () => {
+  const record = { state: 'waiting-usage-limit', childStatus: 'failed', childError: 'usage limit', pendingRecovery: { operationId: 'existing-recover-1' } }
+  assert.equal(aiDelegationDisplayState(record), 'recovery-dispatch-pending')
+  assert.equal(aiDelegationRecoveryAvailability(record).recoveryAvailable, false)
+  assert.equal(aiDelegationRecoveryAvailability(record).recoveryTool, 'mindnprogress_refresh_ai_delegation')
+})
 
 test('AI 위임 대기 폴링은 상태별로 3초에서 30초까지 백오프하고 상태 변경 시 초기화한다', () => {
   const delegation = { state: 'waiting-workspace' }

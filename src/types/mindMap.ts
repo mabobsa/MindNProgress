@@ -159,6 +159,11 @@ export type MindNodeData = {
   collapsed?: boolean
   hiddenDescendantCount?: number
   aiConversationRuntime?: AiConversationRuntime
+  overlapStack?: {
+    count: number
+    titles: string[]
+  }
+  onCycleOverlap?: () => void
   onToggleCollapse?: () => void
   onOpenWaitingItems?: () => void
   onOpenDependencies?: () => void

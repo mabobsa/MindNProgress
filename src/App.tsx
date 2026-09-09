@@ -55,6 +55,7 @@ import { aiConversationLinksFromData } from './utils/aiConversations.mjs'
 import { revisionReasonLabel, shouldRefreshMapContentForAction } from './utils/mapChangeMetadata.mjs'
 import { mapContentsEqual, reconcileRemoteMapContent } from './utils/mapDocumentSync.mjs'
 import { mergeMapContent } from './utils/mergeMapContent.mjs'
+import { nextOverlappingNodeId, nodeOverlapPresentation } from './utils/nodeOverlap.mjs'
 import { computeProgressRollups } from './utils/progressRollup.mjs'
 import { snapAspectResizeToGrid, snapFreeResizeToGrid } from './utils/resizeGrid.mjs'
 import type { ResizeSnapRequest } from './utils/resizeGrid.mjs'
@@ -2954,6 +2955,27 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     return visible
   }, [parentsById, searchMatchedNodeIds])
   const nodeSearchMatches = useMemo(() => nodes.filter((node) => searchMatchedNodeIds.has(node.id)), [nodes, searchMatchedNodeIds])
+  const overlapPresentation = useMemo(() => {
+    if (!boxSelectionArmed) return { warningIds: [], stacks: [] }
+    const candidates = nodes
+      .filter((node) => {
+        const hiddenByCollapse = collapsedHiddenNodeIds.has(node.id)
+          && !searchContextNodeIds.has(node.id)
+          && !(filterActive && filterVisibleNodeIds.has(node.id))
+        const hiddenByFilter = filterActive && !filterVisibleNodeIds.has(node.id)
+        return !hiddenByCollapse && !hiddenByFilter
+      })
+      .map((node) => ({
+        id: node.id,
+        title: node.data.label,
+        x: node.position.x,
+        y: node.position.y,
+        ...nodeDimensions(node),
+      }))
+    return nodeOverlapPresentation(candidates, { zoom: viewport.zoom, selectedId })
+  }, [boxSelectionArmed, collapsedHiddenNodeIds, filterActive, filterVisibleNodeIds, nodes, searchContextNodeIds, selectedId, viewport.zoom])
+  const overlapWarningIds = useMemo(() => new Set(overlapPresentation.warningIds), [overlapPresentation.warningIds])
+  const overlapStackByRepresentativeId = useMemo(() => new Map(overlapPresentation.stacks.map((stack) => [stack.representativeId, stack])), [overlapPresentation.stacks])
   const flowNodes = useMemo(() => nodes.map((node) => {
     const hiddenByCollapse = collapsedHiddenNodeIds.has(node.id)
       && !searchContextNodeIds.has(node.id)
@@ -2965,6 +2987,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
       ? node.data.externalLink
       : undefined
     const progressRollup = progressRollups.get(node.id)
+    const overlapStack = overlapStackByRepresentativeId.get(node.id)
     const blocking = blockingNodes(node, nodes)
     const applyImageResize = image ? (resize: ResizeSnapRequest) => {
       const resized = resize.snapAxis
@@ -3076,6 +3099,13 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         commentCount: (node.data.reference ? referenceCommentStats[node.id] : commentStats[node.id])?.total ?? 0,
         unresolvedCommentCount: (node.data.reference ? referenceCommentStats[node.id] : commentStats[node.id])?.unresolved ?? 0,
         aiConversationRuntime: aiConversationRuntimes[node.id],
+        overlapStack: overlapStack ? { count: overlapStack.ids.length, titles: overlapStack.titles } : undefined,
+        onCycleOverlap: overlapStack ? () => {
+          const nextId = nextOverlappingNodeId(overlapStack.ids, selectedIdRef.current)
+          if (!nextId) return
+          setNodes((current) => current.map((candidate) => ({ ...candidate, selected: candidate.id === nextId })))
+          setSelectedId(nextId)
+        } : undefined,
         hasChildren: collapsibleNodeIds.has(node.id),
         collapsed: collapsedNodeIds.has(node.id),
         hiddenDescendantCount: descendantCounts.get(node.id) ?? 0,
@@ -3096,9 +3126,10 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         normalizedNodeSearch && searchMatchedNodeIds.has(node.id) ? 'search-match' : '',
         normalizedNodeSearch && !searchMatchedNodeIds.has(node.id) && !hidden ? 'search-dim' : '',
         filterActive && filterVisibleNodeIds.has(node.id) && !filterMatchedNodeIds.has(node.id) ? 'filter-context' : '',
+        overlapWarningIds.has(node.id) ? 'overlap-warning' : '',
       ].filter(Boolean).join(' '),
     }
-  }), [activeMapId, aiConversationRuntimes, beginHistoryTransaction, collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, descendantCounts, dropTargetId, endHistoryTransaction, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, hoveredKnowledgeConnectionIssue, knowledgeConnection, knowledgeConnectionTargetId, mode, nodes, normalizedNodeSearch, openDependencies, openWaitingItems, progressRollups, referenceCommentStats, searchContextNodeIds, searchMatchedNodeIds, setNodes, teamMembers, unresolvedReferenceNodeIds])
+  }), [activeMapId, aiConversationRuntimes, beginHistoryTransaction, collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, descendantCounts, dropTargetId, endHistoryTransaction, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, hoveredKnowledgeConnectionIssue, knowledgeConnection, knowledgeConnectionTargetId, mode, nodes, normalizedNodeSearch, openDependencies, openWaitingItems, overlapStackByRepresentativeId, overlapWarningIds, progressRollups, referenceCommentStats, searchContextNodeIds, searchMatchedNodeIds, setNodes, teamMembers, unresolvedReferenceNodeIds])
   const visibleFlowNodeIds = useMemo(() => new Set(flowNodes.filter((node) => !node.hidden).map((node) => node.id)), [flowNodes])
   visibleFlowNodeIdsRef.current = visibleFlowNodeIds
   const visibleFlowNodeIdsKey = useMemo(() => [...visibleFlowNodeIds].sort().join('\u0000'), [visibleFlowNodeIds])
@@ -4543,7 +4574,9 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     const target = event.target
     const nodeTarget = target.closest('.react-flow__node')
     const edgeTarget = target.closest('.react-flow__edge, .react-flow__edge-textwrapper')
-    if (!nodeTarget && !edgeTarget) return
+    const modifiedCanvasPan = (event.ctrlKey || event.metaKey)
+      && Boolean(target.closest('.react-flow__pane, .react-flow__viewport'))
+    if (!nodeTarget && !edgeTarget && !modifiedCanvasPan) return
     const interactiveTarget = target.closest('button, input, textarea, select, a, [contenteditable="true"]')
     if (interactiveTarget
       && !PAN_ALLOWED_NODE_CONTROLS.some((name) => interactiveTarget.classList.contains(name))) return

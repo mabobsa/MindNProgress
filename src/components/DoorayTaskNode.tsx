@@ -3,6 +3,7 @@ import { Handle, NodeResizer, Position } from '@xyflow/react'
 import type { MindNodeData } from '../types/mindMap'
 import { normalizedDoorayKnowledgeUrl } from '../utils/externalLinks'
 import { beginResizeGesture, finishResizeGesture, updateResizeGesture, type ResizeGesture } from '../utils/resizeGesture'
+import { NodeOverlapBadge } from './NodeOverlapBadge'
 import './DoorayTaskNode.css'
 
 export function DoorayTaskNode({ data, selected, isConnectable }: {
@@ -52,6 +53,7 @@ export function DoorayTaskNode({ data, selected, isConnectable }: {
 
   return (
     <>
+      <NodeOverlapBadge data={data} />
       <NodeResizer
         isVisible={selected && data.externalLinkEditable === true}
         minWidth={160}

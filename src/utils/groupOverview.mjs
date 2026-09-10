@@ -1,3 +1,16 @@
+import { groupWaitingPresentation } from './groupWaiting.mjs'
+
+const criteriaFields = ['source', 'sourceVersion', 'objective', 'instructions']
+export function groupProjectDraftAfterRefresh(current, previousBase, incoming) {
+  if (!current || !previousBase) return incoming
+  const edited = criteriaFields.some((key) => current[key] !== previousBase[key])
+  const alreadyStale = current.version !== previousBase.version
+  if (!edited && !alreadyStale) return incoming
+  const criteriaChanged = criteriaFields.some((key) => incoming[key] !== previousBase[key])
+  // 분류만 저장된 경우 원문 편집을 보존하고 버전만 따라간다. 실제 기준 충돌은 확인 전까지 유지한다.
+  return criteriaChanged || alreadyStale ? current : { ...current, version: incoming.version }
+}
+
 const delegationLabels = {
   'recovery-dispatch-pending': '복구 요청 전달 확인 대기',
   'waiting-usage-limit': '사용량 회복 대기', 'waiting-rate-limit': '요청 제한 해제 대기',
@@ -44,13 +57,23 @@ export function groupOverviewRows(context) {
   return [...rows.values()].map((row) => {
     row.delegations.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
     const latest = row.delegations[0] ?? null
-    return { ...row, latest, attention: groupDelegationPresentation(latest).attention
-      || row.document?.runtime?.state === 'waiting-confirmation' || (row.document?.work.waiting ?? 0) > 0 }
+    const aiAttention = groupDelegationPresentation(latest).attention || row.document?.runtime?.state === 'waiting-confirmation'
+    const waitingDetails = row.document?.waitingDetails ?? []
+    const waitingUnavailable = Boolean(row.document && !Array.isArray(row.document.waitingDetails)
+      && (row.document.work.waiting > 0 || row.document.root?.data.waitingItems?.length))
+    const reasons = waitingDetails.map((detail) => ({ ...detail, ...groupWaitingPresentation(detail) }))
+    const filters = [...new Set([
+      ...(aiAttention ? ['ai'] : []), ...(waitingUnavailable ? ['unreviewed'] : []),
+      ...reasons.flatMap((reason) => [reason.category, reason.impact]),
+    ])]
+    return { ...row, latest, aiAttention: Boolean(aiAttention), reasons, waitingUnavailable, filters,
+      attention: filters.length > 0 }
   })
 }
 
-export function filterGroupOverviewRows(rows, query, attentionOnly) {
+export function filterGroupOverviewRows(rows, query, filter = 'all') {
   const keyword = query.trim().toLocaleLowerCase()
-  return rows.filter((row) => (!attentionOnly || row.attention)
+  // boolean은 구버전 호출 호환용이다. 새 화면은 사유·영향별 문서 수를 사용한다.
+  return rows.filter((row) => ((filter === true ? row.attention : filter === false || filter === 'all' || row.filters.includes(filter)))
     && (!keyword || `${row.title} ${row.mapId}`.toLocaleLowerCase().includes(keyword)))
 }

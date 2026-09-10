@@ -5,6 +5,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { applyGroupWaitingReview, groupWaitingDetails } from '../server/lib/groupWaitingReviews.mjs'
 
 const dist = path.resolve(import.meta.dirname, '../dist')
 const directory = await mkdtemp(path.join(tmpdir(), 'mnp-group-ui-'))
@@ -15,14 +16,14 @@ async function until(check, message) {
 }
 const titles = ['공통 구조와 화면 이동', '로비와 입장', '테이블 화면', '게임 진행', '베팅 입력', '팝업과 안내', '결과와 정산', '통합 검수']
 const rootData = (title) => ({ label: title, kind: 'root', isWork: true, status: 'in-progress', progress: 30, description: `담당 범위: ${title}\n기획서의 화면·상태·예외 조건을 확인하고 검증 근거를 남깁니다.\n${'상세 요구사항과 기존 결과를 대조합니다.\n'.repeat(30)}`, sharedKnowledge: '공통 기준을 먼저 확인합니다.\n검증 근거는 원문 카드에 보관합니다.', aiConversationId: 'fixture-conversation' })
-const makeDocument = (id, title, state = 'idle') => ({ id, title, version: 7, root: { id: `root-${id}`, data: rootData(title) }, runtime: { state, pendingConfirmations: state === 'waiting-confirmation' ? 1 : 0 }, work: { total: 12, done: 4, waiting: 0 } })
+const makeDocument = (id, title, state = 'idle') => ({ id, title, version: 7, root: { id: `root-${id}`, data: rootData(title) }, runtime: { state, pendingConfirmations: state === 'waiting-confirmation' ? 1 : 0 }, work: { total: 12, done: 4, waiting: 0 }, waitingDetails: [] })
 const coordinator = makeDocument('coordinator', '통합 관리', 'running')
 const documents = titles.map((title, index) => makeDocument(`doc-${index}`, title, index === 2 ? 'running' : index === 3 ? 'waiting-confirmation' : 'idle'))
 const makeDelegation = (mapId, state, extra = {}) => ({ id: `delegation-${mapId}`, mapId, targetCardId: `root-${mapId}`, targetCardLabel: documents.find((d) => d.id === mapId)?.title ?? '이전 문서', state, displayState: state, instructionPreview: '승인받은 계획에 따라 담당 범위를 점검하고 남은 업무만 수행하세요.', createdAt: '2026-09-10T00:00:00Z', updatedAt: '2026-09-10T01:00:00Z', recovery: { recoveryAvailable: false }, ...extra })
 let context = {
   group: { id: 'group-test', name: 'JP-매니저', mapIds: ['coordinator', ...documents.map((d) => d.id)] },
   project: { version: 3, coordinatorMapId: 'coordinator', source: 'https://example.test/spec/v0.4', sourceVersion: 'v0.4', objective: '클라이언트 영역의 기획 요구사항을 구현한다.\n더미 UI와 더미 데이터를 이용하여 Play 가능하도록 개발한다.', instructions: '렌더링된 기획 시안을 직접 확인한다.\n사용자 승인 후 실행한다.\n' + '화면 구조, 상태, 문구, 색상과 배치를 확인한다.\n'.repeat(20) },
-  coordinator, documents: [coordinator, ...documents], guide: { coordinator: '' },
+  coordinator, documents: [coordinator, ...documents], guide: { coordinator: '' }, waitingReviewSupported: true,
   delegations: [
     makeDelegation('doc-0', 'waiting-usage-limit', { childError: '사용량 제한으로 대기 중입니다.', recovery: { recoveryAvailable: true }, result: '첫 화면 구현 결과를 보존했습니다. 남은 검수가 필요합니다.\n' + '완료된 작업을 반복하지 않습니다.\n'.repeat(45), attemptHistory: [{ at: '2026-09-09T23:00:00Z', reason: 'usage-limit', childError: '이전 제한 오류', result: '보존된 이전 결과' }] }),
     makeDelegation('doc-0', 'failed', { id: 'older-doc-0', createdAt: '2026-09-09T00:00:00Z', result: '이전 위임 결과 원문' }),
@@ -31,8 +32,14 @@ let context = {
     makeDelegation('orphan', 'failed', { recovery: { recoveryAvailable: true }, result: '그룹 이동 전 보관 결과' }),
   ],
 }
+const waitingItem = (id, label) => ({ id, label, note: '대기 사유 첫 절\n\n마지막 절도 보존합니다.', resumeCondition: '승인된 자료 제공 후 해당 조건을 재검증합니다.', since: '2026-09-10T00:00:00Z' })
+const waitingMap = { id: 'doc-5', nodes: [documents[5].root, { id: 'waiting-card', data: { label: '외부 자료와 정책', isWork: true, status: 'in-progress', waitingItems: [waitingItem('assets', '최종 아트 전달'), waitingItem('decision', '친밀도 표시 방식 확정')] } }, { id: 'verification-card', data: { label: '실경로 검증', isWork: true, status: 'in-progress', waitingItems: [waitingItem('verification', '실제 환경 검증')] } }] }
+documents[5].root.data.waitingItems = [waitingItem('root-wait', '서버 API 계약')]
+documents[5].work.waiting = 2
+const updateWaiting = () => { const doc = context.documents.find((value) => value.id === waitingMap.id); if (doc) doc.waitingDetails = groupWaitingDetails(waitingMap, waitingMap.nodes[0], context.project) }
+updateWaiting()
 const originalContext = structuredClone(context)
-let role = 'editor'; let groupError = false; let actionError = true; let groupReads = 0
+let role = 'editor'; let groupError = false; let actionError = true; let groupReads = 0; let legacyWaiting = false
 const requests = []; const apiErrors = []
 const server = createServer(async (req, res) => {
   try {
@@ -46,11 +53,24 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/api/integrations/aionui/subscription-usage') return send({ error: '시험 환경에서는 사용량을 조회하지 않습니다.' }, 503)
     if (url.pathname === '/api/maps') return send({ maps: context.documents.map((d) => ({ id: d.id, title: d.title, color: 'purple', nodeCount: 13, rootProgress: 30, rootStatus: 'in-progress', waitingCount: d.work.waiting, version: d.version, updatedAt: '2026-09-10T00:00:00Z' })), documentLayout: { version: 1, items: [{ type: 'group', id: context.group.id }], groups: [context.group] } })
     if (['/api/maps/trash', '/api/maps/archive'].includes(url.pathname)) return send({ maps: [] })
-    if (url.pathname === '/api/groups/group-test' && req.method === 'GET') { groupReads++; return groupError ? send({ error: '시험용 연결 오류' }, 503) : send(context) }
+    if (url.pathname === '/api/groups/group-test' && req.method === 'GET') {
+      groupReads++; updateWaiting()
+      if (groupError) return send({ error: '시험용 연결 오류' }, 503)
+      if (legacyWaiting) { const legacy = structuredClone(context); delete legacy.waitingReviewSupported; for (const doc of legacy.documents) delete doc.waitingDetails; return send(legacy) }
+      return send(context)
+    }
     if (url.pathname === '/api/groups/group-test' && req.method === 'PATCH') {
       if (body.baseVersion !== context.project.version) return send({ error: '기준 버전 충돌' }, 409)
-      const { source, sourceVersion, objective, instructions } = body
-      context.project = { ...context.project, source, sourceVersion, objective, instructions, version: context.project.version + 1 }
+      if (body.waitingReview) {
+        if (body.baseWaitingReviewVersion !== (context.project.waitingReviewVersion ?? 0)) return send({ error: '대기 분류 충돌' }, 409)
+        try { context.project.waitingReviews = applyGroupWaitingReview(context.project, waitingMap, waitingMap.nodes[0], body.waitingReview, { id: 'fixture-user', name: 'UI 검증' }) }
+        catch (error) { return send({ error: error.message }, error.status ?? 400) }
+        context.project.waitingReviewVersion = (context.project.waitingReviewVersion ?? 0) + 1
+      } else {
+        const { source, sourceVersion, objective, instructions } = body
+        context.project = { ...context.project, source, sourceVersion, objective, instructions, version: context.project.version + 1 }
+      }
+      updateWaiting()
       return send(context)
     }
     if (url.pathname.startsWith('/api/maps/coordinator/ai-delegations/')) return actionError ? send({ error: '시험용 위임 버전 충돌: 다시 확인해 주세요.' }, 409) : send({ success: true })
@@ -117,11 +137,11 @@ try {
   await selectDocument('orphan')
   assert.equal(await evaluate('document.querySelector(".group-detail-panel").innerText.includes("읽기 전용")'), true)
   assert.equal(await evaluate('document.querySelector(".group-recovery-actions") === null'), true)
-  await click('확인 필요 4')
+  await fill('select[aria-label="문서 상태 필터"]', 'ai')
   assert.equal(await evaluate('document.querySelectorAll(".group-document-row").length'), 4)
   await fill('input[type="search"]', '없는 문서')
   assert.equal(await evaluate('document.querySelector(".group-detail-panel").innerText.includes("검색 조건")'), true)
-  await fill('input[type="search"]', ''); await click('전체 9'); await selectDocument('doc-0')
+  await fill('input[type="search"]', ''); await fill('select[aria-label="문서 상태 필터"]', 'all'); await selectDocument('doc-0'); await click('위임·결과 2')
   // 취소는 POST하지 않으며 승인 시 기존 요청의 버전·범위 계약을 그대로 사용한다.
   await evaluate('window.confirm=()=>false'); const beforeCancel = requests.length
   await click('승인 범위 작업 재개'); assert.equal(requests.length, beforeCancel)
@@ -169,17 +189,57 @@ try {
   // 기존 MnP 사이드바의 모바일 전환 애니메이션(200ms)이 끝난 뒤 확인한다.
   await pause(350); await checkLayout(); await capture('overview-mobile')
   await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
+  // 한 문서에 여러 사유가 있어도 문서 수는 1, 사유 원문과 영향 분류는 별도로 유지한다.
+  const beforeReviewMap = structuredClone(waitingMap)
+  await fill('select[aria-label="문서 상태 필터"]', 'external')
+  assert.equal(await evaluate('document.querySelectorAll(".group-document-row").length'), 1)
+  assert.equal(await evaluate('document.querySelectorAll(".group-waiting-reason").length'), 2)
+  assert.equal(await evaluate('document.querySelector(".group-waiting-summary").innerText.includes("대기 업무 2개 · 사유 4개")'), true)
+  assert.equal(await evaluate('document.querySelector(".group-waiting-reasons").innerText.includes("승인 요청 수가 아닙니다")'), true)
+  await evaluate('document.querySelector(\'[data-waiting-id="assets"] summary\').click()')
+  assert.equal(await evaluate('document.querySelector(\'[data-waiting-id="assets"]\').innerText.includes("마지막 절도 보존합니다.")'), true)
+  assert.equal(await evaluate('document.querySelector(\'[data-waiting-id="assets"]\').innerText.includes("승인된 자료 제공 후 해당 조건을 재검증합니다.")'), true)
+  await capture('waiting-reasons-dark')
+  await evaluate('[...document.querySelectorAll(\'[data-waiting-id="assets"] button\')].find(b=>b.textContent === "분류·범위 확인").click()'); await pause(60)
+  await fill('[data-waiting-id="assets"] .group-waiting-review label:nth-child(2) select', 'deferred')
+  const postsBeforeReview = requests.filter((r) => r.method === 'POST').length
+  const criteriaVersionBeforeReview = context.project.version
+  await click('분류 저장')
+  await until(() => evaluate('document.querySelector(\'[data-waiting-id="assets"]\')?.innerText.includes("예정된 외부 대기")'), '분류 저장 표시 실패')
+  assert.equal(requests.filter((r) => r.method === 'POST').length, postsBeforeReview, '분류로 AI를 실행하지 않는다')
+  assert.deepEqual(waitingMap, beforeReviewMap, '분류로 원문·대기·진행률을 변경하지 않는다')
+  assert.equal(context.project.waitingReviews[0].impact, 'deferred')
+  assert.equal(context.project.version, criteriaVersionBeforeReview, '분류가 승인 기준을 변경하지 않는다')
+  assert.equal(await evaluate('document.querySelector(\'select[aria-label="문서 상태 필터"]\').value'), 'all', '저장 뒤 동일 문서를 유지한다')
+  await fill('select[aria-label="문서 상태 필터"]', 'deferred')
+  assert.equal(await evaluate('document.querySelectorAll(".group-waiting-reason").length'), 1)
+  await capture('waiting-deferred')
+  await load(); await selectDocument('doc-5'); await click('대기 사유 4')
+  assert.equal(await evaluate('document.querySelector(\'[data-waiting-id="assets"]\').innerText.includes("직접 분류")'), true, '새로고침 뒤 분류 유지')
+  context.project.sourceVersion = 'v0.5'; context.project.version++; await click('새로고침')
+  await until(() => evaluate('document.querySelector(\'[data-waiting-id="assets"] .group-review-stale\')?.innerText.includes("기획 기준 변경")'), '기준 변경 시 재확인 표시')
+  assert.equal(await evaluate('document.querySelector(".group-criteria-strip").innerText.includes("미저장")'), false, '편집하지 않은 기준은 자동 갱신하며 가짜 미저장 상태를 만들지 않는다')
+  assert.equal(await evaluate('[...document.querySelectorAll(\'select[aria-label="문서 상태 필터"] option\')].find(o=>o.value === "deferred").textContent.includes("0문서")'), true)
+  await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  await pause(350); await checkLayout(); await capture('waiting-mobile')
+  await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
   role = 'viewer'; await load()
   assert.equal(await evaluate('[...document.querySelectorAll(".group-overview button")].some(b=>["총괄 AI 대화 시작","위임 제안 요청","승인 범위 작업 재개","문서 추가"].includes(b.textContent))'), false)
   await click('기획 기준')
   assert.equal(await evaluate('document.querySelector(".group-detail-scroll").innerText.includes("사용자 승인 후 실행한다.")'), true)
+  await click('문서로 돌아가기'); await selectDocument('doc-5'); await click('대기 사유 4')
+  assert.equal(await evaluate('[...document.querySelectorAll(".group-detail-panel button")].some(b=>b.textContent === "분류·범위 확인")'), false, '읽기 전용 분류 수정 금지')
+  legacyWaiting = true; await load(); await selectDocument('doc-5'); await click('대기 사유 0+')
+  assert.equal(await evaluate('document.querySelector(".group-waiting-summary").innerText.includes("대기 업무 2개 · 사유 상세 조회 필요")'), true, '구버전 서버의 대기 건수 보존')
+  assert.equal(await evaluate('document.querySelector(".group-detail-scroll").innerText.includes("서버를 재시작")'), true)
+  legacyWaiting = false
   context = { ...context, project: { ...context.project, coordinatorMapId: null }, coordinator: null, documents: [], delegations: [], group: { ...context.group, mapIds: [] } }
   role = 'editor'; await load(); await click('기획 기준과 총괄 설정')
   assert.equal(await evaluate('[...document.querySelectorAll("button")].some(b=>b.textContent === "기준 저장 · 총괄 준비" && !b.disabled)'), true)
   await capture('empty-setup')
   assert.deepEqual(errors, [], '브라우저 예외 없음')
   assert.deepEqual(apiErrors, [], '시험 범위 밖 API 호출 없음')
-  console.log(JSON.stringify({ passed: true, directory, typography, checked: ['전체 MnP 그룹 딥링크', '8개 문서와 이전 이력', '밝은·어두운 테마', '선택·검색·확인 필요', '전체 기준·결과 보존', '복구 취소와 승인 요청', '보고만 재시도', '자동 갱신 후 오류 보존', '편집 중 갱신·버전 충돌·저장', '갱신 실패 시 실행 차단', 'URL 복사', '모바일 배치', '읽기 전용', '빈 그룹 설정'] }, null, 2))
+  console.log(JSON.stringify({ passed: true, directory, typography, checked: ['전체 MnP 그룹 딥링크', '8개 문서와 이전 이력', '밝은·어두운 테마', '사유·범위별 문서 필터', '대기 사유·재개 조건 원문', '분류 저장·새로고침 유지', '기준 변경 시 재확인', '분류와 AI 실행·대기 해제 분리', '전체 기준·결과 보존', '복구 취소와 승인 요청', '보고만 재시도', '자동 갱신 후 오류 보존', '편집 중 갱신·버전 충돌·저장', '갱신 실패 시 실행 차단', 'URL 복사', '모바일 배치', '읽기 전용', '빈 그룹 설정'] }, null, 2))
 } catch (error) {
   if (evaluate) console.error(await evaluate('({text:document.querySelector(".group-overview")?.innerText, width:innerWidth,height:innerHeight})').catch(() => null))
   if (command) { const shot = await command('Page.captureScreenshot', { format: 'png' }).catch(() => null); if (shot) await writeFile(path.join(directory, 'failure.png'), Buffer.from(shot.data, 'base64')) }

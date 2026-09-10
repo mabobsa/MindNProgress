@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MindNodeData, AiConversationRuntime } from '../types/mindMap'
 import type { AiConversationExplicitTarget } from '../utils/aiConversationLaunch.mjs'
 import { buildGroupCoordinatorRequest, buildGroupDocumentRequest, buildGroupDocumentProposalRequest } from '../utils/aiApprovalInstructions.mjs'
+import { copyTextToClipboard } from '../utils/clipboardText.mjs'
+import { groupPageUrl } from '../utils/groupDeepLink.mjs'
 import './GroupOverview.css'
 
 type Project = { version: number; coordinatorMapId: string | null; source: string; sourceVersion: string; objective: string; instructions: string }
@@ -44,6 +46,8 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
+  const [linkCopyState, setLinkCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
+  const linkCopyTimer = useRef<number | null>(null)
   const [coordinatorChoice, setCoordinatorChoice] = useState('')
   const [newTitle, setNewTitle] = useState('')
   const [newDescription, setNewDescription] = useState('')
@@ -77,6 +81,25 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
     window.addEventListener('focus', onFocus)
     return () => { mounted.current = false; window.clearInterval(timer); window.removeEventListener('focus', onFocus) }
   }, [refresh, membershipKey])
+
+  useEffect(() => () => {
+    if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current)
+  }, [])
+
+  const copyPageLink = async () => {
+    if (linkCopyState === 'copying') return
+    if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current)
+    setLinkCopyState('copying')
+    try {
+      const health = await request<{ publicBaseUrl: string }>('/api/health', clientId)
+      await copyTextToClipboard(groupPageUrl(health.publicBaseUrl, groupId))
+      if (!mounted.current) return
+      setLinkCopyState('copied')
+      linkCopyTimer.current = window.setTimeout(() => setLinkCopyState('idle'), 2500)
+    } catch {
+      if (mounted.current) setLinkCopyState('failed')
+    }
+  }
 
   const changed = Boolean(draft && context && ['source', 'sourceVersion', 'objective', 'instructions'].some((key) => draft[key as keyof Project] !== context.project[key as keyof Project]))
   const stale = draft && context && draft.version !== context.project.version
@@ -155,7 +178,12 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
   }
 
   return <section className="group-overview" aria-label={`${name} 그룹 개요`}>
-    <header className="group-overview-header"><div><small>그룹 · 기획과 개발</small><h1>{name}</h1><p>기획 기준과 담당 범위를 공유하고, 문서별 분석·개발 결과를 모읍니다.</p></div><button onClick={() => void refresh()} disabled={busy}>새로고침</button></header>
+    <header className="group-overview-header"><div><small>그룹 · 기획과 개발</small><div className="group-page-title"><h1>{name}</h1>
+      <button type="button" className={`group-link-copy-button ${linkCopyState}`} onClick={() => void copyPageLink()} disabled={linkCopyState === 'copying'} aria-label="총괄 AI 페이지 URL 복사" title={linkCopyState === 'copied' ? '링크가 복사되었습니다' : '총괄 AI 페이지 URL 복사'}>
+        <svg className="icon" width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">{linkCopyState === 'copied' ? <path d="m5 12 4 4L19 6" /> : <><path d="M10 13a5 5 0 0 0 7 .1l3-3a5 5 0 0 0-7-7l-1.7 1.7" /><path d="M14 11a5 5 0 0 0-7-.1l-3 3a5 5 0 0 0 7 7l1.7-1.7" /></>}</svg>
+      </button>
+    </div><p>기획 기준과 담당 범위를 공유하고, 문서별 분석·개발 결과를 모읍니다.</p></div><button onClick={() => void refresh()} disabled={busy}>새로고침</button></header>
+    <div aria-live="polite" aria-atomic="true">{linkCopyState === 'copied' && <p className="group-message">총괄 AI 페이지 링크를 복사했습니다.</p>}{linkCopyState === 'failed' && <p className="group-message error">링크를 복사하지 못했습니다. 연결과 클립보드 권한을 확인한 뒤 다시 시도해 주세요.</p>}</div>
     {error && <div className="group-message error" role="alert">{error}</div>}
     {notice && <div className="group-message" role="status">{notice}</div>}
     {!context || !draft ? <p aria-live="polite">그룹 정보를 불러오는 중…</p> : <>

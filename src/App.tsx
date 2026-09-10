@@ -43,6 +43,7 @@ import type { AiConversationLink, AiConversationRuntime, ChecklistItem, Knowledg
 import { resolveAiConversationTarget, type AiConversationExplicitTarget } from './utils/aiConversationLaunch.mjs'
 import { applyBoxSelection, boxSelectionNodeIds, boxSelectionRect, isBoxSelectionDrag } from './utils/boxSelection.mjs'
 import { copyTextToClipboard } from './utils/clipboardText.mjs'
+import { parseGroupDeepLink } from './utils/groupDeepLink.mjs'
 import { collectDragDescendantOwners, dragRootIds, hierarchyReparentPairs } from './utils/hierarchyDrag.mjs'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
 import { collapsedDocumentGroupsStorageKey, initialCollapsedDocumentGroupIds, normalizeCollapsedDocumentGroupIds } from './utils/documentGroupCollapse.mjs'
@@ -2296,7 +2297,7 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
-function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { user: AuthUser; onLogout: () => void; initialDeepLink: WorkspaceDeepLink | null; theme: UiTheme; onToggleTheme: () => void }) {
+function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onToggleTheme }: { user: AuthUser; onLogout: () => void; initialDeepLink: WorkspaceDeepLink | null; initialGroupId: string | null; theme: UiTheme; onToggleTheme: () => void }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<MindMapNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<MindMapEdge>([])
   const { canUndo, canRedo, undo, redo, resetHistory, rebaseline: rebaselineHistory, beginTransaction: beginHistoryTransaction, endTransaction: endHistoryTransaction, cancelTransaction: cancelHistoryTransaction } = useMapHistory(nodes, setNodes, edges, setEdges)
@@ -2324,7 +2325,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const [viewMode, setViewMode] = useState<ViewMode>(initialDeepLink?.viewMode ?? lastWorkspaceLocation.current?.viewMode ?? 'mindmap')
   const [documents, setDocuments] = useState<MapSummary[]>([])
   const [documentLayout, setDocumentLayout] = useState<DocumentLayout>(EMPTY_DOCUMENT_LAYOUT)
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
+  const [documentLibraryLoaded, setDocumentLibraryLoaded] = useState(false)
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(initialGroupId)
   const selectedGroup = documentLayout.groups.find((group) => group.id === selectedGroupId) ?? null
   const storedCollapsedDocumentGroupIds = useRef(readStoredCollapsedDocumentGroupIds(user.id))
   const collapsedDocumentGroupsInitialized = useRef(false)
@@ -3282,6 +3284,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         if (!active) return
         setTrashedDocuments(trash)
         setDocumentLayout(loadedDocumentLayout)
+        setDocuments(maps)
         if (!collapsedDocumentGroupsInitialized.current) {
           const initialCollapsedGroupIds = initialCollapsedDocumentGroupIds(
             storedCollapsedDocumentGroupIds.current,
@@ -3291,8 +3294,10 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           collapsedDocumentGroupsInitialized.current = true
           setCollapsedDocumentGroupIds(new Set(initialCollapsedGroupIds))
         }
+        // 그룹 링크로 들어오면 마지막 문서보다 총괄 페이지를 우선한다.
+        // 빈 그룹도 열 수 있으며 관계없는 문서를 뒤에서 불러오지 않는다.
+        if (initialGroupId) return
         if (maps.length > 0) {
-          setDocuments(maps)
           const deepLink = pendingDeepLink.current
           const requestedDocument = deepLink?.mapId
             ? maps.find((map) => map.id === deepLink.mapId) ?? null
@@ -3320,7 +3325,6 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         }
 
         setDocuments([])
-        setDocumentLayout(EMPTY_DOCUMENT_LAYOUT)
         setActiveMapId('')
         setNodes([])
         setEdges([])
@@ -3331,8 +3335,9 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         if (!active) return
         setSaveError(error instanceof Error ? error.message : '문서 목록을 불러오지 못했습니다.')
       })
+      .finally(() => { if (active) setDocumentLibraryLoaded(true) })
     return () => { active = false }
-  }, [mode, setEdges, setNodes])
+  }, [initialGroupId, mode, setEdges, setNodes])
 
   useEffect(() => {
     if (!activeMapId || loadedMapId !== activeMapId) return
@@ -4497,7 +4502,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
   useEffect(() => {
     const handleHistoryShortcut = (event: KeyboardEvent) => {
-      if (selectedGroup || mode !== 'editor' || (!event.ctrlKey && !event.metaKey)) return
+      if (selectedGroupId || mode !== 'editor' || (!event.ctrlKey && !event.metaKey)) return
       const target = event.target as HTMLElement | null
       if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
@@ -4515,7 +4520,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
     window.addEventListener('keydown', handleHistoryShortcut)
     return () => window.removeEventListener('keydown', handleHistoryShortcut)
-  }, [mode, redo, undo, selectedGroup])
+  }, [mode, redo, undo, selectedGroupId])
 
   const deleteNodeById = useCallback((nodeId: string) => {
     if (mode === 'viewer') return
@@ -6615,17 +6620,17 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
             </form>
           ) : (
             <div className="document-title-row">
-              <span>{selectedGroup?.name ?? activeDocument?.title ?? '마인드맵 선택'}</span>
-              {mode === 'editor' && activeDocument && !selectedGroup && (
+              <span>{selectedGroupId ? selectedGroup?.name ?? '총괄 AI 그룹' : activeDocument?.title ?? '마인드맵 선택'}</span>
+              {mode === 'editor' && activeDocument && !selectedGroupId && (
                 <button onClick={() => { setRenameTitle(activeDocument.title); setRenamingMap(true) }} aria-label="문서 이름 변경">
                   <Icon name="edit" size={13} />
                 </button>
               )}
             </div>
           )}
-          <small className={saveError ? 'save-error' : ''}>{saveError || (selectedGroup ? '그룹 개요' : savedAt)}</small>
+          <small className={saveError ? 'save-error' : ''}>{saveError || (selectedGroupId ? '그룹 개요' : savedAt)}</small>
         </div>
-        {!selectedGroup && <nav className="view-switcher" aria-label="업무 보기 전환">
+        {!selectedGroupId && <nav className="view-switcher" aria-label="업무 보기 전환">
           {([
             ['mindmap', 'map', '마인드맵'],
             ['kanban', 'board', '칸반'],
@@ -6661,7 +6666,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           aria-expanded={mobileInspectorOpen}
           aria-label="선택 카드 세부정보 열기"
           title="선택 카드 세부정보"
-          disabled={!selectedNode || Boolean(selectedGroup)}
+          disabled={!selectedNode || Boolean(selectedGroupId)}
         >
           <Icon name="edit" size={18} />
         </button>
@@ -6678,8 +6683,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           )}
           {mode === 'editor' && (
             <div className="history-controls" aria-label="실행 취소와 다시 실행">
-              <button onClick={undo} disabled={!canUndo || Boolean(selectedGroup)} title="실행 취소 (Ctrl+Z)" aria-label="실행 취소"><Icon name="undo" size={15} /></button>
-              <button onClick={redo} disabled={!canRedo || Boolean(selectedGroup)} title="다시 실행 (Ctrl+Y)" aria-label="다시 실행"><Icon name="redo" size={15} /></button>
+              <button onClick={undo} disabled={!canUndo || Boolean(selectedGroupId)} title="실행 취소 (Ctrl+Z)" aria-label="실행 취소"><Icon name="undo" size={15} /></button>
+              <button onClick={redo} disabled={!canRedo || Boolean(selectedGroupId)} title="다시 실행 (Ctrl+Y)" aria-label="다시 실행"><Icon name="redo" size={15} /></button>
             </div>
           )}
           {mode === 'editor' && (
@@ -6694,7 +6699,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
               <Icon name="sparkles" size={15} /><span>지식 정리</span>
             </button>
           )}
-          <button className="icon-button" onClick={() => { void openMapHistory() }} disabled={!activeMapId || Boolean(selectedGroup)} aria-label="서버 변경 이력" title="서버 변경 이력">
+          <button className="icon-button" onClick={() => { void openMapHistory() }} disabled={!activeMapId || Boolean(selectedGroupId)} aria-label="서버 변경 이력" title="서버 변경 이력">
             <Icon name="history" size={16} />
           </button>
           {!user.publicAccess && <div className="notification-center">
@@ -6789,7 +6794,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
       )}
 
       <main
-        className={`workspace ${selectedGroup ? 'group-workspace' : ''}`}
+        className={`workspace ${selectedGroupId ? 'group-workspace' : ''}`}
         style={{
           '--sidebar-width': `${effectiveSidebarWidth}px`,
           '--inspector-width': `${inspectorWidth}px`,
@@ -7157,7 +7162,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           <span />
         </div>
 
-        {selectedGroup ? <GroupOverview
+        {selectedGroupId ? selectedGroup ? <GroupOverview
           key={selectedGroup.id}
           groupId={selectedGroup.id}
           name={selectedGroup.name}
@@ -7174,7 +7179,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           onLibraryChanged={() => {
             void apiRequest<DocumentLibraryResponse>('/api/maps').then((library) => { setDocuments(library.maps); setDocumentLayout(library.documentLayout) }).catch((error) => setSaveError(error.message))
           }}
-        /> : <>
+        /> : <section className="group-overview" aria-label="총괄 AI 그룹 안내"><h1>총괄 AI</h1><p role={documentLibraryLoaded ? 'alert' : 'status'}>{documentLibraryLoaded ? saveError || '요청한 그룹을 찾을 수 없습니다. 삭제되었는지 확인하거나 문서 목록에서 다른 그룹을 선택해 주세요.' : '총괄 AI 그룹을 불러오는 중…'}</p></section> : <>
         {viewMode === 'mindmap' ? (
         <section
           ref={canvasWrapRef}
@@ -8789,7 +8794,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
 function App() {
   const deepLink = parseWorkspaceDeepLink(window.location.pathname)
-  const deepLinkEntry = deepLink !== null
+  const groupId = parseGroupDeepLink(window.location.pathname)
+  const deepLinkEntry = deepLink !== null || groupId !== null
   const [user, setUser] = useState<AuthUser | null>(null)
   const [checkingSession, setCheckingSession] = useState(true)
   const [theme, setTheme] = useState<UiTheme>(() => appliedUiTheme())
@@ -8846,7 +8852,7 @@ function App() {
 
   return (
     <ReactFlowProvider>
-      <Workspace user={user} onLogout={() => { void logout() }} initialDeepLink={deepLink} theme={theme} onToggleTheme={toggleTheme} />
+      <Workspace user={user} onLogout={() => { void logout() }} initialDeepLink={deepLink} initialGroupId={groupId} theme={theme} onToggleTheme={toggleTheme} />
     </ReactFlowProvider>
   )
 }

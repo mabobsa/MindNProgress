@@ -3,6 +3,12 @@
 .group-overview-header { display: flex; justify-content: space-between; align-items: start; gap: 16px; margin: 0 auto 24px; max-width: 1080px; }
 .group-overview-header > button { flex-shrink: 0; white-space: nowrap; }
 .group-overview-header h1 { margin: 5px 0 8px; font-size: 25px; }
+.group-page-title { display: flex; align-items: center; gap: 10px; }
+.group-page-title h1 { min-width: 0; overflow-wrap: anywhere; }
+.group-overview .group-link-copy-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 32px; height: 32px; padding: 6px; color: var(--theme-text-muted, #817a8c); }
+.group-overview .group-link-copy-button.copied { color: var(--theme-text, #5b4dcc); border-color: #8978dc; }
+.group-overview .group-link-copy-button.failed { border-color: #c46b7a; }
+.group-overview .group-link-copy-button:focus-visible { outline: 2px solid #8978dc; outline-offset: 3px; }
 .group-overview p { font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .group-overview small, .group-muted { color: var(--theme-text-muted, #817a8c); font-size: 12px; }
 .group-overview button, .group-overview select { padding: 8px 12px; border: 1px solid var(--theme-border, #dfdbe8); border-radius: 7px; background: var(--theme-surface, #fff); color: inherit; font: inherit; font-size: 12px; cursor: pointer; }

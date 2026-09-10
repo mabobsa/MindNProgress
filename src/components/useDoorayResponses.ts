@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAiRuntimeSelection, normalizeAiRuntimeSelections } from '../utils/aiRuntimeSelections.mjs'
+import type { DoorayHandoffLaunch } from './DoorayResponseHandoff'
+
+export type DoorayDecision = { kind: 'input' | 'approval' | 'proposal'; reason: string; questions: string[];
+  approval: { title: string; scope: string[]; exclusions: string[] } | null }
+type DoorayApproval = { revision: string; approvedAt: string; approvedBy: { id: string; name: string }; proposal: string;
+  title: string; scope: string[]; exclusions: string[];
+  conversation?: { conversationId: string; homeMachineRole: 'main' | 'sub'; linkedAt: string } }
 
 type ResponseSettings = { agentId?: string; modelId?: string; mode?: string; thoughtLevel?: string; machineId?: string; proposalWorkspace?: string }
 type Option = { id: string; label: string }
@@ -9,11 +16,13 @@ export type DoorayResponseJob = {
   id: string; itemKey: string; postId: string; subject: string; sourceUrl: string; status: string; proposal: string; error: string
   createdAt: string; updatedAt: string; conversationId: string | null; homeMachineRole: 'main' | 'sub'; canRetry: boolean
   completedAt?: string | null; archiveStatus?: 'pending' | 'done' | 'warning' | null; archiveError?: string
+  decision?: DoorayDecision | null; proposalRevision?: string; approval?: DoorayApproval | null; approvalHistory?: DoorayApproval[]
   route: { action: string; mapId: string; cardId: string; documentTitle: string; cardTitle: string; reason: string; requestSummary: string } | null
 }
 export const doorayResponseStatus: Record<string, string> = {
   routing: '담당 탐색 중', reviewing: '담당 AI 검토 중', 'waiting-target': '담당 AI 대기 중',
   proposal: '제안 도착', 'needs-input': '추가 정보 필요', failed: '확인 필요', completed: '대응 완료',
+  'needs-approval': '승인 대기', approved: '승인 완료',
 }
 const active = new Set(['routing', 'reviewing', 'waiting-target'])
 const base = '/api/integrations/dooray/mentions/responses'
@@ -104,6 +113,7 @@ export function useDoorayResponses(clientId: string, userId: string) {
       sequence.current++
       setJobs((current) => current.map((entry) => entry.id === id ? job : entry))
       setError('')
+      setNotice('')
       return true
     } catch (failure) { setError(failure instanceof Error ? failure.message : '추가 정보 전달에 실패했습니다.'); return false }
   }
@@ -120,5 +130,20 @@ export function useDoorayResponses(clientId: string, userId: string) {
       setSelectedId('')
     } catch (failure) { if (!signal?.aborted) setError(failure instanceof Error ? failure.message : '완료 처리에 실패했습니다.') }
   }
-  return { jobs, error, notice, selectedId, setSelectedId, open, setOpen, showCompleted, setShowCompleted, pendingKeys, settings, saveSettings, request, retry, refine, complete, load, requestJson }
+  const approve = async (job: DoorayResponseJob): Promise<DoorayHandoffLaunch | null> => {
+    const signal = controllerRef.current?.signal
+    try {
+      const result = await requestJson<{ job: DoorayResponseJob }>(`${base}/${encodeURIComponent(job.id)}/approve`, {
+        method: 'POST', body: JSON.stringify({ proposalRevision: job.proposalRevision }),
+      })
+      if (signal?.aborted) return null
+      sequence.current++
+      setJobs((current) => current.map((entry) => entry.id === job.id ? result.job : entry))
+      const { launch } = await requestJson<{ launch: DoorayHandoffLaunch }>(`/api/integrations/dooray/response-approvals/${encodeURIComponent(job.id)}?revision=${encodeURIComponent(job.proposalRevision ?? '')}`)
+      if (signal?.aborted) return null
+      setError(''); setNotice('')
+      return launch
+    } catch (failure) { if (!signal?.aborted) setError(failure instanceof Error ? failure.message : '승인 정보를 확인하지 못했습니다.'); return null }
+  }
+  return { jobs, error, notice, selectedId, setSelectedId, open, setOpen, showCompleted, setShowCompleted, pendingKeys, settings, saveSettings, request, retry, refine, complete, approve, load, requestJson }
 }

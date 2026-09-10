@@ -1,5 +1,6 @@
 export type AiConversationKnowledgeSource = { id: string; label: string; policy: string }
-export type AiConversationPurpose = 'card' | 'shared-knowledge-review' | 'group-coordination' | 'document-reconstruction'
+export type AiConversationPurpose = 'card' | 'shared-knowledge-review' | 'group-coordination' | 'document-reconstruction' | 'dooray-response'
+export type DoorayApprovalLaunch = { responseId: string; proposalRevision: string }
 
 export const AI_CONVERSATION_PURPOSES: readonly AiConversationPurpose[]
 
@@ -11,6 +12,7 @@ export type AiConversationExplicitTarget = {
   documentTitle?: string
   initialRequest?: string
   fullInitialRequest?: boolean
+  doorayApproval?: DoorayApprovalLaunch
 }
 
 export type AiConversationTarget<TSource = AiConversationKnowledgeSource> = {
@@ -23,6 +25,7 @@ export type AiConversationTarget<TSource = AiConversationKnowledgeSource> = {
   knowledgeSources: TSource[]
   initialRequest?: string
   fullInitialRequest?: boolean
+  doorayApproval?: DoorayApprovalLaunch
 }
 
 export type AiConversationSelection<TSource = AiConversationKnowledgeSource> = {
@@ -72,6 +75,8 @@ export function resolveAiConversationTarget<TSource = AiConversationKnowledgeSou
 }): AiConversationTarget<TSource> | null
 
 export function buildAiConversationPrompt(input: {
+  purpose?: AiConversationPurpose
+  doorayApproval?: DoorayApprovalLaunch
   mapId: string
   cardId: string
   editorId: string

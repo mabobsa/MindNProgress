@@ -20,6 +20,7 @@ import {
   DEFAULT_AI_EDITOR_REQUEST,
   normalizeAiAutomaticRequest,
   type AiConversationPurpose,
+  type DoorayApprovalLaunch,
 } from '../utils/aiConversationLaunch.mjs'
 import './AiConversationDialog.css'
 
@@ -198,7 +199,7 @@ function encodeBase64Json(value: unknown) {
   return btoa(binary)
 }
 
-export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, knowledgeSources, initialRequest, fullInitialRequest, reconstructionRequestId, launchInWebUi, onClose }: {
+export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, knowledgeSources, initialRequest, fullInitialRequest, doorayApproval, reconstructionRequestId, launchInWebUi, onClose }: {
   userId: string
   documentId: string
   documentTitle: string
@@ -208,6 +209,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   knowledgeSources: { id: string; label: string; policy: KnowledgePolicy }[]
   initialRequest?: string
   fullInitialRequest?: boolean
+  doorayApproval?: DoorayApprovalLaunch
   reconstructionRequestId?: string
   launchInWebUi: boolean
   onClose: () => void
@@ -459,6 +461,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           cardId,
           machineId: options.machineId,
           purpose,
+          doorayApproval,
           reconstructionRequestId,
           mode: mode || undefined,
           thoughtLevel: thoughtLevel || undefined,
@@ -469,16 +472,18 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           requestPreview: userRequest.trim() || automaticRequest,
         }),
       })
-      const attribution = await attributionResponse.json().catch(() => ({})) as { attributionToken?: string; completionUrl?: string; editorId?: string; error?: string }
+      const attribution = await attributionResponse.json().catch(() => ({})) as { attributionToken?: string; completionUrl?: string; editorId?: string; error?: string; approvalRequest?: string }
       if (!attributionResponse.ok || !attribution.attributionToken || !attribution.completionUrl || !attribution.editorId) {
         throw new Error(attribution.error ?? 'AI 작성자 정보를 준비하지 못했습니다.')
       }
+      if (doorayApproval && !attribution.approvalRequest) throw new Error('서버에서 승인 전문을 확인하지 못했습니다. 대화를 시작하지 않았습니다.')
       const prompt = buildAiConversationPrompt({
+        purpose, doorayApproval,
         mapId: documentId,
         cardId,
         editorId: attribution.editorId,
         attributionToken: attribution.attributionToken,
-        request,
+        request: doorayApproval ? combineAiEditorRequest(attribution.approvalRequest, userRequest, true) : request,
       })
       const launchPayload = {
         agentId: selectedAgent.id,
@@ -534,6 +539,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           <div><span>AionUi 연동</span><strong>AI 대화 시작</strong><small>{cardTitle}</small></div>
           <button type="button" onClick={onClose} aria-label="AI 대화 옵션 닫기">×</button>
         </header>
+        {doorayApproval && <p className="ai-dialog-message">승인한 제안을 새 대화에 전달합니다. 사용할 작업공간을 확인하세요. 취소하면 대화를 시작하지 않습니다.</p>}
         {loading ? <div className="ai-dialog-message">AionUi의 새 채팅 옵션을 불러오는 중…</div> : error ? (
           <div className="ai-dialog-message error">
             <strong>연결할 수 없습니다.</strong><span>{error}</span><small>AionUi를 실행하거나 다른 실행 머신을 선택해 주세요.</small>

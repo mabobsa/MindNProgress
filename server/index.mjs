@@ -5907,7 +5907,20 @@ const server = createServer(async (request, response) => {
       return sendJson(response, 200, doorayMentionResponse(state, user.id))
     }
 
-    const doorayResponseRoute = url.pathname.match(/^\/api\/integrations\/dooray\/mentions\/responses(?:\/([a-zA-Z0-9_-]+)\/(retry|refine|complete|handoff))?$/)
+    const doorayApprovalContextRoute = url.pathname.match(/^\/api\/integrations\/dooray\/response-approvals\/([a-zA-Z0-9_-]+)$/)
+    if (doorayApprovalContextRoute && request.method === 'GET') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 승인 기록을 확인할 수 있습니다.' })
+      try {
+        const result = await doorayResponses.approvalContext(user.id, doorayApprovalContextRoute[1], url.searchParams.get('revision'), {
+          execution: url.searchParams.get('execution') === '1', conversationId: url.searchParams.get('conversationId'),
+        })
+        return sendJson(response, 200, result)
+      } catch (error) { return sendJson(response, error.status ?? 500, { error: error.message }) }
+    }
+
+    const doorayResponseRoute = url.pathname.match(/^\/api\/integrations\/dooray\/mentions\/responses(?:\/([a-zA-Z0-9_-]+)\/(retry|refine|complete|handoff|approve))?$/)
     if (doorayResponseRoute) {
       const user = requireSignedInUser(request, response)
       if (!user) return
@@ -5925,6 +5938,10 @@ const server = createServer(async (request, response) => {
           return sendJson(response, 200, { jobs: await doorayResponses.list(user.id) })
         }
         if (request.method === 'POST' && doorayResponseRoute[1]) {
+          if (doorayResponseRoute[2] === 'approve') {
+            const body = await readJsonBody(request)
+            return sendJson(response, 200, { job: await doorayResponses.approve(user.id, doorayResponseRoute[1], body.proposalRevision) })
+          }
           if (doorayResponseRoute[2] === 'complete') return sendJson(response, 200, { job: await doorayResponses.complete(user.id, doorayResponseRoute[1]) })
           if (doorayResponseRoute[2] === 'refine') {
             const body = await readJsonBody(request)
@@ -6126,14 +6143,24 @@ const server = createServer(async (request, response) => {
       const mapId = String(body.mapId ?? '').trim().slice(0, 120)
       const cardId = String(body.cardId ?? '').trim().slice(0, 120)
       const purpose = body.purpose === undefined ? 'card' : String(body.purpose).trim()
-      if (!agentId || !modelId || !isValidMapId(mapId) || !cardId) {
+      let doorayApprovalContext = null
+      if (purpose === 'dooray-response') {
+        // 문서가 아직 없는 구성 제안도 지원하되 임의의 카드로 귀속하지 않는다.
+        try {
+          doorayApprovalContext = await doorayResponses.approvalContext(user.id, body.doorayApproval?.responseId, body.doorayApproval?.proposalRevision)
+          if (doorayApprovalContext.launch.mapId !== mapId || doorayApprovalContext.launch.cardId !== cardId) return sendJson(response, 409, { error: '승인한 담당 경로와 대화 시작 대상이 다릅니다.' })
+          if (doorayApprovalContext.job.approval.conversation) return sendJson(response, 409, { error: '이미 시작한 승인 대화가 있습니다. 해당 대화에서 이어가 주세요.' })
+          if (/(^|[\\/])_dooray-response-workspaces([\\/]|$)/i.test(String(body.workspace ?? ''))) return sendJson(response, 400, { error: '제안 공통 보관 폴더가 아닌 업무 작업공간을 선택해 주세요.' })
+        } catch (error) { return sendJson(response, error.status ?? 500, { error: error.message }) }
+      }
+      if (!agentId || !modelId || (!doorayApprovalContext && (!isValidMapId(mapId) || !cardId))) {
         return sendJson(response, 400, { error: 'AI 종류, 모델, 문서와 카드를 모두 지정해 주세요.' })
       }
       if (!isAiConversationPurpose(purpose)) {
         return sendJson(response, 400, { error: 'AI 대화 용도가 올바르지 않습니다.' })
       }
-      const map = await readMap(mapId)
-      if (!map || map.trashedAt || !map.nodes.some((node) => node.id === cardId)) {
+      const map = mapId ? await readMap(mapId) : null
+      if ((!doorayApprovalContext || mapId) && (!map || map.trashedAt || (doorayApprovalContext && map.archivedAt) || !map.nodes.some((node) => node.id === cardId))) {
         return sendJson(response, 404, { error: 'AI 대화를 시작할 문서 또는 카드를 찾을 수 없습니다.' })
       }
       if (purpose === 'group-coordination') {
@@ -6206,6 +6233,7 @@ const server = createServer(async (request, response) => {
           homeMachineId,
           purpose,
           reconstructionRequestId: purpose === 'document-reconstruction' ? body.reconstructionRequestId : undefined,
+          doorayApproval: doorayApprovalContext ? body.doorayApproval : undefined,
           startedBy: user.id,
           expiresAt,
         })
@@ -6226,6 +6254,7 @@ const server = createServer(async (request, response) => {
           editorId: user.id,
           homeMachineId,
           homeMachineLabel: machineLabel(homeMachineId),
+          ...(doorayApprovalContext ? { approvalRequest: doorayApprovalContext.launch.initialRequest } : {}),
           expiresAt,
         })
       } catch (error) {
@@ -6270,6 +6299,11 @@ const server = createServer(async (request, response) => {
           return sendJson(response, 409, { error: 'AI 종류와 모델 정보가 작성자 귀속 정보와 일치하지 않습니다.' })
         }
 
+        if (launch.doorayApproval) {
+          const context = await doorayResponses.approvalContext(user.id, launch.doorayApproval.responseId, launch.doorayApproval.proposalRevision)
+          if (context.job.approval.conversation) return sendJson(response, 409, { error: '이미 연결된 승인 대화에서 이어가 주세요.' })
+          if (!payload.prompt.includes(context.launch.initialRequest)) return sendJson(response, 409, { error: '승인 전문이 변경되거나 누락되었습니다. 다시 확인해 주세요.' })
+        }
         const ticket = await fetchAionUiOn(launch.homeMachineId, '/api/internal/external-conversation-launches', {
           method: 'POST',
           body: payload,
@@ -6286,6 +6320,8 @@ const server = createServer(async (request, response) => {
         if (error instanceof AionUiExternalLaunchPayloadError) {
           return sendJson(response, 400, { error: error.message })
         }
+        // 완료·변경된 승인으로 시작하려는 요청은 외부 서버 장애가 아닌 승인 충돌이다.
+        if (error.status === 409) return sendJson(response, 409, { error: error.message })
         console.error('[AionUi external conversation launch]', error)
         return sendJson(response, 503, { error: 'AionUi WebUI 대화 시작 정보를 발급하지 못했습니다.' })
       }
@@ -6312,6 +6348,14 @@ const server = createServer(async (request, response) => {
         )
         if (!conversation || conversation.id !== conversationId) {
           return sendJson(response, 409, { error: '생성된 AionUi 대화를 확인할 수 없습니다.' })
+        }
+        if (launch.purpose === 'dooray-response') {
+          await doorayResponses.linkApprovalConversation(launch.startedBy, launch.doorayApproval.responseId, launch.doorayApproval.proposalRevision,
+            { conversationId, homeMachineId: launch.homeMachineId, homeMachineRole: launch.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub', linkedAt: new Date().toISOString() })
+          const attribution = aiAttributions.get(launch.attributionKey)
+          if (attribution) { attribution.conversationId = conversationId; await persistAiAttributions() }
+          // 승인 실행 대화는 제안용 보관 대상에 넣지 않는다. 구성 전 카드가 없어도 요청에 연결한다.
+          return sendJson(response, 200, { conversationId, linked: true, purpose: launch.purpose })
         }
         const map = await readMap(launch.mapId)
         const targetNode = map?.nodes.find((node) => node.id === launch.cardId)

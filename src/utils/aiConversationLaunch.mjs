@@ -8,6 +8,7 @@ export const AI_CONVERSATION_PURPOSES = Object.freeze([
   'shared-knowledge-review',
   'group-coordination',
   'document-reconstruction',
+  'dooray-response',
 ])
 
 export const AI_EDITOR_REQUEST_MAX_LENGTH = 4_000
@@ -62,7 +63,7 @@ export function normalizeAiConversationPurpose(value) {
 }
 
 export function aiConversationTitle({ purpose, documentTitle, cardTitle } = {}) {
-  const prefix = purpose === 'document-reconstruction' ? '[문서 정리] ' : purpose === 'group-coordination' ? '[그룹 총괄] ' : normalizeAiConversationPurpose(purpose) === 'shared-knowledge-review' ? '[지식정리] ' : ''
+  const prefix = purpose === 'dooray-response' ? '[Dooray 승인] ' : purpose === 'document-reconstruction' ? '[문서 정리] ' : purpose === 'group-coordination' ? '[그룹 총괄] ' : normalizeAiConversationPurpose(purpose) === 'shared-knowledge-review' ? '[지식정리] ' : ''
   return `${prefix}${text(documentTitle)}: ${text(cardTitle)}`.replace(/\s+/g, ' ').trim().slice(0, 120)
 }
 
@@ -91,7 +92,9 @@ function explicitTarget(value) {
   if (!isRecord(value)) return null
   const mapId = text(value.mapId)
   const cardId = text(value.cardId)
-  if (!mapId || !cardId) return null
+  const doorayApproval = value.purpose === 'dooray-response' && /^dooray-[a-zA-Z0-9_-]+$/.test(value.doorayApproval?.responseId ?? '')
+    && /^[a-f0-9]{64}$/.test(value.doorayApproval?.proposalRevision ?? '') ? value.doorayApproval : null
+  if (value.purpose === 'dooray-response' ? !doorayApproval : (!mapId || !cardId)) return null
   const initialRequest = normalizeAiAutomaticRequest(value.initialRequest, value.fullInitialRequest === true)
   return {
     source: 'explicit',
@@ -103,6 +106,7 @@ function explicitTarget(value) {
     knowledgeSources: [],
     ...(initialRequest ? { initialRequest } : {}),
     ...(value.fullInitialRequest === true ? { fullInitialRequest: true } : {}),
+    ...(doorayApproval ? { doorayApproval } : {}),
   }
 }
 
@@ -142,6 +146,10 @@ export function buildAiConversationPrompt(input) {
   const editorId = text(input?.editorId)
   const attributionToken = text(input?.attributionToken)
   const normalizedRequest = text(input?.request)
+  if (input?.purpose === 'dooray-response' && (!input.doorayApproval?.responseId || !input.doorayApproval?.proposalRevision)) throw new Error('Dooray 승인 대화에 승인 근거가 없습니다.')
+  if (input?.purpose === 'dooray-response' && editorId && attributionToken && normalizedRequest && input.doorayApproval?.responseId && input.doorayApproval?.proposalRevision) {
+    return `# MindNProgress Dooray 승인 작업\n\n가장 먼저 mindnprogress_get_dooray_response_approval을 호출해 서버에 저장된 사용자 승인을 검증하세요. 이 도구는 담당 카드가 없는 신규 구성에서도 먼저 호출할 수 있으며 이후 문서·카드의 get_context와 제품 지침 확인을 대신하지 않습니다.\n- responseId: ${input.doorayApproval.responseId}\n- proposalRevision: ${input.doorayApproval.proposalRevision}\n- editorId: ${editorId}\n- attributionToken: ${attributionToken}\n\n조회 결과의 승인 버전·본문·범위와 아래 인계 내용을 대조하세요. 확인할 수 없으면 작업을 진행하지 마세요. 이번 전문만으로 승인 근거를 만들어내지 마세요.\n\n${AI_EXECUTION_APPROVAL_INSTRUCTION}\n\n이번 사용자의 승인 근거는 위 도구로 확인하는 서버 기록입니다. 승인 범위와 제외 범위를 그대로 따르세요.\n\n${normalizedRequest}`
+  }
   if (!mapId || !cardId || !editorId || !attributionToken || !normalizedRequest) {
     throw new Error('AI 대화 전문을 만들 정보가 부족합니다.')
   }

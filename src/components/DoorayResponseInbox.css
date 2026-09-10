@@ -28,3 +28,7 @@
 .dooray-response-refine label { display: grid; gap: 5px; flex: 1; }
 .dooray-response-refine textarea { resize: vertical; min-height: 50px; border: 1px solid var(--theme-border, #ddd); border-radius: 6px; padding: 7px; font: inherit; color: inherit; background: var(--theme-surface, #fff); }
 @media (max-width: 600px) { .dooray-response-toolbar > span { display: none; } .dooray-response-toolbar { justify-content: space-between; } }
+.dooray-response-decision { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--theme-control-border, #ddd8e5); border-radius: 8px; }
+.dooray-response-decision p { margin: 6px 0; }
+.dooray-response-decision ul { margin: 6px 0 10px; padding-left: 20px; }
+.dooray-response-decision-reason { color: var(--theme-text-muted, #837c92); }

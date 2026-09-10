@@ -26,6 +26,20 @@ const selection = {
   knowledgeSources: [{ id: 'node-source', label: '선행 지식', policy: 'reuse-first' }],
 }
 
+test('Dooray 승인은 담당 카드가 없어도 새 대화를 열고 승인 근거 확인 전문을 보존한다', () => {
+  const doorayApproval = { responseId: 'dooray-request1', proposalRevision: 'a'.repeat(64) }
+  const initialRequest = '승인 제안 전문\n' + '상세 조건\n'.repeat(1500) + '마지막 문장'
+  const target = resolveAiConversationTarget({ explicitTarget: { purpose: 'dooray-response', mapId: '', cardId: '', doorayApproval, fullInitialRequest: true, initialRequest }, selection })
+  assert.equal(target.mapId, '')
+  assert.deepEqual(target.doorayApproval, doorayApproval)
+  assert.equal(target.initialRequest, initialRequest)
+  const prompt = buildAiConversationPrompt({ purpose: target.purpose, doorayApproval, mapId: '', cardId: '', editorId: 'user1', attributionToken: 'token', request: initialRequest })
+  assert.ok(prompt.includes(initialRequest))
+  assert.match(prompt, /mindnprogress_get_dooray_response_approval/)
+  assert.match(prompt, /서버에 저장된 사용자 승인을 검증/)
+  assert.equal(resolveAiConversationTarget({ explicitTarget: { purpose: 'dooray-response', mapId: '', cardId: '' } }), null)
+})
+
 test('담당 카드 전달 전문은 4,000자 뒤의 제안·URL·재제안 지침까지 보존한다', () => {
   const proposal = `# 전달 제안\n${'긴 제안 내용입니다.\n'.repeat(600)}\nhttps://example.test/post#comment\n실행하지 말고 다시 제안하세요.`
   const target = resolveAiConversationTarget({ explicitTarget: { mapId: 'map1', cardId: 'card1', initialRequest: proposal, fullInitialRequest: true }, selection })

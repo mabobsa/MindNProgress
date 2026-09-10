@@ -8656,6 +8656,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           knowledgeSources={aiConversationTarget.knowledgeSources}
           initialRequest={aiConversationTarget.initialRequest}
           fullInitialRequest={aiConversationTarget.fullInitialRequest}
+          doorayApproval={aiConversationTarget.doorayApproval}
           launchInWebUi={aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)}
           onClose={closeAiConversationDialog}
         />

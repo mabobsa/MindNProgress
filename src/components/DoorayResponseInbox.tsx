@@ -3,6 +3,7 @@ import { availableAiRuntimeOptionId } from '../utils/aiRuntimeSelections.mjs'
 import { doorayResponseStatus, type Options, type DoorayResponseJob, type useDoorayResponses } from './useDoorayResponses'
 import './DoorayResponseInbox.css'
 import { DoorayResponseHandoff, type DoorayHandoffLaunch } from './DoorayResponseHandoff'
+import { DoorayResponseDecision } from './DoorayResponseDecision'
 
 export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, onLaunchCard }: {
   response: ReturnType<typeof useDoorayResponses>
@@ -110,23 +111,25 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
               <p>{job.route.reason}</p>
             </>}
             {job.proposal && <div className="dooray-response-proposal">{job.proposal}</div>}
+            {job.proposal && <DoorayResponseDecision key={`${job.id}:${job.proposalRevision}`} job={job} response={response}
+              disabled={completing || refining} onLaunchCard={onLaunchCard} onOpenConversation={onOpenConversation} />}
             {job.error && <p className="dooray-response-error">{job.error}</p>}
             {job.completedAt && <p>완료: {new Date(job.completedAt).toLocaleString('ko-KR')} · 제안과 완료 기록은 대화 삭제 후에도 보존됩니다.</p>}
             {job.archiveError && <p className="dooray-response-error">{job.archiveError}</p>}
             <div className="dooray-response-actions">
               {job.conversationId && <button type="button" onClick={() => onOpenConversation(job)}>{job.completedAt ? '대화 보기' : '대화에서 이어가기'}</button>}
-              {job.status === 'proposal' && job.route && <button type="button" disabled={completing || refining} onClick={() => setHandoffId(job.id)}>담당 카드로 전달하기</button>}
+              {['proposal', 'needs-approval', 'approved'].includes(job.status) && job.route && <button type="button" disabled={completing || refining} onClick={() => setHandoffId(job.id)}>담당 카드로 전달하기</button>}
               {job.canRetry && <button type="button" onClick={() => void response.retry(job.id)}>상태 다시 확인</button>}
-              {(['proposal', 'needs-input', 'failed'].includes(job.status) || (job.completedAt && job.archiveStatus !== 'done')) && <button type="button"
+              {(['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'].includes(job.status) || (job.completedAt && job.archiveStatus !== 'done')) && <button type="button"
                 disabled={completing || refining} onClick={() => {
                   setCompleting(true)
                   void response.complete(job.id).finally(() => setCompleting(false))
                 }}>{completing ? '완료·보관 처리 중…' : job.completedAt ? '대화 보관 다시 시도' : '대응 완료'}</button>}
             </div>
-            {job.status === 'proposal' && handoffId === job.id && <DoorayResponseHandoff key={job.id} job={job} response={response}
+            {['proposal', 'needs-approval', 'approved'].includes(job.status) && handoffId === job.id && <DoorayResponseHandoff key={job.id} job={job} response={response}
               onLaunchCard={onLaunchCard} onOpenConversation={onOpenConversation} onClose={() => setHandoffId('')} />}
-            {!job.completedAt && ['proposal', 'needs-input', 'failed'].includes(job.status) && <p className="dooray-response-completion-help">대응 완료 시 건수에서 제외하고 전용 대화를 보관합니다. Dooray 업무 상태와 기존 업무 대화는 변경하지 않습니다.</p>}
-            {['proposal', 'needs-input', 'failed'].includes(job.status) && <form className="dooray-response-refine" onSubmit={(event) => {
+            {!job.completedAt && ['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'].includes(job.status) && <p className="dooray-response-completion-help">대응 완료 시 건수에서 제외하고 제안 전용 대화를 보관합니다. 이미 연결된 실행 대화의 승인은 유지하며, Dooray 업무 상태와 실행 대화·기존 업무 대화는 변경하지 않습니다.</p>}
+            {['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'].includes(job.status) && !job.approval?.conversation && <form className="dooray-response-refine" onSubmit={(event) => {
               event.preventDefault()
               setRefining(true)
               void response.refine(job.id, hint).then((ok) => { if (ok) setHint('') }).finally(() => setRefining(false))

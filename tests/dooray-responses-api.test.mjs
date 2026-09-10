@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { checkDoorayResponseBrowser } from './helpers/doorayResponseBrowser.mjs'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 const projectDirectory = path.resolve(import.meta.dirname, '..')
 const item = { key: 'comment:post1:comment1', kind: 'mention-comment', projectId: 'p1', postId: 'post1', commentId: 'comment1',
@@ -36,6 +38,10 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   const deleted = new Set()
   const reviewProposal = '금액 포맷터를 확인하고 경계값을 검증하는 작업을 제안합니다.\n' + '상세 조건을 확인합니다.\n'.repeat(320) + '제안의 마지막 검증 조건입니다.'
   let conversationFailure = null
+  let approvalMode = false
+  const approvalTickets = []
+  const approvalDecision = { kind: 'approval', reason: '그룹·총괄 구성의 사실은 충분하고 실행 동의만 남았습니다.', questions: [],
+    approval: { title: '연동 그룹과 총괄 구성', scope: ['연동 그룹과 총괄 문서를 생성한다.'], exclusions: ['기능 구현과 하위 AI 실행은 제외한다.'] } }
   const upstream = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost')
     paths.push(`${request.method} ${url.pathname}`)
@@ -47,7 +53,11 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
       response.end(JSON.stringify(dooray ? { header: { isSuccessful: true }, result } : { success: status < 400, data: result }))
     }
     if (url.pathname === '/project/v1/projects/p1/posts/post1') return send({ subject: item.subject, body: { content: '베팅 금액은 천 단위 구분자를 표시합니다.' } }, 200, true)
-    if (url.pathname === '/project/v1/projects/p1/posts/post1/logs') return send([{ id: 'comment1', type: 'comment', body: { content: '김용민님, 금액 표시를 확인해 주세요.' } }], 200, true)
+    if (url.pathname === '/project/v1/projects/p1/posts/post1/logs') return send([{ id: 'comment1', type: 'comment', body: { content: approvalMode ? '그룹과 총괄 문서 구성도 검토해 주세요.' : '김용민님, 금액 표시를 확인해 주세요.' } }], 200, true)
+    if (url.pathname === '/api/internal/external-conversation-launches' && request.method === 'POST') {
+      approvalTickets.push(body)
+      return send({ launchId: 'a'.repeat(64) }, 201)
+    }
     if (url.pathname === '/project/v1/projects') return send([], 200, true)
     if (url.pathname === '/api/agents/management') return send([{ id: 'test-agent', name: '검증 AI', installed: true, enabled: true,
       available_models: { current_model_id: 'test-model', available_models: [{ id: 'test-model', name: '검증 모델' }] } }])
@@ -74,7 +84,8 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
       if (messageMatch[1] === 'existing-chat') return send({ items: [{ position: 'left', type: 'text', content: { content: '기존 담당 대화의 확정 사항: 소수점 둘째 자리까지 표시' } }] })
       const op = [...operations.values()].reverse().find((entry) => entry.targetConversationId === messageMatch[1])
       if (!op) return send({ items: [] })
-      const result = op.operationId.includes('-route-') ? { requestId: op.operationId, action: 'direct', mapId: 'map-test', cardId: 'task1', conversationId: 'existing-chat',
+      const result = approvalMode ? { requestId: op.operationId, action: 'clarify', proposal: reviewProposal, decision: approvalDecision }
+        : op.operationId.includes('-route-') ? { requestId: op.operationId, action: 'direct', mapId: 'map-test', cardId: 'task1', conversationId: 'existing-chat',
         requestSummary: '베팅 금액 표시 확인', reason: '해당 업무 URL이 연결된 담당 카드' } : { requestId: op.operationId, proposal: reviewProposal }
       return send({ items: [{ position: 'left', type: 'text', content: { content: `\`\`\`json\n${JSON.stringify(result)}\n\`\`\`` } }] })
     }
@@ -125,7 +136,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   const password = 'response-test-password'
   const server = spawn(process.execPath, ['server/index.mjs'], { cwd: projectDirectory, stdio: 'ignore', env: {
     ...process.env, MNP_DATA_DIR: directory, MNP_API_HOST: '127.0.0.1', MNP_API_PORT: String(port), MNP_WEB_PORT: String(port),
-    MNP_ADMIN_PASSWORD: password, MNP_DOORAY_API_KEY: 'test-only', MNP_DOORAY_BASE_URL: upstreamUrl, MNP_AIONUI_URL: upstreamUrl,
+    MNP_ADMIN_PASSWORD: password, MNP_DOORAY_API_KEY: 'test-only', MNP_DOORAY_BASE_URL: upstreamUrl, MNP_AIONUI_URL: upstreamUrl, MNP_AIONUI_WEB_URL: upstreamUrl,
   } })
   t.after(async () => {
     server.kill()
@@ -236,4 +247,113 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   assert.equal(preserved.items[0].key, item.key)
   assert.equal(preserved.items[0].acknowledgedAt, null)
   assert.equal(paths.filter((entry) => entry.startsWith('POST /project')).length, 0)
+
+  approvalMode = true
+  const newApproval = await (await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: item.key }) })).json()
+  let approvalJob
+  await waitFor(async () => {
+    approvalJob = (await (await fetch(endpoint, { headers })).json()).jobs.find((job) => job.id === newApproval.job.id)
+    return approvalJob?.status === 'needs-approval'
+  })
+  assert.equal(approvalJob.route, null)
+  const approveUrl = `${endpoint}/${approvalJob.id}/approve`
+  const contextUrl = `${baseUrl}/api/integrations/dooray/response-approvals/${approvalJob.id}?revision=${approvalJob.proposalRevision}`
+  assert.equal((await fetch(approveUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401)
+  assert.equal((await fetch(approveUrl, { method: 'POST', headers, body: JSON.stringify({ proposalRevision: '0'.repeat(64) }) })).status, 409)
+  const beforeApproval = { created: created.length, operations: operations.size }
+  const verifyNoLaunch = async () => {
+    assert.equal(approvalTickets.length, 0, '옵션 창 취소 시 새 대화를 시작하지 않는다')
+    assert.deepEqual({ created: created.length, operations: operations.size }, beforeApproval, '승인만으로 기존 제안 AI를 재개하거나 새 AI를 만들지 않는다')
+  }
+  const verifyApprovalMcp = async () => {
+    const payload = approvalTickets[0]
+    const mcp = new Client({ name: 'dooray-approval-test', version: '1' })
+    try {
+      await mcp.connect(new StdioClientTransport({ command: process.execPath, args: ['mcp/server.mjs'], cwd: projectDirectory, stderr: 'pipe', env: {
+        ...process.env, MNP_API_URL: baseUrl, MNP_DATA_DIR: directory, MNP_TOKEN_FILE: path.join(directory, '_integration-token'),
+        MNP_MCP_USAGE_DISABLED: '1', AIONUI_CONVERSATION_ID: 'approved-work',
+      } }))
+      const args = { responseId: approvalJob.id, proposalRevision: approvalJob.proposalRevision, editorId: 'user-admin',
+        attributionToken: payload.prompt.match(/^- attributionToken: (.+)$/m)[1] }
+      const result = await mcp.callTool({ name: 'mindnprogress_get_dooray_response_approval', arguments: args })
+      assert.notEqual(result.isError, true, JSON.stringify(result))
+      const verified = JSON.parse(result.content[0].text)
+      assert.equal(verified.approval.proposal, reviewProposal)
+      assert.deepEqual(verified.approval.scope, approvalDecision.approval.scope)
+      assert.deepEqual(verified.approval.exclusions, approvalDecision.approval.exclusions)
+      assert.ok(verified.request.includes(reviewProposal))
+      const wrongEditor = await mcp.callTool({ name: 'mindnprogress_get_dooray_response_approval', arguments: { ...args, editorId: 'another-editor' } })
+      assert.equal(wrongEditor.isError, true)
+    } finally { await mcp.close() }
+  }
+  const completeLaunch = async (request) => {
+    await waitFor(() => approvalTickets.length === 1)
+    const payload = approvalTickets[0]
+    assert.ok(payload.prompt.includes(request))
+    assert.ok(payload.prompt.includes(reviewProposal))
+    assert.match(payload.prompt, /서버에 저장된 사용자 승인을 검증/)
+    assert.match(payload.title, /^\[Dooray 승인\]/)
+    assert.equal(payload.workspace, 'C:/test-approved-workspace')
+    assert.equal(payload.agentId, 'test-agent')
+    assert.equal(payload.autoSend, true)
+    assert.equal((await fetch(`${contextUrl}&execution=1&conversationId=approved-work`, { headers })).status, 409)
+    const linked = await fetch(payload.completionUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId: 'approved-work' }) })
+    assert.equal(linked.status, 200, JSON.stringify(await linked.json()))
+    assert.equal((await fetch(payload.completionUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId: 'approved-work' }) })).status, 200)
+    assert.equal((await fetch(`${contextUrl}&execution=1&conversationId=approved-work`, { headers })).status, 200)
+    assert.equal((await fetch(`${contextUrl}&execution=1&conversationId=other-work`, { headers })).status, 409)
+    await verifyApprovalMcp()
+  }
+  if (['1', 'approval'].includes(process.env.MNP_RESPONSE_BROWSER_CHECK)) {
+    await checkDoorayResponseBrowser({ directory, baseUrl, password, approvalFlow: { verifyNoLaunch, completeLaunch } })
+  } else {
+    const approval = await fetch(approveUrl, { method: 'POST', headers, body: JSON.stringify({ proposalRevision: approvalJob.proposalRevision }) })
+    assert.equal(approval.status, 200)
+    await verifyNoLaunch()
+    const { launch } = await (await fetch(contextUrl, { headers })).json()
+    const attributionResponse = await fetch(`${baseUrl}/api/integrations/aionui/attributions`, { method: 'POST', headers, body: JSON.stringify({
+      agentId: 'test-agent', modelId: 'test-model', purpose: launch.purpose, mapId: launch.mapId, cardId: launch.cardId,
+      doorayApproval: launch.doorayApproval, workspace: 'C:/test-approved-workspace',
+    }) })
+    const attribution = await attributionResponse.json()
+    assert.equal(attributionResponse.status, 201, JSON.stringify(attribution))
+    const { buildAiConversationPrompt, aiConversationTitle } = await import('../src/utils/aiConversationLaunch.mjs')
+    const prompt = buildAiConversationPrompt({ ...launch, editorId: attribution.editorId, attributionToken: attribution.attributionToken, request: attribution.approvalRequest })
+    const payload = { agentId: 'test-agent', modelId: 'test-model', completionUrl: attribution.completionUrl, prompt,
+      title: aiConversationTitle(launch), workspace: 'C:/test-approved-workspace', autoSend: true }
+    const bad = await fetch(`${baseUrl}/api/integrations/aionui/external-conversation-launches`, { method: 'POST', headers, body: JSON.stringify({ ...payload, prompt: '전문 누락' }) })
+    assert.equal(bad.status, 409)
+    const ticket = await fetch(`${baseUrl}/api/integrations/aionui/external-conversation-launches`, { method: 'POST', headers, body: JSON.stringify(payload) })
+    assert.equal(ticket.status, 201, JSON.stringify(await ticket.json()))
+    await completeLaunch(launch.initialRequest)
+    assert.equal((await fetch(`${endpoint}/${approvalJob.id}/complete`, { method: 'POST', headers })).status, 200)
+  }
+  const executionUrl = `${contextUrl}&execution=1&conversationId=approved-work`
+  assert.equal((await fetch(executionUrl)).status, 401)
+  const execution = await fetch(executionUrl, { headers })
+  assert.equal(execution.status, 200, '대응 완료 후에도 기존 실행 대화에서 승인을 검증한다')
+  const approvalFinal = (await execution.json()).job
+  assert.equal(approvalFinal.status, 'completed')
+  assert.equal(approvalFinal.approval.conversation.conversationId, 'approved-work')
+  assert.ok(approvalFinal.completedAt)
+  assert.equal(approvalFinal.approval.revision, approvalJob.proposalRevision)
+  assert.ok(archived.includes(approvalJob.conversationId))
+  assert.equal(archived.includes('approved-work'), false, '실행 대화는 완료 시 보관하지 않는다')
+  assert.equal((await fetch(contextUrl, { headers })).status, 409, '완료된 승인으로 신규 대화 전문을 발급하지 않는다')
+  for (const suffix of ['&execution=1', '&execution=1&conversationId=', '&execution=1&conversationId=other-work']) {
+    assert.equal((await fetch(`${contextUrl}${suffix}`, { headers })).status, 409)
+  }
+  assert.equal((await fetch(executionUrl.replace(approvalJob.proposalRevision, '0'.repeat(64)), { headers })).status, 409)
+  assert.equal((await fetch(approveUrl, { method: 'POST', headers, body: JSON.stringify({ proposalRevision: approvalJob.proposalRevision }) })).status, 409)
+  const duplicateAttribution = await fetch(`${baseUrl}/api/integrations/aionui/attributions`, { method: 'POST', headers, body: JSON.stringify({
+    agentId: 'test-agent', modelId: 'test-model', purpose: 'dooray-response', mapId: '', cardId: '', workspace: 'C:/test-approved-workspace',
+    doorayApproval: { responseId: approvalJob.id, proposalRevision: approvalJob.proposalRevision },
+  }) })
+  assert.equal(duplicateAttribution.status, 409)
+  const duplicateLaunch = await fetch(`${baseUrl}/api/integrations/aionui/external-conversation-launches`, { method: 'POST', headers, body: JSON.stringify(approvalTickets[0]) })
+  assert.equal(duplicateLaunch.status, 409)
+  assert.equal(approvalTickets.length, 1)
+  await verifyApprovalMcp()
+  assert.equal(JSON.parse(await readFile(path.join(directory, 'map-test.json'), 'utf8')).version, 1)
+  assert.deepEqual({ created: created.length, operations: operations.size }, beforeApproval)
 })

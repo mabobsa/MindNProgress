@@ -14,8 +14,8 @@ async function waitFor(action) {
   throw lastError ?? new Error('브라우저 검증 대기 시간 초과')
 }
 
-export async function checkDoorayResponseBrowser({ directory, baseUrl, password, deleteConversation, complete = false }) {
-  const profile = path.join(directory, complete ? 'browser-profile-completion' : 'browser-profile')
+export async function checkDoorayResponseBrowser({ directory, baseUrl, password, deleteConversation, complete = false, approvalFlow }) {
+  const profile = path.join(directory, approvalFlow ? 'browser-profile-approval' : complete ? 'browser-profile-completion' : 'browser-profile')
   await mkdir(profile, { recursive: true })
   const child = spawn(process.env.MNP_TEST_BROWSER_EXE ?? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', [
     '--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--remote-debugging-port=0',
@@ -48,8 +48,8 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
       pending.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value) }, reject: (error) => { clearTimeout(timer); reject(error) } })
       socket.send(JSON.stringify({ id, method, params }))
     })
-    const evaluate = async (expression) => {
-      const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
+    const evaluate = async (expression, userGesture = false) => {
+      const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, userGesture })
       if (result.exceptionDetails) throw new Error(result.exceptionDetails.text)
       return result.result?.value
     }
@@ -64,6 +64,47 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
     await evaluate('document.querySelector(".dooray-response-request").click()')
     await waitFor(() => evaluate('document.querySelector(".dooray-response-proposal")?.textContent.includes("경계값")'))
     assert.equal(await evaluate('document.querySelector(".dooray-mentions-check input").checked'), false)
+    if (approvalFlow) {
+      assert.ok(await evaluate('document.querySelector(".dooray-response-heading").textContent.includes("승인 대기")'))
+      assert.equal(await evaluate('Boolean(document.querySelector(".dooray-response-target"))'), false, '담당이 없어도 임의의 카드를 선택하지 않는다')
+      await evaluate('void (window.approvalDoorayPanel = document.querySelector(".dooray-mentions-panel"))')
+      await evaluate('Array.from(document.querySelectorAll(".dooray-response-decision button")).find(b => b.textContent === "제안 승인 · AI 대화 시작").click()')
+      await waitFor(() => evaluate('Boolean(document.querySelector(".ai-auto-request textarea"))'))
+      const request = await evaluate('document.querySelector(".ai-auto-request textarea").value')
+      assert.ok(request.length > 4000)
+      for (const text of ['승인에서 제외한 작업', '#comment-comment1', '마지막 검증 조건', '담당 경로: 미지정', 'mindnprogress_get_dooray_response_approval']) assert.ok(request.includes(text), text)
+      assert.equal(await evaluate('document.querySelector(".dooray-mentions-panel") === window.approvalDoorayPanel'), true)
+      await evaluate('document.querySelector(\'button[aria-label="AI 대화 옵션 닫기"]\').click()')
+      await waitFor(() => evaluate('!document.querySelector(".ai-dialog")'))
+      await approvalFlow.verifyNoLaunch()
+      await evaluate('Array.from(document.querySelectorAll(".dooray-response-decision button")).find(b => b.textContent === "승인한 제안으로 AI 대화 시작").click()')
+      await waitFor(() => evaluate('Boolean(document.querySelector(".ai-workspace-input input"))'))
+      await evaluate(`(() => {
+        const input = document.querySelector('.ai-workspace-input input');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'C:/test-approved-workspace');
+        input.dispatchEvent(new Event('input', {bubbles:true}));
+      })()`)
+      await evaluate('document.querySelector(".ai-dialog footer button.primary").click()', true)
+      await waitFor(() => evaluate('!document.querySelector(".ai-dialog") || Boolean(document.querySelector(".ai-launch-error"))'))
+      assert.equal(await evaluate('document.querySelector(".ai-launch-error")?.textContent ?? ""'), '', '승인된 새 대화 시작은 오류 없이 완료되어야 한다')
+      await approvalFlow.completeLaunch(request)
+      await waitFor(() => evaluate('document.querySelector(".dooray-response-decision")?.textContent.includes("승인 대화 열기")'))
+      assert.equal(await evaluate('document.querySelector(".dooray-mentions-panel") === window.approvalDoorayPanel'), true)
+      assert.ok(await evaluate('document.querySelector(".dooray-response-toolbar").textContent.includes("1건")'), '대화 시작을 대응 완료로 오인하지 않는다')
+      await evaluate('Array.from(document.querySelectorAll(".dooray-response-actions button")).find(b => b.textContent === "대응 완료").click()')
+      await waitFor(() => evaluate('!document.querySelector(".dooray-response-toolbar button").textContent.includes("1건")'))
+      await evaluate('Array.from(document.querySelectorAll(".dooray-response-toolbar button")).find(b => b.textContent.startsWith("완료 내역")).click()')
+      await waitFor(() => evaluate('document.querySelector(".dooray-response-heading")?.textContent.includes("대응 완료")'))
+      assert.ok(await evaluate('document.querySelector(".dooray-response-decision").textContent.includes("대응 완료 후에도 연결된 승인 대화와 승인 범위는 유지")'))
+      assert.deepEqual(await evaluate('Array.from(document.querySelectorAll(".dooray-response-decision button")).map(b => b.textContent)'), ['승인 대화 열기'], '완료 내역에서 실행 대화를 열 수 있고 승인·신규 대화 버튼은 표시하지 않는다')
+      await send('Page.bringToFront')
+      await evaluate('document.querySelector(".dooray-response-decision").scrollIntoView({block:"center"})')
+      const screenshot = await send('Page.captureScreenshot', { format: 'png' })
+      const screenshotPath = path.join(tmpdir(), `mnp-dooray-approval-ui-${Date.now()}.png`)
+      await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+      console.log(`Dooray 승인 UI 검증 화면: ${screenshotPath}`)
+      return
+    }
     assert.equal(await evaluate('document.querySelector(".dooray-response-target").textContent'), '홀덤 UI → 베팅')
     assert.deepEqual(await evaluate(`(() => {
       const link = document.querySelector('.dooray-mentions-open');
@@ -72,7 +113,7 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
     })()`), { afterTime: 'TIME', label: 'Dooray에서 열기 (새 탭)', target: '_blank', rel: 'noreferrer noopener',
       url: 'https://nhnent.dooray.com/project/posts/post1#comment-comment1', icon: true, text: '' }, '시간 뒤의 아이콘은 원래 코멘트 URL을 새 탭으로 연다')
     assert.ok(await evaluate('Array.from(document.querySelectorAll(".dooray-response-actions button")).some(b => b.textContent === "대화에서 이어가기")'))
-    assert.equal(await evaluate('Array.from(document.querySelectorAll(".dooray-response-actions button"))[1]?.textContent'), '담당 카드로 전달하기')
+    assert.equal(await evaluate('Array.from(document.querySelectorAll(".dooray-response-detail article > .dooray-response-actions button"))[1]?.textContent'), '담당 카드로 전달하기')
     for (const [width, height] of [[1440, 1300], [1440, 720], [900, 480], [390, 640]]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
       const layout = await waitFor(() => evaluate(`(() => {

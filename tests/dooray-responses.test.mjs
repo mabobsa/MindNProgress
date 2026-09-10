@@ -468,7 +468,7 @@ test('담당 카드 전달은 제안과 본문·코멘트 URL을 보존하고 �
   assert.ok(prompt.includes(item.url))
   assert.ok(prompt.includes(item.url.split('#')[0]))
   assert.match(prompt, /독립적으로 판단/)
-  assert.match(prompt, /실행 지시가 아닙니다/)
+  assert.match(prompt, /실행 지시로 취급하지/)
   assert.match(prompt, /별도 승인을 기다리세요/)
   assert.match(prompt, /JSON 형식은 사용하지 말고/)
   for (const change of [{ status: 'needs-input' }, { completedAt: 'done' }, { route: null }, { proposal: '' }, { proposal: '가'.repeat(90_000) }]) {
@@ -498,4 +498,111 @@ test('담당 전달은 계정·대화·실행 상태를 검사하고 응답 유�
   assert.equal((await service.list('user1'))[0].status, 'proposal', '전달 접수는 대응 완료를 뜻하지 않는다')
   await service.complete('user1', job.id)
   await assert.rejects(service.handoff('user1', job.id, 'old-chat'), /제안 도착/)
+})
+
+const approvalDecision = { kind: 'approval', reason: '그룹과 총괄 문서의 구성은 정해졌고 사용자 동의만 필요합니다.', questions: [],
+  approval: { title: '연동 그룹과 총괄 구성', scope: ['연동 그룹과 총괄 문서를 생성하고 관련 문서를 연결한다.'], exclusions: ['기능 구현, Dooray 댓글 작성 및 하위 AI 위임은 제외한다.'] } }
+
+test('담당이 없는 구성안도 승인 대기가 되며 승인 버튼은 현재 버전만 기록하고 AI를 실행하지 않는다', async (t) => {
+  const proposal = '새 그룹과 총괄을 생성하는 제안입니다.\n' + '보존할 세부 근거\n'.repeat(500) + '마지막 완료 조건'
+  const { service, deps, counts } = await fixture(t, { messages: async (op) => [assistant({ requestId: op.id, action: 'clarify', proposal, decision: approvalDecision, approved: true })] })
+  await service.start({ id: 'user1' }, item)
+  const [job] = await until(service, 'user1', 'needs-approval')
+  assert.equal(job.route, null)
+  assert.equal(job.approval, null, 'AI의 승인 주장은 저장하지 않는다')
+  await assert.rejects(service.approve('user2', job.id, job.proposalRevision), /찾을 수/)
+  await assert.rejects(service.approve('user1', job.id, ''), /버전/)
+  await assert.rejects(service.approve('user1', job.id, '0'.repeat(64)), /변경/)
+  const before = { ...counts }
+  const approved = await service.approve('user1', job.id, job.proposalRevision)
+  assert.equal(approved.status, 'approved')
+  assert.equal(approved.completedAt, null)
+  assert.deepEqual(approved.approval.scope, approvalDecision.approval.scope)
+  assert.equal(approved.approval.approvedBy.id, 'user1')
+  assert.deepEqual((await service.approve('user1', job.id, job.proposalRevision)).approval, approved.approval)
+  assert.deepEqual(counts, before, '승인만으로 대화 생성·전송·카드 연결을 하지 않는다')
+  const { launch } = await service.approvalContext('user1', job.id, job.proposalRevision)
+  assert.equal(launch.purpose, 'dooray-response')
+  assert.equal(launch.mapId, '')
+  assert.equal(launch.cardId, '')
+  assert.equal(launch.fullInitialRequest, true)
+  for (const preserved of [proposal, item.url, job.proposalRevision, approvalDecision.approval.scope[0], approvalDecision.approval.exclusions[0]]) assert.ok(launch.initialRequest.includes(preserved))
+  const restarted = createDoorayResponseService(deps)
+  deps.conversationExists = async () => false
+  assert.equal((await restarted.list('user1'))[0].approval.revision, job.proposalRevision, '승인 기록은 제안 대화 삭제 후에도 보존한다')
+})
+
+test('질문 및 구버전 답변은 승인할 수 없으며 다시 판단한 제안에 이전 승인을 승계하지 않는다', async (t) => {
+  const { service, deps } = await fixture(t, { messages: async (op) => [assistant({ requestId: op.id, action: 'clarify', proposal: '승인된 구성대로 그룹을 생성하자는 기존 답변' })] })
+  await service.start({ id: 'user1' }, item)
+  const [legacy] = await until(service, 'user1', 'needs-input')
+  await assert.rejects(service.approve('user1', legacy.id, legacy.proposalRevision), /승인 대기/)
+  deps.messages = async (op) => [assistant({ requestId: op.id, action: 'clarify', proposal: '구성 제안', decision: approvalDecision })]
+  await service.refine('user1', legacy.id, '질문·승인 구분을 다시 판단하세요.')
+  const [plan] = await until(service, 'user1', 'needs-approval')
+  await assert.rejects(service.approve('user1', plan.id, legacy.proposalRevision), /변경/)
+  await service.approve('user1', plan.id, plan.proposalRevision)
+  deps.messages = async (op) => [assistant({ requestId: op.id, action: 'clarify', proposal: '구성 전 정책 확인', decision: { ...approvalDecision, questions: ['어느 정책을 적용하나요?'] } })]
+  await service.refine('user1', plan.id, '정책이 달라졌습니다.')
+  const [question] = await until(service, 'user1', 'needs-input')
+  assert.equal(question.approval, null)
+  assert.equal(question.approvalHistory.length, 1)
+  await assert.rejects(service.approve('user1', plan.id, question.proposalRevision), /승인 대기/)
+  await assert.rejects(service.approvalContext('user1', plan.id, plan.proposalRevision), /변경/)
+})
+
+test('새 승인 대화는 요청에 한 번 연결되고 제안 전용 대화 보관 대상에 들어가지 않는다', async (t) => {
+  const archived = []
+  const { service, deps, counts } = await fixture(t, { messages: async (op) => [assistant({ requestId: op.id, action: 'clarify', proposal: '구성 제안', decision: approvalDecision })],
+    archiveConversation: async (_user, ref) => archived.push(ref.conversationId) })
+  await service.start({ id: 'user1' }, item)
+  const [job] = await until(service, 'user1', 'needs-approval')
+  await service.approve('user1', job.id, job.proposalRevision)
+  const conversation = { conversationId: 'approved-work', homeMachineRole: 'main', homeMachineId: 'main', linkedAt: new Date().toISOString() }
+  await service.linkApprovalConversation('user1', job.id, job.proposalRevision, conversation)
+  await service.linkApprovalConversation('user1', job.id, job.proposalRevision, conversation)
+  await assert.rejects(service.linkApprovalConversation('user1', job.id, job.proposalRevision, { ...conversation, conversationId: 'other-chat' }), /이미 연결/)
+  await assert.rejects(service.refine('user1', job.id, '계획 수정'), /승인 대화/)
+  const execution = { execution: true, conversationId: conversation.conversationId }
+  const before = await service.approvalContext('user1', job.id, job.proposalRevision, execution)
+  await service.complete('user1', job.id)
+  assert.deepEqual(archived, ['new-chat-1'])
+  // 이미 완료 저장된 기록도 서버 재시작 후 데이터 수정 없이 다시 검증할 수 있다.
+  const restarted = createDoorayResponseService(deps)
+  const completed = await restarted.approvalContext('user1', job.id, job.proposalRevision, execution)
+  assert.equal(completed.job.status, 'completed')
+  assert.ok(completed.job.completedAt)
+  assert.deepEqual(completed.job.approval, before.job.approval)
+  assert.equal(completed.launch.initialRequest, before.launch.initialRequest, '승인 전문과 범위는 완료 전후 동일하다')
+  assert.equal(counts.create, 1, '실행 승인 조회는 새 대화를 만들지 않는다')
+  assert.equal(counts.dispatch, 1, '실행 승인 조회는 AI를 자동 재개하지 않는다')
+  await assert.rejects(restarted.approvalContext('user2', job.id, job.proposalRevision, execution), /찾을 수/)
+  await assert.rejects(restarted.approvalContext('user1', job.id, '0'.repeat(64), execution), /변경/)
+  for (const conversationId of [undefined, '', 'other-chat']) {
+    await assert.rejects(restarted.approvalContext('user1', job.id, job.proposalRevision, { execution: true, conversationId }), /연결된 새 대화/)
+  }
+  await assert.rejects(restarted.approvalContext('user1', job.id, job.proposalRevision), /변경/)
+  await assert.rejects(restarted.approvalContext('user1', job.id, job.proposalRevision, { conversationId: conversation.conversationId }), /변경/)
+  await assert.rejects(restarted.approve('user1', job.id, job.proposalRevision), /완료/)
+  await assert.rejects(restarted.linkApprovalConversation('user1', job.id, job.proposalRevision, { ...conversation, conversationId: 'other-chat' }), /변경/)
+
+  const file = path.join(deps.directory, 'user1.json')
+  const stored = await deps.read(file)
+  for (const change of [{ proposal: '다른 제안' }, { completionStatus: 'needs-input' }, { status: 'needs-approval' }, { approval: null }]) {
+    await deps.write(file, { jobs: [{ ...stored.jobs[0], ...change }] })
+    await assert.rejects(restarted.approvalContext('user1', job.id, job.proposalRevision, execution), /변경/)
+  }
+})
+
+test('새 대화를 연결하기 전에 대응 완료하면 실행 승인이나 신규 연결을 허용하지 않는다', async (t) => {
+  const { service } = await fixture(t, { messages: async (op) => [assistant({ requestId: op.id, action: 'clarify', proposal: '구성 제안', decision: approvalDecision })] })
+  await service.start({ id: 'user1' }, item)
+  const [job] = await until(service, 'user1', 'needs-approval')
+  await service.approve('user1', job.id, job.proposalRevision)
+  const execution = { execution: true, conversationId: 'unlinked-chat' }
+  await assert.rejects(service.approvalContext('user1', job.id, job.proposalRevision, execution), /연결된 새 대화/)
+  await service.complete('user1', job.id)
+  await assert.rejects(service.approvalContext('user1', job.id, job.proposalRevision, execution), /연결된 새 대화/)
+  await assert.rejects(service.approvalContext('user1', job.id, job.proposalRevision), /변경/)
+  await assert.rejects(service.linkApprovalConversation('user1', job.id, job.proposalRevision, { conversationId: 'unlinked-chat' }), /변경/)
 })

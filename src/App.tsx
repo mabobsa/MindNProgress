@@ -36,6 +36,7 @@ import { AiConversationDialog } from './components/AiConversationDialog'
 import { AiConversationPickerDialog } from './components/AiConversationPickerDialog'
 import { AiConversationActivityIndicator } from './components/AiConversationRuntimeBadge'
 import { DailyBackupPreviewDialog, type DailyBackupPreview } from './components/DailyBackupPreviewDialog'
+import { DoorayMentionsPanel } from './components/DoorayMentionsPanel'
 import { ImagePreviewDialog } from './components/ImagePreviewDialog'
 import { SharedKnowledgeReviewDialog, type SharedKnowledgeReviewApplied } from './components/SharedKnowledgeReviewDialog'
 import { DashboardView, KanbanView, TimelineView } from './components/WorkViews'
@@ -2339,6 +2340,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const [mapReloadToken, setMapReloadToken] = useState(0)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [sharedKnowledgeReviewOpen, setSharedKnowledgeReviewOpen] = useState(false)
+  const [doorayMentionsOpen, setDoorayMentionsOpen] = useState(false)
   const [historyTab, setHistoryTab] = useState<'changes' | 'daily'>('changes')
   const [mapRevisions, setMapRevisions] = useState<MapRevisionSummary[]>([])
   const [dailyBackups, setDailyBackups] = useState<DailyBackupSummary[]>([])
@@ -6784,6 +6786,18 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
               ) : mode === 'editor' && (
                 <div className="sidebar-create-actions">
                   <button
+                    type="button"
+                    className="dooray-mentions-trigger"
+                    aria-label="Dooray 참조"
+                    title="Dooray 참조 — 나를 멘션한 업무와 댓글"
+                    onClick={(event) => {
+                      setDoorayMentionsOpen(true)
+                      event.currentTarget.blur()
+                    }}
+                  >
+                    <Icon name="comment" size={15} />
+                  </button>
+                  <button
                     aria-label="새 문서 그룹"
                     title="새 문서 그룹"
                     onClick={() => { setCreatingGroup((current) => !current); setCreatingMap(false) }}
@@ -8481,6 +8495,9 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
             <footer>{mode === 'editor' ? '일일 백업은 날짜별 최신 상태를 자동 보관하며, 복원 전 현재 상태도 이력에 저장됩니다.' : '뷰어는 변경 이력과 일일 백업을 확인할 수 있지만 복원할 수 없습니다.'}</footer>
           </section>
         </div>
+      )}
+      {doorayMentionsOpen && mode === 'editor' && (
+        <DoorayMentionsPanel clientId={CLIENT_ID} onClose={() => setDoorayMentionsOpen(false)} />
       )}
       {sharedKnowledgeReviewOpen && mode === 'editor' && (
         <SharedKnowledgeReviewDialog

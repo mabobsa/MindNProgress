@@ -61,6 +61,17 @@ import {
   parseDoorayWikiUrl,
 } from './lib/doorayTasks.mjs'
 import {
+  collectDoorayMentions,
+  DOORAY_MENTION_KINDS,
+  DOORAY_MENTION_MAX_RANGE_DAYS,
+  DOORAY_MENTION_MAX_STORED_ITEMS,
+  listDoorayMentionProjects,
+  mergeDoorayMentionAcks,
+  normalizeDoorayMentionRange,
+  normalizeDoorayWebHostname,
+  pruneDoorayMentionAcks,
+} from './lib/doorayMentions.mjs'
+import {
   AI_WORKSPACE_HISTORY_LIMIT,
   AI_WORKSPACE_MAX_LENGTH,
   normalizeAiWorkspaceHistory,
@@ -144,6 +155,7 @@ const historyDirectory = path.join(dataDirectory, '_history')
 const dailyBackupDirectory = path.join(dataDirectory, '_daily-backups')
 const commentsDirectory = path.join(dataDirectory, '_comments')
 const notificationsDirectory = path.join(dataDirectory, '_notifications')
+const doorayMentionsDirectory = path.join(dataDirectory, '_dooray-mentions')
 const imageAssetsDirectory = path.join(dataDirectory, '_assets')
 const usersFile = path.join(dataDirectory, '_users.json')
 const sessionsFile = path.join(dataDirectory, '_sessions.json')
@@ -186,6 +198,27 @@ const doorayTaskPreviewCache = new Map()
 const doorayCommentAuthorCache = new Map()
 const doorayTaskTitleCacheDurationMs = 5 * 60 * 1000
 const doorayTaskTitleBatchLimit = 50
+// Dooray API 주소(api.dooray.com)로는 조직의 웹 주소를 알 수 없어 설정으로 받는다.
+// 설정이 잘못돼도 서버 기동까지 막지는 않고 기본값으로 되돌린다.
+const doorayMentionWebHostname = (() => {
+  try {
+    return normalizeDoorayWebHostname(process.env.MNP_DOORAY_WEB_HOST ?? '')
+  } catch {
+    console.error('[dooray-mentions] MNP_DOORAY_WEB_HOST 값이 올바르지 않아 기본 주소를 사용합니다.')
+    return normalizeDoorayWebHostname('')
+  }
+})()
+const doorayMentionScans = new Map()
+const doorayMentionStateWrites = new Map()
+const doorayMentionProjectLimit = 100
+const doorayMentionQuickRangeIds = new Set([
+  'today',
+  'one-day',
+  'two-days',
+  'three-days',
+  'seven-days',
+  'thirty-days',
+])
 const sessionDurationMs = 8 * 60 * 60 * 1000
 const rememberedSessionDurationMs = 30 * 24 * 60 * 60 * 1000
 const sessions = new Map()
@@ -1303,6 +1336,23 @@ async function readStoredArray(filePath) {
 }
 
 async function writeStoredArray(filePath, value) {
+  await mkdir(path.dirname(filePath), { recursive: true })
+  const temporaryFile = `${filePath}.${randomBytes(5).toString('hex')}.tmp`
+  await writeFile(temporaryFile, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  await replaceFileWithRetry(temporaryFile, filePath)
+}
+
+async function readStoredRecord(filePath) {
+  try {
+    const value = JSON.parse(await readFile(filePath, 'utf8'))
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {}
+    throw error
+  }
+}
+
+async function writeStoredRecord(filePath, value) {
   await mkdir(path.dirname(filePath), { recursive: true })
   const temporaryFile = `${filePath}.${randomBytes(5).toString('hex')}.tmp`
   await writeFile(temporaryFile, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
@@ -4541,6 +4591,173 @@ function notificationFileForUser(userId) {
   return path.join(notificationsDirectory, `${userId}.json`)
 }
 
+function doorayMentionFileForUser(userId) {
+  if (!users.some((user) => user.id === userId)) throw new Error('INVALID_USER_ID')
+  return path.join(doorayMentionsDirectory, `${userId}.json`)
+}
+
+function idleDoorayMentionScan() {
+  return { status: 'idle', phase: null, done: 0, total: 0, startedAt: null, finishedAt: null, error: null }
+}
+
+function doorayMentionScanState(userId) {
+  return doorayMentionScans.get(userId) ?? idleDoorayMentionScan()
+}
+
+function normalizeDoorayMentionPreferences(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const since = String(value.since ?? '')
+  const until = String(value.until ?? '')
+  const validDate = (date) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false
+    const parsed = new Date(`${date}T00:00:00.000Z`)
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date
+  }
+  if (!validDate(since) || !validDate(until) || since > until) return null
+  const quickRangeId = value.quickRangeId === null
+    ? null
+    : doorayMentionQuickRangeIds.has(value.quickRangeId) ? value.quickRangeId : null
+  const sortOrder = ['current', 'time-desc', 'time-asc'].includes(value.sortOrder)
+    ? value.sortOrder
+    : 'current'
+  return {
+    since,
+    until,
+    quickRangeId,
+    sortOrder,
+    includeBody: value.includeBody !== false,
+    includeComments: value.includeComments !== false,
+    includeAssigned: value.includeAssigned !== false,
+    includeCc: value.includeCc !== false,
+    unacknowledgedOnly: value.unacknowledgedOnly !== false,
+    hiddenKinds: Array.isArray(value.hiddenKinds)
+      ? [...new Set(value.hiddenKinds.filter((kind) => DOORAY_MENTION_KINDS.includes(kind)))]
+      : [],
+  }
+}
+
+// 진행 상황은 조회 API로 그대로 읽어 가므로 별도 이벤트는 내보내지 않는다.
+function updateDoorayMentionScan(userId, patch) {
+  const scan = { ...doorayMentionScanState(userId), ...patch }
+  doorayMentionScans.set(userId, scan)
+  return scan
+}
+
+async function readDoorayMentionState(userId) {
+  const stored = await readStoredRecord(doorayMentionFileForUser(userId))
+  const record = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {})
+  return {
+    acknowledgements: record(stored.acknowledgements),
+    cache: record(stored.cache),
+    items: Array.isArray(stored.items) ? stored.items : [],
+    lastScan: stored.lastScan && typeof stored.lastScan === 'object' ? stored.lastScan : null,
+    preferences: normalizeDoorayMentionPreferences(stored.preferences),
+    selectedProjectIds: Array.isArray(stored.selectedProjectIds)
+      ? [...new Set(stored.selectedProjectIds.map((value) => String(value ?? '').trim()).filter(Boolean))]
+        .slice(0, doorayMentionProjectLimit)
+      : [],
+  }
+}
+
+async function writeDoorayMentionState(userId, state) {
+  await writeStoredRecord(doorayMentionFileForUser(userId), state)
+}
+
+function updateDoorayMentionState(userId, updater) {
+  const previous = doorayMentionStateWrites.get(userId) ?? Promise.resolve()
+  const pending = previous.catch(() => {}).then(async () => {
+    const current = await readDoorayMentionState(userId)
+    const next = await updater(current)
+    await writeDoorayMentionState(userId, next)
+    return next
+  })
+  doorayMentionStateWrites.set(userId, pending)
+  const cleanup = () => {
+    if (doorayMentionStateWrites.get(userId) === pending) doorayMentionStateWrites.delete(userId)
+  }
+  void pending.then(cleanup, cleanup)
+  return pending
+}
+
+function doorayMentionResponse(state, userId) {
+  return {
+    scan: doorayMentionScanState(userId),
+    lastScan: state.lastScan,
+    kinds: DOORAY_MENTION_KINDS,
+    maxRangeDays: DOORAY_MENTION_MAX_RANGE_DAYS,
+    preferences: state.preferences,
+    items: mergeDoorayMentionAcks(state.items, state.acknowledgements),
+  }
+}
+
+async function runDoorayMentionScan(userId, options) {
+  const state = await readDoorayMentionState(userId)
+  let publishedAt = 0
+  try {
+    const result = await collectDoorayMentions({
+      config: await getDoorayApiConfig(),
+      since: options.since,
+      until: options.until,
+      projectIds: options.projectIds,
+      includeBody: options.includeBody,
+      includeComments: options.includeComments,
+      includeAssigned: options.includeAssigned,
+      includeCc: options.includeCc,
+      webHostname: doorayMentionWebHostname || undefined,
+      cache: state.cache,
+    }, {
+      onProgress: ({ phase, done, total }) => {
+        // 업무 하나마다 알리면 너무 잦다. 마지막 진행만 확실히 보내고 나머지는 솎아 낸다.
+        const currentTime = Date.now()
+        if (done !== total && currentTime - publishedAt < 400) return
+        publishedAt = currentTime
+        updateDoorayMentionScan(userId, { status: 'running', phase, done, total })
+      },
+    })
+    const items = result.items.slice(0, DOORAY_MENTION_MAX_STORED_ITEMS)
+    await updateDoorayMentionState(userId, (latestState) => ({
+      ...latestState,
+      // 수집 중 사용자가 확인한 항목을 시작 시점의 상태로 덮어쓰지 않는다.
+      acknowledgements: pruneDoorayMentionAcks(latestState.acknowledgements),
+      cache: result.cache,
+      items,
+      lastScan: {
+        since: result.since,
+        until: result.until,
+        projectIds: options.projectIds,
+        includeBody: options.includeBody,
+        includeComments: options.includeComments,
+        includeAssigned: options.includeAssigned,
+        includeCc: options.includeCc,
+        webHostname: result.webHostname,
+        projectCount: result.projectCount,
+        scannedPostCount: result.scannedPostCount,
+        itemCount: result.items.length,
+        requestCount: result.requestCount,
+        throttledCount: result.throttledCount,
+        failureCount: result.failureCount,
+        startedAt: result.startedAt,
+        finishedAt: result.finishedAt,
+      },
+    }))
+    updateDoorayMentionScan(userId, {
+      status: 'idle',
+      phase: 'done',
+      done: result.scannedPostCount,
+      total: result.scannedPostCount,
+      finishedAt: result.finishedAt,
+      error: null,
+    })
+  } catch (error) {
+    updateDoorayMentionScan(userId, {
+      status: 'failed',
+      error: error instanceof DoorayTaskError ? error.message : 'Dooray 참조를 수집하지 못했습니다.',
+      finishedAt: new Date().toISOString(),
+    })
+    if (!(error instanceof DoorayTaskError)) console.error('[dooray-mentions] 수집 실패', error)
+  }
+}
+
 async function listComments(mapId, nodeId) {
   const comments = await readStoredArray(commentFileForMap(mapId))
   return comments
@@ -5537,6 +5754,160 @@ const server = createServer(async (request, response) => {
         throw error
       }
       return sendJson(response, 200, { tasks })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/integrations/dooray/mentions') {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 참조는 계정 사용자만 확인할 수 있습니다.' })
+      const state = await readDoorayMentionState(user.id)
+      return sendJson(response, 200, doorayMentionResponse(state, user.id))
+    }
+
+    if (url.pathname === '/api/integrations/dooray/mentions/projects') {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 참조는 계정 사용자만 확인할 수 있습니다.' })
+
+      if (request.method === 'GET') {
+        try {
+          const result = await listDoorayMentionProjects(await getDoorayApiConfig())
+          const availableIds = new Set(result.projects.map((project) => project.id))
+          let state = await readDoorayMentionState(user.id)
+          const selectedProjectIds = state.selectedProjectIds.filter((id) => availableIds.has(id))
+          // 프로젝트에서 제외되면 계정에 저장된 선택에서도 제거한다. 새로 초대된 프로젝트는
+          // 목록에만 나타나고 사용자가 직접 고르기 전까지 선택하지 않는다.
+          if (selectedProjectIds.length !== state.selectedProjectIds.length) {
+            state = await updateDoorayMentionState(user.id, (latestState) => ({
+              ...latestState,
+              selectedProjectIds: latestState.selectedProjectIds.filter((id) => availableIds.has(id)),
+            }))
+          }
+          return sendJson(response, 200, {
+            projects: result.projects,
+            selectedProjectIds: state.selectedProjectIds,
+            maxSelectedProjects: doorayMentionProjectLimit,
+          })
+        } catch (error) {
+          if (error instanceof DoorayTaskError) return sendJson(response, error.status, { error: error.message, code: error.code })
+          throw error
+        }
+      }
+
+      if (request.method === 'PUT') {
+        const body = await readJsonBody(request)
+        if (!Array.isArray(body.projectIds)) {
+          return sendJson(response, 400, { error: '저장할 프로젝트 목록을 지정해 주세요.' })
+        }
+        const selectedProjectIds = [...new Set(
+          body.projectIds.map((value) => String(value ?? '').trim().slice(0, 120)).filter(Boolean),
+        )].slice(0, doorayMentionProjectLimit)
+        await updateDoorayMentionState(user.id, (state) => ({ ...state, selectedProjectIds }))
+        return sendJson(response, 200, { selectedProjectIds })
+      }
+
+      return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
+    }
+
+    if (request.method === 'PUT' && url.pathname === '/api/integrations/dooray/mentions/preferences') {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 참조는 계정 사용자만 확인할 수 있습니다.' })
+      const preferences = normalizeDoorayMentionPreferences(await readJsonBody(request))
+      if (!preferences) return sendJson(response, 400, { error: '저장할 조회 조건이 올바르지 않습니다.' })
+      await updateDoorayMentionState(user.id, (state) => ({ ...state, preferences }))
+      return sendJson(response, 200, { preferences })
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/integrations/dooray/mentions/scan') {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 참조는 계정 사용자만 확인할 수 있습니다.' })
+      if (doorayMentionScanState(user.id).status === 'running') {
+        return sendJson(response, 409, { error: '이미 수집이 진행 중입니다.', code: 'SCAN_RUNNING' })
+      }
+      const body = await readJsonBody(request)
+      const storedState = await readDoorayMentionState(user.id)
+      const requestedProjectIds = Array.isArray(body.projectIds)
+        ? body.projectIds
+        : Array.isArray(body.projectCodes) ? body.projectCodes : storedState.selectedProjectIds
+      const projectIds = [...new Set(
+        requestedProjectIds.map((value) => String(value ?? '').trim()).filter(Boolean),
+      )].slice(0, doorayMentionProjectLimit)
+      if (projectIds.length === 0) {
+        return sendJson(response, 400, {
+          error: '탐색할 프로젝트를 하나 이상 선택해 주세요.',
+          code: 'PROJECT_SELECTION_REQUIRED',
+        })
+      }
+      let range
+      try {
+        range = normalizeDoorayMentionRange({ since: body.since, until: body.until })
+        const config = await getDoorayApiConfig()
+        if (!config.apiKey) {
+          throw new DoorayTaskError('CONFIG_UNAVAILABLE', 'Dooray API 키가 설정되어 있지 않습니다.', 503)
+        }
+      } catch (error) {
+        if (error instanceof DoorayTaskError) return sendJson(response, error.status, { error: error.message, code: error.code })
+        throw error
+      }
+      const includeAssigned = body.includeAssigned !== false
+      const options = {
+        since: range.since,
+        until: range.until,
+        projectIds,
+        includeBody: body.includeBody !== false,
+        includeComments: body.includeComments !== false,
+        includeAssigned,
+        // 이전 클라이언트는 담당과 참조를 includeAssigned 하나로 보냈다.
+        includeCc: body.includeCc === undefined ? includeAssigned : body.includeCc !== false,
+      }
+      const scan = updateDoorayMentionScan(user.id, {
+        status: 'running',
+        phase: 'me',
+        done: 0,
+        total: 0,
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        error: null,
+      })
+      // 수집은 수 분이 걸릴 수 있어 응답을 붙잡지 않고 진행 상황은 조회 API로 노출한다.
+      void runDoorayMentionScan(user.id, options)
+      return sendJson(response, 202, { scan, ...options })
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/integrations/dooray/mentions/acknowledgements') {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 참조는 계정 사용자만 확인할 수 있습니다.' })
+      const body = await readJsonBody(request)
+      const keys = Array.isArray(body.keys)
+        ? [...new Set(body.keys.map((value) => String(value ?? '').trim()).filter(Boolean))]
+        : []
+      if (keys.length === 0) return sendJson(response, 400, { error: '확인할 항목을 지정해 주세요.' })
+      let nextState
+      try {
+        nextState = await updateDoorayMentionState(user.id, (state) => {
+          const known = new Set(state.items.map((item) => item.key))
+          const unknown = keys.filter((key) => !known.has(key))
+          if (unknown.length > 0) {
+            throw new DoorayTaskError('MENTION_NOT_FOUND', '수집 결과에 없는 항목입니다.', 404)
+          }
+          const acknowledgements = { ...state.acknowledgements }
+          const acknowledgedAt = new Date().toISOString()
+          for (const key of keys) {
+            if (body.acknowledged === false) delete acknowledgements[key]
+            else acknowledgements[key] = { acknowledgedAt }
+          }
+          return { ...state, acknowledgements }
+        })
+      } catch (error) {
+        if (error instanceof DoorayTaskError) {
+          return sendJson(response, error.status, { error: error.message, code: error.code })
+        }
+        throw error
+      }
+      return sendJson(response, 200, doorayMentionResponse(nextState, user.id))
     }
 
     if (request.method === 'GET' && url.pathname === '/api/integrations/aionui/subscription-usage') {

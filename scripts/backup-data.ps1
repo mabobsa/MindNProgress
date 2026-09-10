@@ -5,6 +5,7 @@
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Get-FullPath([string]$Path, [string]$BasePath) {
   if ([System.IO.Path]::IsPathRooted($Path)) {
@@ -142,26 +143,55 @@ function Get-Sha256([string]$Path) {
   return ([System.BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
 }
 
-function Test-BackupPayload([string]$ExtractedRoot) {
-  $manifestPath = Join-Path $ExtractedRoot 'manifest.json'
-  if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-    throw "백업 검증에 필요한 manifest.json이 없습니다."
-  }
-  $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-  foreach ($entry in $manifest.files) {
-    $relativePath = [string]$entry.path
-    $filePath = Join-Path $ExtractedRoot ($relativePath.Replace('/', '\'))
-    if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
-      throw "백업 파일이 누락되었습니다: $relativePath"
+function Test-BackupArchive([string]$Path) {
+  $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+  try {
+    $archiveEntries = New-Object 'System.Collections.Generic.Dictionary[string, System.IO.Compression.ZipArchiveEntry]' (
+      [System.StringComparer]::Ordinal
+    )
+    foreach ($archiveEntry in $archive.Entries) {
+      $relativePath = $archiveEntry.FullName.Replace('\', '/')
+      if ($archiveEntries.ContainsKey($relativePath)) {
+        throw "백업 파일 경로가 중복됩니다: $relativePath"
+      }
+      $archiveEntries.Add($relativePath, $archiveEntry)
     }
-    $file = Get-Item -LiteralPath $filePath
-    if ([long]$file.Length -ne [long]$entry.size) {
-      throw "백업 파일 크기가 일치하지 않습니다: $relativePath"
+    if (-not $archiveEntries.ContainsKey('manifest.json')) {
+      throw "백업 검증에 필요한 manifest.json이 없습니다."
     }
-    $hash = Get-Sha256 $filePath
-    if ($hash -ne ([string]$entry.sha256).ToLowerInvariant()) {
-      throw "백업 파일 해시가 일치하지 않습니다: $relativePath"
+    $reader = New-Object System.IO.StreamReader($archiveEntries['manifest.json'].Open())
+    try {
+      $manifest = $reader.ReadToEnd() | ConvertFrom-Json
+    } finally {
+      $reader.Dispose()
     }
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      foreach ($entry in $manifest.files) {
+        $relativePath = ([string]$entry.path).Replace('\', '/')
+        if (-not $archiveEntries.ContainsKey($relativePath)) {
+          throw "백업 파일이 누락되었습니다: $relativePath"
+        }
+        $file = $archiveEntries[$relativePath]
+        if ([long]$file.Length -ne [long]$entry.size) {
+          throw "백업 파일 크기가 일치하지 않습니다: $relativePath"
+        }
+        $stream = $file.Open()
+        try {
+          $hash = ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+          $stream.Dispose()
+        }
+        if ($hash -ne ([string]$entry.sha256).ToLowerInvariant()) {
+          throw "백업 파일 해시가 일치하지 않습니다: $relativePath"
+        }
+      }
+    } finally {
+      $sha256.Dispose()
+    }
+  } finally {
+    $archive.Dispose()
   }
 }
 
@@ -211,7 +241,6 @@ while (Test-Path -LiteralPath $archivePath) {
 
 $operationId = [Guid]::NewGuid().ToString('N')
 $stagingDirectory = Join-Path $dateDirectory ('.staging-' + $operationId)
-$verificationDirectory = Join-Path $dateDirectory ('.verify-' + $operationId)
 $partialArchive = $archivePath + '.partial.zip'
 $wasRunning = Test-MindNProgressRunning $resolvedProject
 $backupCompleted = $false
@@ -276,20 +305,20 @@ Git 커밋: $commit
   Write-Utf8File (Join-Path $stagingDirectory 'RESTORE.txt') $restoreGuide
 
   $payloadFiles = @(
-    Get-ChildItem -LiteralPath $stagingDirectory -Recurse -Force -File |
-      Where-Object { $_.Name -ne 'manifest.json' }
+    Get-ChildItem -LiteralPath $stagingDirectory -Recurse -Force -File
   )
-  $fileEntries = @()
   $totalBytes = [long]0
-  foreach ($file in $payloadFiles) {
-    $relativePath = Get-RelativeFilePath $file.FullName $stagingDirectory
-    $totalBytes += [long]$file.Length
-    $fileEntries += [ordered]@{
-      path = $relativePath
-      size = [long]$file.Length
-      sha256 = Get-Sha256 $file.FullName
+  $fileEntries = @(
+    foreach ($file in $payloadFiles) {
+      $relativePath = Get-RelativeFilePath $file.FullName $stagingDirectory
+      $totalBytes += [long]$file.Length
+      [ordered]@{
+        path = $relativePath
+        size = [long]$file.Length
+        sha256 = Get-Sha256 $file.FullName
+      }
     }
-  }
+  )
   $manifest = [ordered]@{
     formatVersion = 1
     product = 'MindNProgress'
@@ -306,14 +335,16 @@ Git 커밋: $commit
     ($manifest | ConvertTo-Json -Depth 8) + [Environment]::NewLine
   )
 
-  $archiveItems = @(
-    Get-ChildItem -LiteralPath $stagingDirectory -Force | ForEach-Object { $_.FullName }
+  Write-Output '[MindNProgress] 스냅샷을 Fastest 수준으로 압축합니다.'
+  [System.IO.Compression.ZipFile]::CreateFromDirectory(
+    $stagingDirectory,
+    $partialArchive,
+    [System.IO.Compression.CompressionLevel]::Fastest,
+    $false
   )
-  Compress-Archive -LiteralPath $archiveItems -DestinationPath $partialArchive -CompressionLevel Optimal
 
-  New-Item -ItemType Directory -Force -Path $verificationDirectory | Out-Null
-  Expand-Archive -LiteralPath $partialArchive -DestinationPath $verificationDirectory -Force
-  Test-BackupPayload $verificationDirectory
+  Write-Output '[MindNProgress] ZIP 내부 파일의 크기와 SHA-256을 검증합니다.'
+  Test-BackupArchive $partialArchive
   Move-Item -LiteralPath $partialArchive -Destination $archivePath
   $backupCompleted = $true
 
@@ -341,7 +372,6 @@ Git 커밋: $commit
   Write-Output "[MindNProgress] 파일 $($fileEntries.Count)개, 원본 $totalBytes 바이트, ZIP $($archive.Length) 바이트"
 } finally {
   Remove-SafeDirectory $stagingDirectory $backupRoot
-  Remove-SafeDirectory $verificationDirectory $backupRoot
   if ((Test-Path -LiteralPath $partialArchive) -and (Test-PathInside $partialArchive $backupRoot)) {
     Remove-Item -LiteralPath $partialArchive -Force
   }

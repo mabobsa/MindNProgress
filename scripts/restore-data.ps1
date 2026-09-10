@@ -115,7 +115,7 @@ function Test-BackupPayload([string]$ExtractedRoot) {
   if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     throw "백업에 manifest.json이 없습니다."
   }
-  $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
   if ([int]$manifest.formatVersion -ne 1 -or [string]$manifest.product -ne 'MindNProgress') {
     throw "지원하지 않는 MindNProgress 백업 형식입니다."
   }

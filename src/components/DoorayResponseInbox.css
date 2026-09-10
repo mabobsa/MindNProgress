@@ -1,0 +1,23 @@
+.dooray-response-inbox { flex: none; border-bottom: 1px solid var(--theme-border, #e8e4ec); font-size: 12px; }
+.dooray-response-toolbar { display: flex; align-items: center; gap: 10px; padding: 9px 20px; background: var(--theme-surface-soft, #f7f5fa); }
+.dooray-response-toolbar > span { flex: 1; color: var(--theme-text-muted, #837c92); }
+.dooray-response-inbox button, .dooray-response-request { border: 1px solid var(--theme-border, #ded7e7); border-radius: 6px; padding: 5px 9px; color: inherit; background: var(--theme-surface, #fff); cursor: pointer; font-size: 12px; }
+.dooray-response-inbox button:hover, .dooray-response-request:hover { background: var(--theme-surface-hover, #efecf5); }
+.dooray-response-request:disabled { opacity: .6; cursor: progress; }
+.dooray-response-request { margin-top: 6px; }
+.dooray-response-detail { padding: 10px 20px 14px; max-height: min(360px, 40vh); overflow: auto; }
+.dooray-response-picker { display: flex; align-items: center; gap: 8px; }
+.dooray-response-picker select { flex: 1; min-width: 0; }
+.dooray-response-inbox select { padding: 5px; max-width: 100%; border: 1px solid var(--theme-border, #ddd); border-radius: 6px; background: var(--theme-surface, #fff); color: inherit; }
+.dooray-response-heading, .dooray-response-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.dooray-response-heading a { margin-left: auto; color: inherit; }
+.dooray-response-proposal { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; padding: 12px; background: var(--theme-surface-soft, #f7f5fa); border-radius: 8px; }
+.dooray-response-error { color: #b54444; margin: 8px 20px; overflow-wrap: anywhere; }
+.dooray-response-detail .dooray-response-error { margin: 8px 0; }
+.dooray-response-settings { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding: 10px 20px; }
+.dooray-response-settings label { display: grid; gap: 4px; max-width: 280px; }
+.dooray-response-target { text-align: left; }
+.dooray-response-refine { display: flex; gap: 8px; align-items: end; margin-top: 12px; }
+.dooray-response-refine label { display: grid; gap: 5px; flex: 1; }
+.dooray-response-refine textarea { resize: vertical; min-height: 50px; border: 1px solid var(--theme-border, #ddd); border-radius: 6px; padding: 7px; font: inherit; color: inherit; background: var(--theme-surface, #fff); }
+@media (max-width: 600px) { .dooray-response-toolbar > span { display: none; } .dooray-response-toolbar { justify-content: space-between; } }

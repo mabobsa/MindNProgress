@@ -1,5 +1,6 @@
 import { createServer } from 'node:http'
 import { createGroupProjects, documentRoot, DOCUMENT_COORDINATOR_INSTRUCTION } from './lib/groupProjects.mjs'
+import { createDoorayResponseIntegration } from './lib/doorayResponseIntegration.mjs'
 import { AI_EXECUTION_APPROVAL_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -5463,6 +5464,17 @@ const groupProjects = createGroupProjects({
   delegations: aiDelegations, publicDelegation: delegationPublicView, runtimeSnapshot: aiConversationRuntimeSnapshot,
 })
 
+const doorayResponses = createDoorayResponseIntegration({
+  dataDirectory, readStoredRecord, writeStoredRecord, getDoorayApiConfig, listMaps, readMap, readDocumentLayout, groupProjects,
+  aionUiCandidateBaseUrls, fetchAionUiOn, resolveTargetMachineForUser, normalizeAionUiAgent, normalizeAiConversationRuntime,
+  conversationHomeMachineId, machineAccessibleByUser, listComments, saveMap, broadcastEvent, publicUser,
+  rememberAiConversationOrigin, persistAiConversationOrigins, readAionUiMessageContent,
+  mainMachineId: machineRegistry.mainMachineId,
+  user: (id) => users.find((user) => user.id === id && user.active !== false && canEdit(user)),
+  activeDelegations: (mapId, cardId) => [...aiDelegations.values()].some((delegation) => delegation.mapId === mapId
+    && delegation.targetCardId === cardId && !['completed', 'failed', 'superseded'].includes(delegation.state)),
+})
+
 const server = createServer(async (request, response) => {
   const loopbackLocation = localLoopbackRedirectLocation(request)
   if (loopbackLocation) {
@@ -5762,6 +5774,36 @@ const server = createServer(async (request, response) => {
       if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 참조는 계정 사용자만 확인할 수 있습니다.' })
       const state = await readDoorayMentionState(user.id)
       return sendJson(response, 200, doorayMentionResponse(state, user.id))
+    }
+
+    const doorayResponseRoute = url.pathname.match(/^\/api\/integrations\/dooray\/mentions\/responses(?:\/([a-zA-Z0-9_-]+)\/(retry|refine))?$/)
+    if (doorayResponseRoute) {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (!canEdit(user) || isPublicViewer(user)) return sendJson(response, 403, { error: '편집자만 AI 대응을 요청할 수 있습니다.' })
+      try {
+        if (request.method === 'GET' && !doorayResponseRoute[1]) {
+          return sendJson(response, 200, { jobs: await doorayResponses.list(user.id) })
+        }
+        if (request.method === 'POST' && doorayResponseRoute[1]) {
+          if (doorayResponseRoute[2] === 'refine') {
+            const body = await readJsonBody(request)
+            return sendJson(response, 202, { job: await doorayResponses.refine(user.id, doorayResponseRoute[1], body.hint) })
+          }
+          await doorayResponses.retry(user.id, doorayResponseRoute[1])
+          return sendJson(response, 202, { jobs: await doorayResponses.list(user.id) })
+        }
+        if (request.method === 'POST' && !doorayResponseRoute[1]) {
+          const body = await readJsonBody(request)
+          const state = await readDoorayMentionState(user.id)
+          const item = state.items.find((entry) => entry.key === body.itemKey)
+          if (!item) return sendJson(response, 404, { error: '수집 결과에 없는 참조입니다. 다시 수집해 주세요.' })
+          return sendJson(response, 202, await doorayResponses.start(user, item, body.settings ?? {}))
+        }
+        return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
+      } catch (error) {
+        return sendJson(response, error.status ?? 502, { error: error.message ?? 'AI 대응 요청에 실패했습니다.' })
+      }
     }
 
     if (url.pathname === '/api/integrations/dooray/mentions/projects') {
@@ -9332,6 +9374,10 @@ setInterval(() => {
 setInterval(() => {
   void pollAiDelegations().catch((error) => console.warn('[AI delegation poll]', error))
 }, aiDelegationPollIntervalMs).unref()
+
+setInterval(() => {
+  void doorayResponses.poll().catch((error) => console.warn('[Dooray response poll]', error.message))
+}, 3_000).unref()
 
 setInterval(() => {
   void ensureDailyBackups().catch((error) => console.warn('[Daily backup scheduler]', error))

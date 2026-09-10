@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './DoorayMentionsPanel.css'
+import { DoorayResponseInbox } from './DoorayResponseInbox'
+import { doorayResponseStatus, useDoorayResponses, type DoorayResponseJob } from './useDoorayResponses'
 
 export type DoorayMentionKind = 'mention-comment' | 'mention-body' | 'assigned' | 'cc' | 'related-comment'
 
@@ -190,7 +192,12 @@ function postGroupForItem(item: DoorayMentionItem, key = item.postId): PostGroup
   }
 }
 
-export function DoorayMentionsPanel({ clientId, onClose }: { clientId: string; onClose: () => void }) {
+export function DoorayMentionsPanel({ clientId, userId, onClose, onOpenConversation, onOpenCard }: {
+  clientId: string; userId: string; onClose: () => void
+  onOpenConversation: (job: DoorayResponseJob) => void
+  onOpenCard: (mapId: string, cardId: string) => void
+}) {
+  const responses = useDoorayResponses(clientId, userId)
   const today = useMemo(() => toDateInputValue(new Date()), [])
   const [since, setSince] = useState(() => {
     const start = new Date()
@@ -740,6 +747,7 @@ export function DoorayMentionsPanel({ clientId, onClose }: { clientId: string; o
           </label>
         </div>
 
+        <DoorayResponseInbox response={responses} onOpenConversation={onOpenConversation} onOpenCard={onOpenCard} />
         <div className="dooray-mentions-list">
           {loading && <p className="dooray-mentions-empty">불러오는 중…</p>}
           {!loading && groups.length === 0 && (
@@ -787,6 +795,11 @@ export function DoorayMentionsPanel({ clientId, onClose }: { clientId: string; o
                           <a href={item.url} target="_blank" rel="noreferrer noopener">열기</a>
                         </div>
                         {item.excerpt && <p className="dooray-mentions-excerpt">{item.excerpt}</p>}
+                        <button type="button" className="dooray-response-request" disabled={responses.pendingKeys.has(item.key)}
+                          onClick={() => void responses.request(item.key)}>
+                          {responses.pendingKeys.has(item.key) ? '요청 준비 중…' : 'AI 대응 제안'}
+                          {responses.jobs.find((job) => job.itemKey === item.key) && ` · ${doorayResponseStatus[responses.jobs.find((job) => job.itemKey === item.key)!.status] ?? ''}`}
+                        </button>
                       </div>
                     </li>
                   ))}

@@ -8497,7 +8497,19 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         </div>
       )}
       {doorayMentionsOpen && mode === 'editor' && (
-        <DoorayMentionsPanel clientId={CLIENT_ID} onClose={() => setDoorayMentionsOpen(false)} />
+        <DoorayMentionsPanel clientId={CLIENT_ID} userId={user.id} onClose={() => setDoorayMentionsOpen(false)}
+          onOpenConversation={(job) => {
+            if (job.conversationId) openAiConversation(job.conversationId, job.route?.cardId ?? '', job.route?.mapId ?? '', job.homeMachineRole)
+          }}
+          onOpenCard={(mapId, cardId) => {
+            setDoorayMentionsOpen(false)
+            setSelectedGroupId(null)
+            pendingSelection.current = cardId
+            setViewMode('mindmap')
+            setTrashOpen(false)
+            if (mapId === activeMapId) setSelectedId(cardId)
+            else setActiveMapId(mapId)
+          }} />
       )}
       {sharedKnowledgeReviewOpen && mode === 'editor' && (
         <SharedKnowledgeReviewDialog

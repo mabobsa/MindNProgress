@@ -80,7 +80,7 @@ async function stopProcess(process) {
   })
 }
 
-test('지식 정리 대화는 임시 귀속만 유지하고 카드 대화와 영속 귀속을 변경하지 않는다', { timeout: 30_000 }, async () => {
+test('지식·문서 정리 대화는 임시 귀속만 유지하고 원본 카드 대화와 버전을 변경하지 않는다', { timeout: 30_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mindnprogress-ai-conversation-purpose-'))
   const conversations = new Map()
   const fakeAionUi = await startFakeAionUi(conversations)
@@ -206,6 +206,22 @@ test('지식 정리 대화는 임시 귀속만 유지하고 카드 대화와 영
       purpose: 'shared-knowledge-review',
     })
 
+    const sourceBytes = await readFile(path.join(dataDirectory, `${mapId}.json`))
+    const cleanupResponse = await fetch(`${baseUrl}/api/document-reconstructions/requests`, { method: 'POST', headers,
+      body: JSON.stringify({ mode: 'compact', mapIds: [mapId], baseline: 'v0.4', analysisOnly: true }),
+    })
+    assert.equal(cleanupResponse.status, 201)
+    const cleanup = await cleanupResponse.json()
+    assert.equal((await requestAttribution({ cardId: 'short-card', purpose: 'document-reconstruction', reconstructionRequestId: cleanup.id })).status, 403)
+    const cleanupAttributionResponse = await requestAttribution({ cardId: 'review-card', purpose: 'document-reconstruction', reconstructionRequestId: cleanup.id })
+    assert.equal(cleanupAttributionResponse.status, 201)
+    const cleanupAttribution = await cleanupAttributionResponse.json()
+    conversations.set('conversation-reconstruction', { ...conversations.get(reviewConversationId), id: 'conversation-reconstruction', name: '[문서 정리] 정리안 제안' })
+    const cleanupCompletion = await fetch(cleanupAttribution.completionUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId: 'conversation-reconstruction' }) })
+    assert.equal(cleanupCompletion.status, 200)
+    assert.equal((await cleanupCompletion.json()).linked, false)
+    assert.equal((await (await fetch(`${baseUrl}/api/document-reconstructions/requests/${cleanup.id}`, { headers })).json()).conversation.id, 'conversation-reconstruction')
+    assert.deepEqual(await readFile(path.join(dataDirectory, `${mapId}.json`)), sourceBytes)
     const reviewedMap = (await (await fetch(`${baseUrl}/api/maps/${mapId}`, { headers })).json()).map
     const reviewedCard = reviewedMap.nodes.find((node) => node.id === 'review-card')
     assert.equal(reviewedMap.version, linkedVersion)

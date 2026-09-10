@@ -1,29 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MindNodeData, AiConversationRuntime } from '../types/mindMap'
 import type { AiConversationExplicitTarget } from '../utils/aiConversationLaunch.mjs'
 import { buildGroupCoordinatorRequest, buildGroupDocumentRequest, buildGroupDocumentProposalRequest } from '../utils/aiApprovalInstructions.mjs'
+import { copyTextToClipboard } from '../utils/clipboardText.mjs'
+import { groupPageUrl } from '../utils/groupDeepLink.mjs'
+import { filterGroupOverviewRows, groupDelegationPresentation, groupOverviewRows, groupProjectDraftAfterRefresh } from '../utils/groupOverview.mjs'
+import type { GroupContext, GroupDelegation as Delegation, GroupDocument, GroupProject as Project } from '../utils/groupOverview.mjs'
+import { AiConversationRuntimeBadge } from './AiConversationRuntimeBadge'
+import { groupOverviewFilters, groupWaitingCategories } from '../utils/groupWaiting.mjs'
+import { GroupWaitingReasons, type GroupWaitingReviewInput } from './GroupWaitingReasons'
 import './GroupOverview.css'
 
-type Project = { version: number; coordinatorMapId: string | null; source: string; sourceVersion: string; objective: string; instructions: string }
-type GroupDocument = { id: string; title: string; version: number; root: { id: string; data: MindNodeData } | null; runtime: AiConversationRuntime | null; work: { total: number; done: number; waiting: number } }
-type Delegation = { id: string; mapId: string; targetCardId: string; targetCardLabel: string; state: string; displayState?: string; instructionPreview: string; childError?: string; parentError?: string; recoveryWakeError?: string; linkError?: string; createdAt: string; updatedAt: string; result?: string; workCompleted?: boolean; reportPending?: boolean; recovery?: { recoveryAvailable: boolean; reportRetryAvailable?: boolean; failureCategory?: string }; attemptHistory?: Array<{ at: string; reason: string; childError?: string; parentError?: string; result?: string }> }
-type GroupContext = { group: { id: string; name: string; mapIds: string[] }; project: Project; coordinator: GroupDocument | null; documents: GroupDocument[]; delegations: Delegation[]; guide: { coordinator: string } }
 export type GroupAiTarget = AiConversationExplicitTarget & { initialRequest: string }
 
-const runtimeLabels: Record<string, string> = { running: 'AI 실행 중', 'waiting-confirmation': 'AI 확인 대기', idle: 'AI 대기', unknown: 'AI 상태 확인 불가' }
-const delegationLabels: Record<string, string> = {
-  'recovery-dispatch-pending': '복구 요청 전달 확인 대기',
-  'waiting-usage-limit': '사용량 회복 대기', 'waiting-rate-limit': '요청 제한 해제 대기', 'parent-wake-failed': '총괄 보고 실패 · 확인 필요',
-  running: '문서 AI 실행 중', 'waiting-document-work': '하위 업무와 문서 검수 대기',
-  starting: '실행 준비', 'running-child': '문서 AI 실행 중', 'waiting-child': '문서 AI 실행 중', 'waiting-resource': '실행 자원 대기',
-  'waiting-child-resume': '문서 AI 재개 대기', 'waiting-parent': '총괄 보고 대기', 'waking-parent': '총괄 AI 검토 중',
-  completed: '실행 완료 · 검증 근거 확인', failed: '실행 실패', superseded: '후속 위임으로 이어짐',
-  'recovery-required': '복구 필요', 'integration-recovery-required': '통합 복구 필요', 'waiting-workspace': '작업공간 대기',
-  'waiting-integration-clean': '통합 준비 대기', resuming: '재개 중',
+const linked = (document: GroupDocument) => Boolean(document.root?.data.aiConversations?.length || document.root?.data.aiConversationId)
+function RuntimeStatus({ document }: { document: GroupDocument }) {
+  if (document.runtime?.state === 'running' || document.runtime?.state === 'waiting-confirmation') {
+    return <AiConversationRuntimeBadge runtime={document.runtime} />
+  }
+  return <span className="group-muted">{document.runtime?.state === 'idle' ? 'AI 대기' : linked(document) ? 'AI 상태 확인 불가' : '대화 미연결'}</span>
 }
-const delegationLabel = (item: Delegation) => item.workCompleted && item.reportPending
-  ? '작업 완료 · 총괄 보고 대기'
-  : delegationLabels[item.displayState ?? item.state] ?? item.state
+function DelegationStatus({ item }: { item?: Delegation | null }) {
+  const status = groupDelegationPresentation(item)
+  return <span className={`group-status ${status.tone}`}>{status.label}</span>
+}
+const formatTime = (value: string) => new Date(value).toLocaleString()
 
 async function request<T>(url: string, clientId: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', 'X-MNP-Client': clientId, ...options.headers } })
@@ -42,12 +42,20 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
   const [context, setContext] = useState<GroupContext | null>(null)
   const [draft, setDraft] = useState<Project | null>(null)
   const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
+  const [linkCopyState, setLinkCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
+  const linkCopyTimer = useRef<number | null>(null)
   const [coordinatorChoice, setCoordinatorChoice] = useState('')
   const [newTitle, setNewTitle] = useState('')
   const [newDescription, setNewDescription] = useState('')
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [panel, setPanel] = useState<'document' | 'criteria' | 'create'>('document')
+  const [selectedMapId, setSelectedMapId] = useState('')
+  const [selectedDelegationId, setSelectedDelegationId] = useState('')
+  const [detailTab, setDetailTab] = useState<'scope' | 'results' | 'history' | 'reasons'>('results')
+  const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState('all')
   const mounted = useRef(true)
   const draftBase = useRef<Project | null>(null)
   const loadSequence = useRef(0)
@@ -58,15 +66,13 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
       const value = await request<GroupContext>(baseUrl, clientId)
       if (!mounted.current || sequence !== loadSequence.current) return
       setContext(value)
-      setDraft((current) => {
-        const edited = current && draftBase.current && ['source', 'sourceVersion', 'objective', 'instructions'].some((key) => current[key as keyof Project] !== draftBase.current?.[key as keyof Project])
-        if (edited) return current
-        draftBase.current = value.project
-        return value.project
-      })
-      setError('')
+      const previousBase = draftBase.current
+      draftBase.current = value.project
+      // StrictMode의 updater 재호출에서도 동일한 기준을 사용한다.
+      setDraft((current) => groupProjectDraftAfterRefresh(current, previousBase, value.project))
+      setLoadError('')
     } catch (reason) {
-      if (mounted.current && sequence === loadSequence.current) setError(reason instanceof Error ? reason.message : '그룹을 불러오지 못했습니다.')
+      if (mounted.current && sequence === loadSequence.current) setLoadError(reason instanceof Error ? reason.message : '그룹을 불러오지 못했습니다.')
     }
   }, [baseUrl, clientId])
   useEffect(() => {
@@ -78,11 +84,30 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
     return () => { mounted.current = false; window.clearInterval(timer); window.removeEventListener('focus', onFocus) }
   }, [refresh, membershipKey])
 
+  useEffect(() => () => {
+    if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current)
+  }, [])
+
+  const copyPageLink = async () => {
+    if (linkCopyState === 'copying') return
+    if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current)
+    setLinkCopyState('copying')
+    try {
+      const health = await request<{ publicBaseUrl: string }>('/api/health', clientId)
+      await copyTextToClipboard(groupPageUrl(health.publicBaseUrl, groupId))
+      if (!mounted.current) return
+      setLinkCopyState('copied')
+      linkCopyTimer.current = window.setTimeout(() => setLinkCopyState('idle'), 2500)
+    } catch {
+      if (mounted.current) setLinkCopyState('failed')
+    }
+  }
+
   const changed = Boolean(draft && context && ['source', 'sourceVersion', 'objective', 'instructions'].some((key) => draft[key as keyof Project] !== context.project[key as keyof Project]))
   const stale = draft && context && draft.version !== context.project.version
   const updateField = (key: 'source' | 'sourceVersion' | 'objective' | 'instructions', value: string) => setDraft((current) => current ? { ...current, [key]: value } : current)
   const save = async (prepare = false) => {
-    if (!draft) return
+    if (!draft || !editable || busy || stale || loadError || (!prepare && !changed)) return
     setBusy(true); setError(''); setNotice('')
     try {
       const value = await request<GroupContext>(baseUrl, clientId, { method: 'PATCH', body: JSON.stringify({
@@ -93,9 +118,9 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
       loadSequence.current++
       draftBase.current = value.project
       setContext(value); setDraft(value.project); setNotice(prepare ? '총괄 문서를 연결했습니다. AI에게 진행 방향을 제안받고 승인 후 실행할 수 있습니다.' : '그룹 정보를 저장했습니다.')
-      setSettingsOpen(false)
+      setLoadError('')
       onLibraryChanged()
-    } catch (reason) { if (mounted.current) setError(reason instanceof Error ? reason.message : '저장하지 못했습니다.') }
+    } catch (reason) { if (mounted.current) setError(`기획 기준: ${reason instanceof Error ? reason.message : '저장하지 못했습니다.'}`) }
     finally { if (mounted.current) setBusy(false) }
   }
   function aiTarget(document: GroupDocument, instruction?: string): GroupAiTarget | null {
@@ -118,22 +143,46 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
     if (target) onConversations(target)
   }
   const createDocument = async () => {
-    if (!context || !newTitle.trim()) return
-    setBusy(true); setError('')
+    if (!context || !newTitle.trim() || !editable || busy || changed || stale || loadError) return
+    setBusy(true); setError(''); setNotice('')
     try {
       await request(baseUrl + '/documents', clientId, { method: 'POST', body: JSON.stringify({ baseVersion: context.project.version, title: newTitle.trim(), description: newDescription }) })
       if (!mounted.current) return
       setNewTitle(''); setNewDescription(''); setNotice('문서와 최상위 카드를 만들었습니다. 담당 범위를 확인한 뒤 위임하세요.')
       await refresh(); onLibraryChanged()
-    } catch (reason) { if (mounted.current) setError(reason instanceof Error ? reason.message : '문서를 생성하지 못했습니다.') }
+    } catch (reason) { if (mounted.current) setError(`문서 추가: ${reason instanceof Error ? reason.message : '문서를 생성하지 못했습니다.'}`) }
     finally { if (mounted.current) setBusy(false) }
   }
-  const documents = context?.documents.filter((item) => item.id !== context.project.coordinatorMapId) ?? []
+  const rows = groupOverviewRows(context)
+  const documents = rows.filter((row) => row.document)
+  const visibleRows = filterGroupOverviewRows(rows, query, statusFilter)
+  const selected = visibleRows.find((row) => row.mapId === selectedMapId) ?? visibleRows[0] ?? null
+  const selectedDocument = selected?.document
+  const delegation = selected?.delegations.find((item) => item.id === selectedDelegationId) ?? selected?.latest
   const coordinator = context?.coordinator
-  const linked = (document: GroupDocument) => Boolean(document.root?.data.aiConversations?.length || document.root?.data.aiConversationId)
-  const aiDisabled = busy || changed || Boolean(stale)
+  const aiDisabled = busy || changed || Boolean(stale) || Boolean(loadError)
+  async function reviewWaiting(input: GroupWaitingReviewInput): Promise<boolean> {
+    if (!context || !editable || aiDisabled || !context.waitingReviewSupported) return false
+    const target = context.documents.find((item) => item.id === input.mapId)
+    if (!target) return false
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const value = await request<GroupContext>(baseUrl, clientId, { method: 'PATCH', body: JSON.stringify({ baseVersion: context.project.version, baseWaitingReviewVersion: context.project.waitingReviewVersion ?? 0, waitingReview: input }) })
+      if (!mounted.current) return false
+      loadSequence.current++; draftBase.current = value.project
+      setContext(value); setDraft(value.project); setLoadError('')
+      // 분류 변경으로 현재 필터에서 사라져도 다른 문서를 조용히 선택하지 않는다.
+      setStatusFilter('all'); setSelectedMapId(input.mapId)
+      setNotice(`${target.title}: 대기 분류를 저장했습니다. 원문·대기 상태·업무 진행률은 변경하지 않았습니다.`)
+      return true
+    } catch (reason) {
+      await refresh()
+      if (mounted.current) setError(`${target.title} 대기 분류: ${reason instanceof Error ? reason.message : '저장하지 못했습니다.'}`)
+      return false
+    } finally { if (mounted.current) setBusy(false) }
+  }
   async function delegationAction(item: Delegation, action: 'refresh' | 'recover' | 'retry-report') {
-    if (!context || !coordinator) return
+    if (!context || !coordinator || !editable || aiDisabled) return
     const target = context.documents.find((document) => document.id === item.mapId)
     if (!target) return
     if (action !== 'refresh' && !window.confirm(action === 'recover'
@@ -147,62 +196,101 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
         ...(action === 'recover' ? { instruction: '사용자가 총괄 화면에서 기존 승인 범위의 재개를 요청했습니다. 최신 그룹 기준과 원래 사용자 승인 근거·계획을 먼저 대조하세요. 같은 대화에서 이미 진행된 문서·하위 위임·검수 결과를 확인하고, 완료된 작업은 반복하지 말고 결과를 보고하세요. 남은 작업만 기존 승인 범위에서 이어가며 기준·방향·범위가 달라졌으면 제안 후 재승인을 기다리세요. 새 작업공간을 임의 점유하거나 새 위임으로 우회하지 마세요.' } : {}),
       }) })
       await refresh()
-      setNotice(action === 'refresh' ? '실행 요청 없이 기존 위임 상태를 확인했습니다. 다른 턴에서 이어진 작업은 재개 기능으로 기존 결과부터 확인할 수 있습니다.' : action === 'recover' ? '기존 대화에 재개 요청을 전달했습니다. 완료된 작업은 재검토하고 미완료 부분만 이어갑니다.' : '결과 재전달을 접수했습니다. 하위 작업은 재실행하지 않습니다.')
+      if (mounted.current) setNotice(`${target.title}: ${action === 'refresh' ? '실행 요청 없이 기존 위임 상태를 확인했습니다.' : action === 'recover' ? '기존 대화에 재개 요청을 전달했습니다. 완료된 작업은 확인하고 미완료 부분만 이어갑니다.' : '결과 재전달을 접수했습니다. 하위 작업은 재실행하지 않습니다.'}`)
     } catch (reason) {
       await refresh()
-      setError(reason instanceof Error ? reason.message : '위임 상태를 처리하지 못했습니다.')
-    } finally { setBusy(false) }
+      if (mounted.current) setError(`${target.title}: ${reason instanceof Error ? reason.message : '위임 상태를 처리하지 못했습니다.'}`)
+    } finally { if (mounted.current) setBusy(false) }
   }
 
   return <section className="group-overview" aria-label={`${name} 그룹 개요`}>
-    <header className="group-overview-header"><div><small>그룹 · 기획과 개발</small><h1>{name}</h1><p>기획 기준과 담당 범위를 공유하고, 문서별 분석·개발 결과를 모읍니다.</p></div><button onClick={() => void refresh()} disabled={busy}>새로고침</button></header>
-    {error && <div className="group-message error" role="alert">{error}</div>}
-    {notice && <div className="group-message" role="status">{notice}</div>}
-    {!context || !draft ? <p aria-live="polite">그룹 정보를 불러오는 중…</p> : <>
-      <section className="group-project-card">
-        <div className="group-section-title"><h2>기획 기준</h2>{editable && <button onClick={() => setSettingsOpen((current) => !current)}>{settingsOpen ? '편집 접기' : '기준 편집'}</button>}</div>
-        {editable && (settingsOpen || !coordinator) ? <form onSubmit={(event) => { event.preventDefault(); void save() }}>
-          <div className="group-source-fields"><label>원본 링크 또는 파일 경로<input value={draft.source} maxLength={4096} onChange={(event) => updateField('source', event.target.value)} placeholder="기획서 업무 링크 또는 AI가 읽을 수 있는 파일 경로" /></label><label>기준 버전<input value={draft.sourceVersion} maxLength={240} onChange={(event) => updateField('sourceVersion', event.target.value)} placeholder="예: v0.3" /></label></div>
-          <label>전체 목표<textarea value={draft.objective} maxLength={10000} rows={3} onChange={(event) => updateField('objective', event.target.value)} placeholder="완성할 사용자 흐름과 개발 범위" /></label>
-          <label>공통 지침<textarea value={draft.instructions} maxLength={20000} rows={3} onChange={(event) => updateField('instructions', event.target.value)} placeholder="공통 제약, 기존 구현 활용 기준, 외부 대기와 완료 조건" /></label>
-          {stale && <p className="group-message error">다른 곳에서 그룹 설정을 변경했습니다. 작성 중인 내용을 확인한 뒤 최신 내용을 불러오세요. <button type="button" onClick={() => { if (window.confirm('작성 중인 그룹 설정을 최신 저장 내용으로 바꿀까요?')) { draftBase.current = context.project; setDraft(context.project) } }}>최신 내용 불러오기</button></p>}
-          <div className="group-actions"><button type="submit" disabled={busy || Boolean(stale) || !changed}>기준 저장</button>{changed && <small>AI를 시작하기 전에 변경 내용을 저장해 주세요.</small>}</div>
-        </form> : <div className="group-project-summary"><p><strong>{context.project.sourceVersion || '버전 미등록'}</strong> · {context.project.source || '기획 원본을 등록해 주세요.'}</p><p>{context.project.objective || '전체 목표를 등록해 주세요.'}</p>{context.project.instructions && <details><summary>공통 지침</summary><p>{context.project.instructions}</p></details>}</div>}
-      </section>
-      <section className="group-project-card">
-        <div className="group-section-title"><h2>총괄 AI</h2>{coordinator && <span className="group-badge">{coordinator.runtime ? runtimeLabels[coordinator.runtime.state] ?? 'AI 상태 확인 불가' : linked(coordinator) ? 'AI 상태 확인 불가' : '대화 미연결'}</span>}</div>
-        {coordinator ? <><p>원본 분석, 문서 분할, 요구사항 소유권과 실행 순서를 관리합니다. 결정과 검증 근거는 <button className="group-text-button" onClick={() => onNavigate(coordinator.id, coordinator.root?.id)}>{coordinator.title}</button>에 기록합니다.</p>
-          <div className="group-actions">{editable && <button className="primary" disabled={aiDisabled} onClick={() => launch(coordinator)}>총괄 AI 대화 시작</button>}{linked(coordinator) && <button onClick={() => openConversations(coordinator)}>연결된 대화 열기</button>}<button onClick={() => onNavigate(coordinator.id, coordinator.root?.id)}>통합 관리 문서 열기</button></div></>
-          : <><p>통합 관리 문서에 총괄 대화와 전역 요구사항 원장을 연결합니다.</p>{editable && <div className="group-actions"><select aria-label="통합 관리 문서 선택" value={coordinatorChoice} onChange={(event) => setCoordinatorChoice(event.target.value)}><option value="">새 통합 관리 문서 만들기</option>{context.documents.map((document) => <option key={document.id} value={document.id}>{document.title}</option>)}</select><button className="primary" disabled={busy || Boolean(stale)} onClick={() => void save(true)}>총괄 준비</button></div>}</>}
-      </section>
-      <section className="group-project-card">
-        <div className="group-section-title"><h2>담당 문서 <span>{documents.length}</span></h2><small>문서를 그룹으로 드래그하여 추가</small></div>
-        <p className="group-muted">전체 방향 승인 후에도 문서별 실행 계획을 사용자에게 제안하고 승인받습니다. 업무 카드 집계와 요구사항 검증 현황은 별도로 확인합니다.</p>
-        {documents.length === 0 ? <div className="group-empty">문서를 드래그해 넣거나 총괄 AI에게 기획 분석과 문서 구성을 요청하세요.</div> : <div className="group-document-list">{documents.map((document) => {
-          const latest = context.delegations.find((item) => item.mapId === document.id)
-          return <article key={document.id} className="group-document-row"><div className="group-document-heading"><button className="group-text-button" onClick={() => onNavigate(document.id, document.root?.id)}>{document.title}</button><span className="group-badge">{document.runtime ? runtimeLabels[document.runtime.state] ?? 'AI 상태 확인 불가' : linked(document) ? 'AI 상태 확인 불가' : '대화 미연결'}</span></div>
-            <p className="group-scope">{document.root?.data.description || '담당 범위가 비어 있습니다. 최상위 카드에서 작성해 주세요.'}</p>
-            <div className="group-row-meta"><span>하위 업무 {document.work.done}/{document.work.total} 완료 · 대기 {document.work.waiting}개</span>{latest && <span>{delegationLabel(latest)}</span>}</div>
-            <div className="group-actions"><button onClick={() => onNavigate(document.id, document.root?.id)}>최상위 카드 열기</button>{linked(document) && <button onClick={() => openConversations(document)}>AI 대화</button>}{editable && coordinator && <button disabled={aiDisabled || !document.root} onClick={() => launch(coordinator, buildGroupDocumentProposalRequest({ mapId: document.id, cardId: document.root?.id ?? '', title: document.title }))}>총괄 AI에 위임 제안 요청</button>}</div>
-          </article>
-        })}</div>}
-        {editable && <details className="group-new-document"><summary>문서 직접 추가</summary><form onSubmit={(event) => { event.preventDefault(); void createDocument() }}><label>문서 이름<input value={newTitle} maxLength={80} required onChange={(event) => setNewTitle(event.target.value)} /></label><label>최상위 카드의 담당 범위와 완료 조건<textarea value={newDescription} maxLength={100000} rows={4} onChange={(event) => setNewDescription(event.target.value)} /></label><button disabled={busy || !newTitle.trim()}>문서 만들기</button></form></details>}
-      </section>
-      <section className="group-project-card"><div className="group-section-title"><h2>문서 위임과 결과</h2><small>{context.delegations.length}건</small></div>
-        <p className="group-muted">사용량 제한은 실행 실패와 구분합니다. 작업 재개는 기존 승인 범위에서만 수행하며, 보고 재시도는 하위 작업을 다시 실행하지 않습니다.</p>
-        {context.delegations.length === 0 ? <p className="group-muted">총괄 AI가 문서 루트에 위임하면 실행 상태와 결과가 여기에 표시됩니다.</p> : context.delegations.map((item) => <details className="group-delegation" key={item.id}>
-          <summary><strong>{item.targetCardLabel}</strong><span>{delegationLabel(item)}</span></summary>
-          <p>{item.instructionPreview}</p><p className="group-muted">마지막 상태 변경: {new Date(item.updatedAt ?? item.createdAt).toLocaleString()}</p>
-          {(item.childError || item.parentError || item.linkError || item.recoveryWakeError) && <p className="group-message error">{item.childError || item.parentError || item.linkError || item.recoveryWakeError}</p>}
-          {item.result && <><small>{item.workCompleted ? '실행 결과 요약 · 요구사항 검증 근거는 문서에서 확인' : '중단 시점 결과 · 완료 근거가 아닙니다'}</small><pre>{item.result}</pre></>}
-          <div className="group-actions"><button onClick={() => onNavigate(item.mapId, item.targetCardId)}>문서와 검증 근거 확인</button>
-            {editable && item.displayState && <button disabled={aiDisabled} onClick={() => void delegationAction(item, 'refresh')}>상태 다시 확인</button>}
-            {editable && item.displayState && item.recovery?.recoveryAvailable && <button disabled={aiDisabled} onClick={() => void delegationAction(item, 'recover')}>승인 범위 작업 재개</button>}
-            {editable && item.recovery?.reportRetryAvailable && <button disabled={aiDisabled} onClick={() => void delegationAction(item, 'retry-report')}>결과 전달 재시도</button>}
+    <header className="group-overview-header"><div className="group-heading"><small>그룹 · 총괄 AI</small><div className="group-page-title"><h1>{name}</h1>
+      <button type="button" className={`group-link-copy-button ${linkCopyState}`} onClick={() => void copyPageLink()} disabled={linkCopyState === 'copying'} aria-label="총괄 AI 페이지 URL 복사" title={linkCopyState === 'copied' ? '링크가 복사되었습니다' : '총괄 AI 페이지 URL 복사'}>
+        <svg className="icon" width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">{linkCopyState === 'copied' ? <path d="m5 12 4 4L19 6" /> : <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>}</svg>
+      </button>
+    </div></div><div className="group-actions group-header-actions">
+      {coordinator ? <><RuntimeStatus document={coordinator} />{editable && <button className="primary" disabled={aiDisabled || !coordinator.root} onClick={() => launch(coordinator)}>총괄 AI 대화 시작</button>}{linked(coordinator) && <button onClick={() => openConversations(coordinator)}>연결된 대화</button>}<button onClick={() => onNavigate(coordinator.id, coordinator.root?.id)}>통합 관리 문서</button></>
+        : context && <button onClick={() => setPanel('criteria')}>총괄 {editable ? '설정' : '미연결'}</button>}
+      <button onClick={() => void refresh()} disabled={busy}>새로고침</button>
+    </div></header>
+    {!context || !draft ? <div className="group-empty" aria-live="polite">{loadError ? '그룹 정보를 불러오지 못했습니다. 새로고침으로 다시 시도해 주세요.' : '그룹 정보를 불러오는 중…'}</div> : <>
+      <div className="group-criteria-strip">
+        <button aria-pressed={panel === 'criteria'} onClick={() => setPanel(panel === 'criteria' ? 'document' : 'criteria')}>기획 기준{changed ? ' · 미저장' : ''}</button>
+        <strong>{context.project.sourceVersion || '버전 미등록'}</strong><span title={context.project.objective}>{context.project.objective || '전체 목표를 등록해 주세요.'}</span>
+      </div>
+      <div className="group-master-detail">
+        <section className="group-list-panel" aria-label="담당 문서 목록">
+          <div className="group-panel-heading"><h2>담당 문서 <span>{documents.length}</span></h2>{editable && <button aria-pressed={panel === 'create'} onClick={() => setPanel('create')}>문서 추가</button>}</div>
+          <div className="group-list-tools">
+            <input type="search" aria-label="담당 문서 검색" placeholder="문서 검색" value={query} onChange={(event) => setQuery(event.target.value)} />
+            <select className="group-status-filter" aria-label="문서 상태 필터" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPanel('document'); if (event.target.value !== 'all') setDetailTab('reasons') }}>{groupOverviewFilters.map((filter) => <option key={filter.id} value={filter.id}>{filter.label} · {filter.id === 'all' ? rows.length : rows.filter((row) => row.filters.includes(filter.id)).length}문서</option>)}</select>
+            <small className="group-filter-explanation">문서 수 기준 · 한 문서가 여러 분류에 포함될 수 있습니다.</small>
           </div>
-          {!!item.attemptHistory?.length && <details><summary>이전 실행·복구 이력 {item.attemptHistory.length}건</summary>{item.attemptHistory.map((attempt, index) => <div key={index}><p>{new Date(attempt.at).toLocaleString()} · {attempt.reason}</p>{(attempt.childError || attempt.parentError) && <p>{attempt.childError || attempt.parentError}</p>}{attempt.result && <pre>{attempt.result}</pre>}</div>)}</details>}
-        </details>)}
-      </section>
+          <div className="group-document-list">
+            {!visibleRows.length && <p className="group-empty">{rows.length ? '조건에 맞는 문서가 없습니다.' : '왼쪽 보관함에서 문서를 그룹으로 드래그하거나 문서를 추가하세요.'}</p>}
+            {visibleRows.map((row) => <button key={row.mapId} className="group-document-row" data-map-id={row.mapId} aria-pressed={panel === 'document' && selected?.mapId === row.mapId} onClick={() => { setSelectedMapId(row.mapId); setSelectedDelegationId(''); setPanel('document') }}>
+              <span className="group-document-heading"><strong>{row.title}</strong>{row.document ? <RuntimeStatus document={row.document} /> : <span className="group-muted">이전 소속 · 이력</span>}</span>
+              <span className="group-row-meta">{row.document ? `하위 업무 ${row.document.work.done}/${row.document.work.total} 완료 · 대기 업무 ${row.document.work.waiting}개` : `이전 위임 ${row.delegations.length}건`}</span>
+              <DelegationStatus item={row.latest} />
+              {row.attention && <span className="group-reason-tags">{row.aiAttention && <span className="group-status warning">AI 확인·복구</span>}{row.filters.includes('blocking') && <span className="group-status danger">현재 범위 차단</span>}{row.filters.includes('deferred') && <span className="group-status">예정된 외부 대기</span>}{groupWaitingCategories.filter((category) => row.filters.includes(category.id)).map((category) => <span className="group-status" key={category.id}>{category.label}</span>)}{row.filters.includes('unreviewed') && <span className="group-status">범위 영향 미확인</span>}</span>}
+            </button>)}
+          </div>
+          <div className="group-list-note">업무 카드 집계이며 요구사항 검증 완료율은 아닙니다.{rows.length > documents.length && ' 이전 소속 문서의 위임 이력도 표시합니다.'}</div>
+        </section>
+        <section className="group-detail-panel" aria-label={panel === 'criteria' ? '기획 기준 상세' : panel === 'create' ? '문서 추가' : '문서 상세'}>
+          {panel === 'criteria' ? <>
+            <div className="group-panel-heading"><h2>기획 기준</h2><button onClick={() => setPanel('document')}>문서로 돌아가기</button></div>
+            <div className="group-detail-scroll">
+              <p className="group-muted">총괄 AI와 문서 AI가 공유하는 기준입니다. 저장만으로 AI 작업이 실행되지는 않습니다.</p>
+              {editable ? <form id="group-criteria-form" onSubmit={(event) => { event.preventDefault(); void save() }}>
+                <fieldset disabled={busy}><div className="group-source-fields"><label>원본 링크 또는 파일 경로<input value={draft.source} maxLength={4096} onChange={(event) => updateField('source', event.target.value)} placeholder="기획서 업무 링크 또는 AI가 읽을 수 있는 파일 경로" /></label><label>기준 버전<input value={draft.sourceVersion} maxLength={240} onChange={(event) => updateField('sourceVersion', event.target.value)} placeholder="예: v0.3" /></label></div>
+                <label>전체 목표<textarea value={draft.objective} maxLength={10000} rows={5} onChange={(event) => updateField('objective', event.target.value)} placeholder="완성할 사용자 흐름과 개발 범위" /></label>
+                <label>공통 지침<textarea value={draft.instructions} maxLength={20000} rows={8} onChange={(event) => updateField('instructions', event.target.value)} placeholder="공통 제약, 기존 구현 활용 기준, 외부 대기와 완료 조건" /></label></fieldset>
+              </form> : <><h3>원본 · {context.project.sourceVersion || '버전 미등록'}</h3><p className="group-full-text">{context.project.source || '원본 미등록'}</p><h3>전체 목표</h3><p className="group-full-text">{context.project.objective || '목표 미등록'}</p><h3>공통 지침</h3><p className="group-full-text">{context.project.instructions || '지침 미등록'}</p></>}
+              <div className="group-coordinator-settings"><h3>총괄 문서</h3>{coordinator ? <p>결정과 검증 근거는 <button className="group-text-button" onClick={() => onNavigate(coordinator.id, coordinator.root?.id)}>{coordinator.title}</button>에 기록합니다.</p> : <><p>통합 관리 문서에 총괄 대화와 전역 요구사항 원장을 연결합니다.</p>{editable && <label>통합 관리 문서 선택<select value={coordinatorChoice} disabled={busy} onChange={(event) => setCoordinatorChoice(event.target.value)}><option value="">새 통합 관리 문서 만들기</option>{context.documents.map((document) => <option key={document.id} value={document.id}>{document.title}</option>)}</select></label>}</>}</div>
+            </div>
+            {editable && <div className="group-detail-actions"><button type="submit" form="group-criteria-form" className="primary" disabled={busy || Boolean(stale) || Boolean(loadError) || !changed}>기준 저장</button>{!coordinator && <button disabled={busy || Boolean(stale) || Boolean(loadError)} onClick={() => void save(true)}>기준 저장 · 총괄 준비</button>}</div>}
+          </> : panel === 'create' && editable ? <>
+            <div className="group-panel-heading"><h2>문서 추가</h2><button onClick={() => setPanel('document')}>문서로 돌아가기</button></div>
+            <div className="group-detail-scroll"><p className="group-muted">문서와 최상위 카드만 만듭니다. AI 위임은 별도로 제안받고 승인합니다.</p><form id="group-create-form" onSubmit={(event) => { event.preventDefault(); void createDocument() }}><fieldset disabled={busy}><label>문서 이름<input value={newTitle} maxLength={80} required onChange={(event) => setNewTitle(event.target.value)} /></label><label>최상위 카드의 담당 범위와 완료 조건<textarea value={newDescription} maxLength={100000} rows={12} onChange={(event) => setNewDescription(event.target.value)} /></label></fieldset></form></div>
+            <div className="group-detail-actions"><button type="submit" form="group-create-form" className="primary" disabled={aiDisabled || !newTitle.trim()}>문서 만들기</button></div>
+          </> : selected ? <>
+            <div className="group-panel-heading group-detail-heading"><div><h2>{selected.title}</h2><small>{selectedDocument ? '최상위 카드의 담당 범위와 실행 기록' : '현재 그룹에서 제외된 문서 · 위임 이력 읽기 전용'}</small></div>{selectedDocument && <RuntimeStatus document={selectedDocument} />}</div>
+            <nav className="group-detail-tabs" aria-label="문서 상세 보기"><button aria-pressed={detailTab === 'scope'} onClick={() => setDetailTab('scope')}>담당 범위</button><button aria-pressed={detailTab === 'reasons'} onClick={() => setDetailTab('reasons')}>대기 사유 {selected.reasons.length}{selected.waitingUnavailable ? '+' : ''}</button><button aria-pressed={detailTab === 'results'} onClick={() => setDetailTab('results')}>위임·결과 {selected.delegations.length}</button><button aria-pressed={detailTab === 'history'} onClick={() => setDetailTab('history')}>복구 이력</button></nav>
+            {(detailTab === 'results' || detailTab === 'history') && delegation && <div className="group-execution-picker"><label>위임 기록<select aria-label="위임 기록 선택" value={delegation.id} onChange={(event) => setSelectedDelegationId(event.target.value)}>{selected.delegations.map((item, index) => <option key={item.id} value={item.id}>{index === 0 ? '최신 · ' : ''}{formatTime(item.createdAt)} · {groupDelegationPresentation(item).label}</option>)}</select></label></div>}
+            <div className="group-detail-scroll" key={`${selected.mapId}-${detailTab}-${delegation?.id ?? ''}`}>
+              {detailTab === 'reasons' ? <GroupWaitingReasons key={`${selected.mapId}:${statusFilter}`} row={selected} project={context.project} editable={editable} disabled={aiDisabled} supported={Boolean(context.waitingReviewSupported)} filter={statusFilter} onNavigate={onNavigate} onReview={reviewWaiting} onAiDetails={() => { setSelectedDelegationId(''); setDetailTab('results') }} onConversations={() => { if (selectedDocument) openConversations(selectedDocument) }} />
+                : detailTab === 'scope' ? <><h3>담당 범위 · 완료 조건</h3><p className="group-full-text">{selectedDocument?.root?.data.description || (selectedDocument ? '담당 범위가 비어 있습니다. 최상위 카드에서 작성해 주세요.' : '현재 그룹 소속이 아닙니다. 원문 문서에서 담당 범위를 확인해 주세요.')}</p>{selectedDocument?.root?.data.sharedKnowledge && <><h3>공유 지식 · 검증 근거</h3><p className="group-full-text">{selectedDocument.root.data.sharedKnowledge}</p></>}</>
+                : !delegation ? <p className="group-empty">아직 위임 기록이 없습니다. 총괄 AI에게 문서별 실행 계획을 제안받고 승인한 뒤 진행하세요.</p>
+                  : detailTab === 'history' ? <><p className="group-muted">선택한 위임의 이전 실행·복구 기록입니다. 현재 결과와 구분해 확인하세요.</p>{delegation.attemptHistory?.length ? delegation.attemptHistory.map((attempt, index) => <article className="group-attempt" key={index}><h3>{formatTime(attempt.at)} · {attempt.reason}</h3>{attempt.childError && <p className="group-inline-error">문서 AI: {attempt.childError}</p>}{attempt.parentError && <p className="group-inline-error">총괄 AI: {attempt.parentError}</p>}{attempt.result && <pre className="group-full-text">{attempt.result}</pre>}</article>) : <p className="group-empty">이 위임에 기록된 복구 이력이 없습니다.</p>}</>
+                    : <><div className="group-result-status"><DelegationStatus item={delegation} /><small>상태 변경 {formatTime(delegation.updatedAt || delegation.createdAt)}</small></div><h3>위임 지시</h3><p className="group-full-text">{delegation.instructionPreview || '기록된 지시가 없습니다.'}</p>
+                      {([['문서 AI', delegation.childError], ['총괄 AI', delegation.parentError], ['연결', delegation.linkError], ['복구 전달', delegation.recoveryWakeError]] as const).map(([label, message]) => message && <p className="group-inline-error" key={label}>{label}: {message}</p>)}
+                      <h3>{delegation.workCompleted ? '실행 결과 요약' : '중간 결과'}</h3><p className="group-muted">{delegation.workCompleted ? '실행 완료와 요구사항 검증 완료는 다릅니다. 검증 근거는 문서에서 확인하세요.' : '중단 시점의 결과는 완료 근거가 아닙니다.'}</p><pre className="group-full-text">{delegation.result || '아직 전달된 결과가 없습니다.'}</pre>
+                    </>}
+            </div>
+            <div className="group-detail-footer">
+              <div className="group-detail-actions">
+                <button onClick={() => onNavigate(selected.mapId, selectedDocument?.root?.id ?? delegation?.targetCardId)}>문서와 검증 근거 확인</button>
+                {selectedDocument && linked(selectedDocument) && <button onClick={() => openConversations(selectedDocument)}>AI 대화</button>}
+                {editable && coordinator && selectedDocument && <button disabled={aiDisabled || !selectedDocument.root || !coordinator.root} onClick={() => launch(coordinator, buildGroupDocumentProposalRequest({ mapId: selectedDocument.id, cardId: selectedDocument.root?.id ?? '', title: selectedDocument.title }))}>위임 제안 요청</button>}
+              </div>
+              {(detailTab === 'results' || detailTab === 'history') && delegation && editable && selectedDocument && coordinator && <div className="group-recovery-actions"><small>선택 위임 · {formatTime(delegation.createdAt)}</small><div className="group-actions">
+                {delegation.displayState && <button disabled={aiDisabled} onClick={() => void delegationAction(delegation, 'refresh')}>상태 다시 확인</button>}
+                {delegation.displayState && delegation.recovery?.recoveryAvailable && <button disabled={aiDisabled} onClick={() => void delegationAction(delegation, 'recover')}>승인 범위 작업 재개</button>}
+                {delegation.recovery?.reportRetryAvailable && <button disabled={aiDisabled} onClick={() => void delegationAction(delegation, 'retry-report')}>결과 전달 재시도</button>}
+              </div></div>}
+            </div>
+          </> : <div className="group-empty">{rows.length ? '문서를 선택하거나 검색 조건을 바꿔 주세요.' : <>총괄 AI에게 기획 분석과 문서 구성을 제안받으세요.{!coordinator && <button onClick={() => setPanel('criteria')}>기획 기준과 총괄 설정</button>}</>}</div>}
+        </section>
+      </div>
     </>}
+    <footer className="group-feedback">
+      <div className="group-approval-note">전체 방향 제안 → 사용자 승인 → 문서별 계획 제안 → 사용자 승인 후 실행</div>
+      {loadError && <div className="group-message error" role="alert">정보 갱신 실패: {loadError} · 실행 전 새로고침해 주세요.</div>}
+      {error && <div className="group-message error" role="alert"><span>{error}</span><button aria-label="작업 오류 닫기" onClick={() => setError('')}>닫기</button></div>}
+      {notice && <div className="group-message" role="status"><span>{notice}</span><button aria-label="작업 알림 닫기" onClick={() => setNotice('')}>닫기</button></div>}
+      <div aria-live="polite" aria-atomic="true">{linkCopyState === 'copied' && <div className="group-message">총괄 AI 페이지 링크를 복사했습니다.</div>}{linkCopyState === 'failed' && <div className="group-message error">링크를 복사하지 못했습니다. 연결과 클립보드 권한을 확인한 뒤 다시 시도해 주세요.</div>}</div>
+      {stale && context ? <div className="group-message warning">다른 곳에서 기획 기준이 변경되었습니다. 작성 중인 내용은 보존했습니다.<button disabled={busy} onClick={() => { if (window.confirm('작성 중인 그룹 설정을 최신 저장 내용으로 바꿀까요?')) { draftBase.current = context.project; setDraft(context.project) } }}>최신 내용 불러오기</button></div> : changed && <div className="group-message warning">기획 기준에 저장하지 않은 변경이 있습니다. AI 실행 전에 저장해 주세요.<button onClick={() => setPanel('criteria')}>기준 확인</button></div>}
+    </footer>
   </section>
 }

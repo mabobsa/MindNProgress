@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { reconstructionLayoutFixture } from '../tests/helpers/reconstructionLayoutFixture.mjs'
 import { spawn } from 'node:child_process'
 import { createServer as createHttpServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
@@ -375,7 +376,10 @@ async function main() {
     await client.connect(transport)
     const listedTools = await client.listTools()
     const registeredToolNames = listedTools.tools.map((tool) => tool.name).sort()
-    assert.equal(registeredToolNames.length, 54, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
+    assert.equal(registeredToolNames.length, 63, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
+    for (const suffix of ['list_archived_documents', 'set_document_archive', 'get_reconstruction_context', 'preview_reconstruction', 'apply_reconstruction', 'get_reconstructions', 'rollback_reconstruction']) {
+      assert.ok(registeredToolNames.includes(`mindnprogress_${suffix}`), `문서 재구성 도구 누락: ${suffix}`)
+    }
     const toolSchema = (name) => listedTools.tools.find((tool) => tool.name === name)?.inputSchema
     const toolDescription = (name) => listedTools.tools.find((tool) => tool.name === name)?.description ?? ''
     for (const name of ['mindnprogress_update_card', 'mindnprogress_move_card', 'mindnprogress_delete_card', 'mindnprogress_list_comments', 'mindnprogress_add_comment']) {
@@ -433,7 +437,8 @@ async function main() {
 
     const guide = await invoke('mindnprogress_read_me_first')
     assert.equal(guide.guide.product.name, 'MindNProgress')
-    assert.equal(guide.guide.version, '4.14')
+    assert.equal(guide.guide.version, '4.17')
+    assert.equal(guide.guide.documentReconstruction.contextTool, 'mindnprogress_get_reconstruction_context')
     assert.match(guide.guide.operationRules.join('\n'), /AionUi에서 시작한 대화.*임시 귀속.*AI_ATTRIBUTION_UNRESOLVED/)
     assert.match(guide.guide.operationRules.join('\n'), /응답을 받지 못한 시도는 횟수에 포함하지 않고/)
     assert.match(guide.guide.operationRules.join('\n'), /mindnprogress_complete_ai_delegation/)
@@ -2322,6 +2327,43 @@ async function main() {
     await invokeExpectError('mindnprogress_update_group_project', {
       groupId: groupTestId, baseVersion: 0, objective: '오래된 설정으로 변경',
     }, /그룹 설정이 변경/)
+
+    const lifecycleSource = (await invoke('mindnprogress_create_document', { title: '재구성 MCP 검증', rootLabel: '현재 기준', rootDescription: '기준 원문' })).map
+    const lifecycleContext = await invoke('mindnprogress_get_reconstruction_context', { mapIds: [lifecycleSource.id] })
+    const lifecyclePlan = {
+      id: 'mcp-full-lifecycle', mode: 'compact', baseline: 'v0.4', reason: '임시 데이터 전환 검증',
+      sources: lifecycleContext.sources, groupBaselines: lifecycleContext.groupBaselines,
+      targets: [{ key: 'next', title: '후속 기준', nodes: [{ ...structuredClone(lifecycleSource.nodes[0]), id: 'next-root', data: { ...lifecycleSource.nodes[0].data, kind: 'root', isWork: false, progress: 0, status: 'planned' } }], edges: [] }],
+      decisions: [{ mapId: lifecycleSource.id, cardId: lifecycleSource.nodes[0].id, disposition: 'carry', reason: '기준 유지', targets: [{ key: 'next', cardId: 'next-root' }] }],
+      approval: { statement: '시험 데이터의 전환안을 적용합니다.', source: 'MCP 전체 회귀 시험의 승인 입력' },
+    }
+    let lifecyclePreview = await invoke('mindnprogress_preview_reconstruction', { plan: lifecyclePlan })
+    await invokeExpectError('mindnprogress_apply_reconstruction', { plan: lifecyclePlan, previewHash: lifecyclePreview.previewHash }, /실제 마인드맵/)
+    for (const action of ['measure-layout', 'verify-layout']) {
+      const result = await fetch(`${apiBaseUrl}/api/document-reconstructions/${action}`, { method: 'POST', headers: { Cookie: editorSessionCookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ plan: lifecyclePlan, previewHash: lifecyclePreview.previewHash, measurements: reconstructionLayoutFixture(lifecyclePreview) }) })
+      const body = await result.json(); assert.equal(result.status, 200, JSON.stringify(body)); lifecyclePreview = body
+    }
+    const proposalRequestResponse = await fetch(`${apiBaseUrl}/api/document-reconstructions/requests`, {
+      method: 'POST', headers: { Cookie: editorSessionCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mapIds: [lifecycleSource.id], mode: 'compact', baseline: lifecyclePlan.baseline, analysisOnly: true }),
+    })
+    assert.equal(proposalRequestResponse.status, 201)
+    const proposalRequest = await proposalRequestResponse.json()
+    assert.equal((await invoke('mindnprogress_get_reconstruction_request', { requestId: proposalRequest.id })).revision, 0)
+    const { approval: _proposalApproval, ...submittedPlan } = lifecyclePlan
+    assert.equal((await invoke('mindnprogress_submit_reconstruction_proposal', { requestId: proposalRequest.id, baseRevision: 0, plan: submittedPlan })).hasProposal, true)
+    const lifecycleApplied = await invoke('mindnprogress_apply_reconstruction', { plan: lifecyclePlan, previewHash: lifecyclePreview.previewHash })
+    assert.equal(lifecycleApplied.operation.state, 'applied')
+    assert.equal(lifecycleApplied.operation.createdBy.id, lifecycleSource.createdBy.id)
+    assert.equal(lifecycleApplied.operation.createdBy.name, lifecycleSource.createdBy.name)
+    assert.ok((await invoke('mindnprogress_list_archived_documents')).maps.some((map) => map.id === lifecycleSource.id))
+    assert.equal((await invoke('mindnprogress_get_reconstructions', { id: lifecyclePlan.id })).decisions.length, 1)
+    const lifecycleRestored = await invoke('mindnprogress_rollback_reconstruction', { id: lifecyclePlan.id })
+    assert.equal(lifecycleRestored.operation.state, 'rolled-back')
+    const lifecycleCurrent = (await invoke('mindnprogress_get_document', { mapId: lifecycleSource.id })).map
+    const lifecycleArchived = await invoke('mindnprogress_set_document_archive', { mapId: lifecycleSource.id, baseVersion: lifecycleCurrent.version, baseLifecycleVersion: lifecycleCurrent.lifecycleVersion, archived: true, reason: '개별 보관 검증' })
+    assert.ok(lifecycleArchived.map.archivedAt)
+    await invoke('mindnprogress_set_document_archive', { mapId: lifecycleSource.id, baseVersion: lifecycleArchived.map.version, baseLifecycleVersion: lifecycleArchived.map.lifecycleVersion, archived: false, reason: '개별 복원 검증' })
 
     const uncalledTools = registeredToolNames.filter((name) => !calledTools.has(name))
     assert.deepEqual(uncalledTools, [], `호출되지 않은 MCP 도구: ${uncalledTools.join(', ')}`)

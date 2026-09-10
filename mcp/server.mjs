@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
+import { documentReconstructionGuide } from '../src/utils/documentReconstructionGuide.mjs'
 import { AI_DELEGATION_ID_PATTERN } from '../server/lib/aiDelegations.mjs'
 import { AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 import {
@@ -140,7 +141,15 @@ const knowledgeLinePolicy = Object.freeze({
 
 const serverInstructions = `MindNProgress는 마인드맵과 업무 진행 관리를 결합한 웹 서비스입니다. MindNProgress 밖에서 시작해 문서 ID나 카드 ID가 없다면 mindnprogress_read_me_first를 먼저 호출하세요. 선택 문서와 카드가 있다면 mindnprogress_get_context로 제품 규칙과 최신 문서 구조를 먼저 확인하세요. MCP 도구에서 카드를 지정할 때는 cardId 계열 인자를 사용하세요. nodeId 계열 인자는 기존 대화 호환용이므로 새 호출에서는 사용하지 마세요. AionUi 일반 대화는 get_context 호출 시 현재 대화의 AI 종류와 모델을 자동 확인하므로 aiType과 aiModel을 임의로 채우지 마세요. AionUi가 아닌 외부 MCP 세션만 자신이 현재 AI 종류와 모델을 정확히 알고 있을 때 get_context의 aiType과 aiModel에 함께 전달하고, 알지 못하면 추측하지 마세요. get_context의 selection.taskLinks.startupInspection을 따르세요. mode가 knowledge-guided이면 primary 선행 지식 중 kind=image인 항목은 imageAccess.localPath의 원본을 사용 가능한 로컬 이미지 열람 도구로 직접 확인하고 설명과 댓글을 함께 사용하며, 일반 카드는 sharedKnowledge를 먼저 재사용하고 설명과 댓글로 보완합니다. fallbackSources와 fallbackTargets는 정보가 부족할 때만 선택적으로 조사합니다. mode가 default이고 required가 true이면 targets의 업무 본문, 댓글, 첨부파일 목록과 관련 링크를 조사하세요. 지식선 생성과 제안은 get_context의 guide.knowledgeLinePolicy를 따르세요. ${AI_EXECUTION_APPROVAL_INSTRUCTION} 이하 변경·기록·위임 안내는 사용자에게 승인된 실행 범위에서만 적용합니다. 승인된 진행 과정과 결과는 댓글에 기록하고, 다른 카드나 후속 세션이 재사용할 현재 유효한 사실·결정·제약·검증 결과만 sharedKnowledge에 남기세요. 진행 기록·도구 로그·중복·폐기 결론은 넣지 말고 같은 주제의 결론은 새 이력으로 덧붙이지 말고 기존 절을 안전하게 교체하세요. 실제로 실행할 카드에 독립적으로 완료 여부를 판정할 구현·검증 조건이 2개 이상이면 결과 중심 체크리스트로 작성하고 진행에 맞춰 갱신하세요. 별도 하위 카드로 추적할 작업은 체크리스트에 중복하지 마세요. AI 댓글은 1~2문장의 summary와 작업을 이어가거나 검증하는 데 필요한 사실을 충실히 담은 detail로 작성하며, 요약 때문에 상세를 축약하지 마세요. 외부 전달물이나 결정 대기는 waitingItems로 기록하고 제목에 대기 문구를 붙이지 마세요. 대기를 등록할 때는 [차단], 해제할 때는 [진행] 댓글로 이유와 재개 상태를 기록하세요. 카드 일부 필드만 변경할 때는 mindnprogress_update_card의 data에 변경할 필드만 보내고 현재 카드 전체 데이터를 재전송하지 마세요. 기존 description 또는 sharedKnowledge 내부의 일부만 고칠 때는 조회 결과의 textIntegrity SHA-256과 mindnprogress_patch_card_text를 사용하세요. ${cardTextSafetyInstructions} 과도한 sharedKnowledge를 정리할 때는 후보 목록과 전용 검토 문맥을 조회한 뒤 mindnprogress_apply_shared_knowledge_review로 현재 해시가 일치하는 결과만 원자적으로 저장하세요. 일반 카드에서 생략한 필드와 위치는 보존되지만 완료 상태 또는 진행률 100 적용 시 waitingItems는 자동으로 해제되며, Ref 카드는 원본 관리 필드가 최신 원본 값으로 동기화될 수 있습니다. 선택 카드 밖의 형제·하위·선행 카드를 함께 수정하기 전에는 mindnprogress_get_ai_work_states로 해당 카드에 다른 AI 작업이 진행 중인지 확인하세요. running 또는 waiting-confirmation인 카드는 사용자 지시 없이 동시에 수정하지 마세요. 등록된 AI 작업공간의 최신 목록·경로·상태가 필요하면 폴더명을 추측하지 말고 mindnprogress_get_ai_workspace_pool을 호출하세요. 작업공간 선택·점유·전환·해제는 MindNProgress만 수행하며 AI가 임의로 worker를 선택하지 않습니다. 현재 위임 실행이 사용자의 중지로 끊긴 뒤 같은 대화에서 직접 이어 실제 작업을 완료했다면 카드 기록과 작업공간 체크포인트를 마친 뒤 최종 답변 직전에 mindnprogress_complete_ai_delegation을 호출하세요. 같은 대화의 과거 위임만 중지됐거나 현재 위임이 중단 없이 진행됐다면 호출하지 마세요. 도구가 required=false를 반환하면 오류가 아니며 최종 답변을 마치면 자동으로 상위 AI에 보고됩니다. 지식선만 변경할 때는 전체 문서를 다시 보내지 말고 지식선 전용 도구를 사용하세요. 조회 도구는 문서 version을 변경하지 않지만 카드·관계 편집과 AI 대화 ID 연결은 version을 증가시킬 수 있습니다. 특정 자료가 있다고 가정하지 마세요. 여러 카드로 구성된 새 문서는 mindnprogress_create_mindmap으로 한 번에 생성하고, 변경 후에는 최신 문서를 다시 조회해 결과를 검증하세요. 비밀번호 변경과 계정 관리 작업은 지원하지 않습니다.`
 const productGuide = {
-  version: '4.14',
+  version: '4.17',
+  documentReconstruction: {
+    contextTool: 'mindnprogress_get_reconstruction_context',
+    requestTool: 'mindnprogress_get_reconstruction_request',
+    submitProposalTool: 'mindnprogress_submit_reconstruction_proposal',
+    archiveTool: 'mindnprogress_list_archived_documents',
+    rule: '보관 문서는 활성 목록과 집계에서 제외하지만 URL·원문·댓글·이미지·Ref를 유지합니다. 보관 문서는 수정·AI 실행을 하지 않으며 복원하려면 사용자 승인을 받습니다. 그룹 총괄 문서는 기준점으로 유지하고 하위 문서만 재구성합니다.',
+    ...documentReconstructionGuide,
+  },
   product: {
     name: 'MindNProgress',
     purpose: '아이디어를 계층형 마인드맵으로 구조화하고 실행 업무의 진행 상황을 같은 문서에서 관리하는 웹 서비스',
@@ -727,6 +736,12 @@ function focusedDocument(map, publicBaseUrl) {
     title: map.title,
     color: map.color,
     version: map.version,
+    archivedAt: map.archivedAt ?? null,
+    archiveReason: map.archiveReason ?? '',
+    lifecycleVersion: map.lifecycleVersion ?? 0,
+    reconstructionId: map.reconstructionId ?? null,
+    predecessorMapIds: map.predecessorMapIds ?? [],
+    successorMapIds: map.successorMapIds ?? [],
     updatedAt: map.updatedAt,
     updatedBy: map.updatedBy,
     accessUrl: documentAccessUrl(publicBaseUrl, map.id),
@@ -1024,6 +1039,49 @@ async function main() {
 
   registerTool(server, 'mindnprogress_list_documents', '활성 문서 목록과 버전, 완료 현황 및 좌측 목록의 문서 그룹·혼합 순서를 조회합니다.', {}, async () =>
     apiRequest('/api/maps'))
+
+  registerTool(server, 'mindnprogress_list_archived_documents', '보관 문서를 조회합니다. 보관함은 휴지통과 다르며 기존 URL·카드·댓글·이미지·Ref를 유지하는 읽기 전용 원본입니다.', {}, async () => apiRequest('/api/maps/archive'))
+
+  registerTool(server, 'mindnprogress_set_document_archive', '사용자가 승인한 문서만 보관하거나 복원합니다. 원본 버전과 현재 lifecycleVersion을 전달하세요. AI 작업이 미종료이거나 상태를 확인할 수 없으면 보관하지 않습니다. 그룹 총괄 문서는 기준점으로 유지합니다.', {
+    mapId: z.string().min(1), baseVersion: z.number().int().positive(), baseLifecycleVersion: z.number().int().nonnegative(),
+    archived: z.boolean(), reason: z.string().min(1),
+  }, async ({ mapId, ...body }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/archive`, { method: 'PATCH', body: JSON.stringify(body) }))
+
+  registerTool(server, 'mindnprogress_get_reconstruction_context', '문서 재구성을 위한 공통 정리 지침·원본 버전·본문/댓글 해시·전수 카드 목록을 읽습니다. compact는 요구사항 유지, spec-update는 새 기획 변경 분석이 필요합니다. 원문과 댓글은 get_document/get_card로 보완하세요. 계획 생성이나 실행 승인이 아닙니다.', {
+    mapIds: z.array(z.string().min(1)).min(1).max(30),
+  }, async ({ mapIds }) => apiRequest(`/api/document-reconstructions/context?${new URLSearchParams(mapIds.map((id) => ['mapId', id]))}`))
+
+  registerTool(server, 'mindnprogress_get_reconstruction_request', '사용자가 문서·그룹 우클릭에서 요청한 정리 목적·대상·기준·요청사항·분석 승인 기록과 제안함 revision을 읽습니다. 문서 적용 승인이 아닙니다.', {
+    requestId: z.string().min(1),
+  }, async ({ requestId }) => apiRequest(`/api/document-reconstructions/requests/${encodeURIComponent(requestId)}`))
+
+  const reconstructionPlanSchema = z.object({
+    id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), mode: z.enum(['compact', 'spec-update']), baseline: z.string().min(1), reason: z.string().min(1),
+    newSource: z.string().optional(), changeSummary: z.string().optional(),
+    groupBaselines: z.array(z.record(z.unknown())).optional().describe('get_reconstruction_context의 groupBaselines를 그대로 전달합니다. 그룹 기준·소속 변경 시 재검토합니다.'),
+    sources: z.array(z.object({ mapId: z.string(), version: z.number().int(), sha256: z.string(), commentsSha256: z.string(), lifecycleVersion: z.number().int() }).passthrough()).min(1).max(30),
+    targets: z.array(z.object({ key: z.string(), title: z.string(), color: z.string().optional(), nodes: z.array(z.record(z.unknown())), edges: z.array(z.record(z.unknown())) })).min(1).max(30),
+    decisions: z.array(z.object({ mapId: z.string(), cardId: z.string(), disposition: z.enum(['carry', 'merge', 'knowledge', 'history', 'drop']), reason: z.string().min(1), evidence: z.string().optional(), targets: z.array(z.object({ key: z.string(), cardId: z.string() })).optional() })),
+    approval: z.object({ statement: z.string().min(1), source: z.string().min(1) }).optional(),
+  })
+  registerTool(server, 'mindnprogress_submit_reconstruction_proposal', '사용자가 요청한 정리안을 해당 제안함에만 저장합니다. 원본·후속 문서·카드·보관 상태는 변경하지 않습니다. 요청의 mode/baseline/newSource/mapIds를 지키고 최신 context와 전수 대응표를 사용하세요. approval은 금지입니다. 화면에서 별도 검토·승인 후 적용합니다.', {
+    requestId: z.string().min(1), baseRevision: z.number().int().nonnegative(), plan: reconstructionPlanSchema,
+  }, async ({ requestId, baseRevision, plan }) => apiRequest(`/api/document-reconstructions/requests/${encodeURIComponent(requestId)}/proposal`, { method: 'POST', body: JSON.stringify({ baseRevision, plan }), timeoutMs: 60_000 }))
+  registerTool(server, 'mindnprogress_preview_reconstruction', '재구성안을 저장하지 않고 검증합니다. 모든 원본 카드 대응·계층·참조·미완료 조건을 검사하고 previewHash와 layoutPhase를 반환합니다. nodes 배열은 형제 순서이며 AI 좌표는 무시하고 공통 배치기가 계산합니다. MnP 실제 마인드맵 미리보기에서 렌더 크기·배지·겹침 검증을 마쳐 layoutPhase=verified가 되어야 적용할 수 있습니다. 측정값을 추측해 제출하지 마세요. 의미 보존은 별도로 검토합니다.', {
+    plan: reconstructionPlanSchema,
+  }, async ({ plan }) => apiRequest('/api/document-reconstructions/preview', { method: 'POST', body: JSON.stringify({ plan }), timeoutMs: 60_000 }))
+
+  registerTool(server, 'mindnprogress_apply_reconstruction', '사용자가 승인한 전환안만 적용합니다. approval에 실제 승인 발언·확인 가능한 대화 출처가 필수입니다. MnP 실제 렌더 미리보기 검증 완료 후 preview를 다시 조회하여 layoutPhase=verified와 최신 previewHash를 확인하세요. 미검증·만료·서버 재시작이면 UI에서 다시 검증해야 하며 MCP도 우회할 수 없습니다. 검증된 좌표로 새 문서를 저장한 뒤 원본을 보관합니다. 버전 충돌·AI 작업 중에는 중단합니다. 같은 ID·같은 계획은 멱등이며 적용 후 문서와 이력을 재조회하세요.', {
+    plan: reconstructionPlanSchema, previewHash: z.string().min(1),
+  }, async ({ plan, previewHash }) => apiRequest('/api/document-reconstructions/apply', { method: 'POST', body: JSON.stringify({ plan, previewHash }), timeoutMs: 60_000 }))
+
+  registerTool(server, 'mindnprogress_get_reconstructions', '문서 전환의 상태, 카드 대응표, 원본·후속 문서와 승인 근거를 읽습니다. ID 생략 시 전체 이력을 조회합니다.', {
+    id: z.string().optional(),
+  }, async ({ id }) => apiRequest(`/api/document-reconstructions${id ? `/${encodeURIComponent(id)}` : ''}`))
+
+  registerTool(server, 'mindnprogress_rollback_reconstruction', '사용자가 승인한 전환 되돌리기를 실행합니다. 후속 문서나 댓글이 변경됐으면 거부합니다. 원본을 복원하고 후속 문서는 삭제하지 않고 보관합니다.', {
+    id: z.string().min(1),
+  }, async ({ id }) => apiRequest(`/api/document-reconstructions/${encodeURIComponent(id)}/rollback`, { method: 'POST', body: '{}', timeoutMs: 60_000 }))
 
   registerTool(server, 'mindnprogress_list_shared_knowledge_candidates', '전체 문서 또는 한 문서에서 정리가 필요한 sharedKnowledge 후보를 원문 없이 조회합니다. 우선순위, 길이, SHA-256, 반복 문장 수, 검토 상태와 지식선 소비자 수를 반환하며 accepted-long 승인도 30일이 지나면 다시 후보로 포함합니다. 문서 버전은 변경하지 않습니다.', {
     mapId: z.string().min(1).optional().describe('한 문서만 조회할 때 지정하는 문서 ID'),
@@ -1382,6 +1440,12 @@ async function main() {
         title: map.title,
         color: map.color,
         version: map.version,
+        archivedAt: map.archivedAt ?? null,
+        archiveReason: map.archiveReason ?? '',
+        lifecycleVersion: map.lifecycleVersion ?? 0,
+        reconstructionId: map.reconstructionId ?? null,
+        predecessorMapIds: map.predecessorMapIds ?? [],
+        successorMapIds: map.successorMapIds ?? [],
         updatedAt: map.updatedAt,
         updatedBy: map.updatedBy,
         nodes: map.nodes,

@@ -1,0 +1,82 @@
+.react-flow__node.overlap-warning .mind-node,
+.react-flow__node.overlap-warning .mind-image-node {
+  outline: 2px dotted #e78321;
+  outline-offset: 4px;
+}
+
+.node-overlap-badge {
+  position: absolute;
+  top: -12px;
+  right: 8px;
+  z-index: 12;
+  padding: 3px 7px;
+  color: #9b4c08;
+  border: 1px solid #e78321;
+  border-radius: 999px;
+  outline: 0;
+  background: #fff5e9;
+  box-shadow: 0 4px 11px rgba(151, 78, 13, .2);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.node-overlap-badge:hover,
+.node-overlap-badge:focus-visible {
+  color: white;
+  background: #d96f10;
+  box-shadow: 0 0 0 3px rgba(231, 131, 33, .2), 0 5px 13px rgba(151, 78, 13, .24);
+}
+
+.node-overlap-tooltip {
+  min-width: 170px;
+  max-width: 280px;
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 20;
+  display: none;
+  gap: 3px;
+  padding: 9px 10px;
+  color: #f8f6fb;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px;
+  background: #332c3c;
+  box-shadow: 0 8px 22px rgba(35, 27, 46, .28);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.node-overlap-badge:hover .node-overlap-tooltip,
+.node-overlap-badge:focus-visible .node-overlap-tooltip {
+  display: grid;
+}
+
+.node-overlap-tooltip strong { color: white; font-size: 10px; }
+.node-overlap-tooltip > span { overflow-wrap: anywhere; }
+.node-overlap-tooltip small { margin-top: 3px; color: #c9c3d2; font-size: 8px; }
+
+[data-theme="dark"] .react-flow__node.overlap-warning .mind-node,
+[data-theme="dark"] .react-flow__node.overlap-warning .mind-image-node {
+  outline-color: #ff9d3d;
+}
+
+[data-theme="dark"] .node-overlap-badge {
+  color: #ffd4a7;
+  border-color: #f09a3e;
+  background: #422b1d;
+  box-shadow: 0 4px 13px rgba(255, 139, 31, .2);
+}
+
+[data-theme="dark"] .node-overlap-badge:hover,
+[data-theme="dark"] .node-overlap-badge:focus-visible {
+  color: #26160b;
+  background: #ffad5b;
+}

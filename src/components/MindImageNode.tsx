@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import { Handle, NodeResizer, Position } from '@xyflow/react'
 import type { MindNodeData } from '../types/mindMap'
 import { beginResizeGesture, finishResizeGesture, updateResizeGesture, type ResizeGesture } from '../utils/resizeGesture'
+import { NodeOverlapBadge } from './NodeOverlapBadge'
 import './MindImageNode.css'
 
 export function MindImageNode({ data, selected }: { data: MindNodeData; selected: boolean }) {
@@ -16,6 +17,7 @@ export function MindImageNode({ data, selected }: { data: MindNodeData; selected
 
   return (
     <>
+      <NodeOverlapBadge data={data} />
       <NodeResizer
         isVisible={selected && data.imageEditable === true}
         keepAspectRatio

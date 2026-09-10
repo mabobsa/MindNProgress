@@ -106,6 +106,7 @@ export type AiConversationLink = {
 }
 
 export type MindNodeData = {
+  reconstructionSources?: Array<{ mapId: string; cardId: string; version: number; disposition: string }>
   label: string
   description: string
   sharedKnowledge?: string
@@ -159,6 +160,11 @@ export type MindNodeData = {
   collapsed?: boolean
   hiddenDescendantCount?: number
   aiConversationRuntime?: AiConversationRuntime
+  overlapStack?: {
+    count: number
+    titles: string[]
+  }
+  onCycleOverlap?: () => void
   onToggleCollapse?: () => void
   onOpenWaitingItems?: () => void
   onOpenDependencies?: () => void

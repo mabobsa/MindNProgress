@@ -1,5 +1,5 @@
 export type AiConversationKnowledgeSource = { id: string; label: string; policy: string }
-export type AiConversationPurpose = 'card' | 'shared-knowledge-review' | 'group-coordination'
+export type AiConversationPurpose = 'card' | 'shared-knowledge-review' | 'group-coordination' | 'document-reconstruction'
 
 export const AI_CONVERSATION_PURPOSES: readonly AiConversationPurpose[]
 

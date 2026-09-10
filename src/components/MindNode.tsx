@@ -4,6 +4,7 @@ import { AiConversationRuntimeBadge } from './AiConversationRuntimeBadge'
 import { AssigneeTooltip } from './AssigneeTooltip'
 import { DoorayTaskNode } from './DoorayTaskNode'
 import { MindImageNode } from './MindImageNode'
+import { NodeOverlapBadge } from './NodeOverlapBadge'
 import { isSameDoorayKnowledgeUrl, normalizedDoorayKnowledgeUrl, taskUrlProvider } from '../utils/externalLinks'
 import './MindNode.css'
 
@@ -72,7 +73,9 @@ export function MindNode({ data, selected, isConnectable }: NodeProps<MindNodeTy
     : ''
 
   return (
-    <article className={`mind-node ${data.kind} status-${displayStatus} ${isCompleted ? 'completed' : ''} ${selected ? 'selected' : ''}`}>
+    <>
+      <NodeOverlapBadge data={data} />
+      <article className={`mind-node ${data.kind} status-${displayStatus} ${isCompleted ? 'completed' : ''} ${selected ? 'selected' : ''}`}>
       <Handle type="target" position={Position.Left} isConnectable={isConnectable} />
       {([
         ['top', Position.Top],
@@ -189,6 +192,7 @@ export function MindNode({ data, selected, isConnectable }: NodeProps<MindNodeTy
         </div>
       )}
       <Handle type="source" position={Position.Right} isConnectable={isConnectable} />
-    </article>
+      </article>
+    </>
   )
 }

@@ -302,6 +302,7 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     await pause(400)
     assert.equal(calls.length, completedCallCount, '보고 실패를 무제한 재시도했습니다.')
     assert.equal((await humanAction('refresh', await actionBody())).body.executionRequested, false)
+    dispatches.delete(reportFailed.wakeOperationId)
     failWake = false
     const reportRetryBody = await actionBody()
     const reports = await Promise.all([humanAction('retry-report', reportRetryBody), humanAction('retry-report', reportRetryBody)])
@@ -340,6 +341,42 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     const changedRecovery = await api(`${delegateUrl}/changed-plan/recover`, 'POST', { sourceRevision: parent.version, instruction: '기존 작업 재개' }, sourceHeaders)
     assert.equal(changedRecovery.status, 409)
     assert.match(changedRecovery.body.error, /기획 기준이 변경/)
+
+    // 대기 분류는 별도 그룹의 메타데이터만 저장하고 카드·AI 실행에는 영향을 주지 않는다.
+    const reviewGroupId = 'group-waiting-review-api'
+    const reviewLibrary = (await api('/api/maps')).body
+    const reviewLayout = structuredClone(reviewLibrary.documentLayout)
+    reviewLayout.items.push({ type: 'group', id: reviewGroupId })
+    reviewLayout.groups.push({ id: reviewGroupId, name: '대기 분류 시험', mapIds: [] })
+    assert.equal((await api('/api/maps/layout', 'PATCH', { documentLayout: reviewLayout })).status, 200)
+    const reviewDocument = (await api(`/api/groups/${reviewGroupId}/documents`, 'POST', { baseVersion: 0, title: '분류 대상', description: '원문 담당 범위' })).body.map
+    const reviewRoot = reviewDocument.nodes[0]
+    const waitingItem = { id: 'wait-assets', label: '최종 아트 전달', note: '첫 절\n\n보존할 마지막 절', resumeCondition: '승인된 아트 제공 후 검증', since: '2026-09-10T00:00:00Z' }
+    const waitingNode = { id: 'waiting-child', type: 'mind', position: { x: 200, y: 0 }, data: { label: '최종 아트 적용', description: '원문 요구사항', kind: 'task', isWork: true, status: 'planned', progress: 0, waitingItems: [waitingItem] } }
+    const reviewFixture = await api(`/api/maps/${reviewDocument.id}`, 'PUT', { baseVersion: reviewDocument.version, map: { nodes: [...reviewDocument.nodes, waitingNode], edges: [{ id: 'review-edge', source: reviewRoot.id, target: waitingNode.id }] } })
+    assert.equal(reviewFixture.status, 200, JSON.stringify(reviewFixture.body))
+    const beforeReviewDocument = (await api(`/api/maps/${reviewDocument.id}`)).body.map
+    const beforeReviewContext = (await api(`/api/groups/${reviewGroupId}`)).body
+    assert.equal(beforeReviewContext.waitingReviewSupported, true)
+    const waitingDetail = beforeReviewContext.documents[0].waitingDetails[0]
+    assert.deepEqual(waitingDetail.item, waitingItem)
+    const reviewBody = { baseVersion: beforeReviewContext.project.version, baseWaitingReviewVersion: 0, waitingReview: { mapId: reviewDocument.id, cardId: waitingNode.id, waitingId: waitingItem.id, expectedFingerprint: waitingDetail.fingerprint, category: 'external', impact: 'deferred' } }
+    const freshViewer = await fetch(baseUrl + '/api/auth/viewer-access', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    const freshViewerCookie = freshViewer.headers.get('set-cookie').split(';')[0]
+    assert.equal((await fetch(`${baseUrl}/api/groups/${reviewGroupId}`, { method: 'PATCH', headers: { Cookie: freshViewerCookie, 'Content-Type': 'application/json' }, body: JSON.stringify(reviewBody) })).status, 403)
+    const callsBeforeReview = calls.length
+    const reviewed = await api(`/api/groups/${reviewGroupId}`, 'PATCH', reviewBody)
+    assert.equal(reviewed.status, 200, JSON.stringify(reviewed.body))
+    assert.equal(reviewed.body.project.version, beforeReviewContext.project.version, '승인 기준 버전 유지')
+    assert.equal(reviewed.body.project.waitingReviewVersion, 1)
+    assert.equal(reviewed.body.documents[0].waitingDetails[0].review.valid, true)
+    assert.equal(reviewed.body.documents[0].waitingDetails[0].review.impact, 'deferred')
+    assert.deepEqual((await api(`/api/maps/${reviewDocument.id}`)).body.map, beforeReviewDocument)
+    assert.equal(calls.length, callsBeforeReview)
+    assert.equal((await api(`/api/groups/${reviewGroupId}`, 'PATCH', reviewBody)).status, 409)
+    const revised = await api(`/api/groups/${reviewGroupId}`, 'PATCH', { baseVersion: reviewed.body.project.version, objective: '새 기획 기준' })
+    assert.equal(revised.body.documents[0].waitingDetails[0].review.valid, false)
+    assert.equal((await api(`/api/groups/${reviewGroupId}`, 'PATCH', { ...reviewBody, baseVersion: revised.body.project.version, baseWaitingReviewVersion: 1 })).status, 409)
   } finally {
     await stop(child)
     await new Promise((resolve) => fake.close(resolve))

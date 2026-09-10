@@ -27,6 +27,7 @@ import '@xyflow/react/dist/style.css'
 import './App.css'
 import { MindNode } from './components/MindNode'
 import { GroupOverview, type GroupAiTarget } from './components/GroupOverview'
+import { DocumentLifecycle } from './components/DocumentLifecycle'
 import { KnowledgeEdge } from './components/KnowledgeEdge'
 import { LinkifiedText } from './components/LinkifiedText'
 import { DoorayTaskLinkLabel } from './components/DoorayTaskLinkLabel'
@@ -44,6 +45,7 @@ import type { AiConversationLink, AiConversationRuntime, ChecklistItem, Knowledg
 import { resolveAiConversationTarget, type AiConversationExplicitTarget } from './utils/aiConversationLaunch.mjs'
 import { applyBoxSelection, boxSelectionNodeIds, boxSelectionRect, isBoxSelectionDrag } from './utils/boxSelection.mjs'
 import { copyTextToClipboard } from './utils/clipboardText.mjs'
+import { parseGroupDeepLink } from './utils/groupDeepLink.mjs'
 import { collectDragDescendantOwners, dragRootIds, hierarchyReparentPairs } from './utils/hierarchyDrag.mjs'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
 import { collapsedDocumentGroupsStorageKey, initialCollapsedDocumentGroupIds, normalizeCollapsedDocumentGroupIds } from './utils/documentGroupCollapse.mjs'
@@ -56,6 +58,7 @@ import { aiConversationLinksFromData } from './utils/aiConversations.mjs'
 import { revisionReasonLabel, shouldRefreshMapContentForAction } from './utils/mapChangeMetadata.mjs'
 import { mapContentsEqual, reconcileRemoteMapContent } from './utils/mapDocumentSync.mjs'
 import { mergeMapContent } from './utils/mergeMapContent.mjs'
+import { nextOverlappingNodeId, nodeOverlapPresentation } from './utils/nodeOverlap.mjs'
 import { computeProgressRollups } from './utils/progressRollup.mjs'
 import { snapAspectResizeToGrid, snapFreeResizeToGrid } from './utils/resizeGrid.mjs'
 import type { ResizeSnapRequest } from './utils/resizeGrid.mjs'
@@ -616,6 +619,10 @@ type MapSummary = {
   createdBy: AuthUser | null
   trashedAt?: string | null
   trashedBy?: AuthUser | null
+  archivedAt?: string | null
+  archiveReason?: string
+  lifecycleVersion?: number
+  successorMapIds?: string[]
 }
 
 type DocumentGroup = {
@@ -643,6 +650,12 @@ type DocumentLibraryResponse = {
 const EMPTY_DOCUMENT_LAYOUT: DocumentLayout = { version: 1, items: [], groups: [] }
 
 type MapDocument = {
+  archivedAt?: string | null
+  archiveReason?: string
+  lifecycleVersion?: number
+  successorMapIds?: string[]
+  predecessorMapIds?: string[]
+  reconstructionId?: string
   id: string
   title: string
   color: DocumentColorId
@@ -2296,11 +2309,18 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
-function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { user: AuthUser; onLogout: () => void; initialDeepLink: WorkspaceDeepLink | null; theme: UiTheme; onToggleTheme: () => void }) {
+function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onToggleTheme }: { user: AuthUser; onLogout: () => void; initialDeepLink: WorkspaceDeepLink | null; initialGroupId: string | null; theme: UiTheme; onToggleTheme: () => void }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<MindMapNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<MindMapEdge>([])
   const { canUndo, canRedo, undo, redo, resetHistory, rebaseline: rebaselineHistory, beginTransaction: beginHistoryTransaction, endTransaction: endHistoryTransaction, cancelTransaction: cancelHistoryTransaction } = useMapHistory(nodes, setNodes, edges, setEdges)
-  const mode: AccessMode = user.role === 'viewer' ? 'viewer' : 'editor'
+  const [activeMapId, setActiveMapId] = useState('')
+  const [activeDocumentRecord, setActiveDocumentRecord] = useState<MapDocument | null>(null)
+  const accountMode: AccessMode = user.role === 'viewer' ? 'viewer' : 'editor'
+  const documentArchived = activeDocumentRecord?.id === activeMapId && Boolean(activeDocumentRecord.archivedAt)
+  const mode: AccessMode = documentArchived ? 'viewer' : accountMode
+  const [lifecycleOpen, setLifecycleOpen] = useState(false)
+  const [lifecycleEntry, setLifecycleEntry] = useState<{ scope?: { type: 'map' | 'group'; id: string }; initialTab: 'archive' | 'reconstruction' }>({ initialTab: 'archive' })
+  const [archivedDocuments, setArchivedDocuments] = useState<MapSummary[]>([])
   const [adminOpen, setAdminOpen] = useState(false)
   const closeAdminPanel = useCallback(() => setAdminOpen(false), [])
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
@@ -2324,7 +2344,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const [viewMode, setViewMode] = useState<ViewMode>(initialDeepLink?.viewMode ?? lastWorkspaceLocation.current?.viewMode ?? 'mindmap')
   const [documents, setDocuments] = useState<MapSummary[]>([])
   const [documentLayout, setDocumentLayout] = useState<DocumentLayout>(EMPTY_DOCUMENT_LAYOUT)
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
+  const [documentLibraryLoaded, setDocumentLibraryLoaded] = useState(false)
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(initialGroupId)
   const selectedGroup = documentLayout.groups.find((group) => group.id === selectedGroupId) ?? null
   const storedCollapsedDocumentGroupIds = useRef(readStoredCollapsedDocumentGroupIds(user.id))
   const collapsedDocumentGroupsInitialized = useRef(false)
@@ -2334,7 +2355,6 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const [selectedTrashIds, setSelectedTrashIds] = useState<Set<string>>(() => new Set())
   const [trashDeleting, setTrashDeleting] = useState(false)
   const [trashOpen, setTrashOpen] = useState(false)
-  const [activeMapId, setActiveMapId] = useState('')
   const [miniMapReadyMapId, setMiniMapReadyMapId] = useState<string | null>(null)
   const [loadedMapId, setLoadedMapId] = useState<string | null>(null)
   const [mapReloadToken, setMapReloadToken] = useState(0)
@@ -2403,7 +2423,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   const [knowledgeConnection, setKnowledgeConnection] = useState<KnowledgeConnectionDraft | null>(null)
   const [knowledgeConnectionTargetId, setKnowledgeConnectionTargetId] = useState<string | null>(null)
   const [knowledgeConnectionMessage, setKnowledgeConnectionMessage] = useState('')
-  const [documentContextMenu, setDocumentContextMenu] = useState<{ x: number; y: number; mapId: string } | null>(null)
+  const [documentContextMenu, setDocumentContextMenu] = useState<{ x: number; y: number; mapId: string; groupId?: string } | null>(null)
   const [aiConversationContextMenu, setAiConversationContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [canvasPasteMenu, setCanvasPasteMenu] = useState<{ x: number; y: number } | null>(null)
   const paneRightPressRef = useRef({ x: 0, y: 0 })
@@ -2809,7 +2829,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     })
   }, [])
 
-  const activeDocument = documents.find((document) => document.id === activeMapId) ?? null
+  const activeDocument = [...documents, ...archivedDocuments].find((document) => document.id === activeMapId) ?? null
   const activeRootState = useMemo(() => rootStateOf(nodes, edges), [edges, nodes])
   const teamMembers = useMemo<TeamMember[]>(() => assigneeUsers.map((assignee) => ({
     id: assignee.id,
@@ -2956,6 +2976,27 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     return visible
   }, [parentsById, searchMatchedNodeIds])
   const nodeSearchMatches = useMemo(() => nodes.filter((node) => searchMatchedNodeIds.has(node.id)), [nodes, searchMatchedNodeIds])
+  const overlapPresentation = useMemo(() => {
+    if (!boxSelectionArmed) return { warningIds: [], stacks: [] }
+    const candidates = nodes
+      .filter((node) => {
+        const hiddenByCollapse = collapsedHiddenNodeIds.has(node.id)
+          && !searchContextNodeIds.has(node.id)
+          && !(filterActive && filterVisibleNodeIds.has(node.id))
+        const hiddenByFilter = filterActive && !filterVisibleNodeIds.has(node.id)
+        return !hiddenByCollapse && !hiddenByFilter
+      })
+      .map((node) => ({
+        id: node.id,
+        title: node.data.label,
+        x: node.position.x,
+        y: node.position.y,
+        ...nodeDimensions(node),
+      }))
+    return nodeOverlapPresentation(candidates, { zoom: viewport.zoom, selectedId })
+  }, [boxSelectionArmed, collapsedHiddenNodeIds, filterActive, filterVisibleNodeIds, nodes, searchContextNodeIds, selectedId, viewport.zoom])
+  const overlapWarningIds = useMemo(() => new Set(overlapPresentation.warningIds), [overlapPresentation.warningIds])
+  const overlapStackByRepresentativeId = useMemo(() => new Map(overlapPresentation.stacks.map((stack) => [stack.representativeId, stack])), [overlapPresentation.stacks])
   const flowNodes = useMemo(() => nodes.map((node) => {
     const hiddenByCollapse = collapsedHiddenNodeIds.has(node.id)
       && !searchContextNodeIds.has(node.id)
@@ -2967,6 +3008,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
       ? node.data.externalLink
       : undefined
     const progressRollup = progressRollups.get(node.id)
+    const overlapStack = overlapStackByRepresentativeId.get(node.id)
     const blocking = blockingNodes(node, nodes)
     const applyImageResize = image ? (resize: ResizeSnapRequest) => {
       const resized = resize.snapAxis
@@ -3078,6 +3120,13 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         commentCount: (node.data.reference ? referenceCommentStats[node.id] : commentStats[node.id])?.total ?? 0,
         unresolvedCommentCount: (node.data.reference ? referenceCommentStats[node.id] : commentStats[node.id])?.unresolved ?? 0,
         aiConversationRuntime: aiConversationRuntimes[node.id],
+        overlapStack: overlapStack ? { count: overlapStack.ids.length, titles: overlapStack.titles } : undefined,
+        onCycleOverlap: overlapStack ? () => {
+          const nextId = nextOverlappingNodeId(overlapStack.ids, selectedIdRef.current)
+          if (!nextId) return
+          setNodes((current) => current.map((candidate) => ({ ...candidate, selected: candidate.id === nextId })))
+          setSelectedId(nextId)
+        } : undefined,
         hasChildren: collapsibleNodeIds.has(node.id),
         collapsed: collapsedNodeIds.has(node.id),
         hiddenDescendantCount: descendantCounts.get(node.id) ?? 0,
@@ -3098,9 +3147,10 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         normalizedNodeSearch && searchMatchedNodeIds.has(node.id) ? 'search-match' : '',
         normalizedNodeSearch && !searchMatchedNodeIds.has(node.id) && !hidden ? 'search-dim' : '',
         filterActive && filterVisibleNodeIds.has(node.id) && !filterMatchedNodeIds.has(node.id) ? 'filter-context' : '',
+        overlapWarningIds.has(node.id) ? 'overlap-warning' : '',
       ].filter(Boolean).join(' '),
     }
-  }), [activeMapId, aiConversationRuntimes, beginHistoryTransaction, collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, descendantCounts, dropTargetId, endHistoryTransaction, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, hoveredKnowledgeConnectionIssue, knowledgeConnection, knowledgeConnectionTargetId, mode, nodes, normalizedNodeSearch, openDependencies, openWaitingItems, progressRollups, referenceCommentStats, searchContextNodeIds, searchMatchedNodeIds, setNodes, teamMembers, unresolvedReferenceNodeIds])
+  }), [activeMapId, aiConversationRuntimes, beginHistoryTransaction, collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, descendantCounts, dropTargetId, endHistoryTransaction, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, hoveredKnowledgeConnectionIssue, knowledgeConnection, knowledgeConnectionTargetId, mode, nodes, normalizedNodeSearch, openDependencies, openWaitingItems, overlapStackByRepresentativeId, overlapWarningIds, progressRollups, referenceCommentStats, searchContextNodeIds, searchMatchedNodeIds, setNodes, teamMembers, unresolvedReferenceNodeIds])
   const visibleFlowNodeIds = useMemo(() => new Set(flowNodes.filter((node) => !node.hidden).map((node) => node.id)), [flowNodes])
   visibleFlowNodeIdsRef.current = visibleFlowNodeIds
   const visibleFlowNodeIdsKey = useMemo(() => [...visibleFlowNodeIds].sort().join('\u0000'), [visibleFlowNodeIds])
@@ -3245,14 +3295,21 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     let active = true
     void Promise.all([
       apiRequest<DocumentLibraryResponse>('/api/maps'),
-      mode === 'editor'
+      accountMode === 'editor'
         ? apiRequest<{ maps: MapSummary[] }>('/api/maps/trash')
         : Promise.resolve({ maps: [] as MapSummary[] }),
+      apiRequest<{ maps: MapSummary[] }>('/api/maps/archive').catch((error) => {
+        // 개발 중 이전 API와 새 UI가 잠시 함께 동작해도 기존 문서 목록을 유지한다.
+        if (error instanceof ApiRequestError && [400, 404].includes(error.status)) return { maps: [] as MapSummary[] }
+        throw error
+      }),
     ])
-      .then(async ([{ maps, documentLayout: loadedDocumentLayout }, { maps: trash }]) => {
+      .then(async ([{ maps, documentLayout: loadedDocumentLayout }, { maps: trash }, { maps: archive }]) => {
         if (!active) return
+        setArchivedDocuments(archive)
         setTrashedDocuments(trash)
         setDocumentLayout(loadedDocumentLayout)
+        setDocuments(maps)
         if (!collapsedDocumentGroupsInitialized.current) {
           const initialCollapsedGroupIds = initialCollapsedDocumentGroupIds(
             storedCollapsedDocumentGroupIds.current,
@@ -3262,11 +3319,13 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           collapsedDocumentGroupsInitialized.current = true
           setCollapsedDocumentGroupIds(new Set(initialCollapsedGroupIds))
         }
-        if (maps.length > 0) {
-          setDocuments(maps)
+        // 그룹 링크로 들어오면 마지막 문서보다 총괄 페이지를 우선한다.
+        // 빈 그룹도 열 수 있으며 관계없는 문서를 뒤에서 불러오지 않는다.
+        if (initialGroupId) return
+        if (maps.length > 0 || archive.length > 0) {
           const deepLink = pendingDeepLink.current
           const requestedDocument = deepLink?.mapId
-            ? maps.find((map) => map.id === deepLink.mapId) ?? null
+            ? [...maps, ...archive].find((map) => map.id === deepLink.mapId) ?? null
             : null
           const storedLocation = deepLink?.mapId
             ? null
@@ -3274,7 +3333,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           const restoredDocument = storedLocation
             ? maps.find((map) => map.id === storedLocation.mapId) ?? null
             : null
-          const targetDocument = requestedDocument ?? restoredDocument ?? maps[0]
+          const targetDocument = requestedDocument ?? restoredDocument ?? maps[0] ?? archive[0]
           if (!deepLink && storedLocation) {
             setViewMode(storedLocation.viewMode)
             pendingSelection.current = storedLocation.nodeId
@@ -3291,7 +3350,6 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         }
 
         setDocuments([])
-        setDocumentLayout(EMPTY_DOCUMENT_LAYOUT)
         setActiveMapId('')
         setNodes([])
         setEdges([])
@@ -3302,8 +3360,9 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
         if (!active) return
         setSaveError(error instanceof Error ? error.message : '문서 목록을 불러오지 못했습니다.')
       })
+      .finally(() => { if (active) setDocumentLibraryLoaded(true) })
     return () => { active = false }
-  }, [mode, setEdges, setNodes])
+  }, [initialGroupId, accountMode, setEdges, setNodes])
 
   useEffect(() => {
     if (!activeMapId || loadedMapId !== activeMapId) return
@@ -3457,6 +3516,14 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
       const remoteMap = library.maps.find((map) => map.id === activeMapId) ?? null
       if (activeMapId && !remoteMap) {
+        const archive = await apiRequest<{ maps: MapSummary[] }>('/api/maps/archive')
+        if (disposed) return
+        setArchivedDocuments(archive.maps)
+        if (archive.maps.some((map) => map.id === activeMapId)) {
+          const { map } = await apiRequest<MapDocumentResponse>(`/api/maps/${encodeURIComponent(activeMapId)}`)
+          if (!disposed) setActiveDocumentRecord(map)
+          return
+        }
         setActiveMapId(library.maps[0]?.id ?? '')
         return
       }
@@ -3586,6 +3653,10 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           return
         }
         if (event.type !== 'map-changed') return
+        if (['archived', 'archive-restored', 'reconstructed'].includes(event.action)) {
+          void apiRequest<{ maps: MapSummary[] }>('/api/maps/archive').then((result) => setArchivedDocuments(result.maps)).catch(() => undefined)
+          if (event.mapId === activeMapId) setMapReloadToken((current) => current + 1)
+        }
         const changesReferencedMap = referenceCommentTargetsRef.current.some((target) => target.mapId === event.mapId)
         if (changesReferencedMap) refreshResolvedReferences()
         if (event.sourceClientId === CLIENT_ID) return
@@ -3821,6 +3892,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     void apiRequest<MapDocumentResponse>(`/api/maps/${encodeURIComponent(activeMapId)}`)
       .then(({ map, referenceCommentStats: loadedReferenceCommentStats, unresolvedReferenceNodeIds: unresolvedIds }) => {
         if (!active) return
+        setActiveDocumentRecord(map)
         const deepLink = pendingDeepLink.current
         const deepLinkTargetsMap = deepLink?.mapId === map.id
         const requestedNode = deepLink?.mapId === map.id && deepLink.nodeId
@@ -4468,7 +4540,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
   useEffect(() => {
     const handleHistoryShortcut = (event: KeyboardEvent) => {
-      if (selectedGroup || mode !== 'editor' || (!event.ctrlKey && !event.metaKey)) return
+      if (selectedGroupId || mode !== 'editor' || (!event.ctrlKey && !event.metaKey)) return
       const target = event.target as HTMLElement | null
       if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
@@ -4486,7 +4558,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
 
     window.addEventListener('keydown', handleHistoryShortcut)
     return () => window.removeEventListener('keydown', handleHistoryShortcut)
-  }, [mode, redo, undo, selectedGroup])
+  }, [mode, redo, undo, selectedGroupId])
 
   const deleteNodeById = useCallback((nodeId: string) => {
     if (mode === 'viewer') return
@@ -4545,7 +4617,9 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     const target = event.target
     const nodeTarget = target.closest('.react-flow__node')
     const edgeTarget = target.closest('.react-flow__edge, .react-flow__edge-textwrapper')
-    if (!nodeTarget && !edgeTarget) return
+    const modifiedCanvasPan = (event.ctrlKey || event.metaKey)
+      && Boolean(target.closest('.react-flow__pane, .react-flow__viewport'))
+    if (!nodeTarget && !edgeTarget && !modifiedCanvasPan) return
     const interactiveTarget = target.closest('button, input, textarea, select, a, [contenteditable="true"]')
     if (interactiveTarget
       && !PAN_ALLOWED_NODE_CONTROLS.some((name) => interactiveTarget.classList.contains(name))) return
@@ -5527,6 +5601,24 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
     }
   }
 
+  const refreshLifecycleLibrary = async () => {
+    const [library, archive] = await Promise.all([apiRequest<DocumentLibraryResponse>('/api/maps'), apiRequest<{ maps: MapSummary[] }>('/api/maps/archive')])
+    setDocuments(library.maps); setDocumentLayout(library.documentLayout); setArchivedDocuments(archive.maps)
+    setMapReloadToken((current) => current + 1)
+  }
+  const archiveDocument = async (mapId: string) => {
+    const document = documents.find((item) => item.id === mapId)
+    if (mapId === activeMapId && serverBaseline.current && !mapContentsEqual(createPersistedMapContent(nodesRef.current, edgesRef.current), serverBaseline.current)) {
+      setSaveError('현재 문서의 변경이 저장된 뒤 보관해 주세요.'); return
+    }
+    if (accountMode !== 'editor' || !document || !window.confirm(`“${document.title}”을 읽기 전용 보관함으로 옮길까요? 원문·댓글·이미지·참조는 유지됩니다.`)) return
+    setDocumentContextMenu(null)
+    try {
+      await apiRequest(`/api/maps/${encodeURIComponent(mapId)}/archive`, { method: 'PATCH', body: JSON.stringify({ baseVersion: document.version, baseLifecycleVersion: document.lifecycleVersion ?? 0, archived: true, reason: '사용자가 문서 목록에서 보관' }) })
+      await refreshLifecycleLibrary()
+    } catch (error) { setSaveError(error instanceof Error ? error.message : '문서를 보관하지 못했습니다.') }
+  }
+
   const trashDocument = async (mapId: string) => {
     if (mode !== 'editor') return
     const document = documents.find((item) => item.id === mapId)
@@ -5596,16 +5688,29 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
   }
 
   const openDocumentContextMenu = (event: ReactMouseEvent, mapId: string) => {
-    if (mode !== 'editor') return
+    if (accountMode !== 'editor') return
     event.preventDefault()
     event.stopPropagation()
     setNodeContextMenu(null)
     setAiConversationContextMenu(null)
     setDocumentContextMenu({
       x: Math.min(event.clientX, window.innerWidth - 230),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 335)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 410)),
       mapId,
     })
+  }
+
+  const openGroupContextMenu = (event: ReactMouseEvent, groupId: string) => {
+    if (accountMode !== 'editor') return
+    event.preventDefault(); event.stopPropagation()
+    setNodeContextMenu(null); setAiConversationContextMenu(null)
+    setDocumentContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 140)), mapId: '', groupId })
+  }
+  const openDocumentCleanup = (scope: { type: 'map' | 'group'; id: string }) => {
+    setDocumentContextMenu(null)
+    if (accountMode !== 'editor') return
+    if (!documentArchived && serverBaseline.current && !mapContentsEqual(createPersistedMapContent(nodesRef.current, edgesRef.current), serverBaseline.current)) { setSaveError('현재 문서의 변경을 먼저 저장한 뒤 정리해 주세요.'); return }
+    setLifecycleEntry({ scope, initialTab: 'reconstruction' }); setLifecycleOpen(true)
   }
 
   const shareCursorPosition = useCallback((event: ReactPointerEvent<HTMLElement>) => {
@@ -6584,17 +6689,17 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
             </form>
           ) : (
             <div className="document-title-row">
-              <span>{selectedGroup?.name ?? activeDocument?.title ?? '마인드맵 선택'}</span>
-              {mode === 'editor' && activeDocument && !selectedGroup && (
+              <span>{selectedGroupId ? selectedGroup?.name ?? '총괄 AI 그룹' : activeDocument?.title ?? '마인드맵 선택'}{!selectedGroupId && documentArchived ? ' · 보관 문서 (읽기 전용)' : ''}</span>
+              {mode === 'editor' && activeDocument && !selectedGroupId && (
                 <button onClick={() => { setRenameTitle(activeDocument.title); setRenamingMap(true) }} aria-label="문서 이름 변경">
                   <Icon name="edit" size={13} />
                 </button>
               )}
             </div>
           )}
-          <small className={saveError ? 'save-error' : ''}>{saveError || (selectedGroup ? '그룹 개요' : savedAt)}</small>
+          <small className={saveError ? 'save-error' : ''}>{saveError || (selectedGroupId ? '그룹 개요' : savedAt)}</small>
         </div>
-        {!selectedGroup && <nav className="view-switcher" aria-label="업무 보기 전환">
+        {!selectedGroupId && <nav className="view-switcher" aria-label="업무 보기 전환">
           {([
             ['mindmap', 'map', '마인드맵'],
             ['kanban', 'board', '칸반'],
@@ -6630,7 +6735,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           aria-expanded={mobileInspectorOpen}
           aria-label="선택 카드 세부정보 열기"
           title="선택 카드 세부정보"
-          disabled={!selectedNode || Boolean(selectedGroup)}
+          disabled={!selectedNode || Boolean(selectedGroupId)}
         >
           <Icon name="edit" size={18} />
         </button>
@@ -6647,8 +6752,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           )}
           {mode === 'editor' && (
             <div className="history-controls" aria-label="실행 취소와 다시 실행">
-              <button onClick={undo} disabled={!canUndo || Boolean(selectedGroup)} title="실행 취소 (Ctrl+Z)" aria-label="실행 취소"><Icon name="undo" size={15} /></button>
-              <button onClick={redo} disabled={!canRedo || Boolean(selectedGroup)} title="다시 실행 (Ctrl+Y)" aria-label="다시 실행"><Icon name="redo" size={15} /></button>
+              <button onClick={undo} disabled={!canUndo || Boolean(selectedGroupId)} title="실행 취소 (Ctrl+Z)" aria-label="실행 취소"><Icon name="undo" size={15} /></button>
+              <button onClick={redo} disabled={!canRedo || Boolean(selectedGroupId)} title="다시 실행 (Ctrl+Y)" aria-label="다시 실행"><Icon name="redo" size={15} /></button>
             </div>
           )}
           {mode === 'editor' && (
@@ -6663,7 +6768,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
               <Icon name="sparkles" size={15} /><span>지식 정리</span>
             </button>
           )}
-          <button className="icon-button" onClick={() => { void openMapHistory() }} disabled={!activeMapId || Boolean(selectedGroup)} aria-label="서버 변경 이력" title="서버 변경 이력">
+          <button className="icon-button" onClick={() => { void openMapHistory() }} disabled={!activeMapId || Boolean(selectedGroupId)} aria-label="서버 변경 이력" title="서버 변경 이력">
             <Icon name="history" size={16} />
           </button>
           {!user.publicAccess && <div className="notification-center">
@@ -6758,7 +6863,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
       )}
 
       <main
-        className={`workspace ${selectedGroup ? 'group-workspace' : ''}`}
+        className={`workspace ${selectedGroupId ? 'group-workspace' : ''}`}
         style={{
           '--sidebar-width': `${effectiveSidebarWidth}px`,
           '--inspector-width': `${inspectorWidth}px`,
@@ -6948,6 +7053,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                       )}
                       <div
                         className={`document-group-header ${selectedGroup?.id === group.id ? 'group-selected' : ''} ${draggingLibraryItem?.type === 'group' && draggingLibraryItem.id === group.id ? 'dragging' : ''} ${documentDropTargetId === groupDropKey ? 'document-drop-target' : ''}`}
+                        onContextMenu={(event) => openGroupContextMenu(event, group.id)}
                         draggable={mode === 'editor' && !normalizedDocumentSearch}
                         onDragStart={(event) => {
                           const item: DocumentLayoutItem = { type: 'group', id: group.id }
@@ -7089,6 +7195,10 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
               <span><Icon name="trash" size={15} />휴지통</span><small>{trashedDocuments.length}</small>
             </button>
           )}
+          <button className="sidebar-trash" onClick={() => {
+            if (!documentArchived && serverBaseline.current && !mapContentsEqual(createPersistedMapContent(nodesRef.current, edgesRef.current), serverBaseline.current)) { setSaveError('현재 문서의 변경이 저장된 뒤 문서 재구성을 열어 주세요.'); return }
+            setLifecycleOpen(true)
+          }}><span><Icon name="folder" size={15} />보관함 · 문서 재구성</span><small>{archivedDocuments.length}</small></button>
           <div className="sidebar-footer">
             <span>현재 보기</span>
             <strong><span className={`access-dot ${mode}`} />{mode === 'editor' ? '편집 가능' : '읽기 전용'}</strong>
@@ -7138,12 +7248,12 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           <span />
         </div>
 
-        {selectedGroup ? <GroupOverview
+        {selectedGroupId ? selectedGroup ? <GroupOverview
           key={selectedGroup.id}
           groupId={selectedGroup.id}
           name={selectedGroup.name}
           membershipKey={selectedGroup.mapIds.join(',')}
-          editable={mode === 'editor'}
+          editable={accountMode === 'editor'}
           clientId={CLIENT_ID}
           onNavigate={(mapId, rootId) => {
             setSelectedGroupId(null); setViewMode('mindmap'); setMobileSidebarOpen(false)
@@ -7155,7 +7265,7 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           onLibraryChanged={() => {
             void apiRequest<DocumentLibraryResponse>('/api/maps').then((library) => { setDocuments(library.maps); setDocumentLayout(library.documentLayout) }).catch((error) => setSaveError(error.message))
           }}
-        /> : <>
+        /> : <section className="group-overview" aria-label="총괄 AI 그룹 안내"><h1>총괄 AI</h1><p role={documentLibraryLoaded ? 'alert' : 'status'}>{documentLibraryLoaded ? saveError || '요청한 그룹을 찾을 수 없습니다. 삭제되었는지 확인하거나 문서 목록에서 다른 그룹을 선택해 주세요.' : '총괄 AI 그룹을 불러오는 중…'}</p></section> : <>
         {viewMode === 'mindmap' ? (
         <section
           ref={canvasWrapRef}
@@ -8356,6 +8466,8 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                     </div>
                   )}
                 </section>
+                {documentArchived && <div className="document-archive-notice">보관 문서 · 읽기 전용<p>{activeDocumentRecord?.archiveReason}</p><button onClick={() => setLifecycleOpen(true)}>보관함에서 복원</button>{activeDocumentRecord?.successorMapIds?.map((id) => <a key={id} href={`/mindmap/${encodeURIComponent(id)}`}>후속 문서</a>)}</div>}
+                {selectedNode.data.reconstructionSources?.length ? <details className="document-archive-notice"><summary>이 카드가 이어받은 원본</summary>{selectedNode.data.reconstructionSources.map((source) => <a key={`${source.mapId}/${source.cardId}`} href={`/mindmap/${encodeURIComponent(source.mapId)}/${encodeURIComponent(source.cardId)}`}>원본 v{source.version} · {source.disposition}</a>)}</details> : null}
                 <section className="node-comments">
                   <div className="node-comments-heading">
                     <span><Icon name="comment" size={14} />{selectedNode.data.reference ? '원본 댓글' : '댓글'}</span><strong>{comments.length}</strong>
@@ -8367,20 +8479,20 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
                       const replyingHere = Boolean(replyTarget) && (replyTarget?.parentId ?? replyTarget?.id) === comment.id
                       return (
                         <div className={`comment-thread ${comment.resolvedAt ? 'resolved' : ''}`} key={comment.id}>
-                          <CommentCard comment={comment} mode={mode} user={user} collaborators={collaborators} readOnly={Boolean(user.publicAccess)} onReply={setReplyTarget} onDelete={(target) => { void deleteComment(target) }} onResolve={(target) => { void toggleCommentResolved(target) }} onReaction={(target, emoji) => { void toggleCommentReaction(target, emoji) }} />
+                          <CommentCard comment={comment} mode={mode} user={user} collaborators={collaborators} readOnly={Boolean(user.publicAccess) || documentArchived} onReply={setReplyTarget} onDelete={(target) => { void deleteComment(target) }} onResolve={(target) => { void toggleCommentResolved(target) }} onReaction={(target, emoji) => { void toggleCommentReaction(target, emoji) }} />
                           {replies.length > 0 && (
                             <div className="comment-replies">
-                              {replies.map((reply) => <CommentCard key={reply.id} comment={reply} isReply mode={mode} user={user} collaborators={collaborators} readOnly={Boolean(user.publicAccess)} onReply={setReplyTarget} onDelete={(target) => { void deleteComment(target) }} onResolve={(target) => { void toggleCommentResolved(target) }} onReaction={(target, emoji) => { void toggleCommentReaction(target, emoji) }} />)}
+                              {replies.map((reply) => <CommentCard key={reply.id} comment={reply} isReply mode={mode} user={user} collaborators={collaborators} readOnly={Boolean(user.publicAccess) || documentArchived} onReply={setReplyTarget} onDelete={(target) => { void deleteComment(target) }} onResolve={(target) => { void toggleCommentResolved(target) }} onReaction={(target, emoji) => { void toggleCommentReaction(target, emoji) }} />)}
                             </div>
                           )}
-                          {replyingHere && !user.publicAccess && renderReplyForm()}
+                          {replyingHere && !user.publicAccess && !documentArchived && renderReplyForm()}
                         </div>
                       )
                     })}
                     {!commentsLoading && comments.length === 0 && <div className="comment-message">{user.publicAccess ? '등록된 댓글이 없습니다.' : '첫 댓글을 남겨보세요.'}</div>}
                   </div>
                   {commentError && <div className="comment-error">{commentError}</div>}
-                  {user.publicAccess ? <div className="public-viewer-comment-note"><Icon name="lock" size={12} /><span>공개 뷰어에서는 댓글을 조회만 할 수 있습니다.</span></div> : <form className="comment-form" onSubmit={(event) => { event.preventDefault(); void submitComment() }}>
+                  {user.publicAccess || documentArchived ? <div className="public-viewer-comment-note"><Icon name="lock" size={12} /><span>{documentArchived ? '보관 문서의 댓글은 읽기 전용입니다.' : '공개 뷰어에서는 댓글을 조회만 할 수 있습니다.'}</span></div> : <form className="comment-form" onSubmit={(event) => { event.preventDefault(); void submitComment() }}>
                     <label className="comment-summary-editor">
                       <span>요약</span>
                       <textarea value={newComment} onChange={(event) => setNewComment(event.target.value)} placeholder="현재 상태와 핵심 결과를 입력하세요" maxLength={240} rows={2} />
@@ -8730,7 +8842,15 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           </button>
         </div>
       )}
-      {documentContextMenu && mode === 'editor' && (
+      {documentContextMenu?.groupId && accountMode === 'editor' && (
+        <div className="node-context-menu document-context-menu" style={{ left: documentContextMenu.x, top: documentContextMenu.y }} role="menu" onContextMenu={(event) => event.preventDefault()}>
+          <div className="context-menu-title"><span>그룹 메뉴</span><strong>{effectiveDocumentLayout.groups.find((group) => group.id === documentContextMenu.groupId)?.name}</strong></div>
+          <button role="menuitem" onClick={() => openDocumentCleanup({ type: 'group', id: documentContextMenu.groupId! })}>
+            <span className="context-icon"><Icon name="sparkles" size={15} /></span><span><strong>문서 정리</strong><small>총괄 문서를 유지하고 하위 문서의 정리안 요청</small></span>
+          </button>
+        </div>
+      )}
+      {documentContextMenu && !documentContextMenu.groupId && accountMode === 'editor' && (
         <div
           className="node-context-menu document-context-menu"
           style={{ left: documentContextMenu.x, top: documentContextMenu.y }}
@@ -8763,6 +8883,12 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
             </div>
           </div>
           <div className="context-divider" />
+          <button role="menuitem" onClick={() => openDocumentCleanup({ type: 'map', id: documentContextMenu.mapId })}>
+            <span className="context-icon"><Icon name="sparkles" size={15} /></span><span><strong>문서 정리</strong><small>규모 정리 또는 새 기획 반영 · AI 정리안 요청</small></span>
+          </button>
+          <button role="menuitem" onClick={() => { void archiveDocument(documentContextMenu.mapId) }}>
+            <span className="context-icon"><Icon name="folder" size={15} /></span><span><strong>보관함으로 이동</strong><small>원문과 참조를 유지하는 읽기 전용 보관</small></span>
+          </button>
           <button role="menuitem" onClick={() => { void completeDocument(documentContextMenu.mapId) }}>
             <span className="context-icon"><Icon name="check" size={15} /></span>
             <span><strong>전체 완료</strong><small>모든 노드와 체크리스트를 완료 처리</small></span>
@@ -8779,13 +8905,15 @@ function Workspace({ user, onLogout, initialDeepLink, theme, onToggleTheme }: { 
           </button>
         </div>
       )}
+      {lifecycleOpen && <DocumentLifecycle api={apiRequest} editable={accountMode === 'editor'} documents={documents} initialIds={selectedGroup?.mapIds ?? (activeMapId ? [activeMapId] : [])} scope={lifecycleEntry.scope} initialTab={lifecycleEntry.initialTab} userId={user.id} members={teamMembers} launchInWebUi={aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)} onClose={() => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }) }} onChanged={refreshLifecycleLibrary} onNavigate={(id) => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }); setSelectedGroupId(null); setActiveMapId(id); setViewMode('mindmap') }} />}
     </div>
   )
 }
 
 function App() {
   const deepLink = parseWorkspaceDeepLink(window.location.pathname)
-  const deepLinkEntry = deepLink !== null
+  const groupId = parseGroupDeepLink(window.location.pathname)
+  const deepLinkEntry = deepLink !== null || groupId !== null
   const [user, setUser] = useState<AuthUser | null>(null)
   const [checkingSession, setCheckingSession] = useState(true)
   const [theme, setTheme] = useState<UiTheme>(() => appliedUiTheme())
@@ -8842,7 +8970,7 @@ function App() {
 
   return (
     <ReactFlowProvider>
-      <Workspace user={user} onLogout={() => { void logout() }} initialDeepLink={deepLink} theme={theme} onToggleTheme={toggleTheme} />
+      <Workspace user={user} onLogout={() => { void logout() }} initialDeepLink={deepLink} initialGroupId={groupId} theme={theme} onToggleTheme={toggleTheme} />
     </ReactFlowProvider>
   )
 }

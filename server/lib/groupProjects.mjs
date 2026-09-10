@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { GROUP_COORDINATOR_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, DOCUMENT_COORDINATOR_INSTRUCTION } from '../../src/utils/aiApprovalInstructions.mjs'
+import { applyGroupWaitingReview, groupWaitingDetails } from './groupWaitingReviews.mjs'
 
 export { GROUP_COORDINATOR_INSTRUCTION, DOCUMENT_COORDINATOR_INSTRUCTION }
 
@@ -62,11 +63,12 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
         root: root ? { id: root.id, data: root.data } : null,
         runtime: root ? runtimeSnapshot(map.id).find((item) => item.nodeId === root.id)?.runtime ?? null : null,
         work: { total: work.length, done: work.filter((node) => node.data.status === 'done').length, waiting: work.filter((node) => node.data.waitingItems?.length).length },
+        waitingDetails: groupWaitingDetails(map, root, project),
       }
     })
     const coordinator = documents.find((map) => map.id === project.coordinatorMapId) ?? null
     return {
-      group, project, coordinator, documents,
+      group, project, coordinator, documents, waitingReviewSupported: true,
       delegations: [...delegations.values()].filter((item) => item.groupId === id).map((item) => ({ ...publicDelegation(item), result: item.childResultSnapshot ?? '' }))
         .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
       guide: {
@@ -76,6 +78,7 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
         documentDelegation: 'mindnprogress_delegate_ai_work의 mapId는 총괄 문서, targetMapId와 targetCardId는 소속 문서와 루트입니다. sourceRevision과 targetRevision은 두 문서의 최신 버전입니다. 그룹→문서 위임은 분석·조정 전용이며 worker를 점유하지 않습니다.',
         membership: '문서 편입은 실행을 시작하지 않습니다. 실행 중인 그룹 위임의 대상이나 총괄 문서는 그룹 이동·휴지통 이동 전에 위임을 마쳐야 합니다.',
         evidence: '업무 카드 완료 수는 요구사항 구현률이 아닙니다. 소유권 원장과 검증 근거는 총괄 문서 및 추적 카드에서 관리하세요.',
+        waiting: 'waitingDetails는 최상위 카드와 하위 업무의 대기 원문·재개 조건입니다. 분류 기록의 valid=false는 기준이나 대기 내용 변경으로 재확인이 필요하다는 뜻입니다. 분류·현재 범위 차단·예정된 외부 대기는 탐색용 표시이며 사용자 실행 승인, 대기 해제 또는 업무 완료가 아닙니다. 분류 기록만으로 실행하거나 기존 대기를 삭제하지 마세요.',
       },
     }
   }
@@ -100,6 +103,19 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
       const current = await read(id)
       assertVersion(current, body.baseVersion)
       const next = { ...current }
+      if (body.waitingReview !== undefined) {
+        // 기준 변경과 대기 분류를 한 요청에서 섞어 미확인 기준을 승인하지 않는다.
+        if (Object.keys(body).some((key) => !['baseVersion', 'baseWaitingReviewVersion', 'waitingReview'].includes(key))) throw groupProjectError('대기 분류는 기획 기준 저장과 별도로 요청해 주세요.')
+        if (!Number.isInteger(body.baseWaitingReviewVersion) || body.baseWaitingReviewVersion !== (current.waitingReviewVersion ?? 0)) throw groupProjectError('대기 분류가 변경되었습니다. 최신 내용을 확인한 뒤 다시 저장해 주세요.', 409)
+        const mapId = body.waitingReview?.mapId
+        if (!group.mapIds.includes(mapId)) throw groupProjectError('현재 그룹 소속 문서만 분류할 수 있습니다.', 409)
+        const map = await readMap(mapId)
+        next.waitingReviews = applyGroupWaitingReview(current, map, map ? documentRoot(map) : null, body.waitingReview, user)
+        // 탐색용 분류는 위임 승인 기준(groupProjectVersion)을 바꾸지 않는다.
+        next.waitingReviewVersion = (current.waitingReviewVersion ?? 0) + 1
+        await write(id, next)
+        return context(id)
+      }
       for (const [key, limit] of Object.entries({ source: 4096, sourceVersion: 240, objective: 10000, instructions: 20000 })) {
         if (body[key] === undefined) continue
         if (typeof body[key] !== 'string' || body[key].length > limit) throw groupProjectError(`${key} 값의 형식 또는 길이가 올바르지 않습니다.`)

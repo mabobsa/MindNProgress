@@ -179,7 +179,15 @@ test('같은 담당 카드에 대한 여러 참조는 담당 AI 검토를 직렬
   const original = deps.dispatch
   deps.dispatch = async (op) => { if (op.kind === 'review') firstReviewId ??= op.id; return original(op) }
   await Promise.all([service.start({ id: 'user1' }, item), service.start({ id: 'user1' }, { ...item, key: 'comment:post1:comment2' })])
-  for (let i = 0; i < 12; i++) { await service.poll(); await new Promise((resolve) => setTimeout(resolve, 5)) }
+  const deadline = Date.now() + 5000
+  let jobs = []
+  do {
+    await service.poll()
+    jobs = await service.list('user1')
+    if (firstReviewId && jobs.some((job) => job.status === 'waiting-target')) break
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  } while (Date.now() < deadline)
+  assert.ok(jobs.some((job) => job.status === 'waiting-target'), '두 번째 요청이 앞선 담당 AI 검토를 기다려야 한다')
   assert.equal([...operations.values()].filter((op) => op.kind === 'review').length, 1)
   finishFirst = true
   await until(service, 'user1', 'proposal')

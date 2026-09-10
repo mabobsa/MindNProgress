@@ -106,6 +106,7 @@ export type AiConversationLink = {
 }
 
 export type MindNodeData = {
+  reconstructionSources?: Array<{ mapId: string; cardId: string; version: number; disposition: string }>
   label: string
   description: string
   sharedKnowledge?: string

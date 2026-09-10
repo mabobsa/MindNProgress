@@ -198,7 +198,7 @@ function encodeBase64Json(value: unknown) {
   return btoa(binary)
 }
 
-export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, knowledgeSources, initialRequest, launchInWebUi, onClose }: {
+export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, knowledgeSources, initialRequest, reconstructionRequestId, launchInWebUi, onClose }: {
   userId: string
   documentId: string
   documentTitle: string
@@ -207,6 +207,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   purpose: AiConversationPurpose
   knowledgeSources: { id: string; label: string; policy: KnowledgePolicy }[]
   initialRequest?: string
+  reconstructionRequestId?: string
   launchInWebUi: boolean
   onClose: () => void
 }) {
@@ -457,6 +458,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           cardId,
           machineId: options.machineId,
           purpose,
+          reconstructionRequestId,
           mode: mode || undefined,
           thoughtLevel: thoughtLevel || undefined,
           enabledSkillIds,

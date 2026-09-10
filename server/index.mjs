@@ -1,4 +1,6 @@
 import { createServer } from 'node:http'
+import { createDocumentMutationGate, createDocumentReconstruction, reconstructionError } from './lib/documentReconstruction.mjs'
+import { createReconstructionRequests } from './lib/documentReconstructionRequests.mjs'
 import { createGroupProjects, documentRoot, DOCUMENT_COORDINATOR_INSTRUCTION } from './lib/groupProjects.mjs'
 import { AI_EXECUTION_APPROVAL_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
@@ -140,6 +142,7 @@ import {
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url))
 const projectDirectory = path.resolve(serverDirectory, '..')
 const dataDirectory = path.resolve(String(process.env.MNP_DATA_DIR ?? '').trim() || path.join(serverDirectory, 'data'))
+let documentReconstruction = null
 const historyDirectory = path.join(dataDirectory, '_history')
 const dailyBackupDirectory = path.join(dataDirectory, '_daily-backups')
 const commentsDirectory = path.join(dataDirectory, '_comments')
@@ -1050,14 +1053,21 @@ function mapSummary(map) {
     createdBy: map.createdBy ?? map.updatedBy ?? null,
     trashedAt: map.trashedAt ?? null,
     trashedBy: map.trashedBy ?? null,
+    archivedAt: map.archivedAt ?? null,
+    archiveReason: map.archiveReason ?? '',
+    lifecycleVersion: map.lifecycleVersion ?? 0,
+    predecessorMapIds: map.predecessorMapIds ?? [],
+    successorMapIds: map.successorMapIds ?? [],
+    reconstructionId: map.reconstructionId ?? null,
   }
 }
 
-async function readMap(mapId) {
+async function readMap(mapId, options = {}) {
   try {
     const stored = JSON.parse(await readFile(mapFileForId(mapId), 'utf8'))
     return normalizeMapForPersistence({
       ...stored,
+      ...(options?.lifecycleMetadata ?? documentReconstruction?.metadata(mapId)),
       id: mapId,
       title: normalizeTitle(stored.title, '새 마인드맵'),
       createdAt: stored.createdAt ?? stored.updatedAt ?? null,
@@ -1070,19 +1080,26 @@ async function readMap(mapId) {
   }
 }
 
-async function listMaps({ trashedOnly = false } = {}) {
+async function listMaps({ trashedOnly = false, archivedOnly = false, includeArchived = false, includePending = false, includeTrashed = false, lifecycleRetries = 3 } = {}) {
+  const lifecycleSnapshot = documentReconstruction?.metadataSnapshot()
   await mkdir(dataDirectory, { recursive: true })
   const entries = await readdir(dataDirectory, { withFileTypes: true })
+  if (lifecycleSnapshot && lifecycleSnapshot !== documentReconstruction.metadataSnapshot()) {
+    if (lifecycleRetries === 0) throw reconstructionError('문서 전환 중입니다. 목록을 다시 조회하세요.', 409)
+    return listMaps({ trashedOnly, archivedOnly, includeArchived, includePending, includeTrashed, lifecycleRetries: lifecycleRetries - 1 })
+  }
   const maps = await Promise.all(entries
     .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && isValidMapId(entry.name.slice(0, -5)))
-    .map((entry) => readMap(entry.name.slice(0, -5))))
+    .map((entry) => readMap(entry.name.slice(0, -5), { lifecycleMetadata: lifecycleSnapshot?.[entry.name.slice(0, -5)] ?? {} })))
   const summaries = maps
-    .filter((map) => map && (trashedOnly ? Boolean(map.trashedAt) : !map.trashedAt))
+    .filter((map) => map && (includeTrashed || (trashedOnly ? Boolean(map.trashedAt) : !map.trashedAt))
+      && (includePending || !map.reconstructionPending)
+      && (archivedOnly ? Boolean(map.archivedAt) : includeArchived || !map.archivedAt))
     .map(mapSummary)
   if (trashedOnly) {
     return summaries.sort((first, second) => String(second.trashedAt ?? '').localeCompare(String(first.trashedAt ?? '')))
   }
-  const documentLayout = await readDocumentLayout(summaries.map((map) => map.id))
+  const documentLayout = await readDocumentLayout(summaries.map((map) => map.id), lifecycleSnapshot)
   const savedOrder = flattenDocumentLayout(documentLayout)
   const orderIndex = new Map(savedOrder.map((mapId, index) => [mapId, index]))
   return summaries.sort((first, second) => {
@@ -1200,9 +1217,10 @@ function isCompleteDocumentLayout(layout, mapIds) {
     && mapIds.every((mapId) => assignedMapIds.has(mapId))
 }
 
-async function readDocumentLayout(mapIds) {
+async function readDocumentLayout(mapIds, lifecycleSnapshot) {
   try {
-    return normalizeDocumentLayout(JSON.parse(await readFile(mapOrderFile, 'utf8')), mapIds)
+    const stored = JSON.parse(await readFile(mapOrderFile, 'utf8'))
+    return normalizeDocumentLayout(documentReconstruction?.projectLayout(stored, mapIds, lifecycleSnapshot) ?? stored, mapIds)
   } catch (error) {
     if (error?.code === 'ENOENT') return defaultDocumentLayout(mapIds)
     throw error
@@ -1222,11 +1240,13 @@ async function reconcileDocumentLayout(mapIds) {
   return layout
 }
 
-async function writeStoredMap(mapId, payload) {
+async function writeStoredMap(mapId, payload, reconstructionCreate = false) {
+  if (!reconstructionCreate) documentReconstruction?.assertWritable(mapId)
   await mkdir(dataDirectory, { recursive: true })
   const mapFile = mapFileForId(mapId)
   const temporaryFile = `${mapFile}.${randomBytes(6).toString('hex')}.tmp`
   await writeFile(temporaryFile, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+  if (!reconstructionCreate) documentReconstruction?.assertWritable(mapId)
   await replaceFileWithRetry(temporaryFile, mapFile)
 }
 
@@ -1238,7 +1258,7 @@ async function migrateStoredMapEdges() {
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.startsWith('_')) continue
     const mapId = entry.name.slice(0, -5)
-    if (!isValidMapId(mapId)) continue
+    if (!isValidMapId(mapId) || documentReconstruction?.isUnavailable(mapId)) continue
     const stored = JSON.parse(await readFile(path.join(dataDirectory, entry.name), 'utf8'))
     if (!isValidMap(stored)) continue
     const normalized = normalizeMapEdges(stored)
@@ -1258,7 +1278,7 @@ async function migrateStoredMapCreationMetadata() {
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.startsWith('_')) continue
     const mapId = entry.name.slice(0, -5)
-    if (!isValidMapId(mapId)) continue
+    if (!isValidMapId(mapId) || documentReconstruction?.isUnavailable(mapId)) continue
     const stored = JSON.parse(await readFile(path.join(dataDirectory, entry.name), 'utf8'))
     if (!isValidMap(stored) || stored.createdAt && stored.createdBy) continue
 
@@ -1303,9 +1323,12 @@ async function readStoredArray(filePath) {
 }
 
 async function writeStoredArray(filePath, value) {
+  const commentMapId = path.dirname(filePath) === commentsDirectory ? path.basename(filePath, '.json') : null
+  if (commentMapId) documentReconstruction?.assertWritable(commentMapId)
   await mkdir(path.dirname(filePath), { recursive: true })
   const temporaryFile = `${filePath}.${randomBytes(5).toString('hex')}.tmp`
   await writeFile(temporaryFile, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  if (commentMapId) documentReconstruction?.assertWritable(commentMapId)
   await replaceFileWithRetry(temporaryFile, filePath)
 }
 
@@ -4292,6 +4315,7 @@ function normalizedIsoDate(value, fallback = new Date().toISOString()) {
 }
 
 async function repairUnspecifiedConversationComments(attribution, replaceableAuthorNames = []) {
+  if (documentReconstruction?.isUnavailable(attribution.mapId)) return 0
   const comments = await listComments(attribution.mapId)
   const linkedAt = Date.parse(attribution.linkedAt)
   const actor = publicUser(attributionUser(attribution))
@@ -5056,9 +5080,12 @@ async function saveMap(mapId, map, user, title, color, revisionReason = 'edit', 
   sharedKnowledgeReviewRequests = new Map(),
   expectedVersion = null,
   validatePayload = null,
+  reconstructionCreate = false,
 } = {}) {
+  if (!reconstructionCreate) documentReconstruction?.assertWritable(mapId)
   await mkdir(dataDirectory, { recursive: true })
   const existing = await readMap(mapId)
+  if (reconstructionCreate && (existing || !documentReconstruction?.metadata(mapId).reconstructionPending)) throw reconstructionError('전환 생성 대상이 올바르지 않습니다.', 409)
   if (Number.isInteger(expectedVersion) && existing?.version !== expectedVersion) {
     const error = new Error('다른 사용자가 먼저 문서를 변경했습니다.')
     error.code = 'VERSION_CONFLICT'
@@ -5092,7 +5119,7 @@ async function saveMap(mapId, map, user, title, color, revisionReason = 'edit', 
   if (existing && !existing.trashedAt) {
     await archiveMapRevision(existing, user, revisionReason)
   }
-  await writeStoredMap(mapId, payload)
+  await writeStoredMap(mapId, payload, reconstructionCreate)
   try {
     await writeDailyBackup(payload, user, 'automatic')
   } catch (error) {
@@ -5205,6 +5232,43 @@ await loadAiConversationOrigins()
 await loadAiDelegations()
 await loadAiWorkspaceHistories()
 await loadDistributedWorkSettings()
+documentReconstruction = await createDocumentReconstruction({
+  projectReferenceData: projectReferenceNodeData,
+  dataDirectory, writeJson: writeStoredArray, readMap, listMaps, readLayout: readDocumentLayout, isValidMap,
+  readComments: (mapId) => readStoredArray(commentFileForMap(mapId)),
+  saveMap: (...args) => saveMap(...args, { reconstructionCreate: true }),
+  checkIdle: async (mapIds) => {
+    for (const mapId of mapIds) {
+      const delegation = [...aiDelegations.values()].find((item) => [item.mapId, item.parentMapId].includes(mapId) && !['completed', 'failed', 'superseded'].includes(item.state))
+      if (delegation) throw reconstructionError(`미종료 AI 위임이 있습니다: ${delegation.id} (${delegation.state})`, 409, 'RECONSTRUCTION_AI_BUSY')
+      const map = await readMap(mapId)
+      if (!map) throw reconstructionError('원본 문서를 찾을 수 없습니다.', 404)
+      const links = map.nodes.flatMap((node) => aiConversationLinksFromData(node.data))
+      const machines = [...new Set(links.map((link) => conversationHomeMachineId(link.conversationId, link)))]
+      const snapshots = new Map(await Promise.all(machines.map(async (id) => [id, await fetchAiConversationRuntimeSnapshot(id, true)])))
+      if (links.some((link) => {
+        const snapshot = snapshots.get(conversationHomeMachineId(link.conversationId, link))
+        return !snapshot?.available || (snapshot.runtimes.get(link.conversationId)?.state ?? 'idle') !== 'idle'
+      })) throw reconstructionError('AI가 실행 중이거나 상태를 확인하지 못했습니다. 작업 상태를 확인한 뒤 다시 시도하세요.', 409, 'RECONSTRUCTION_AI_BUSY')
+    }
+  },
+  checkGroup: async (mapIds) => {
+    const layout = await readDocumentLayout((await listMaps()).map((map) => map.id))
+    const memberships = new Set(mapIds.map((id) => layout.groups.find((group) => group.mapIds.includes(id))?.id ?? null))
+    if (memberships.size > 1) throw reconstructionError('한 번의 전환에는 같은 그룹의 문서만 포함하세요. 그룹 밖 문서는 그룹 밖 문서끼리 정리할 수 있습니다.', 409)
+    for (const group of layout.groups.filter((group) => group.mapIds.some((id) => mapIds.includes(id)))) {
+      const project = await groupProjects.read(group.id)
+      if (mapIds.includes(project.coordinatorMapId)) throw reconstructionError('그룹 총괄 문서는 현재 기준과 승인 범위의 기준점으로 유지하세요. 이번 전환에는 하위 문서만 포함할 수 있습니다.', 409, 'RECONSTRUCTION_COORDINATOR')
+    }
+  },
+  groupContext: async (mapIds) => {
+    const layout = await readDocumentLayout((await listMaps()).map((map) => map.id))
+    return Promise.all(layout.groups.filter((group) => group.mapIds.some((id) => mapIds.includes(id))).map(async (group) => ({
+      groupId: group.id, name: group.name, mapIds: group.mapIds, project: await groupProjects.read(group.id),
+    })))
+  },
+})
+const reconstructionRequests = await createReconstructionRequests({ dataDirectory, writeJson: writeStoredArray, lifecycle: documentReconstruction, readMap })
 try {
   if (await workspacePoolManager.initialize()) {
     console.log(`[Mind & Progress] AI 작업공간 pool registry를 불러왔습니다: ${workspacePoolRegistryFile}`)
@@ -5246,6 +5310,8 @@ const groupProjects = createGroupProjects({
   delegations: aiDelegations, publicDelegation: delegationPublicView, runtimeSnapshot: aiConversationRuntimeSnapshot,
 })
 
+const acquireDocumentMutation = createDocumentMutationGate()
+
 const server = createServer(async (request, response) => {
   const loopbackLocation = localLoopbackRedirectLocation(request)
   if (loopbackLocation) {
@@ -5258,8 +5324,71 @@ const server = createServer(async (request, response) => {
   }
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
   let delegationActionId = null
+  let releaseDocumentMutation = null
 
   try {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && /^\/api\/(maps|groups|document-reconstructions)(\/|$)/.test(url.pathname)) {
+      const isTransition = /^\/api\/maps\/[^/]+\/archive$/.test(url.pathname)
+        || /^\/api\/document-reconstructions\/(apply|[^/]+\/rollback)$/.test(url.pathname)
+      releaseDocumentMutation = await acquireDocumentMutation(isTransition)
+    }
+    const writableMapRoute = url.pathname.match(/^\/api\/maps\/([^/]+)(\/.*)?$/)
+    if (writableMapRoute && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && writableMapRoute[2] !== '/archive') {
+      const mapId = decodeURIComponent(writableMapRoute[1])
+      if (isValidMapId(mapId) && documentReconstruction.isUnavailable(mapId)) {
+        if (!requireUser(request, response)) return
+        documentReconstruction.assertWritable(mapId)
+      }
+    }
+    const archiveRoute = url.pathname.match(/^\/api\/maps\/(map-[a-zA-Z0-9_-]+)\/archive$/)
+    if (url.pathname === '/api/maps/archive' && request.method === 'GET') {
+      if (!requireUser(request, response)) return
+      return sendJson(response, 200, { maps: await listMaps({ archivedOnly: true }) })
+    }
+    if (archiveRoute && request.method === 'PATCH') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 문서를 보관하거나 복원할 수 있습니다.' })
+      const map = await documentReconstruction.archive(archiveRoute[1], await readJsonBody(request), publicUser(user))
+      broadcastMapChange(request, map.id, map.archivedAt ? 'archived' : 'archive-restored', user)
+      const maps = await listMaps()
+      return sendJson(response, 200, { map, maps, documentLayout: await readDocumentLayout(maps.map((m) => m.id)) })
+    }
+    if (url.pathname === '/api/document-reconstructions' || url.pathname.startsWith('/api/document-reconstructions/')) {
+      const user = requireUser(request, response)
+      if (!user) return
+      const suffix = url.pathname.slice('/api/document-reconstructions'.length)
+      if (request.method === 'GET') {
+        if (suffix === '/choices') return sendJson(response, 200, await documentReconstruction.choices({ groupId: url.searchParams.get('groupId'), mapId: url.searchParams.get('mapId') }))
+        if (suffix === '/requests') return sendJson(response, 200, { requests: reconstructionRequests.list() })
+        if (/^\/requests\/[^/]+$/.test(suffix)) return sendJson(response, 200, reconstructionRequests.get(decodeURIComponent(suffix.split('/')[2])))
+        if (suffix === '/context') return sendJson(response, 200, await documentReconstruction.context(url.searchParams.getAll('mapId')))
+        if (!suffix) return sendJson(response, 200, { operations: documentReconstruction.list() })
+        const record = documentReconstruction.get(decodeURIComponent(suffix.slice(1)))
+        return sendJson(response, record ? 200 : 404, record ?? { error: '전환 이력을 찾을 수 없습니다.' })
+      }
+      if (request.method === 'POST' && suffix === '/preview') {
+        const body = await readJsonBody(request)
+        return sendJson(response, 200, await documentReconstruction.preview(body.plan))
+      }
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 문서 재구성을 적용하거나 되돌릴 수 있습니다.' })
+      if (request.method === 'POST' && ['/measure-layout', '/verify-layout'].includes(suffix)) {
+        const body = await readJsonBody(request)
+        return sendJson(response, 200, await documentReconstruction.inspectRenderedLayout(body.plan, body.previewHash, body.measurements, suffix === '/verify-layout', publicUser(user)))
+      }
+      if (request.method === 'POST' && suffix === '/requests') return sendJson(response, 201, await reconstructionRequests.create(await readJsonBody(request), publicUser(user)))
+      if (request.method === 'POST' && /^\/requests\/[^/]+\/proposal$/.test(suffix)) return sendJson(response, 200, await reconstructionRequests.submit(decodeURIComponent(suffix.split('/')[2]), await readJsonBody(request), publicUser(user)))
+      if (request.method === 'POST' && (suffix === '/apply' || /^\/[^/]+\/rollback$/.test(suffix))) {
+        const body = await readJsonBody(request)
+        const operation = suffix === '/apply'
+          ? await documentReconstruction.apply(body.plan, publicUser(user), body.previewHash)
+          : await documentReconstruction.rollback(decodeURIComponent(suffix.split('/')[1]), publicUser(user))
+        for (const mapId of [...operation.sources.map((source) => source.mapId), ...operation.targetMapIds]) broadcastMapChange(request, mapId, 'reconstructed', user)
+        const maps = await listMaps()
+        return sendJson(response, 200, { operation, maps, documentLayout: await readDocumentLayout(maps.map((map) => map.id)) })
+      }
+      return sendJson(response, 404, { error: '지원하지 않는 재구성 작업입니다.' })
+    }
     const actionRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/ai-delegations\/([^/]+)\/(recover|refresh|retry-report)$/)
     if (actionRoute && request.method === 'POST') {
       const id = decodeURIComponent(actionRoute[2])
@@ -5595,6 +5724,11 @@ const server = createServer(async (request, response) => {
           throw error
         }
       }
+      if (purpose === 'document-reconstruction') {
+        const draftRequest = reconstructionRequests.get(String(body.reconstructionRequestId ?? ''))
+        if (draftRequest.createdBy.id !== user.id || draftRequest.launchTarget.mapId !== mapId || draftRequest.launchTarget.cardId !== cardId) return sendJson(response, 403, { error: '정리 요청의 편집자와 시작 대상을 확인하세요.' })
+        documentReconstruction.assertWritable(mapId)
+      }
 
       try {
         const { machineId: homeMachineId } = resolveTargetMachineForUser(user, body.machineId)
@@ -5647,6 +5781,7 @@ const server = createServer(async (request, response) => {
           cardId,
           homeMachineId,
           purpose,
+          reconstructionRequestId: purpose === 'document-reconstruction' ? body.reconstructionRequestId : undefined,
           startedBy: user.id,
           expiresAt,
         })
@@ -5765,7 +5900,10 @@ const server = createServer(async (request, response) => {
           attribution.conversationId = conversationId
           await persistAiAttributions()
         }
-        if (launch.purpose === 'shared-knowledge-review') {
+        if (launch.purpose === 'document-reconstruction') {
+          await reconstructionRequests.linkConversation(launch.reconstructionRequestId, { id: conversationId, homeMachineId: launch.homeMachineId, linkedAt: new Date().toISOString() })
+        }
+        if (launch.purpose === 'shared-knowledge-review' || launch.purpose === 'document-reconstruction') {
           aiConversationLaunches.delete(tokenKey)
           return sendJson(response, 200, {
             conversationId,
@@ -8940,12 +9078,14 @@ const server = createServer(async (request, response) => {
 
     return sendJson(response, 404, { error: '요청한 경로를 찾을 수 없습니다.' })
   } catch (error) {
+    if (error?.reconstructionError) return sendJson(response, error.status, { error: error.message, code: error.code })
     if (error?.groupProjectError) return sendJson(response, error.status, { error: error.message })
     if (error?.message === 'PAYLOAD_TOO_LARGE') return sendJson(response, 413, { error: '요청 데이터가 너무 큽니다.' })
     if (error instanceof SyntaxError) return sendJson(response, 400, { error: 'JSON 형식이 올바르지 않습니다.' })
     console.error(error)
     return sendJson(response, 500, { error: '서버 오류가 발생했습니다.' })
   } finally {
+    releaseDocumentMutation?.()
     if (delegationActionId) aiDelegationActions.delete(delegationActionId)
   }
 })

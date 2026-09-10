@@ -7,6 +7,7 @@ export const AI_CONVERSATION_PURPOSES = Object.freeze([
   'card',
   'shared-knowledge-review',
   'group-coordination',
+  'document-reconstruction',
 ])
 
 export const AI_EDITOR_REQUEST_MAX_LENGTH = 4_000
@@ -61,7 +62,7 @@ export function normalizeAiConversationPurpose(value) {
 }
 
 export function aiConversationTitle({ purpose, documentTitle, cardTitle } = {}) {
-  const prefix = purpose === 'group-coordination' ? '[그룹 총괄] ' : normalizeAiConversationPurpose(purpose) === 'shared-knowledge-review' ? '[지식정리] ' : ''
+  const prefix = purpose === 'document-reconstruction' ? '[문서 정리] ' : purpose === 'group-coordination' ? '[그룹 총괄] ' : normalizeAiConversationPurpose(purpose) === 'shared-knowledge-review' ? '[지식정리] ' : ''
   return `${prefix}${text(documentTitle)}: ${text(cardTitle)}`.replace(/\s+/g, ' ').trim().slice(0, 120)
 }
 

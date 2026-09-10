@@ -1,0 +1,4 @@
+.reconstruction-map { height: 360px; min-width: 0; border: 1px solid #8886; border-radius: 8px; background: var(--theme-surface, #fff); margin: 12px 0; }
+.reconstruction-map .react-flow__node { cursor: default; }
+.reconstruction-map .node-collapse-toggle, .reconstruction-map .node-waiting { cursor: default; }
+.reconstruction-map .node-collapse-toggle:hover { transform: none; }

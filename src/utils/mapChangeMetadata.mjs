@@ -3,6 +3,9 @@ const mapContentRefreshActions = new Set([
   'history-restored',
   'daily-backup-restored',
   'shared-knowledge-reviewed',
+  'archived',
+  'archive-restored',
+  'reconstructed',
 ])
 
 const revisionReasonLabels = Object.freeze({

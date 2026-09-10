@@ -1,0 +1,147 @@
+/* SharedKnowledgeReviewDialog / AiConversationDialog의 글자 계층과 조작 밀도를 따른다.
+   실제 카드 렌더러에는 관리 화면의 타이포그래피를 적용하지 않는다. */
+.lifecycle-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(28, 23, 42, .52);
+  backdrop-filter: blur(3px);
+}
+
+.lifecycle-dialog {
+  box-sizing: border-box;
+  width: min(960px, 100%);
+  max-height: calc(100dvh - 44px);
+  overflow: auto;
+  scrollbar-gutter: stable;
+  padding: 16px 18px;
+  color: var(--theme-text, #332e3b);
+  border: 1px solid var(--theme-border, #ddd8e5);
+  border-radius: 18px;
+  background: var(--theme-surface, #fff);
+  box-shadow: 0 30px 90px rgba(25, 18, 44, .32);
+  font-size: 9px;
+  font-weight: 400;
+  line-height: 1.55;
+}
+
+.lifecycle-dialog > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--theme-border, #e8e4ec);
+}
+
+.lifecycle-dialog h2:not(.reconstruction-map *) { margin: 0; font-size: 15px; font-weight: 700; line-height: 1.4; }
+.lifecycle-dialog h3:not(.reconstruction-map *) { margin: 14px 0 6px; font-size: 11px; font-weight: 700; line-height: 1.45; }
+.lifecycle-dialog strong:not(.reconstruction-map *) { font-weight: 700; }
+.lifecycle-dialog small:not(.reconstruction-map *) { color: var(--theme-text-muted, #918a98); font-size: 8px; font-weight: 400; line-height: 1.45; }
+
+.lifecycle-dialog button:not(.reconstruction-map *) {
+  min-height: 28px;
+  max-width: 100%;
+  margin: 3px 4px 3px 0;
+  padding: 5px 10px;
+  color: var(--theme-text-secondary, #6d6675);
+  border: 1px solid var(--theme-border, #ded9e5);
+  border-radius: 8px;
+  background: var(--theme-surface, #fff);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.lifecycle-dialog button:not(.reconstruction-map *):enabled:hover { color: var(--theme-accent, #6657d9); border-color: var(--theme-accent, #6657d9); background: var(--theme-surface-hover, #f7f5fb); }
+.lifecycle-dialog button:not(.reconstruction-map *)[aria-pressed=true] { color: var(--theme-accent, #6657d9); border-color: var(--theme-accent, #6657d9); background: var(--theme-surface-soft, #f5f3fa); }
+.lifecycle-dialog button:not(.reconstruction-map *).lifecycle-primary { color: #fff; border-color: #6657d9; background: #6657d9; }
+.lifecycle-dialog button:not(.reconstruction-map *).lifecycle-primary:enabled:hover { color: #fff; border-color: #5848c7; background: #5848c7; }
+.lifecycle-dialog button:not(.reconstruction-map *):disabled { color: var(--theme-text-muted, #aaa4b1); border-color: var(--theme-border, #e5e1e9); background: var(--theme-surface-soft, #f5f3f7); opacity: .6; cursor: default; }
+.lifecycle-dialog > header button { margin: 0; }
+
+.lifecycle-dialog > nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 4px;
+  border: 1px solid var(--theme-border, #e2dee7);
+  border-radius: 9px;
+  background: var(--theme-surface-soft, #faf9fc);
+}
+.lifecycle-dialog > nav button { margin: 0; padding: 4px 12px; border-color: transparent; background: transparent; }
+
+.lifecycle-dialog article:not(.reconstruction-map *) { margin: 6px 0; padding: 9px 10px; border: 1px solid var(--theme-border, #e5e1e9); border-radius: 9px; background: var(--theme-surface, #fff); }
+.lifecycle-dialog article > strong:not(.reconstruction-map *), .lifecycle-dialog .lifecycle-link { font-size: 10px; }
+.lifecycle-dialog a:not(.reconstruction-map *) { display: inline-block; margin: 2px 6px 2px 0; color: var(--theme-accent, #6657d9); overflow-wrap: anywhere; }
+.lifecycle-dialog p:not(.reconstruction-map *) { margin: 6px 0; color: var(--theme-text-secondary, #746e7c); font-size: 9px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.lifecycle-dialog label:not(.reconstruction-map *) { display: block; margin: 8px 0; color: var(--theme-text-secondary, #777080); font-size: 9px; font-weight: 650; line-height: 1.5; }
+.lifecycle-dialog input[type=checkbox]:not(.reconstruction-map *) { width: 12px; height: 12px; margin: 0 6px 0 0; vertical-align: middle; accent-color: #6657d9; }
+.lifecycle-dialog input:not(.reconstruction-map *):not([type=checkbox]), .lifecycle-dialog select:not(.reconstruction-map *) {
+  display: block;
+  width: 100%;
+  min-height: 30px;
+  margin-top: 5px;
+  padding: 6px 9px;
+  color: var(--theme-text, #37313e);
+  border: 1px solid var(--theme-border, #ded9e7);
+  border-radius: 8px;
+  background: var(--theme-surface-soft, #fbfafc);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.lifecycle-dialog textarea:not(.reconstruction-map *) {
+  display: block;
+  width: 100%;
+  min-height: 130px;
+  margin-top: 5px;
+  padding: 8px 10px;
+  resize: vertical;
+  color: var(--theme-text, #4a4354);
+  border: 1px solid var(--theme-border, #ded9e7);
+  border-radius: 8px;
+  background: var(--theme-surface-soft, #fbfafc);
+  font: 9px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.lifecycle-dialog textarea:not(.reconstruction-map *).lifecycle-notes { min-height: 64px; font-family: inherit; font-size: 10px; font-weight: 400; line-height: 1.55; }
+.lifecycle-dialog :is(input, textarea, select):not(.reconstruction-map *):focus { border-color: var(--theme-accent, #7567d8); box-shadow: 0 0 0 3px rgba(103, 87, 216, .1); }
+.lifecycle-dialog fieldset:not(.reconstruction-map *) { min-width: 0; margin: 12px 0; padding: 10px 12px; border: 1px solid var(--theme-border, #e2dee7); border-radius: 10px; background: var(--theme-surface-soft, #faf9fc); }
+/* legend를 내부 흐름에 배치해 테두리를 끊지 않고, fieldset의 접근성·입력 잠금은 유지한다. */
+.lifecycle-dialog legend:not(.reconstruction-map *) { float: left; width: 100%; margin: 0 0 8px; padding: 0; font-size: 10px; font-weight: 700; }
+.lifecycle-dialog legend + .lifecycle-sources { clear: both; }
+.lifecycle-dialog details:not(.reconstruction-map *) { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--theme-border, #e7e3eb); border-radius: 9px; background: var(--theme-surface-soft, #faf9fc); }
+.lifecycle-dialog summary:not(.reconstruction-map *) { color: var(--theme-text-secondary, #746e7c); font-size: 9px; font-weight: 700; line-height: 1.5; cursor: pointer; }
+.lifecycle-dialog pre:not(.reconstruction-map *) { max-height: 320px; overflow: auto; padding: 8px; font: 9px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.lifecycle-dialog table:not(.reconstruction-map *) { width: 100%; margin: 8px 0; border-collapse: collapse; font-size: 9px; line-height: 1.5; }
+.lifecycle-dialog th:not(.reconstruction-map *), .lifecycle-dialog td:not(.reconstruction-map *) { padding: 5px 10px; border-bottom: 1px solid var(--theme-border, #e8e4ec); text-align: left; }
+.lifecycle-dialog th:not(.reconstruction-map *) { color: var(--theme-text-secondary, #777080); font-weight: 650; }
+.lifecycle-dialog li:not(.reconstruction-map *) { margin: 5px 0; }
+.lifecycle-dialog ol:not(.reconstruction-map *) { margin: 8px 0; padding-left: 18px; }
+.lifecycle-dialog p[role=alert] { padding: 8px 10px; color: #b34b52; border: 1px solid #ecc9cc; border-radius: 8px; background: #fff3f4; }
+.lifecycle-dialog p[role=status] { padding: 8px 10px; color: #39795f; border: 1px solid #cfe9df; border-radius: 8px; background: #eff9f5; }
+.lifecycle-dialog article.lifecycle-request-detail { background: var(--theme-surface-soft, #f5f3fa); }
+.lifecycle-sources { max-height: 160px; overflow: auto; }
+.lifecycle-dialog .lifecycle-sources label { margin: 5px 0; font-weight: 400; }
+.document-archive-notice { padding: 7px 14px; color: var(--theme-text-secondary, #746e7c); border-bottom: 1px solid var(--theme-border, #e5e1e9); background: var(--theme-surface-soft, #faf9fc); font-size: 9px; line-height: 1.5; }
+.document-archive-notice a { margin-left: 8px; color: var(--theme-accent, #6657d9); }
+
+/* 관리 화면의 9px 기본 글꼴·줄간격이 실제 카드 크기와 겹침 검증을 바꾸지 않도록 격리한다. */
+.lifecycle-dialog .reconstruction-map { font-size: 1rem; font-weight: 400; line-height: normal; }
+[data-theme=dark] .lifecycle-dialog p[role=alert] { color: #f0a3aa; border-color: #6b424c; background: #3e2932; }
+[data-theme=dark] .lifecycle-dialog p[role=status] { color: #9ed0bc; border-color: #395c4f; background: #233a32; }
+
+@media (max-width: 600px) {
+  .lifecycle-backdrop { padding: 10px; }
+  .lifecycle-dialog { max-height: calc(100dvh - 20px); padding: 12px; border-radius: 14px; }
+  .lifecycle-dialog > header { gap: 8px; }
+}

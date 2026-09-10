@@ -44,7 +44,7 @@ export async function documentLifecycleBrowser(base, directory, sourceId, nextId
     await command('Page.navigate', { url: `${base}/mindmap/${sourceId}/task` })
     await until(() => evaluate('document.body.innerText.includes("보관 문서 (읽기 전용)")'), '보관 링크가 보관 문서를 열지 못했습니다.')
     assert.equal(await evaluate('document.querySelector(".comment-form") === null'), true, '보관 문서 댓글 작성 금지')
-    assert.equal(await evaluate('document.querySelector(".react-flow__node[data-id=task]") !== null'), true, '기존 카드 ID 열람')
+    await until(() => evaluate('document.querySelector(".react-flow__node[data-id=task]") !== null'), '기존 카드 ID 열람')
     await evaluate('[...document.querySelectorAll("button")].find(b=>b.textContent.includes("보관함 · 문서 재구성")).click()')
     await until(() => evaluate('document.querySelector(".lifecycle-dialog")?.innerText.includes("v0.4 원본")'), '보관함 목록 표시 실패')
     assert.equal(await evaluate('[...document.querySelectorAll(".lifecycle-dialog button")].some(b=>b.textContent === "복원")'), true)
@@ -172,9 +172,49 @@ export async function documentLifecycleBrowser(base, directory, sourceId, nextId
     await reopenSaved()
     await evaluate('[...document.querySelectorAll(".lifecycle-dialog label")].find(e=>e.textContent.includes("카드 대응표와 현재 지식")).querySelector("input").click()')
     assert.equal(await evaluate('[...document.querySelectorAll(".lifecycle-dialog button")].find(b=>b.textContent === "승인한 전환안 적용").disabled'), false)
+    const assertApplyFailure = async (screenshotName) => {
+      const message = '아직 종료되지 않은 AI 위임이 있어 문서 전환을 적용할 수 없습니다. 시험 문서의 결과 보고 대기 상태와 승인 범위를 확인한 뒤 다시 시도하세요.'
+      // 실제 문서를 전환하거나 AI 상태를 바꾸지 않고, 적용 API의 차단 응답만 한 번 재현한다.
+      await evaluate(`(() => {
+        const fetchBeforeFailure = globalThis.fetch;
+        globalThis.fetch = async (...args) => {
+          if (args[0] === '/api/document-reconstructions/apply' && args[1]?.method === 'POST') {
+            globalThis.fetch = fetchBeforeFailure;
+            await new Promise(resolve => setTimeout(resolve, 100));
+            return new Response(JSON.stringify({error:${JSON.stringify(message)},code:'RECONSTRUCTION_AI_BUSY'}), {status:409,headers:{'Content-Type':'application/json'}});
+          }
+          return fetchBeforeFailure(...args);
+        };
+        window.confirm = () => true;
+        document.querySelector('.lifecycle-dialog').scrollTop = document.querySelector('.lifecycle-dialog').scrollHeight;
+      })()`)
+      await evaluate('document.querySelector(".lifecycle-apply-action button").click()')
+      await until(() => evaluate(`document.querySelector('.lifecycle-apply-error')?.textContent.includes(${JSON.stringify(message)}) && !document.querySelector('.lifecycle-apply-action button').disabled`), '적용 차단 사유를 버튼 아래에 표시하지 못했습니다.')
+      const visibility = await evaluate(`(() => {
+        const dialog = document.querySelector('.lifecycle-dialog');
+        const error = dialog.querySelector('.lifecycle-apply-error');
+        const button = dialog.querySelector('.lifecycle-apply-action button');
+        const box = dialog.getBoundingClientRect();
+        const bounds = error.getBoundingClientRect();
+        const buttonBounds = button.getBoundingClientRect();
+        return { visible:bounds.top >= box.top && bounds.bottom <= Math.min(box.bottom,innerHeight), buttonVisible:buttonBounds.top >= box.top, gap:bounds.top-buttonBounds.bottom, scrolled:dialog.scrollTop > 0, described:button.getAttribute('aria-describedby') === error.id, alerts:dialog.querySelectorAll('[role=alert]').length, topAlerts:dialog.querySelectorAll(':scope > p[role=alert]').length };
+      })()`)
+      assert.ok(visibility.visible && visibility.buttonVisible && visibility.scrolled, '아래로 스크롤한 화면에서 버튼과 오류가 함께 보여야 한다: ' + JSON.stringify(visibility))
+      assert.ok(visibility.gap >= 0 && visibility.gap <= 16, '적용 버튼 바로 아래에 오류 표시')
+      assert.equal(visibility.described, true, '적용 버튼과 오류의 접근성 연결')
+      assert.equal(visibility.alerts, 1, '오류를 중복 표시하지 않는다')
+      assert.equal(visibility.topAlerts, 0, '적용 오류를 최상단에 표시하지 않는다')
+      assert.equal(await evaluate(`fetch('/api/maps/${nextId}').then(r=>r.json()).then(r=>Boolean(r.map.archivedAt))`), false, '차단된 적용은 원본을 보관하지 않는다')
+      await capture(screenshotName)
+    }
+    await assertApplyFailure('apply-error-light.png')
+    await evaluate('document.querySelector("button[aria-label^=\\"화면 테마:\\"]").click()')
+    await assertApplyFailure('apply-error-dark.png')
+    await evaluate('document.querySelector("button[aria-label^=\\"화면 테마:\\"]").click()')
     await command('Page.reload')
     await until(() => evaluate('document.querySelector(".lifecycle-dialog") === null && [...document.querySelectorAll("button")].some(b=>b.textContent.includes("보관함 · 문서 재구성"))').catch(() => false), '새로고침 실패')
     await reopenSaved()
+    assert.equal(await evaluate('document.querySelector(".lifecycle-apply-error") === null'), true, '다시 연 정리안에 이전 적용 오류를 표시하지 않는다')
     await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
     assert.equal(await evaluate('document.querySelector(".lifecycle-dialog").getBoundingClientRect().width <= innerWidth'), true, '모바일 화면 폭 안에 대화상자 배치')
     await evaluate('document.querySelector(".lifecycle-dialog").scrollTop = 0')
@@ -184,8 +224,10 @@ export async function documentLifecycleBrowser(base, directory, sourceId, nextId
     const expectedPositions = await evaluate('[...document.querySelectorAll(".reconstruction-map .react-flow__node")].map(e=>({id:e.dataset.id,transform:e.style.transform}))')
     await evaluate('window.confirm=()=>true; [...document.querySelectorAll(".lifecycle-dialog label")].find(e=>e.textContent.includes("카드 대응표와 현재 지식")).querySelector("input").click()')
     await until(() => evaluate('[...document.querySelectorAll(".lifecycle-dialog button")].find(b=>b.textContent === "승인한 전환안 적용").disabled === false'), '브라우저 시험 승인 실패')
+    await assertApplyFailure('apply-error-mobile.png')
     await evaluate('[...document.querySelectorAll(".lifecycle-dialog button")].find(b=>b.textContent === "승인한 전환안 적용").click()')
     await until(() => evaluate('document.querySelector(".lifecycle-dialog")?.innerText.includes("전환했습니다")'), '실제 렌더 검증안 UI 적용 실패')
+    assert.equal(await evaluate('document.querySelector(".lifecycle-apply-error") === null'), true, '성공한 재시도 뒤 적용 오류 제거')
     const savedPositions = await evaluate(`(async()=>{const result=await (await fetch('/api/document-reconstructions/browser-proposal')).json(); const map=(await (await fetch('/api/maps/'+result.targetMapIds[0])).json()).map; return map.nodes.map(n=>({id:n.id,transform:'translate('+n.position.x+'px, '+n.position.y+'px)'}));})()`)
     assert.deepEqual(savedPositions, expectedPositions, '미리보기와 실제 저장 좌표 일치')
     assert.equal(await evaluate(`fetch('/api/document-reconstructions/browser-proposal/rollback',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)`), 200, '시험 전환 되돌리기')

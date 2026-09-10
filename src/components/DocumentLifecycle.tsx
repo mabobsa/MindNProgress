@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { documentReconstructionGuide } from '../utils/documentReconstructionGuide.mjs'
 import { buildReconstructionRequestPrompt } from '../utils/documentReconstructionRequest.mjs'
 import { AiConversationDialog } from './AiConversationDialog'
@@ -51,6 +51,9 @@ export function DocumentLifecycle({ api, editable, documents, initialIds, scope,
   const appliedPlan = useRef<{ draft: string; plan: Record<string, unknown> } | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [applyError, setApplyError] = useState('')
+  const applyErrorId = useId()
+  const applyErrorElement = useRef<HTMLParagraphElement>(null)
   const [notice, setNotice] = useState('')
   const dialog = useRef<HTMLElement>(null)
   const refresh = useCallback(async () => {
@@ -93,8 +96,13 @@ export function DocumentLifecycle({ api, editable, documents, initialIds, scope,
     const previous = document.activeElement as HTMLElement | null
     return () => previous?.focus()
   }, [])
+  useEffect(() => {
+    if (applyError && tab === 'reconstruction' && preview) {
+      applyErrorElement.current?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
+    }
+  }, [applyError, tab, preview])
   const run = async (action: () => Promise<void>) => {
-    setBusy(true); setError(''); setNotice('')
+    setBusy(true); setError(''); setApplyError(''); setNotice('')
     try { await action() } catch (error) { setError(error instanceof Error ? error.message : '처리하지 못했습니다.') }
     finally { setBusy(false) }
   }
@@ -136,7 +144,12 @@ export function DocumentLifecycle({ api, editable, documents, initialIds, scope,
       ...JSON.parse(draft), approval: { statement: `문서 재구성 ${preview.id}의 미리보기와 카드 대응표를 확인하고 적용을 승인합니다.`, source: `MindNProgress 문서 재구성 화면의 사용자 확인 · ${new Date().toISOString()}` },
     }
     appliedPlan.current = { draft, plan }
-    await api('/api/document-reconstructions/apply', { method: 'POST', body: JSON.stringify({ plan, previewHash: preview.previewHash }) })
+    try {
+      await api('/api/document-reconstructions/apply', { method: 'POST', body: JSON.stringify({ plan, previewHash: preview.previewHash }) })
+    } catch (error) {
+      setApplyError(error instanceof Error ? error.message : '전환안을 적용하지 못했습니다.')
+      return
+    }
     setPreview(null); setApproved(false); setActiveRequest(null); await refresh(); await onChanged(); setTab('history'); setNotice('전환했습니다. 원본과 후속 문서 및 카드 대응표를 확인하세요.')
   })
   const selectRequest = (id: string) => run(async () => {
@@ -232,7 +245,12 @@ export function DocumentLifecycle({ api, editable, documents, initialIds, scope,
             {decision.evidence && <p>제외 근거: {decision.evidence}</p>}
             {decision.targets?.map((target) => { const doc = preview.targets.find((doc) => doc.key === target.key); return <div key={`${target.key}/${target.cardId}`}>→ {doc?.map.title} / {doc?.map.nodes.find((node) => node.id === target.cardId)?.data.label ?? target.cardId}</div> })}
           </article>)}</details>
-          {editable && <><label><input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} disabled={busy || layoutBusy || Boolean(layoutError) || preview.layoutPhase !== 'verified'} />카드 대응표와 현재 지식·미완료 조건의 의미 보존을 검토했으며, 이 전환안의 적용을 승인합니다.</label><button className="lifecycle-primary" onClick={() => void apply()} disabled={busy || !approved || layoutBusy || Boolean(layoutError) || preview.layoutPhase !== 'verified'}>승인한 전환안 적용</button></>}
+          {editable && <><label><input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} disabled={busy || layoutBusy || Boolean(layoutError) || preview.layoutPhase !== 'verified'} />카드 대응표와 현재 지식·미완료 조건의 의미 보존을 검토했으며, 이 전환안의 적용을 승인합니다.</label>
+            <div className="lifecycle-apply-action">
+              <button className="lifecycle-primary" aria-describedby={applyError ? applyErrorId : undefined} onClick={() => void apply()} disabled={busy || !approved || layoutBusy || Boolean(layoutError) || preview.layoutPhase !== 'verified'}>승인한 전환안 적용</button>
+              {applyError && <p ref={applyErrorElement} id={applyErrorId} className="lifecycle-apply-error" role="alert" aria-atomic="true"><strong>전환 적용 오류</strong><br />{applyError}</p>}
+            </div>
+          </>}
         </>}
       </>}
       {tab === 'history' && <>

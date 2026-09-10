@@ -4,6 +4,7 @@ import path from 'node:path'
 import { documentReconstructionGuide } from '../../src/utils/documentReconstructionGuide.mjs'
 import { layoutMindMap, verifyRenderedLayout, MIND_MAP_LAYOUT_VERSION } from '../../src/utils/mindMapLayout.mjs'
 import { applyProgressRollup } from '../../src/utils/progressRollup.mjs'
+import { impactHash, inspectReconstructionImpact } from './reconstructionImpact.mjs'
 
 export function reconstructionError(message, status = 400, code = 'RECONSTRUCTION_INVALID') {
   return Object.assign(new Error(message), { status, code, reconstructionError: true })
@@ -208,7 +209,7 @@ export function validateReconstruction(plan, sourceMaps, { isValidMap, targetExi
 }
 
 // 보관·전환 상태는 문서 원문과 분리한다. 한 파일의 원자적 교체가 활성 문서 전환점이다.
-export async function createDocumentReconstruction({ dataDirectory, writeJson, readMap, saveMap, listMaps, readLayout, checkIdle, isValidMap, readComments = async () => [], checkGroup = async () => {}, groupContext = async () => [], projectReferenceData = (local) => local }) {
+export async function createDocumentReconstruction({ dataDirectory, writeJson, readMap, saveMap, listMaps, readLayout, checkIdle, isValidMap, readComments = async () => [], checkGroup = async () => {}, groupContext = async () => [], proposalBaseline = () => null, projectReferenceData = (local) => local }) {
   const file = path.join(dataDirectory, '_document-lifecycle.json')
   let state
   try { state = JSON.parse(await readFile(file, 'utf8')) }
@@ -261,7 +262,11 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
     }
     return next
   }
-  async function inspect(plan) {
+  const inspectImpact = async (plan, sources, targets, baseline) => inspectReconstructionImpact({ plan, sources, targets,
+    groups: await groupContext(plan.sources.map((source) => source.mapId)),
+    library: await listMaps({ includeArchived: true, includePending: true, includeTrashed: true }),
+    readMap, readComments, readLayout, metadata, operations: Object.values(state.operations), baseline, sourceHash: reconstructionSourceHash })
+  async function inspect(plan, { submitting = false } = {}) {
     if (!Array.isArray(plan?.sources) || plan.sources.length < 1 || plan.sources.length > 30
       || plan.sources.some((source) => !source || !/^map-[a-zA-Z0-9_-]+$/.test(source.mapId ?? ''))) throw reconstructionError('원본 문서 ID를 1~30개 지정하세요.')
     const sources = await Promise.all((plan?.sources ?? []).map((source) => readMap(source.mapId)))
@@ -272,8 +277,7 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
       if (source.commentsSha256 !== hash(await readComments(source.mapId)) || source.lifecycleVersion !== (metadata(source.mapId).lifecycleVersion ?? 0)) throw reconstructionError('원본 댓글 또는 보관 상태가 변경되었습니다. 전환안을 다시 검토하세요.', 409, 'RECONSTRUCTION_STALE')
     }
     await checkGroup(plan.sources.map((source) => source.mapId))
-    const groups = await groupContext(plan.sources.map((source) => source.mapId))
-    if (hash(groups) !== hash(plan.groupBaselines ?? [])) throw reconstructionError('그룹 기준·소속 문서가 변경되었거나 전환안에 누락되었습니다. 그룹 기준을 다시 조회하세요.', 409, 'RECONSTRUCTION_GROUP_STALE')
+    const impactValidation = await inspectImpact(plan, sources, result.targets, submitting ? null : proposalBaseline(plan))
     const referenceSnapshots = new Map()
     for (const target of result.targets) target.map = applyProgressRollup(target.map)
     const renderTargets = structuredClone(result.targets)
@@ -288,10 +292,15 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
         if (!result.targets.some((target) => target.map.id === source.id)) referenceSnapshots.set(source.id, { mapId: source.id, sha256: reconstructionSourceHash(source) })
       }
     }
-    const intent = previewHash({ plan: { ...plan, approval: undefined }, targets: renderTargets, references: [...referenceSnapshots.values()], version: MIND_MAP_LAYOUT_VERSION })
+    const intent = previewHash({ plan: { ...plan, approval: undefined }, targets: renderTargets, references: [...referenceSnapshots.values()], impact: impactValidation.references, impactVersion: impactValidation.version, version: MIND_MAP_LAYOUT_VERSION })
     const cached = previews.get(intent)
-    if (cached?.expiresAt > Date.now()) return structuredClone(cached.result)
+    const impactResult = { impactValidation, warnings: [...result.warnings, ...impactValidation.warnings] }
+    if (cached?.expiresAt > Date.now()) {
+      if (impactHash({ ...impactValidation, checkedAt: undefined }) === impactHash({ ...cached.result.impactValidation, checkedAt: undefined })) return structuredClone(cached.result)
+      return structuredClone({ ...cached.result, ...impactResult })
+    }
     return publishPreview(intent, { ...result, layoutPhase: 'draft', baseline: plan.baseline, reason: plan.reason, newSource: plan.newSource, changeSummary: plan.changeSummary,
+      ...impactResult,
       targets: result.targets.map((target, index) => placeTarget({ ...target, renderMap: renderTargets[index].map })), referenceSnapshots: [...referenceSnapshots.values()],
       sourceCards: sources.flatMap((map) => map.nodes.map((node) => ({ mapId: map.id, cardId: node.id, label: node.data.label }))) })
   }
@@ -385,6 +394,7 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
       const record = { id: plan.id, state: 'preparing', mode: plan.mode, baseline: plan.baseline, reason: plan.reason,
         newSource: plan.newSource ?? '', changeSummary: plan.changeSummary ?? '', approval: plan.approval,
         groupBaselines: plan.groupBaselines ?? [],
+        impactValidation: preview.impactValidation,
         createdAt: now, createdBy: user, sources: plan.sources, targetMapIds: preview.targets.map((target) => target.map.id),
         targets: preview.targets.map(({ key, map }) => ({ key, mapId: map.id, title: map.title })),
         targetLayouts: preview.targets.map(({ key, map, layout }) => ({ key, mapId: map.id, layout })), layoutVerification: preview.layoutVerification,
@@ -411,6 +421,8 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
           if (!current || current.trashedAt || reconstructionSourceHash(current) !== source.sha256 || hash(await readComments(source.mapId)) !== source.commentsSha256) throw reconstructionError('저장 중 원본이 변경되었습니다.', 409, 'RECONSTRUCTION_STALE')
         }
         await checkIdle(plan.sources.map((s) => s.mapId))
+        const finalImpact = await inspectImpact(plan, await Promise.all(plan.sources.map((source) => readMap(source.mapId))), preview.targets, proposalBaseline(plan))
+        if (impactHash(finalImpact.references) !== impactHash(preview.impactValidation.references)) throw reconstructionError('저장 중 양방향 Ref 연결 또는 원본이 변경되었습니다. 다시 검토하세요.', 409, 'RECONSTRUCTION_REFERENCE_STALE')
         const next = structuredClone(state)
         for (const source of plan.sources) {
           const targetKeys = new Set(plan.decisions.filter((d) => d.mapId === source.mapId).flatMap((d) => (d.targets ?? []).map((t) => t.key)))
@@ -426,7 +438,7 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
           const originGroupId = [...groups][0] ?? layout.groups.find((group) => group.mapIds.some((id) => plan.sources.some((source) => source.mapId === id)))?.id ?? null
           next.documents[target.map.id] = { reconstructionId: plan.id, predecessorMapIds: sourceIds, originGroupId }
         }
-        next.operations[plan.id] = { ...record, state: 'applied', appliedAt: new Date().toISOString(), targetVersions: await Promise.all(created.map(async (map) => ({ mapId: map.id, version: map.version, sha256: reconstructionSourceHash(map), commentsSha256: hash(await readComments(map.id)) }))) }
+        next.operations[plan.id] = { ...record, impactValidation: finalImpact, state: 'applied', appliedAt: new Date().toISOString(), targetVersions: await Promise.all(created.map(async (map) => ({ mapId: map.id, version: map.version, sha256: reconstructionSourceHash(map), commentsSha256: hash(await readComments(map.id)) }))) }
         await persist(next)
         return publicRecord(get(plan.id))
       } catch (error) {

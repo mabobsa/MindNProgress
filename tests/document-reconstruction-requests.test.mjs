@@ -15,7 +15,7 @@ test('정리 요청은 범위를 고정하고 제안만 저장하며 재시작·
     readMap: async () => ({ id: 'map-a', title: '현재 업무', nodes: [{ id: 'root', data: { kind: 'root', label: '현재 기준' } }] }),
     lifecycle: { context: async (ids) => ({ groupBaselines: [], sources: ids.map((mapId) => ({ mapId, title: '원본' })) }),
       choices: async () => ({ documents: [{ id: 'map-a' }, { id: 'map-coordinator', excluded: true }] }),
-      preview: async () => { inspected++ },
+      preview: async () => { inspected++; return { impactValidation: { references: { documents: [], links: [] } } } },
     },
   }
   let requests = await createReconstructionRequests(options)
@@ -36,9 +36,13 @@ test('정리 요청은 범위를 고정하고 제안만 저장하며 재시작·
   assert.equal(inspected, 1)
   assert.equal(requests.get(request.id).revision, 1)
   assert.equal(requests.list()[0].plan, undefined)
+  assert.equal(requests.list()[0].referenceBaseline, undefined)
+  assert.deepEqual(requests.validationBaseline({ ...plan, approval: { statement: '승인', source: '시험' } }).references, { documents: [], links: [] })
+  assert.equal(requests.validationBaseline({ ...plan, baseline: '다른 기준' }), null)
   await requests.linkConversation(request.id, { id: 'test-conversation' })
   requests = await createReconstructionRequests(options)
   assert.deepEqual(requests.get(request.id).plan, plan)
+  assert.deepEqual(requests.validationBaseline(plan).references, { documents: [], links: [] }, '재시작 후에도 제출 당시 Ref 기준 유지')
   assert.equal(requests.get(request.id).conversation.id, 'test-conversation')
   const copied = requests.get(request.id); copied.plan.baseline = '임의 변경'
   assert.equal(requests.get(request.id).plan.baseline, 'v0.4')

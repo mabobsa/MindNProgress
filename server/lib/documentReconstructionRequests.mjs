@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { reconstructionError } from './documentReconstruction.mjs'
+import { proposalHash } from './reconstructionImpact.mjs'
 
 // 제안함은 업무 문서·보관 상태·진행률과 별개다. 제출은 적용 승인이 아니다.
 export async function createReconstructionRequests({ dataDirectory, writeJson, lifecycle, readMap }) {
@@ -21,8 +22,13 @@ export async function createReconstructionRequests({ dataDirectory, writeJson, l
     if (typeof value !== 'string' || (!optional && !value.trim()) || value.length > max) throw reconstructionError(`${label} 입력을 확인하세요. (최대 ${max}자)`)
     return value.trim()
   }
-  const summary = ({ plan, ...record }) => ({ ...record, hasProposal: Boolean(plan), planId: plan?.id })
+  const summary = ({ plan, referenceBaseline: _referenceBaseline, ...record }) => ({ ...record, hasProposal: Boolean(plan), planId: plan?.id })
   return {
+    validationBaseline: (plan) => {
+      const fingerprint = proposalHash(plan)
+      const record = Object.values(records).filter((item) => item.plan && proposalHash(item.plan) === fingerprint).sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))[0]
+      return record ? structuredClone({ submittedAt: record.submittedAt, references: record.referenceBaseline }) : null
+    },
     get: (id) => structuredClone(required(id)),
     list: () => Object.values(records).map(summary).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     create: (body, user) => exclusive(async () => {
@@ -54,8 +60,8 @@ export async function createReconstructionRequests({ dataDirectory, writeJson, l
       if (!plan || plan.approval !== undefined) throw reconstructionError('제안함에는 적용 승인 없이 정리안만 제출하세요.')
       if (plan.mode !== request.mode || plan.baseline !== request.baseline || (request.mode === 'spec-update' && plan.newSource !== request.newSource)
         || !Array.isArray(plan.sources) || plan.sources.length !== request.mapIds.length || request.mapIds.some((id) => !plan.sources.some((source) => source?.mapId === id))) throw reconstructionError('정리안의 목적·기준·기획 출처·대상이 사용자 요청 범위와 다릅니다.')
-      await lifecycle.preview(plan)
-      const record = await save({ ...request, plan, revision: request.revision + 1, submittedAt: new Date().toISOString(), submittedBy: user })
+      const preview = await lifecycle.preview(plan, { submitting: true })
+      const record = await save({ ...request, plan, referenceBaseline: preview?.impactValidation?.references, revision: request.revision + 1, submittedAt: new Date().toISOString(), submittedBy: user })
       return summary(record)
     }),
     linkConversation: (id, conversation) => exclusive(async () => save({ ...required(id), conversation })),

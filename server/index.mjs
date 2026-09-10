@@ -5454,6 +5454,7 @@ await loadAiWorkspaceHistories()
 await loadDistributedWorkSettings()
 documentReconstruction = await createDocumentReconstruction({
   projectReferenceData: projectReferenceNodeData,
+  proposalBaseline: (plan) => reconstructionRequests.validationBaseline(plan),
   dataDirectory, writeJson: writeStoredArray, readMap, listMaps, readLayout: readDocumentLayout, isValidMap,
   readComments: (mapId) => readStoredArray(commentFileForMap(mapId)),
   saveMap: (...args) => saveMap(...args, { reconstructionCreate: true }),

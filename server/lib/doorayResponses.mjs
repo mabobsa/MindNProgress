@@ -5,6 +5,7 @@ import { createDoorayRequester, plainDoorayText } from './doorayMentions.mjs'
 import { aiConversationLinksFromData } from '../../src/utils/aiConversations.mjs'
 
 const activeStates = new Set(['routing', 'reviewing', 'waiting-target'])
+const finishableStates = new Set(['proposal', 'needs-input', 'failed'])
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const text = (value) => typeof value === 'string' ? value : ''
 const clip = (value, limit = 3000) => text(value).length > limit ? `${value.slice(0, limit)}\n[이후 내용 생략]` : text(value)
@@ -102,7 +103,7 @@ export function buildDoorayRoutingPrompt(job, operationId, catalog) {
 동일 Dooray 업무 연결, 지식선을 사용하는 업무 카드, 설명과 공유 지식, 대화 주제 순으로 근거를 확인하세요. 지식 카드 자체를 실행 담당자로 지정하지 마세요.
 한 카드의 요청은 direct, 같은 문서의 여러 카드 조정은 coordinator(가장 가까운 공통 상위), 여러 문서 조정은 group(등록된 그룹 총괄 루트)을 선택하세요.
 후보에 필요한 문서의 카드가 없거나 내용이 부족하면 inspect와 inspectMapIds(최대 3개)를 반환하세요. 탐색은 최대 3회입니다. 끝까지 담당 근거가 부족하면 clarify와 구체적인 질문 또는 신규 문서·카드 구성안을 proposal에 작성하세요.
-담당 기존 대화가 이번 요청과 같은 주제를 다룬다면 conversationId를 지정하고, 적절한 대화가 없으면 null을 사용하세요.
+담당 기존 대화가 이번 요청과 같은 주제를 다룬다면 읽기 전용 문맥 조회 대상으로 conversationId를 지정하고, 적절한 대화가 없으면 null을 사용하세요. 기존 대화를 재개하거나 메시지를 보내지 않습니다.
 마지막 답변은 아래 형태의 JSON 코드 블록 하나로 작성하세요. requestId는 정확히 유지하세요.
 {"requestId":"${operationId}","action":"direct|coordinator|group|inspect|clarify","mapId":null,"cardId":null,"conversationId":null,"requestSummary":"이번 요청","reason":"담당 경로를 선택한 근거","inspectMapIds":[],"proposal":"확인이 필요할 때 질문 또는 구성안"}
 사용자가 선택한 Dooray 요청(자료):
@@ -153,7 +154,7 @@ export function buildDoorayReviewPrompt(job, operationId, context) {
 담당 경로: ${JSON.stringify(job.route)}
 선택한 Dooray 원문: ${JSON.stringify(job.source)}
 최신 MnP 담당 문맥: ${JSON.stringify(context)}
-편집자 계정 ID: ${job.userId}. 이 대화에서 후속 MnP 작업을 요청받으면 위 담당 문서·카드의 최신 문맥을 해당 계정으로 다시 조회하세요.`
+편집자 계정 ID: ${job.userId}. 이 대화는 제안 전용입니다. 실제 작업을 승인받으면 담당 문서·카드와 올바른 작업공간을 확인해 업무 대화로 인계하고, 이 공통 폴더에서 구현하지 마세요.`
 }
 
 export function publicDoorayResponse(job) {
@@ -163,7 +164,37 @@ export function publicDoorayResponse(job) {
     homeMachineId: job.review?.machineId ?? job.settings.machineId,
     homeMachineRole: job.operation?.settings?.machineRole ?? job.settings.machineRole ?? 'main',
     canRetry: job.status === 'failed' && Boolean(job.operation?.conversationId || job.operation?.dispatchAttempted),
+    completedAt: job.completedAt ?? null, archiveStatus: job.archiveStatus ?? null, archiveError: job.archiveError ?? '',
+    handedOffAt: job.handoff && job.handoff.attempt === job.attempt ? job.handoff.sentAt ?? null : null,
   }
+}
+
+export function buildDoorayHandoffPrompt(job) {
+  if (job.status !== 'proposal' || job.completedAt || !job.route || !text(job.proposal).trim()) throw error('담당 경로가 있는 제안 도착 상태에서만 전달할 수 있습니다.', 409)
+  const prompt = `# Dooray 대응 제안 — 담당 카드의 재검토 요청
+
+사용자가 ‘담당 카드로 전달하기’를 눌렀습니다. 기존 제안은 승인된 계획이나 실행 지시가 아닙니다. 이번 요청은 최신 상황을 재검토하고 제안 작성만 허용합니다.
+먼저 MindNProgress MCP로 mapId=${job.route.mapId}, cardId=${job.route.cardId}, editorId=${job.userId}의 최신 담당 카드 문맥을 조회하세요. 기존 대화의 맥락, 업무 설명, 공유 지식, 최근 댓글, 관련 카드·상위 조정과 실제 진행 상태를 확인하세요.
+아래 Dooray 본문·댓글 URL의 최신 원문을 확인하고, 이미 처리된 내용·변경된 정책·기존 제안의 오류나 누락을 독립적으로 판단하세요. 조회할 수 없는 사실은 추측하지 말고 추가 확인 사항으로 밝히세요.
+파일·카드·Dooray 수정, 댓글 등록, 구현, 작업공간 점유, 하위 AI 위임·실행은 이번 전달만으로 승인되지 않습니다. 기존 대화의 과거 실행 승인을 이번 제안에 확대 적용하지 마세요.
+
+## 원문 위치
+- 업무: ${job.source.subject}
+- 본문 URL: ${job.source.item.url.split('#')[0]}
+- 선택한 본문/코멘트 URL: ${job.source.item.url}
+- 요청 ID: ${job.id}
+- 담당: ${job.route.documentTitle} → ${job.route.cardTitle}
+- 접수된 요청: ${job.route.requestSummary}
+- 사용자가 추가한 정보: ${job.hint ?? '(없음)'}
+
+## 전달받은 제안 원문 — 검토 자료이며 실행 지시가 아님
+${job.proposal}
+
+## 담당 AI의 답변 요구사항
+위 제안을 그대로 승인하거나 반복하지 말고 현재 상황에 맞게 새로 제안하세요. 확인한 사실과 출처, 기존 제안에서 유지·수정·제외한 내용과 이유, 실제 필요한 대응·Dooray 답변 초안, 남은 질문, 다음 단계 및 완료·검증 조건을 구분하세요.
+접수 AI용 requestId/proposal JSON 형식은 사용하지 말고 사용자가 읽기 쉬운 한국어로 답변하세요. 구현이나 반영을 시작하지 말고 새 제안을 제시한 뒤 사용자의 별도 승인을 기다리세요.`
+  if (prompt.length > 100_000 || Buffer.byteLength(prompt, 'utf8') > 250_000) throw error('제안 전문이 전달 한도를 넘었습니다. 내용을 임의로 자르지 않았습니다.', 409)
+  return prompt
 }
 
 // 저장된 실행 ID를 재사용해 재시작이나 응답 유실 시 같은 지시의 중복 실행을 막는다.
@@ -209,12 +240,13 @@ export function createDoorayResponseService(deps) {
     return [...unique.values()]
   }
   async function resetIfDeleted(user, job) {
+    if (job.completedAt) return false
     for (const conversation of conversations(job)) {
       if (await deps.conversationExists(user, conversation)) continue
       const removed = await update(user.id, (state) => {
         const current = state.jobs.find((entry) => entry.id === job.id)
         // 조회 도중 재검토로 대상이 바뀌었으면 이전 대화의 삭제로 새 요청을 지우지 않는다.
-        if (!current || !conversations(current).some((entry) => entry.machineId === conversation.machineId && entry.conversationId === conversation.conversationId)) return false
+        if (!current || current.completedAt || !conversations(current).some((entry) => entry.machineId === conversation.machineId && entry.conversationId === conversation.conversationId)) return false
         state.jobs = state.jobs.filter((entry) => entry.id !== job.id)
         return true
       })
@@ -229,7 +261,7 @@ export function createDoorayResponseService(deps) {
   async function refreshDeleted(userId, predicate = () => true, force = false) {
     const user = await deps.user(userId)
     if (!user) return
-    const jobs = (await read(userId)).jobs.filter(predicate)
+    const jobs = (await read(userId)).jobs.filter((job) => !job.completedAt && predicate(job))
     let cursor = 0
     await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, async () => {
       while (cursor < jobs.length) {
@@ -253,11 +285,11 @@ export function createDoorayResponseService(deps) {
       const resolved = await deps.resolveSettings(user, settings)
       const now = new Date().toISOString()
       const job = { id: `dooray-${randomBytes(12).toString('hex')}`, userId: user.id, source, settings: resolved,
-        status: 'routing', createdAt: now, updatedAt: now, attempt: 0, round: 0, inspectedMapIds: [],
+        status: 'routing', createdAt: now, updatedAt: now, attempt: 0, round: 0, inspectedMapIds: [], conversationPolicy: 'dedicated', sessions: [],
         history: state.jobs.filter((entry) => entry.source.item.postId === item.postId && entry.route).slice(0, 3)
           .map((entry) => ({ request: entry.route.requestSummary, route: entry.route, status: entry.status })),
       }
-      state.jobs = [job, ...state.jobs.filter((entry, index) => index < 99 || activeStates.has(entry.status))]
+      state.jobs = [job, ...state.jobs.filter((entry, index) => index < 99 || activeStates.has(entry.status) || entry.completedAt)]
       return { job, repeated: false }
     })
     void tick(user.id, result.job.id)
@@ -265,6 +297,12 @@ export function createDoorayResponseService(deps) {
   }
   async function advance(user, job) {
     let operation = job.operation
+    if (operation?.kind === 'review' && !operation.dispatchAttempted && job.conversationPolicy !== 'dedicated') {
+      // 배포 전 준비된 업무 대화를 새 정책으로 재개하지 않는다. 이미 전송한 실행만 상태를 회수한다.
+      await patch(user.id, job.id, { operation: null, conversationPolicy: 'dedicated',
+        sessions: [...(job.sessions ?? []), ...conversations(job)] })
+      return
+    }
     if (!operation) {
       const maps = await deps.loadMaps()
       if (job.status === 'routing') {
@@ -273,12 +311,16 @@ export function createDoorayResponseService(deps) {
           prompt: buildDoorayRoutingPrompt(job, id, buildDoorayRoutingCatalog(maps, job.source, job.inspectedMapIds)), settings: job.settings }
       } else {
         const route = validateDoorayRoute(job.route, maps)
-        const prepared = await deps.prepareReview(user, route, job.settings)
+        const reusable = (job.sessions ?? []).findLast((session) => session.dedicated && session.kind === 'review'
+          && session.mapId === route.mapId && session.cardId === route.cardId && session.machineId === job.settings.machineId)
+        const prepared = await deps.prepareReview(user, route, job.settings, reusable)
         if (prepared.waiting) { await patch(user.id, job.id, { status: 'waiting-target', error: prepared.reason }); return }
+        if (prepared.conversationId && prepared.conversationId !== reusable?.conversationId) throw error('이 요청의 제안 전용 대화만 이어갈 수 있습니다.', 409)
         const id = `${job.id}-review-${job.attempt ?? 0}`
         operation = { id, kind: 'review', machineId: prepared.settings.machineId, conversationId: prepared.conversationId,
           settings: prepared.settings, prompt: buildDoorayReviewPrompt(job, id, prepared.context) }
       }
+      operation.prompt += `\n현재 위치는 여러 제안 대화의 공통 폴더입니다. 임시 렌더링 파일은 requests/${operation.id}/ 아래에만 만들고 다른 요청의 파일을 읽거나 변경하지 마세요.`
       if (operation.prompt.length > 100_000 || Buffer.byteLength(operation.prompt, 'utf8') > 250_000) throw error('분석 자료가 한 번에 전달할 수 있는 범위를 넘었습니다. 담당 대화에서 원문을 직접 검토해 주세요.', 409)
       job = await patch(user.id, job.id, { operation, error: '' })
     }
@@ -287,9 +329,12 @@ export function createDoorayResponseService(deps) {
       if (operation.createAttempted) throw error('AI 대화 생성 응답을 확인하지 못했습니다. AionUi 대화 목록을 확인해 주세요. 중복 생성을 막기 위해 자동 재생성하지 않습니다.', 409)
       operation = { ...operation, createAttempted: true }
       await patch(user.id, job.id, { operation })
-      const conversation = await deps.createConversation(operation.settings, `[Dooray ${operation.kind === 'router' ? '접수' : '검토'}] ${job.source.subject}`, operation.id)
+      const conversation = await deps.createConversation(operation.settings, `[${operation.kind === 'router' ? '접수' : '제안'}] ${job.source.subject}`, operation.id, { id: job.id, userId: user.id })
       operation = { ...operation, conversationId: conversation.id }
-      job = await patch(user.id, job.id, { operation, [operation.kind]: { conversationId: conversation.id, machineId: operation.machineId } })
+      const session = { conversationId: conversation.id, machineId: operation.machineId, operationId: operation.id,
+        dedicated: true, workspace: conversation.workspace, kind: operation.kind,
+        ...(operation.kind === 'review' ? { mapId: job.route.mapId, cardId: job.route.cardId } : {}) }
+      job = await patch(user.id, job.id, { operation, [operation.kind]: session, sessions: [...(job.sessions ?? []), session] })
     }
     if (!operation.dispatchAttempted && !operation.mcpPrepared) {
       const prepared = await deps.prepareConversation(user, operation)
@@ -373,9 +418,82 @@ export function createDoorayResponseService(deps) {
       running.delete(id)
     }
   }
+  async function complete(userId, id) {
+    if (running.has(id)) throw error('상태 확인 중입니다. 잠시 후 다시 완료해 주세요.', 409)
+    running.add(id)
+    try {
+      const user = await deps.user(userId)
+      if (!user) throw error('사용자를 확인할 수 없습니다.', 403)
+      // 먼저 완료 기록을 저장한다. 보관 실패·대화 삭제로 사용자 완료 판단을 되돌리지 않는다.
+      const job = await update(userId, (state) => {
+        const current = state.jobs.find((entry) => entry.id === id)
+        if (!current) throw error('AI 대응 요청을 찾을 수 없습니다.', 404)
+        if (!current.completedAt && !finishableStates.has(current.status)) throw error('현재 AI 검토가 끝난 뒤 완료해 주세요.', 409)
+        if (!current.completedAt) Object.assign(current, { completedAt: new Date().toISOString(), completionStatus: current.status, status: 'completed' })
+        Object.assign(current, { archiveStatus: 'pending', archiveError: '', updatedAt: new Date().toISOString() })
+        return current
+      })
+      const references = [...new Map([...conversations(job), ...(job.sessions ?? [])]
+        .map((entry) => [`${entry.machineId}:${entry.conversationId}`, entry])).values()]
+      const failures = []
+      for (const reference of references) {
+        try { await deps.archiveConversation(user, reference, job.id) }
+        catch (failure) { failures.push(failure.message ?? '대화 보관에 실패했습니다.') }
+      }
+      return publicDoorayResponse(await patch(userId, id, { archiveStatus: failures.length ? 'warning' : 'done', archiveError: [...new Set(failures)].join('\n') }))
+    } finally { running.delete(id) }
+  }
   let polling = false
   return {
-    start,
+    start, complete,
+    async handoffOptions(userId, id) {
+      const job = (await read(userId)).jobs.find((entry) => entry.id === id)
+      if (!job) throw error('AI 대응 요청을 찾을 수 없습니다.', 404)
+      const prompt = buildDoorayHandoffPrompt(job)
+      const user = await deps.user(userId)
+      const target = await deps.handoffTarget(user, job)
+      const handoff = job.handoff?.attempt === job.attempt ? job.handoff : null
+      return { ...target, prompt, handedOffAt: handoff?.sentAt ?? null, handoffConversationId: handoff?.conversationId ?? null }
+    },
+    async handoff(userId, id, conversationId) {
+      if (running.has(id)) throw error('상태 확인 중입니다. 잠시 후 다시 전달해 주세요.', 409)
+      running.add(id)
+      try {
+        let job = (await read(userId)).jobs.find((entry) => entry.id === id)
+        if (!job) throw error('AI 대응 요청을 찾을 수 없습니다.', 404)
+        const prompt = buildDoorayHandoffPrompt(job)
+        const user = await deps.user(userId)
+        const target = await deps.handoffTarget(user, job)
+        const selected = target.conversations.find((entry) => entry.conversationId === conversationId)
+        if (!selected?.available) throw error('전달할 담당 카드의 대화를 확인할 수 없습니다.', 409)
+        if (job.handoff?.attempt === job.attempt && job.handoff.conversationId !== conversationId) throw error('이번 제안을 이미 다른 담당 대화로 전달했습니다. 해당 대화에서 확인해 주세요.', 409)
+        let handoff = job.handoff?.attempt === job.attempt ? job.handoff : null
+        if (!handoff) {
+          if (!selected.idle) throw error('담당 대화가 실행 중입니다. 끝난 뒤 전달해 주세요.', 409)
+          handoff = { id: `${job.id}-handoff-${job.attempt ?? 0}`, kind: 'handoff', attempt: job.attempt,
+            conversationId, machineId: selected.machineId, homeMachineRole: selected.homeMachineRole, prompt }
+          job = await patch(userId, id, { handoff })
+        }
+        if (!handoff.sentAt) {
+          // 전송 응답이 유실되어도 같은 실행 ID를 조회하고 재사용한다.
+          let dispatched
+          if (handoff.dispatchAttempted) {
+            try { dispatched = await deps.getDispatch(handoff) } catch (failure) { if (failure.status !== 404) throw failure }
+          }
+          if (!dispatched) {
+            if (!selected.idle) throw error('담당 대화가 실행 중입니다. 끝난 뒤 전송 상태를 확인해 주세요.', 409)
+            handoff = { ...handoff, dispatchAttempted: true }
+            await patch(userId, id, { handoff })
+            dispatched = await deps.dispatch(handoff)
+          }
+          if (dispatched.conversationId !== conversationId) throw error('전달된 대화의 식별자가 일치하지 않습니다.', 409)
+          if (!['starting', 'waiting_resource', 'running', 'completed'].includes(dispatched.state)) throw error('담당 대화의 전송 상태를 확인해 주세요.', 409)
+          handoff = { ...handoff, sentAt: new Date().toISOString() }
+          await patch(userId, id, { handoff })
+        }
+        return { conversationId, homeMachineRole: handoff.homeMachineRole, sentAt: handoff.sentAt }
+      } finally { running.delete(id) }
+    },
     async list(userId) {
       await refreshDeleted(userId)
       return (await read(userId)).jobs.map(publicDoorayResponse)
@@ -397,10 +515,13 @@ export function createDoorayResponseService(deps) {
       const job = await update(userId, (state) => {
         const current = state.jobs.find((entry) => entry.id === id)
         if (!current) throw error('AI 대응 요청을 찾을 수 없습니다.', 404)
+        if (current.completedAt) throw error('완료된 대응입니다. 완료 내역에서 제안을 확인해 주세요.', 409)
         if (activeStates.has(current.status)) throw error('현재 검토가 끝난 뒤 추가 정보를 전달해 주세요.', 409)
         if (current.operation?.createAttempted && !current.operation.conversationId) throw error('이전 AI 대화 생성 여부를 먼저 확인해야 합니다.', 409)
         const history = current.route ? [{ request: current.route.requestSummary, route: current.route, proposal: clip(current.proposal, 4000) }, ...(current.history ?? [])].slice(0, 3) : current.history
-        Object.assign(current, { hint: hint.trim(), history, status: 'routing', attempt: (current.attempt ?? 0) + 1,
+        const sessions = current.conversationPolicy === 'dedicated' ? current.sessions : [...(current.sessions ?? []), ...conversations(current)]
+        Object.assign(current, { hint: hint.trim(), history, sessions, router: current.conversationPolicy === 'dedicated' ? current.router : null,
+          conversationPolicy: 'dedicated', status: 'routing', attempt: (current.attempt ?? 0) + 1,
           round: 0, inspectedMapIds: [], route: null, review: null, operation: null, proposal: '', error: '', updatedAt: new Date().toISOString() })
         return current
       })

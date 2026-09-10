@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { buildDoorayRoutingCatalog, createDoorayResponseService, parseDoorayAiResult, readDoorayResponseSource, validateDoorayRoute } from '../server/lib/doorayResponses.mjs'
+import { buildDoorayHandoffPrompt, buildDoorayRoutingCatalog, createDoorayResponseService, parseDoorayAiResult, readDoorayResponseSource, validateDoorayRoute } from '../server/lib/doorayResponses.mjs'
 
 const item = { key: 'comment:post1:comment1', kind: 'mention-comment', projectId: 'p1', postId: 'post1', commentId: 'comment1',
   subject: '베팅 표시 수정', excerpt: '금액 표시를 확인해 주세요.', url: 'https://nhnent.dooray.com/project/posts/post1#comment-comment1' }
@@ -82,7 +82,8 @@ async function fixture(t, overrides = {}) {
     conversationExists: async () => true,
     prepareConversation: async () => ({ mcpServers: [] }),
     createConversation: async () => ({ id: `new-chat-${++counts.create}` }),
-    prepareReview: async (_user, selected, settings) => ({ conversationId: selected.conversationId, settings, context: {} }),
+    prepareReview: async (_user, _selected, settings, reusable) => ({ conversationId: reusable?.conversationId ?? null, settings, context: {} }),
+    archiveConversation: async () => {},
     linkReview: async () => { counts.link++ },
     dispatch: async (op) => { counts.dispatch++; operations.set(op.id, op); return { conversationId: op.conversationId, state: 'running' } },
     getDispatch: async (op) => {
@@ -104,15 +105,15 @@ async function until(service, userId, expected, max = 50) {
   assert.fail(`상태가 ${expected}에 도달하지 않음: ${JSON.stringify(await service.list(userId))}`)
 }
 
-test('중복 클릭은 한 요청으로 접수하고 담당 대화에서 제안을 회수하며 계정별로 격리한다', async (t) => {
+test('중복 클릭은 한 요청으로 접수하고 전용 대화에서 제안을 회수하며 계정별로 격리한다', async (t) => {
   const { service, counts } = await fixture(t)
   const [first, second] = await Promise.all([service.start({ id: 'user1' }, item), service.start({ id: 'user1' }, item)])
   assert.equal(first.job.id, second.job.id)
   assert.deepEqual([first.repeated, second.repeated].sort(), [false, true])
   const [job] = await until(service, 'user1', 'proposal')
   assert.equal(job.proposal, '변경 범위와 검증 조건 제안')
-  assert.equal(job.conversationId, 'old-chat')
-  assert.equal(counts.create, 1)
+  assert.equal(job.conversationId, 'new-chat-2')
+  assert.equal(counts.create, 2)
   assert.equal(counts.dispatch, 2)
   assert.equal(counts.link, 1)
   assert.deepEqual(await service.list('user2'), [])
@@ -126,7 +127,7 @@ test('서버 재시작 후 기존 실행을 조회하고 새 AI 실행을 중복
   const restarted = createDoorayResponseService(deps)
   const [job] = await until(restarted, 'user1', 'proposal')
   assert.equal(job.route.cardId, 'task1')
-  assert.equal(counts.create, 1)
+  assert.equal(counts.create, 2)
   assert.equal(counts.dispatch, 2)
 })
 
@@ -158,7 +159,7 @@ test('담당 탐색이 모호하면 사용자에게 질문하고 담당 AI를 �
 
 test('담당 대화가 사용 중이면 기다리고 사용 가능해진 뒤 동일 요청을 전달한다', async (t) => {
   let busy = true
-  const { service, counts } = await fixture(t, { prepareReview: async (_user, _route, settings) => busy ? { waiting: true, reason: '실행 중' } : { conversationId: 'old-chat', settings, context: {} } })
+  const { service, counts } = await fixture(t, { prepareReview: async (_user, _route, settings) => busy ? { waiting: true, reason: '실행 중' } : { conversationId: null, settings, context: {} } })
   await service.start({ id: 'user1' }, item)
   await until(service, 'user1', 'waiting-target')
   assert.equal(counts.dispatch, 1)
@@ -194,7 +195,7 @@ test('같은 담당 카드에 대한 여러 참조는 담당 AI 검토를 직렬
   assert.equal([...operations.values()].filter((op) => op.kind === 'review').length, 2)
 })
 
-test('추가 정보로 다시 제안받을 때 같은 접수 대화와 새로운 실행 ID를 사용한다', async (t) => {
+test('같은 담당의 추가 정보 재제안은 전용 접수·검토 대화를 재사용하고 실행 ID만 바꾼다', async (t) => {
   const { service, counts, operations } = await fixture(t)
   await service.start({ id: 'user1' }, item)
   const [first] = await until(service, 'user1', 'proposal')
@@ -202,7 +203,8 @@ test('추가 정보로 다시 제안받을 때 같은 접수 대화와 새로운
   await service.refine('user1', first.id, '표시 정책을 담당하는 카드에서 소수점 처리도 확인해 주세요.')
   const [second] = await until(service, 'user1', 'proposal')
   assert.equal(second.id, first.id)
-  assert.equal(counts.create, 1)
+  assert.equal(counts.create, 2)
+  assert.equal(second.conversationId, first.conversationId)
   assert.equal(operations.size, 4)
   assert.ok([...operations.values()].some((op) => op.prompt.includes('소수점 처리')))
 })
@@ -285,7 +287,7 @@ test('기존 제안을 다시 누르기 직전에 삭제한 접수 대화도 중
   assert.equal(second.repeated, false)
   assert.notEqual(second.job.id, first.job.id)
   await until(service, 'user1', 'proposal')
-  assert.equal(counts.create, 2)
+  assert.equal(counts.create, 4)
 })
 
 test('연결·권한 오류는 삭제로 초기화하지 않고 삭제된 다른 계정의 요청을 건드리지 않는다', async (t) => {
@@ -354,4 +356,146 @@ test('이미 전송한 실행의 상태 회수 중에는 MCP를 변경해 대화
   deps.dispatch = dispatch
   await service.retry('user1', failed.id)
   await until(service, 'user1', 'proposal')
+})
+
+test('완료는 계정별로 저장하고 모든 전용 대화를 보관하며 삭제·재시작 후에도 제안을 보존한다', async (t) => {
+  const archived = []
+  const { service, deps, counts } = await fixture(t, { archiveConversation: async (user, reference, jobId) => {
+    assert.equal(user.id, 'user1')
+    assert.ok(reference.operationId.startsWith(jobId))
+    archived.push(reference.conversationId)
+  } })
+  await service.start({ id: 'user1' }, item)
+  const [proposal] = await until(service, 'user1', 'proposal')
+  await assert.rejects(service.complete('user2', proposal.id), /찾을 수/)
+  const completed = await service.complete('user1', proposal.id)
+  assert.equal(completed.status, 'completed')
+  assert.equal(completed.proposal, proposal.proposal)
+  assert.equal(completed.archiveStatus, 'done')
+  assert.ok(completed.completedAt)
+  assert.deepEqual(archived.sort(), ['new-chat-1', 'new-chat-2'])
+  deps.conversationExists = async () => { throw new Error('완료 기록은 대화의 존재에 의존하지 않아야 한다') }
+  const restarted = createDoorayResponseService(deps)
+  assert.deepEqual(await restarted.list('user1'), [completed])
+  await restarted.poll()
+  const repeated = await restarted.start({ id: 'user1' }, item)
+  assert.equal(repeated.job.status, 'completed')
+  assert.equal(repeated.job.id, completed.id)
+  assert.equal(counts.create, 2)
+  await assert.rejects(restarted.refine('user1', completed.id, '다시 검토'), /완료된 대응/)
+  await assert.rejects(restarted.retry('user1', completed.id), /상태를 다시 확인/)
+})
+
+test('보관 실패는 완료를 유지하고 다시 시도해도 완료 시각과 AI 실행 횟수를 바꾸지 않는다', async (t) => {
+  let blocked = true
+  const { service, counts } = await fixture(t, { archiveConversation: async () => { if (blocked) throw new Error('아직 실행 중') } })
+  await service.start({ id: 'user1' }, item)
+  const [proposal] = await until(service, 'user1', 'proposal')
+  const completed = await service.complete('user1', proposal.id)
+  assert.equal(completed.status, 'completed')
+  assert.equal(completed.archiveStatus, 'warning')
+  assert.match(completed.archiveError, /실행 중/)
+  blocked = false
+  const retried = await service.complete('user1', proposal.id)
+  assert.equal(retried.completedAt, completed.completedAt)
+  assert.equal(retried.archiveStatus, 'done')
+  assert.equal(retried.archiveError, '')
+  assert.equal(counts.dispatch, 2)
+})
+
+test('실행 중 완료는 거부하고 완료·재제안 동시 요청에서도 새 실행을 보관하지 않는다', async (t) => {
+  const { service, deps } = await fixture(t)
+  const original = deps.getDispatch
+  deps.getDispatch = async (op) => ({ conversationId: op.conversationId, state: 'running' })
+  const result = await service.start({ id: 'user1' }, item)
+  await until(service, 'user1', 'routing')
+  await assert.rejects(service.complete('user1', result.job.id), /확인 중|검토가 끝난/)
+  deps.getDispatch = original
+  await until(service, 'user1', 'proposal')
+  let release
+  const archiving = new Promise((resolve) => { release = resolve })
+  deps.archiveConversation = async () => archiving
+  const completion = service.complete('user1', result.job.id)
+  await until(service, 'user1', 'completed')
+  await assert.rejects(service.refine('user1', result.job.id, '동시 재제안'), /완료된 대응/)
+  await assert.rejects(service.complete('user1', result.job.id), /확인 중/)
+  release()
+  await completion
+})
+
+test('담당이 변경되면 새 검토 대화를 만들고 완료 시 이전 담당의 전용 대화도 함께 보관한다', async (t) => {
+  let selected = route
+  const archived = []
+  const { service, counts } = await fixture(t, {
+    messages: async (op) => [assistant({ requestId: op.id, ...(op.kind === 'router' ? selected : { proposal: '새 담당 제안' }) })],
+    archiveConversation: async (_user, reference) => archived.push(reference.conversationId),
+  })
+  await service.start({ id: 'user1' }, item)
+  const [first] = await until(service, 'user1', 'proposal')
+  selected = { ...route, cardId: 'root1', conversationId: null }
+  await service.refine('user1', first.id, '루트에서 조정해 주세요.')
+  const [second] = await until(service, 'user1', 'proposal')
+  assert.notEqual(second.conversationId, first.conversationId)
+  assert.equal(counts.create, 3)
+  await service.complete('user1', first.id)
+  assert.deepEqual(archived.sort(), ['new-chat-1', 'new-chat-2', 'new-chat-3'])
+})
+
+test('예전 완료 내역은 새 요청의 100개 보관 상한에 의해 사라지지 않는다', async (t) => {
+  const { service, deps } = await fixture(t)
+  await service.start({ id: 'user1' }, item)
+  const [first] = await until(service, 'user1', 'proposal')
+  await service.complete('user1', first.id)
+  const file = path.join(deps.directory, 'user1.json')
+  const stored = await deps.read(file)
+  stored.jobs = [...Array.from({ length: 100 }, (_, index) => ({ ...stored.jobs[0], id: `history-${index}` })), ...stored.jobs]
+  await deps.write(file, stored)
+  deps.loadSource = async () => ({ ...source, fingerprint: 'new-source' })
+  const next = await service.start({ id: 'user1' }, item)
+  assert.equal((await service.list('user1')).filter((job) => job.completedAt).length, 101)
+  for (let i = 0; i < 100; i++) {
+    await service.poll()
+    if ((await service.list('user1')).find((job) => job.id === next.job.id)?.status === 'proposal') break
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.equal((await service.list('user1')).find((job) => job.id === next.job.id)?.status, 'proposal')
+})
+
+test('담당 카드 전달은 제안과 본문·코멘트 URL을 보존하고 독립적인 재제안만 요청한다', () => {
+  const job = { id: 'job-1', userId: 'user1', status: 'proposal', source, route, proposal: '가'.repeat(6000) + '\n제안 마지막 문장' }
+  const prompt = buildDoorayHandoffPrompt(job)
+  assert.ok(prompt.includes(job.proposal))
+  assert.ok(prompt.includes(item.url))
+  assert.ok(prompt.includes(item.url.split('#')[0]))
+  assert.match(prompt, /독립적으로 판단/)
+  assert.match(prompt, /실행 지시가 아닙니다/)
+  assert.match(prompt, /별도 승인을 기다리세요/)
+  assert.match(prompt, /JSON 형식은 사용하지 말고/)
+  for (const change of [{ status: 'needs-input' }, { completedAt: 'done' }, { route: null }, { proposal: '' }, { proposal: '가'.repeat(90_000) }]) {
+    assert.throws(() => buildDoorayHandoffPrompt({ ...job, ...change }))
+  }
+})
+
+test('담당 전달은 계정·대화·실행 상태를 검사하고 응답 유실 재시도에도 같은 실행을 회수한다', async (t) => {
+  const { service, deps, counts } = await fixture(t)
+  let idle = true
+  deps.handoffTarget = async () => ({ route, conversations: [{ conversationId: 'old-chat', machineId: 'main', homeMachineRole: 'main', available: true, idle }] })
+  await service.start({ id: 'user1' }, item)
+  const [job] = await until(service, 'user1', 'proposal')
+  await assert.rejects(service.handoffOptions('user2', job.id), /찾을 수/)
+  await assert.rejects(service.handoff('user1', job.id, 'foreign-chat'), /확인할 수/)
+  idle = false
+  await assert.rejects(service.handoff('user1', job.id, 'old-chat'), /실행 중/)
+  idle = true
+  const dispatch = deps.dispatch
+  deps.dispatch = async (op) => { await dispatch(op); throw new Error('전송 응답 유실') }
+  await assert.rejects(service.handoff('user1', job.id, 'old-chat'), /응답 유실/)
+  const sent = await service.handoff('user1', job.id, 'old-chat')
+  assert.equal(sent.conversationId, 'old-chat')
+  assert.ok(sent.sentAt)
+  await service.handoff('user1', job.id, 'old-chat')
+  assert.equal(counts.dispatch, 3)
+  assert.equal((await service.list('user1'))[0].status, 'proposal', '전달 접수는 대응 완료를 뜻하지 않는다')
+  await service.complete('user1', job.id)
+  await assert.rejects(service.handoff('user1', job.id, 'old-chat'), /제안 도착/)
 })

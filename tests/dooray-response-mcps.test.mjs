@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { doorayResponseMcpNames, prepareDoorayResponseMcps, selectDoorayResponseMcps } from '../server/lib/doorayResponseIntegration.mjs'
+import { archiveDoorayResponseConversation, doorayResponseWorkspace, doorayResponseMcpNames, prepareDoorayResponseMcps, selectDoorayResponseMcps } from '../server/lib/doorayResponseIntegration.mjs'
 
 const catalog = doorayResponseMcpNames.map((name, index) => ({ id: `mcp-${index}`, name, enabled: true }))
 const operation = { machineId: 'selected-machine', conversationId: 'test-chat' }
@@ -58,4 +58,42 @@ test('기존 MCP 설정이 손상되었으면 빈 목록으로 덮어쓰지 않�
     return pathname === '/api/mcp/servers' ? catalog : { id: operation.conversationId, extra: { session_mcp_servers: 'invalid' } }
   }
   await assert.rejects(prepareDoorayResponseMcps(call, idle, operation), /변경하지 않았/)
+})
+
+test('전용 대화는 계정별 공통 폴더를 사용하고 서브 머신 경로를 메인 경로로 추측하지 않는다', () => {
+  const workspace = doorayResponseWorkspace('C:/data', 'main', { machineId: 'main' }, 'user1')
+  assert.match(workspace, /user1[\\/]Dooray AI 대응$/)
+  assert.notEqual(workspace, doorayResponseWorkspace('C:/data', 'main', { machineId: 'main' }, 'user2'))
+  assert.equal(doorayResponseWorkspace('C:/data', 'main', { machineId: 'sub', proposalWorkspace: '/srv/dooray-proposals' }, 'user1'), '/srv/dooray-proposals')
+  assert.match(doorayResponseWorkspace('C:/data', 'main', { machineId: 'sub', proposalWorkspace: 'D:\\Proposals' }, 'user1'), /^D:\\Proposals$/)
+  for (const value of ['', 'relative', '/', 'C:\\', 'C:\\folder\\..']) {
+    assert.throws(() => doorayResponseWorkspace('C:/data', 'main', { machineId: 'sub', proposalWorkspace: value }, 'user1'), /절대 경로/)
+  }
+})
+
+test('보관은 이 요청이 만든 유휴 대화만 대상으로 하며 기존 업무·다른 계정·변경된 작업 위치는 보호한다', async () => {
+  const calls = []
+  const call = async (machineId, pathname, options) => calls.push({ machineId, pathname, options })
+  const reference = { machineId: 'sub', conversationId: 'own-chat', workspace: '/proposals' }
+  const extra = { mnpDoorayOperationId: 'job-1-route-0-0', mnpDoorayUserId: 'user1', workspace: reference.workspace }
+  let conversation = { id: reference.conversationId, extra }
+  const read = async (machineId, id) => { assert.equal(machineId, 'sub'); assert.equal(id, 'own-chat'); return conversation }
+  const archive = (runtime = idle) => archiveDoorayResponseConversation(call, read, runtime, { id: 'user1' }, reference, 'job-1')
+  await archive()
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].pathname, '/api/sidebar/conversation/own-chat/archive')
+  assert.equal(calls[0].options.method, 'POST')
+  conversation = { ...conversation, extra: {} }
+  await archive()
+  conversation = { ...conversation, extra: { ...extra, mnpDoorayOperationId: 'job-2-review-0' } }
+  await archive()
+  conversation = { ...conversation, extra: { ...extra, mnpDoorayUserId: 'user2' } }
+  await assert.rejects(archive(), /다른 계정/)
+  conversation = { ...conversation, extra: { ...extra, workspace: '/real-project' } }
+  await assert.rejects(archive(), /작업 위치/)
+  conversation = { ...conversation, extra }
+  await assert.rejects(archive(() => ({ state: 'running' })), /실행 중/)
+  conversation = null
+  await archive()
+  assert.equal(calls.length, 1)
 })

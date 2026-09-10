@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAiRuntimeSelection, normalizeAiRuntimeSelections } from '../utils/aiRuntimeSelections.mjs'
 
-type ResponseSettings = { agentId?: string; modelId?: string; mode?: string; thoughtLevel?: string; machineId?: string }
+type ResponseSettings = { agentId?: string; modelId?: string; mode?: string; thoughtLevel?: string; machineId?: string; proposalWorkspace?: string }
 type Option = { id: string; label: string }
 type Agent = { id: string; name: string; models: Option[]; modes: Option[]; thoughtLevels: Option[]; defaultModelId: string; defaultMode: string; defaultThoughtLevel: string }
-export type Options = { machineId: string; machines: { machineId: string; label: string }[]; agents: Agent[] }
+export type Options = { machineId: string; machineRole?: 'main' | 'sub'; machines: { machineId: string; label: string }[]; agents: Agent[] }
 export type DoorayResponseJob = {
   id: string; itemKey: string; postId: string; subject: string; sourceUrl: string; status: string; proposal: string; error: string
   createdAt: string; updatedAt: string; conversationId: string | null; homeMachineRole: 'main' | 'sub'; canRetry: boolean
+  completedAt?: string | null; archiveStatus?: 'pending' | 'done' | 'warning' | null; archiveError?: string
   route: { action: string; mapId: string; cardId: string; documentTitle: string; cardTitle: string; reason: string; requestSummary: string } | null
 }
 export const doorayResponseStatus: Record<string, string> = {
   routing: '담당 탐색 중', reviewing: '담당 AI 검토 중', 'waiting-target': '담당 AI 대기 중',
-  proposal: '제안 도착', 'needs-input': '추가 정보 필요', failed: '확인 필요',
+  proposal: '제안 도착', 'needs-input': '추가 정보 필요', failed: '확인 필요', completed: '대응 완료',
 }
 const active = new Set(['routing', 'reviewing', 'waiting-target'])
 const base = '/api/integrations/dooray/mentions/responses'
@@ -31,6 +32,8 @@ export function useDoorayResponses(clientId: string, userId: string) {
   const [error, setError] = useState('')
   const [selectedId, setSelectedId] = useState('')
   const [open, setOpen] = useState(false)
+  const [showCompleted, setShowCompleted] = useState(false)
+  const [notice, setNotice] = useState('')
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
   const [settings, setSettings] = useState<ResponseSettings>(() => initialSettings(userId))
   const controllerRef = useRef<AbortController | null>(null)
@@ -59,7 +62,7 @@ export function useDoorayResponses(clientId: string, userId: string) {
     void load()
     return () => { controller.abort(); if (controllerRef.current === controller) controllerRef.current = null }
   }, [load])
-  const needsRefresh = jobs.some((job) => active.has(job.status) || job.conversationId)
+  const needsRefresh = jobs.some((job) => !job.completedAt && (active.has(job.status) || job.conversationId))
   useEffect(() => {
     if (!needsRefresh) return
     const timer = window.setInterval(() => void load(), 3000)
@@ -82,6 +85,8 @@ export function useDoorayResponses(clientId: string, userId: string) {
       sequence.current++
       setJobs((current) => [job, ...current.filter((entry) => entry.id !== job.id)])
       setSelectedId(job.id)
+      setShowCompleted(Boolean(job.completedAt))
+      setNotice('')
     } catch (failure) {
       if (!signal?.aborted) setError(failure instanceof Error ? failure.message : 'AI 대응 요청에 실패했습니다.')
     } finally {
@@ -102,5 +107,18 @@ export function useDoorayResponses(clientId: string, userId: string) {
       return true
     } catch (failure) { setError(failure instanceof Error ? failure.message : '추가 정보 전달에 실패했습니다.'); return false }
   }
-  return { jobs, error, selectedId, setSelectedId, open, setOpen, pendingKeys, settings, saveSettings, request, retry, refine, load, requestJson }
+  const complete = async (id: string) => {
+    const signal = controllerRef.current?.signal
+    sequence.current++
+    try {
+      const { job } = await requestJson<{ job: DoorayResponseJob }>(`${base}/${encodeURIComponent(id)}/complete`, { method: 'POST' })
+      if (signal?.aborted) return
+      sequence.current++
+      setJobs((current) => current.map((entry) => entry.id === id ? job : entry))
+      setError('')
+      setNotice(job.archiveStatus === 'warning' ? '대응은 완료했습니다. 완료 내역에서 대화 보관 상태를 확인해 주세요.' : '대응을 완료 내역으로 옮겼습니다. 제안과 완료 기록은 대화를 삭제해도 보존됩니다.')
+      setSelectedId('')
+    } catch (failure) { if (!signal?.aborted) setError(failure instanceof Error ? failure.message : '완료 처리에 실패했습니다.') }
+  }
+  return { jobs, error, notice, selectedId, setSelectedId, open, setOpen, showCompleted, setShowCompleted, pendingKeys, settings, saveSettings, request, retry, refine, complete, load, requestJson }
 }

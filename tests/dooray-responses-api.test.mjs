@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -9,6 +9,7 @@ import { checkDoorayResponseBrowser } from './helpers/doorayResponseBrowser.mjs'
 
 const projectDirectory = path.resolve(import.meta.dirname, '..')
 const item = { key: 'comment:post1:comment1', kind: 'mention-comment', projectId: 'p1', postId: 'post1', commentId: 'comment1',
+  occurredAt: new Date().toISOString(), actorName: '검증 담당자',
   subject: '베팅 표시 수정', excerpt: '표시를 확인해 주세요.', url: 'https://nhnent.dooray.com/project/posts/post1#comment-comment1', acknowledgedAt: null }
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function waitFor(check, timeout = 20_000) {
@@ -31,6 +32,9 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   const requiredMcpIds = requiredMcps.map((server) => server.id)
   const extraByConversation = new Map([['existing-chat', { mcp_server_ids: ['kept-mcp'], mcp_servers: ['existing-mcp'], session_mcp_servers: [{ name: 'session-tool', command: 'test-only' }] }]])
   const mcpReloads = []
+  const archived = []
+  const deleted = new Set()
+  const reviewProposal = '금액 포맷터를 확인하고 경계값을 검증하는 작업을 제안합니다.\n' + '상세 조건을 확인합니다.\n'.repeat(320) + '제안의 마지막 검증 조건입니다.'
   let conversationFailure = null
   const upstream = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost')
@@ -53,7 +57,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
       created.push(body)
       assert.deepEqual(body.assistant.conversation_overrides.mcp_ids, requiredMcpIds)
       assert.deepEqual(body.extra.selected_mcp_server_ids, requiredMcpIds)
-      extraByConversation.set(`created-${created.length}`, { mcp_server_ids: requiredMcpIds, mcp_servers: mcpNames })
+      extraByConversation.set(`created-${created.length}`, { ...body.extra, mcp_server_ids: requiredMcpIds, mcp_servers: mcpNames })
       return send({ id: `created-${created.length}`, name: body.name }, 201)
     }
     const mcpReload = url.pathname.match(/^\/api\/conversations\/([^/]+)\/mcp-servers$/)
@@ -67,16 +71,18 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     }
     const messageMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/)
     if (messageMatch) {
+      if (messageMatch[1] === 'existing-chat') return send({ items: [{ position: 'left', type: 'text', content: { content: '기존 담당 대화의 확정 사항: 소수점 둘째 자리까지 표시' } }] })
       const op = [...operations.values()].reverse().find((entry) => entry.targetConversationId === messageMatch[1])
       if (!op) return send({ items: [] })
       const result = op.operationId.includes('-route-') ? { requestId: op.operationId, action: 'direct', mapId: 'map-test', cardId: 'task1', conversationId: 'existing-chat',
-        requestSummary: '베팅 금액 표시 확인', reason: '해당 업무 URL이 연결된 담당 카드' } : { requestId: op.operationId, proposal: '금액 포맷터를 확인하고 경계값을 검증하는 작업을 제안합니다.' }
+        requestSummary: '베팅 금액 표시 확인', reason: '해당 업무 URL이 연결된 담당 카드' } : { requestId: op.operationId, proposal: reviewProposal }
       return send({ items: [{ position: 'left', type: 'text', content: { content: `\`\`\`json\n${JSON.stringify(result)}\n\`\`\`` } }] })
     }
     const conversation = url.pathname.match(/^\/api\/conversations\/([^/]+)$/)
-    if (conversation?.[1] === 'existing-chat' && conversationFailure) {
-      response.writeHead(conversationFailure.status, { 'Content-Type': 'application/json' })
-      return response.end(JSON.stringify({ success: false, error: { code: conversationFailure.code } }))
+    const currentFailure = deleted.has(conversation?.[1]) ? { status: 404, code: 'NOT_FOUND' } : conversation?.[1] === 'created-2' ? conversationFailure : null
+    if (currentFailure) {
+      response.writeHead(currentFailure.status, { 'Content-Type': 'application/json' })
+      return response.end(JSON.stringify({ success: false, error: { code: currentFailure.code } }))
     }
     if (conversation) return send({ id: conversation[1], name: '베팅 표시 대화', runtime: { state: 'idle', isProcessing: false, pendingConfirmations: 0 },
       extra: { agent_id: 'test-agent', current_model_id: 'test-model', ...extraByConversation.get(conversation[1]) } })
@@ -84,14 +90,25 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
       assert.equal(body.strategy, 'resume')
       assert.equal(body.actorConversationId, body.targetConversationId)
       assert.match(body.instruction, /제안 작성만 허용/)
-      assert.match(body.instruction, /조회·검색/)
-      for (const id of requiredMcpIds) assert.ok(extraByConversation.get(body.targetConversationId).mcp_server_ids.includes(id))
+      if (body.operationId.includes('-handoff-')) {
+        assert.equal(body.targetConversationId, 'existing-chat')
+        assert.ok(body.instruction.includes(item.url))
+        assert.match(body.instruction, /독립적으로 판단/)
+        assert.match(body.instruction, /사용자의 별도 승인/)
+      } else {
+        assert.notEqual(body.targetConversationId, 'existing-chat')
+        assert.match(body.instruction, /조회·검색/)
+        for (const id of requiredMcpIds) assert.ok(extraByConversation.get(body.targetConversationId).mcp_server_ids.includes(id))
+        if (body.operationId.includes('-review-')) assert.match(body.instruction, /소수점 둘째 자리/)
+      }
       operations.set(body.operationId, body)
       return send({ conversationId: body.targetConversationId, operationId: body.operationId, state: 'completed' }, 202)
     }
     const dispatch = url.pathname.match(/^\/api\/internal\/external-conversation-dispatches\/([^/]+)$/)
     if (dispatch && operations.has(dispatch[1])) return send({ conversationId: operations.get(dispatch[1]).targetConversationId, operationId: dispatch[1], state: 'completed' })
     if (url.pathname === '/api/internal/conversation-runtimes/active') return send({ items: [] })
+    const archive = url.pathname.match(/^\/api\/sidebar\/conversation\/([^/]+)\/archive$/)
+    if (archive && request.method === 'POST') { assert.notEqual(archive[1], 'existing-chat'); archived.push(archive[1]); return send(null) }
     return send({}, 404)
   })
   await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve))
@@ -136,16 +153,27 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     return latest.status === 'proposal' || latest.status === 'failed'
   })
   assert.equal(latest.status, 'proposal', JSON.stringify(latest))
-  assert.equal(latest.conversationId, 'existing-chat')
+  assert.equal(latest.conversationId, 'created-2')
   assert.equal(latest.route.cardId, 'task1')
   assert.match(latest.proposal, /경계값/)
-  assert.equal(created.length, 1)
+  assert.equal(created.length, 2)
+  assert.equal(created[0].extra.workspace, created[1].extra.workspace)
+  assert.match(created[0].extra.workspace, /user-admin[\\/]Dooray AI 대응$/)
+  assert.notEqual(created[0].extra.mnpDoorayOperationId, created[1].extra.mnpDoorayOperationId)
   assert.equal(created[0].assistant.id, 'bare:test-agent')
   assert.equal(created[0].assistant.conversation_overrides.model, 'test-model')
   assert.equal(operations.size, 2)
-  assert.deepEqual(mcpReloads, ['existing-chat'], '기존 대화에만 MCP를 추가하고 새 대화는 생성 설정을 사용한다')
+  assert.deepEqual(mcpReloads, [], '기존 업무 대화의 MCP를 변경하지 않는다')
   assert.ok(extraByConversation.get('existing-chat').mcp_server_ids.includes('kept-mcp'))
   assert.deepEqual(extraByConversation.get('existing-chat').session_mcp_servers, [{ name: 'session-tool', command: 'test-only' }])
+  const refinement = await fetch(`${endpoint}/${latest.id}/refine`, { method: 'POST', headers, body: JSON.stringify({ hint: '소수점 표시 조건도 검토해 주세요.' }) })
+  assert.equal(refinement.status, 202)
+  await waitFor(async () => {
+    latest = (await (await fetch(endpoint, { headers })).json()).jobs[0]
+    return latest?.status === 'proposal' && operations.size === 4
+  })
+  assert.equal(latest.conversationId, 'created-2', '실제 API에서도 같은 요청·담당의 제안 대화를 이어 쓴다')
+  assert.equal(created.length, 2)
   assert.equal(paths.filter((entry) => entry.startsWith('POST /project')).length, 0)
   const mentions = await (await fetch(`${baseUrl}/api/integrations/dooray/mentions`, { headers })).json()
   assert.equal(mentions.items[0].acknowledgedAt, null)
@@ -156,13 +184,13 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   }
   conversationFailure = null
   if (process.env.MNP_RESPONSE_BROWSER_CHECK === '1') {
-    await checkDoorayResponseBrowser({ directory, baseUrl, password, deleteConversation: () => { conversationFailure = { status: 404, code: 'NOT_FOUND' } } })
+    await checkDoorayResponseBrowser({ directory, baseUrl, password, deleteConversation: () => { deleted.add('created-2') } })
   } else {
-    conversationFailure = { status: 404, code: 'NOT_FOUND' }
+    deleted.add('created-2')
   }
   await waitFor(async () => (await (await fetch(endpoint, { headers })).json()).jobs.length === 0)
-  assert.equal(created.length, 1, '삭제 확인으로 새 AI 대화를 자동 생성하지 않는다')
-  assert.equal(operations.size, 2, '삭제된 AI 대화에 이전 지시를 다시 보내지 않는다')
+  assert.equal(created.length, 2, '삭제 확인으로 새 AI 대화를 자동 생성하지 않는다')
+  assert.equal(operations.size, 4, '삭제된 AI 대화에 이전 지시를 다시 보내지 않는다')
   const restarted = await (await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: item.key }) })).json()
   assert.notEqual(restarted.job.id, accepted.job.id)
   await waitFor(async () => {
@@ -170,9 +198,40 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     return latest?.status === 'proposal' || latest?.status === 'failed'
   })
   assert.equal(latest.status, 'proposal', JSON.stringify(latest))
-  assert.equal(latest.conversationId, 'created-3', '삭제된 카드 연결을 건너뛰고 새 검토 대화를 연결한다')
-  assert.equal(created.length, 3)
-  assert.equal(operations.size, 4)
+  assert.equal(latest.conversationId, 'created-4', '업무 대화 대신 새로운 전용 검토 대화를 만든다')
+  assert.equal(created.length, 4)
+  assert.equal(operations.size, 6)
+  assert.equal(new Set(created.map((conversation) => conversation.extra.workspace)).size, 1, '서로 다른 요청도 같은 전용 프로젝트에 모인다')
+  const handoffEndpoint = `${endpoint}/${latest.id}/handoff`
+  const handoff = await (await fetch(handoffEndpoint, { headers })).json()
+  assert.equal(handoff.conversations[0].conversationId, 'existing-chat')
+  assert.ok(handoff.prompt.includes(latest.proposal))
+  assert.ok(handoff.prompt.includes(item.url))
+  assert.equal((await fetch(handoffEndpoint, { method: 'POST', headers, body: JSON.stringify({ conversationId: 'created-4' }) })).status, 409)
+  for (let index = 0; index < 2; index++) {
+    const sent = await fetch(handoffEndpoint, { method: 'POST', headers, body: JSON.stringify({ conversationId: 'existing-chat' }) })
+    assert.equal(sent.status, 202, JSON.stringify(await sent.json()))
+  }
+  assert.equal(operations.size, 7, '명시적 전달만 업무 대화를 실행하며 중복 클릭은 한 실행으로 유지한다')
+  if (process.env.MNP_RESPONSE_BROWSER_CHECK === '1') {
+    await checkDoorayResponseBrowser({ directory, baseUrl, password, complete: true, deleteConversation: () => { deleted.add('created-3'); deleted.add('created-4') } })
+  } else {
+    const completed = await fetch(`${endpoint}/${latest.id}/complete`, { method: 'POST', headers })
+    assert.equal(completed.status, 200)
+    deleted.add('created-3'); deleted.add('created-4')
+  }
+  const final = (await (await fetch(endpoint, { headers })).json()).jobs[0]
+  assert.equal(final.status, 'completed')
+  assert.equal(final.proposal, latest.proposal)
+  assert.equal(final.archiveStatus, 'done')
+  assert.deepEqual(archived.sort(), ['created-3', 'created-4'])
+  const repeated = await (await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: item.key }) })).json()
+  assert.equal(repeated.job.id, final.id)
+  assert.equal(repeated.job.status, 'completed')
+  assert.equal(created.length, 4)
+  const mapAfter = JSON.parse(await readFile(path.join(directory, 'map-test.json'), 'utf8'))
+  assert.equal(mapAfter.version, 1, '제안 전용 대화는 업무 카드와 대화 연결을 변경하지 않는다')
+  assert.equal(mapAfter.nodes.find((node) => node.id === 'task1').data.aiConversations.length, 1)
   const preserved = await (await fetch(`${baseUrl}/api/integrations/dooray/mentions`, { headers })).json()
   assert.equal(preserved.items[0].key, item.key)
   assert.equal(preserved.items[0].acknowledgedAt, null)

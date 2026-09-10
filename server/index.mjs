@@ -5907,16 +5907,25 @@ const server = createServer(async (request, response) => {
       return sendJson(response, 200, doorayMentionResponse(state, user.id))
     }
 
-    const doorayResponseRoute = url.pathname.match(/^\/api\/integrations\/dooray\/mentions\/responses(?:\/([a-zA-Z0-9_-]+)\/(retry|refine))?$/)
+    const doorayResponseRoute = url.pathname.match(/^\/api\/integrations\/dooray\/mentions\/responses(?:\/([a-zA-Z0-9_-]+)\/(retry|refine|complete|handoff))?$/)
     if (doorayResponseRoute) {
       const user = requireSignedInUser(request, response)
       if (!user) return
       if (!canEdit(user) || isPublicViewer(user)) return sendJson(response, 403, { error: '편집자만 AI 대응을 요청할 수 있습니다.' })
       try {
+        if (doorayResponseRoute[2] === 'handoff') {
+          if (request.method === 'GET') return sendJson(response, 200, await doorayResponses.handoffOptions(user.id, doorayResponseRoute[1]))
+          if (request.method === 'POST') {
+            const body = await readJsonBody(request)
+            return sendJson(response, 202, await doorayResponses.handoff(user.id, doorayResponseRoute[1], body.conversationId))
+          }
+          return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
+        }
         if (request.method === 'GET' && !doorayResponseRoute[1]) {
           return sendJson(response, 200, { jobs: await doorayResponses.list(user.id) })
         }
         if (request.method === 'POST' && doorayResponseRoute[1]) {
+          if (doorayResponseRoute[2] === 'complete') return sendJson(response, 200, { job: await doorayResponses.complete(user.id, doorayResponseRoute[1]) })
           if (doorayResponseRoute[2] === 'refine') {
             const body = await readJsonBody(request)
             return sendJson(response, 202, { job: await doorayResponses.refine(user.id, doorayResponseRoute[1], body.hint) })

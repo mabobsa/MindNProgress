@@ -11,6 +11,7 @@ import {
   isAiConversationPurpose,
   normalizeAiCardTitle,
   normalizeAiEditorRequest,
+  normalizeAiAutomaticRequest,
   resolveAiConversationTarget,
 } from '../src/utils/aiConversationLaunch.mjs'
 
@@ -24,6 +25,19 @@ const selection = {
   documentTitle: '현재 문서',
   knowledgeSources: [{ id: 'node-source', label: '선행 지식', policy: 'reuse-first' }],
 }
+
+test('담당 카드 전달 전문은 4,000자 뒤의 제안·URL·재제안 지침까지 보존한다', () => {
+  const proposal = `# 전달 제안\n${'긴 제안 내용입니다.\n'.repeat(600)}\nhttps://example.test/post#comment\n실행하지 말고 다시 제안하세요.`
+  const target = resolveAiConversationTarget({ explicitTarget: { mapId: 'map1', cardId: 'card1', initialRequest: proposal, fullInitialRequest: true }, selection })
+  assert.equal(target.initialRequest, proposal)
+  assert.equal(target.fullInitialRequest, true)
+  assert.equal(normalizeAiAutomaticRequest(proposal, true), proposal)
+  const request = combineAiEditorRequest(target.initialRequest, '추가 요청', target.fullInitialRequest)
+  assert.equal(request, `${proposal}\n\n추가 요청`)
+  assert.ok(buildAiConversationPrompt({ mapId: 'map1', cardId: 'card1', editorId: 'user1', attributionToken: 'token', request }).includes(proposal))
+  assert.equal(normalizeAiAutomaticRequest(proposal).length, AI_EDITOR_REQUEST_MAX_LENGTH)
+  assert.throws(() => normalizeAiAutomaticRequest('가'.repeat(100001), true), /임의로 자르지/)
+})
 
 const reviewContext = {
   document: { id: 'map-other', title: '다른 문서' },

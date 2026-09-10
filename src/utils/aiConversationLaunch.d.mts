@@ -10,6 +10,7 @@ export type AiConversationExplicitTarget = {
   cardTitle?: string
   documentTitle?: string
   initialRequest?: string
+  fullInitialRequest?: boolean
 }
 
 export type AiConversationTarget<TSource = AiConversationKnowledgeSource> = {
@@ -21,6 +22,7 @@ export type AiConversationTarget<TSource = AiConversationKnowledgeSource> = {
   documentTitle: string
   knowledgeSources: TSource[]
   initialRequest?: string
+  fullInitialRequest?: boolean
 }
 
 export type AiConversationSelection<TSource = AiConversationKnowledgeSource> = {
@@ -54,7 +56,8 @@ export const DEFAULT_AI_EDITOR_REQUEST: string
 
 export function normalizeAiCardTitle(value: unknown): string
 export function normalizeAiEditorRequest(value: unknown): string
-export function combineAiEditorRequest(automaticRequest: unknown, userInput: unknown): string
+export function normalizeAiAutomaticRequest(value: unknown, preserveFull?: boolean): string
+export function combineAiEditorRequest(automaticRequest: unknown, userInput: unknown, preserveFull?: boolean): string
 export function isAiConversationPurpose(value: unknown): value is AiConversationPurpose
 export function normalizeAiConversationPurpose(value: unknown): AiConversationPurpose
 export function aiConversationTitle(input?: {

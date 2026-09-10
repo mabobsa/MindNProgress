@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './DoorayMentionsPanel.css'
 import { DoorayResponseInbox } from './DoorayResponseInbox'
+import type { DoorayHandoffLaunch } from './DoorayResponseHandoff'
 import { doorayResponseStatus, useDoorayResponses, type DoorayResponseJob } from './useDoorayResponses'
 
 export type DoorayMentionKind = 'mention-comment' | 'mention-body' | 'assigned' | 'cc' | 'related-comment'
@@ -192,10 +193,13 @@ function postGroupForItem(item: DoorayMentionItem, key = item.postId): PostGroup
   }
 }
 
-export function DoorayMentionsPanel({ clientId, userId, onClose, onOpenConversation, onOpenCard }: {
+export function DoorayMentionsPanel({ clientId, userId, aiRequestOpen = false, onClose, onOpenConversation, onOpenCard, onLaunchCard }: {
   clientId: string; userId: string; onClose: () => void
+  /** 담당 카드의 AI 옵션이 열린 동안 아래 팝업의 상태와 닫기 동작을 보존합니다. */
+  aiRequestOpen?: boolean
   onOpenConversation: (job: DoorayResponseJob) => void
   onOpenCard: (mapId: string, cardId: string) => void
+  onLaunchCard: (launch: DoorayHandoffLaunch) => void
 }) {
   const responses = useDoorayResponses(clientId, userId)
   const today = useMemo(() => toDateInputValue(new Date()), [])
@@ -244,13 +248,13 @@ export function DoorayMentionsPanel({ clientId, userId, onClose, onOpenConversat
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
+      if (aiRequestOpen || event.key !== 'Escape') return
       event.preventDefault()
       onClose()
     }
     window.addEventListener('keydown', closeOnEscape)
     return () => { window.removeEventListener('keydown', closeOnEscape) }
-  }, [onClose])
+  }, [aiRequestOpen, onClose])
 
   const loadProjects = useCallback(async () => {
     const signal = lifecycleControllerRef.current?.signal
@@ -526,7 +530,7 @@ export function DoorayMentionsPanel({ clientId, userId, onClose, onOpenConversat
   const progressRatio = scan && scan.total > 0 ? Math.min(1, scan.done / scan.total) : 0
 
   return (
-    <div className="dooray-mentions-backdrop" role="presentation" onClick={onClose}>
+    <div className="dooray-mentions-backdrop" role="presentation" inert={aiRequestOpen} onClick={() => { if (!aiRequestOpen) onClose() }}>
       <section
         className="dooray-mentions-panel"
         role="dialog"
@@ -747,7 +751,7 @@ export function DoorayMentionsPanel({ clientId, userId, onClose, onOpenConversat
           </label>
         </div>
 
-        <DoorayResponseInbox response={responses} onOpenConversation={onOpenConversation} onOpenCard={onOpenCard} />
+        <DoorayResponseInbox response={responses} onOpenConversation={onOpenConversation} onOpenCard={onOpenCard} onLaunchCard={onLaunchCard} />
         <div className="dooray-mentions-list">
           {loading && <p className="dooray-mentions-empty">불러오는 중…</p>}
           {!loading && groups.length === 0 && (
@@ -790,9 +794,17 @@ export function DoorayMentionsPanel({ clientId, userId, onClose, onOpenConversat
                           <div className="dooray-mentions-entry-meta">
                             <span className={`dooray-mentions-kind ${item.kind}`}>{kindLabels[item.kind]}</span>
                             <span className="dooray-mentions-actor">{item.actorName || '알 수 없음'}</span>
-                            <time dateTime={item.occurredAt}>{formatMoment(item.occurredAt)}</time>
+                            <span className="dooray-mentions-entry-time">
+                              <time dateTime={item.occurredAt}>{formatMoment(item.occurredAt)}</time>
+                              <a href={item.url} target="_blank" rel="noreferrer noopener" className="dooray-mentions-open"
+                                title="Dooray에서 열기 (새 탭)" aria-label="Dooray에서 열기 (새 탭)">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+                                  <path d="M14 4h6v6M20 4l-9 9" />
+                                  <path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6" />
+                                </svg>
+                              </a>
+                            </span>
                           </div>
-                          <a href={item.url} target="_blank" rel="noreferrer noopener">열기</a>
                         </div>
                         {item.excerpt && <p className="dooray-mentions-excerpt">{item.excerpt}</p>}
                         <button type="button" className="dooray-response-request" disabled={responses.pendingKeys.has(item.key)}

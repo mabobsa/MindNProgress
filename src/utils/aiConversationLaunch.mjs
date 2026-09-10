@@ -74,8 +74,15 @@ export function normalizeAiEditorRequest(value) {
   return text(value).slice(0, AI_EDITOR_REQUEST_MAX_LENGTH)
 }
 
-export function combineAiEditorRequest(automaticRequest, userInput) {
-  return [normalizeAiEditorRequest(automaticRequest), normalizeAiEditorRequest(userInput)]
+export function normalizeAiAutomaticRequest(value, preserveFull = false) {
+  if (!preserveFull) return normalizeAiEditorRequest(value)
+  const request = text(value)
+  if (request.length > 100_000) throw new Error('자동 전달 전문이 너무 깁니다. 내용을 임의로 자르지 않았습니다.')
+  return request
+}
+
+export function combineAiEditorRequest(automaticRequest, userInput, preserveFull = false) {
+  return [normalizeAiAutomaticRequest(automaticRequest, preserveFull), normalizeAiEditorRequest(userInput)]
     .filter(Boolean)
     .join('\n\n')
 }
@@ -85,7 +92,7 @@ function explicitTarget(value) {
   const mapId = text(value.mapId)
   const cardId = text(value.cardId)
   if (!mapId || !cardId) return null
-  const initialRequest = normalizeAiEditorRequest(value.initialRequest)
+  const initialRequest = normalizeAiAutomaticRequest(value.initialRequest, value.fullInitialRequest === true)
   return {
     source: 'explicit',
     purpose: normalizeAiConversationPurpose(value.purpose),
@@ -95,6 +102,7 @@ function explicitTarget(value) {
     documentTitle: text(value.documentTitle),
     knowledgeSources: [],
     ...(initialRequest ? { initialRequest } : {}),
+    ...(value.fullInitialRequest === true ? { fullInitialRequest: true } : {}),
   }
 }
 

@@ -8610,6 +8610,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       )}
       {doorayMentionsOpen && mode === 'editor' && (
         <DoorayMentionsPanel clientId={CLIENT_ID} userId={user.id} onClose={() => setDoorayMentionsOpen(false)}
+          aiRequestOpen={Boolean(aiConversationTarget)}
+          onLaunchCard={setAiConversationLaunch}
           onOpenConversation={(job) => {
             if (job.conversationId) openAiConversation(job.conversationId, job.route?.cardId ?? '', job.route?.mapId ?? '', job.homeMachineRole)
           }}
@@ -8653,6 +8655,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           purpose={aiConversationTarget.purpose}
           knowledgeSources={aiConversationTarget.knowledgeSources}
           initialRequest={aiConversationTarget.initialRequest}
+          fullInitialRequest={aiConversationTarget.fullInitialRequest}
           launchInWebUi={aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)}
           onClose={closeAiConversationDialog}
         />

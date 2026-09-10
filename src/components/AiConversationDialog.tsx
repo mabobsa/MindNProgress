@@ -18,7 +18,7 @@ import {
   buildAiConversationPrompt,
   combineAiEditorRequest,
   DEFAULT_AI_EDITOR_REQUEST,
-  normalizeAiEditorRequest,
+  normalizeAiAutomaticRequest,
   type AiConversationPurpose,
 } from '../utils/aiConversationLaunch.mjs'
 import './AiConversationDialog.css'
@@ -198,7 +198,7 @@ function encodeBase64Json(value: unknown) {
   return btoa(binary)
 }
 
-export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, knowledgeSources, initialRequest, reconstructionRequestId, launchInWebUi, onClose }: {
+export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, knowledgeSources, initialRequest, fullInitialRequest, reconstructionRequestId, launchInWebUi, onClose }: {
   userId: string
   documentId: string
   documentTitle: string
@@ -207,6 +207,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   purpose: AiConversationPurpose
   knowledgeSources: { id: string; label: string; policy: KnowledgePolicy }[]
   initialRequest?: string
+  fullInitialRequest?: boolean
   reconstructionRequestId?: string
   launchInWebUi: boolean
   onClose: () => void
@@ -217,7 +218,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   const [launching, setLaunching] = useState(false)
   const [error, setError] = useState('')
   const [launchError, setLaunchError] = useState('')
-  const automaticRequest = normalizeAiEditorRequest(initialRequest) || DEFAULT_AI_EDITOR_REQUEST
+  const automaticRequest = normalizeAiAutomaticRequest(initialRequest, fullInitialRequest) || DEFAULT_AI_EDITOR_REQUEST
   const [userRequest, setUserRequest] = useState('')
   const [agentId, setAgentId] = useState('')
   const [modelId, setModelId] = useState('')
@@ -421,7 +422,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
 
   const launch = async () => {
     if (!options || !selectedAgent || !modelId) return
-    const request = combineAiEditorRequest(automaticRequest, userRequest)
+    const request = combineAiEditorRequest(automaticRequest, userRequest, fullInitialRequest)
     if (!request) return
     const useWebLaunch = launchInWebUi || options.machineRole === 'sub'
     let launchTab: Window | null = null

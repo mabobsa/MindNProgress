@@ -11,7 +11,8 @@
 
 .dooray-mentions-panel {
   width: min(920px, calc(100vw - 44px));
-  height: min(900px, calc(100vh - 44px));
+  height: calc(100vh - 44px);
+  height: calc(100dvh - 44px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -27,7 +28,11 @@
   display: flex;
   flex: 1;
   flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
+
+.dooray-mentions-content > :not(.dooray-mentions-list) { flex-shrink: 0; }
 
 .dooray-mentions-content[hidden] { display: none; }
 
@@ -41,6 +46,7 @@
 }
 
 .dooray-mentions-header {
+  flex-shrink: 0;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -352,6 +358,7 @@
 
 .dooray-mentions-list {
   flex: 1;
+  min-height: 160px;
   overflow-y: auto;
   padding: 12px 20px 20px;
 }
@@ -452,10 +459,6 @@
 }
 
 .dooray-mentions-entry-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) max-content;
-  align-items: start;
-  gap: 7px;
   font-size: 11px;
   color: var(--theme-text-muted, #837c92);
 }
@@ -487,14 +490,34 @@
   font-weight: 600;
 }
 
-.dooray-mentions-entry-head a {
-  justify-self: end;
+.dooray-mentions-entry-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   white-space: nowrap;
-  color: var(--theme-accent, #6657d9);
+}
+
+.dooray-mentions-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: inherit;
   text-decoration: none;
 }
 
-.dooray-mentions-entry-head a:hover { text-decoration: underline; }
+.dooray-mentions-open:hover {
+  color: var(--theme-accent, #6657d9);
+  background: var(--theme-accent-soft, #efecfd);
+}
+
+.dooray-mentions-open:focus-visible {
+  outline: 2px solid var(--theme-accent, #6657d9);
+  outline-offset: 2px;
+}
 
 .dooray-mentions-excerpt {
   margin: 4px 0 0;
@@ -509,6 +532,13 @@
   .dooray-mentions-panel {
     width: 100vw;
     height: 100vh;
+    height: 100dvh;
     border-radius: 0;
   }
+}
+
+@media (max-width: 640px) {
+  .dooray-mentions-range, .dooray-mentions-options { flex-wrap: wrap; }
+  .dooray-response-refine { flex-wrap: wrap; }
+  .dooray-response-refine label { min-width: 180px; }
 }

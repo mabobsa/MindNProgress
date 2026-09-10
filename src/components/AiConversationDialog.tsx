@@ -558,8 +558,17 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
                 <small>최상위 업무와 원본 자료는 선행 지식만으로 부족할 때만 선택적으로 확인합니다.</small>
               </div>
             )}
-            <div className="ai-knowledge-notice">
-              <strong>실행 머신: {options.machineLabel}</strong>
+            <div className="ai-knowledge-notice ai-machine-notice">
+              <label className="ai-machine-select">
+                <span>실행 머신</span>
+                <select value={options.machineId} onChange={(event) => setMachineId(event.target.value)}>
+                  {options.machines.map((machine) => (
+                    <option key={machine.machineId} value={machine.machineId}>
+                      {machine.label}{machine.role === 'main' ? ' · 메인' : machine.online === false ? ' · Runner 끊김' : ' · 서브'}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <span>이 대화와 이후 조회·재개는 {options.machineLabel}에 고정됩니다.</span>
               {options.machineRole === 'sub' && <small>서브 머신 대화 창은 해당 장비에서 이 화면을 열었을 때 로컬 AionUi로 연결됩니다.</small>}
             </div>
@@ -581,16 +590,6 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
               <small>MindNProgress가 대화 목적에 맞춰 자동으로 전달하며 편집할 수 없습니다.</small>
             </label>
             <div className="ai-dialog-grid">
-              <label>
-                <span>실행 머신</span>
-                <select value={options.machineId} onChange={(event) => setMachineId(event.target.value)}>
-                  {options.machines.map((machine) => (
-                    <option key={machine.machineId} value={machine.machineId}>
-                      {machine.label}{machine.role === 'main' ? ' · 메인' : machine.online === false ? ' · Runner 끊김' : ' · 서브'}
-                    </option>
-                  ))}
-                </select>
-              </label>
               <label><span>AI 종류</span><select value={agentId} onChange={(event) => changeAgent(event.target.value)}>{options.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
               <label><span>모델</span><select value={modelId} onChange={(event) => setModelId(event.target.value)}>{selectedAgent?.models.map((model) => <option key={`${model.providerId ?? ''}-${model.id}`} value={model.id}>{model.label}</option>)}</select></label>
               {selectedAgent && selectedAgent.modes.length > 0 && <label><span>권한</span><select value={mode} onChange={(event) => setMode(event.target.value)}>{selectedAgent.modes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>}

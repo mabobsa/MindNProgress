@@ -12,6 +12,9 @@
 .ai-knowledge-notice strong { font-size: 10px; }
 .ai-knowledge-notice span { overflow: hidden; font-size: 9px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .ai-knowledge-notice small { color: #739387; font-size: 8px; line-height: 1.45; }
+.ai-machine-select { display: grid; gap: 7px; }
+.ai-machine-select > span { font-size: 10px; font-weight: 800; }
+.ai-machine-select > select { min-width: 0; padding-block: 8px; color: #315f50; border-color: #b9ddcf; background: #fff; font-weight: 700; }
 .ai-dialog-content > label, .ai-dialog-grid label { display: grid; gap: 7px; color: #777080; font-size: 10px; font-weight: 700; }
 .ai-dialog-content textarea, .ai-dialog-content input, .ai-dialog-content select { width: 100%; padding: 10px 11px; border: 1px solid #ded9e7; border-radius: 9px; outline: 0; color: #37313e; background: #fbfafc; font: inherit; font-size: 11px; box-sizing: border-box; }
 .ai-dialog-content textarea:focus, .ai-dialog-content input:focus, .ai-dialog-content select:focus { border-color: #7568d5; box-shadow: 0 0 0 3px rgba(104, 88, 210, .1); }

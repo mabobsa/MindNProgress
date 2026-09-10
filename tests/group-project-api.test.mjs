@@ -302,6 +302,7 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     await pause(400)
     assert.equal(calls.length, completedCallCount, '보고 실패를 무제한 재시도했습니다.')
     assert.equal((await humanAction('refresh', await actionBody())).body.executionRequested, false)
+    dispatches.delete(reportFailed.wakeOperationId)
     failWake = false
     const reportRetryBody = await actionBody()
     const reports = await Promise.all([humanAction('retry-report', reportRetryBody), humanAction('retry-report', reportRetryBody)])

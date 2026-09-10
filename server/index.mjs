@@ -1720,6 +1720,7 @@ async function aionUiCandidateBaseUrls() {
 
 async function fetchAionUi(pathname, { timeoutMs = 8_000, method = 'GET', body } = {}) {
   let lastError = null
+  let lastResponseError = null
   const candidates = await aionUiCandidateBaseUrls()
   for (const baseUrl of candidates) {
     try {
@@ -1743,9 +1744,10 @@ async function fetchAionUi(pathname, { timeoutMs = 8_000, method = 'GET', body }
       return responseBody?.data ?? responseBody
     } catch (error) {
       lastError = error
+      if (Number.isInteger(error?.status)) lastResponseError = error
     }
   }
-  throw lastError ?? new Error('AIONUI_REQUEST_FAILED')
+  throw lastResponseError ?? lastError ?? new Error('AIONUI_REQUEST_FAILED')
 }
 
 // 메인 머신과 서브 머신의 유일한 분기점이다.

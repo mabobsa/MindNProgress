@@ -31,17 +31,36 @@ const attentionStates = new Set([
   'recovery-required', 'integration-recovery-required', 'waiting-child-resume',
   'integration-waiting-resume', 'recovery-dispatch-pending',
 ])
+const completedReportLabels = {
+  'waiting-parent': '작업 완료 · 총괄에 결과 전달 대기',
+  'waking-parent': '작업 완료 · 총괄에 결과 전달 중',
+  'parent-wake-failed': '작업 완료 · 총괄 보고 실패',
+}
 
 export function groupDelegationPresentation(item) {
   if (!item) return { label: '위임 없음', tone: 'muted', attention: false }
   const state = item.displayState ?? item.state
   const attention = attentionStates.has(state) || item.recovery?.recoveryAvailable === true || item.recovery?.reportRetryAvailable === true
-  const label = item.workCompleted && item.reportPending
-    ? '작업 완료 · 총괄 보고 대기'
+  const label = item.workCompleted && item.reportStatus === 'received' && ['completed', 'waking-parent'].includes(state)
+    ? '작업 완료 · 총괄 수신 완료'
+    : item.workCompleted && item.reportPending && completedReportLabels[state] ? completedReportLabels[state]
     : delegationLabels[state] ?? state
   const tone = state === 'failed' ? 'danger' : attention ? 'warning'
     : state === 'completed' ? 'success' : ['superseded', 'closed'].includes(state) ? 'muted' : 'active'
   return { label, tone, attention }
+}
+
+export function groupDelegationReportHint(item) {
+  if (item?.reportStatus === 'received') return '결과 수신이 확인됐습니다. 상위 AI의 후속 작업이나 품질 검수 완료를 뜻하지 않습니다.'
+  if (item?.state === 'parent-wake-failed') return '하위 실행 결과는 보존되어 있습니다. 전달 상태를 확인한 뒤 필요한 경우 결과만 재전달하세요.'
+  if (item?.state === 'waking-parent') return '상위 대화로 결과 전달을 요청했습니다. 실행 요청 접수와 수신 확인은 구분됩니다.'
+  if (item?.state !== 'waiting-parent') return ''
+  return ({
+    'parent-busy': '상위 AI가 작업 중이어서 자동 전달을 기다립니다. 담당 상위 AI가 결과를 읽고 수신 확인하면 대기를 해제할 수 있습니다.',
+    'parent-confirmation': '상위 AI가 사용자 확인을 기다리고 있어 결과를 자동 전달하지 않았습니다.',
+    'parent-unavailable': '상위 대화 상태를 확인할 수 없어 결과를 자동 전달하지 않았습니다.',
+    'earlier-report': '같은 상위 대화에 먼저 요청한 결과 전달을 확인하고 있습니다.',
+  })[item.reportWaitReason] ?? '하위 실행은 끝났으며 상위 대화가 유휴 상태가 되면 결과를 전달합니다. 상위 AI가 재개될 수 있습니다.'
 }
 
 export function groupOverviewRows(context) {

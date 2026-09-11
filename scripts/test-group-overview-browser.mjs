@@ -6,6 +6,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { applyGroupWaitingReview, groupWaitingDetails } from '../server/lib/groupWaitingReviews.mjs'
+import { groupPlanningSources, withGroupPlanningSources } from '../src/utils/groupPlanningSources.mjs'
 
 const dist = path.resolve(import.meta.dirname, '../dist')
 const directory = await mkdtemp(path.join(tmpdir(), 'mnp-group-ui-'))
@@ -23,7 +24,7 @@ const makeDelegation = (mapId, state, extra = {}) => ({ id: `delegation-${mapId}
 let context = {
   group: { id: 'group-test', name: 'JP-매니저', mapIds: ['coordinator', ...documents.map((d) => d.id)] },
   project: { version: 3, coordinatorMapId: 'coordinator', source: 'https://example.test/spec/v0.4', sourceVersion: 'v0.4', objective: '클라이언트 영역의 기획 요구사항을 구현한다.\n더미 UI와 더미 데이터를 이용하여 Play 가능하도록 개발한다.', instructions: '렌더링된 기획 시안을 직접 확인한다.\n사용자 승인 후 실행한다.\n' + '화면 구조, 상태, 문구, 색상과 배치를 확인한다.\n'.repeat(20) },
-  coordinator, documents: [coordinator, ...documents], guide: { coordinator: '' }, waitingReviewSupported: true,
+  coordinator, documents: [coordinator, ...documents], guide: { coordinator: '' }, waitingReviewSupported: true, sourcesSupported: true,
   delegations: [
     makeDelegation('doc-0', 'waiting-usage-limit', { childError: '사용량 제한으로 대기 중입니다.', recovery: { recoveryAvailable: true }, result: '첫 화면 구현 결과를 보존했습니다. 남은 검수가 필요합니다.\n' + '완료된 작업을 반복하지 않습니다.\n'.repeat(45), attemptHistory: [{ at: '2026-09-09T23:00:00Z', reason: 'usage-limit', childError: '이전 제한 오류', result: '보존된 이전 결과' }] }),
     makeDelegation('doc-0', 'failed', { id: 'older-doc-0', createdAt: '2026-09-09T00:00:00Z', result: '이전 위임 결과 원문' }),
@@ -67,8 +68,8 @@ const server = createServer(async (req, res) => {
         catch (error) { return send({ error: error.message }, error.status ?? 400) }
         context.project.waitingReviewVersion = (context.project.waitingReviewVersion ?? 0) + 1
       } else {
-        const { source, sourceVersion, objective, instructions } = body
-        context.project = { ...context.project, source, sourceVersion, objective, instructions, version: context.project.version + 1 }
+        const { objective, instructions } = body
+        context.project = withGroupPlanningSources({ ...context.project, objective, instructions, version: context.project.version + 1 }, body.sources ?? groupPlanningSources(context.project))
       }
       updateWaiting()
       return send(context)
@@ -216,7 +217,7 @@ try {
   await capture('waiting-deferred')
   await load(); await selectDocument('doc-5'); await click('대기 사유 4')
   assert.equal(await evaluate('document.querySelector(\'[data-waiting-id="assets"]\').innerText.includes("직접 분류")'), true, '새로고침 뒤 분류 유지')
-  context.project.sourceVersion = 'v0.5'; context.project.version++; await click('새로고침')
+  context.project = withGroupPlanningSources({ ...context.project, version: context.project.version + 1 }, groupPlanningSources(context.project).map((source, index) => index === 0 ? { ...source, sourceVersion: 'v0.5' } : source)); await click('새로고침')
   await until(() => evaluate('document.querySelector(\'[data-waiting-id="assets"] .group-review-stale\')?.innerText.includes("기획 기준 변경")'), '기준 변경 시 재확인 표시')
   assert.equal(await evaluate('document.querySelector(".group-criteria-strip").innerText.includes("미저장")'), false, '편집하지 않은 기준은 자동 갱신하며 가짜 미저장 상태를 만들지 않는다')
   assert.equal(await evaluate('[...document.querySelectorAll(\'select[aria-label="문서 상태 필터"] option\')].find(o=>o.value === "deferred").textContent.includes("0문서")'), true)

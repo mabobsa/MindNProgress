@@ -865,7 +865,7 @@ async function main() {
     assert.equal(fullContext.document.outline, undefined)
     assert.equal(fullContext.selection.knowledgeSources.all.length, 0)
     assert.ok(JSON.stringify(context).length < JSON.stringify(fullContext).length)
-    assert.ok(JSON.stringify(context).length < 25_000, 'focused 컨텍스트가 크기 회귀 기준을 초과했습니다.')
+    assert.ok(JSON.stringify(context).length < 25_000, `focused 컨텍스트가 크기 회귀 기준을 초과했습니다: ${JSON.stringify(context).length} / 25000`)
     documentResult = await invoke('mindnprogress_get_document', { mapId })
     assert.equal(documentResult.map.version, versionBeforeReadOnlyTools, '조회 도구가 문서 버전을 변경했습니다.')
 
@@ -1286,6 +1286,17 @@ async function main() {
     assert.equal(recoveredDelegation.recovered, true)
     assert.equal(recoveredDelegation.repeated, true)
     assert.equal(recoveredDelegation.delegation.state, 'waiting-parent')
+
+    const capturedReports = await invoke('mindnprogress_list_ai_delegations', {
+      mapId, targetCardId: delegatedChild.id, includeResult: true,
+    })
+    const capturedReport = capturedReports.delegations[0]
+    assert.match(capturedReport.result, /하위 카드 작업을 완료하고 결과를 기록했습니다/)
+    assert.match(capturedReport.resultHash, /^[a-f0-9]{64}$/)
+    await invokeExpectError('mindnprogress_refresh_ai_delegation', {
+      mapId, delegationId: capturedReport.id, expectedUpdatedAt: capturedReport.updatedAt,
+      acknowledgeResultHash: '0'.repeat(64),
+    }, /해시|위임 상태가 변경/)
 
     mockAionUi.setConversationRuntimeState('idle')
     let completedDelegation = null

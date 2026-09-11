@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { completedReplacementDelegations, type AiDelegationSummary } from '../utils/aiDelegationManagement.mjs'
-import { groupDelegationPresentation, type GroupDelegation } from '../utils/groupOverview.mjs'
+import { groupDelegationPresentation, groupDelegationReportHint, type GroupDelegation } from '../utils/groupOverview.mjs'
 import './AiDelegationRecovery.css'
 
 type Delegation = GroupDelegation & AiDelegationSummary & {
@@ -168,6 +168,7 @@ export function AiDelegationRecovery({ mapId, cardId }: { mapId: string; cardId:
           </div>
           <span>{groupDelegationPresentation(item).label}</span>
         </div>
+        {groupDelegationReportHint(item) && <p className="ai-delegation-recovery-guidance">{groupDelegationReportHint(item)}</p>}
         {(item.recoveryDispatchError || item.childError || item.parentError) && <p className="ai-delegation-recovery-error-detail">{item.recoveryDispatchError || item.childError || item.parentError}</p>}
         {candidates.length > 1 && <label className="ai-delegation-replacement">
           <span>완료된 후속 위임</span>

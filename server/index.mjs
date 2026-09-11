@@ -3,7 +3,7 @@ import { createDocumentMutationGate, createDocumentReconstruction, reconstructio
 import { createReconstructionRequests } from './lib/documentReconstructionRequests.mjs'
 import { createGroupProjects, documentRoot, DOCUMENT_COORDINATOR_INSTRUCTION } from './lib/groupProjects.mjs'
 import { createDoorayResponseIntegration } from './lib/doorayResponseIntegration.mjs'
-import { AI_EXECUTION_APPROVAL_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
+import { AI_EXECUTION_APPROVAL_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_REPORT_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { hostname, networkInterfaces, tmpdir } from 'node:os'
@@ -14,6 +14,12 @@ import { detectReleasedWaitingItems } from './lib/waitingItems.mjs'
 import { resolveAttributionWithoutToken, resolveScopedAttribution } from './lib/attributionScope.mjs'
 import { readAionUiSubscriptionUsage } from './lib/aionUiSubscriptionUsage.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
+import {
+  acknowledgeAiDelegationReport,
+  aiDelegationDeliveredReportPatch,
+  aiDelegationStoredReportDeliveryPatch,
+  aiDelegationReportStatus,
+} from './lib/aiDelegationReports.mjs'
 import {
   inactiveAiConversationRuntime,
   normalizeAionUiConversationRuntime,
@@ -2130,7 +2136,7 @@ ${inspection}
 ${instruction.trim()}`
 }
 
-function delegationPublicView(delegation) {
+function delegationPublicView(delegation, includeResult = false) {
   const publicDelegation = { ...delegation }
   delete publicDelegation.instructionHash
   delete publicDelegation.recoveryInstructionHash
@@ -2145,9 +2151,16 @@ function delegationPublicView(delegation) {
   if (closure) publicDelegation.closure = closure
   publicDelegation.displayState = aiDelegationDisplayState(delegation)
   publicDelegation.workCompleted = aiDelegationSucceeded(delegation)
+  publicDelegation.reportStatus = aiDelegationReportStatus(delegation)
   publicDelegation.reportPending = !aiDelegationIsTerminal(delegation)
-    && aiDelegationSucceeded(delegation) && delegation.parentDispatchState !== 'completed'
-  publicDelegation.resultAvailability = aiDelegationReportResult(delegation).availability
+    && aiDelegationSucceeded(delegation) && publicDelegation.reportStatus !== 'received'
+  const result = aiDelegationReportResult(delegation)
+  publicDelegation.resultAvailability = result.availability
+  if (includeResult === true) {
+    publicDelegation.result = result.text
+    publicDelegation.resultHash = result.hash
+    publicDelegation.resultTurnId = result.turnId
+  }
   return publicDelegation
 }
 
@@ -2877,7 +2890,9 @@ ${workspaceResult}
 
 ${AI_EXECUTION_APPROVAL_INSTRUCTION}
 
-${aiDelegationResultSection(reportResult)}${AI_DELEGATION_FOLLOWUP_INSTRUCTION}`
+${aiDelegationResultSection(reportResult)}${AI_DELEGATION_REPORT_INSTRUCTION}
+
+${AI_DELEGATION_FOLLOWUP_INSTRUCTION}`
 }
 
 function aiDelegationRecoveryKey(delegation) {
@@ -3101,6 +3116,7 @@ async function settlePendingAiRecovery(delegation) {
     childError: dispatch.errorMessage ?? null,
     childResultSnapshot: null, childResultHash: null, childResultTurnId: null,
     childResultCapturedAt: null, childResultCaptureAttemptedAt: null,
+    reportReceipt: null, reportWaitReason: null,
     reportPayloadHash: null, reportResultAvailability: null, reportResultHash: null,
     reportResultTurnId: null, reportPreparedAt: null,
     workspaceResult: null, workspaceError: null,
@@ -3114,8 +3130,13 @@ async function settlePendingAiRecovery(delegation) {
 
 async function refreshSuspendedAiDelegation(delegation) {
   if (delegation.pendingRecovery) return settlePendingAiRecovery(delegation)
+  if (['completed', 'superseded', 'closed'].includes(delegation.state)) return delegation
+  const delivered = aiDelegationStoredReportDeliveryPatch(delegation)
+  if (delivered) return updateAiDelegation(delegation.id, delivered)
+  // 하위 실행이 이미 끝난 보고 대기를 과거 child operation 조회 실패로 막지 않는다.
+  if (delegation.state === 'waiting-parent') return delegation
   // 실행 요청을 보내지 않는다. 같은 operation의 확인된 상태만 반영한다.
-  const reportOnly = aiDelegationSucceeded(delegation) && delegation.state === 'parent-wake-failed'
+  const reportOnly = aiDelegationSucceeded(delegation) && ['waking-parent', 'parent-wake-failed'].includes(delegation.state)
   const operationId = reportOnly ? delegation.wakeOperationId : delegation.childOperationId
   if (!operationId) return delegation
   const status = await readAiDelegationDispatchStatus(fetchAionUiOn, {
@@ -3125,6 +3146,8 @@ async function refreshSuspendedAiDelegation(delegation) {
   const expectedConversation = reportOnly ? delegation.parentConversationId : delegation.targetConversationId
   if (status.conversationId && status.conversationId !== expectedConversation) throw aiDelegationDispatchError('실행 대화가 위임 기록과 일치하지 않습니다.', 409)
   if (reportOnly) {
+    const received = aiDelegationDeliveredReportPatch(delegation, { ...status, conversationId: status.conversationId ?? expectedConversation })
+    if (received) return updateAiDelegation(delegation.id, received)
     if (status.state !== 'completed') return delegation
     return updateAiDelegation(delegation.id, {
       state: 'completed', parentDispatchState: 'completed', parentError: null,
@@ -3149,6 +3172,7 @@ async function refreshSuspendedAiDelegation(delegation) {
       parentError: null, parentDispatchState: null, completedAt: null,
       childResultSnapshot: null, childResultHash: null, childResultTurnId: null,
       childResultCapturedAt: null, childResultCaptureAttemptedAt: null,
+      reportReceipt: null, reportWaitReason: null,
       reportPayloadHash: null, reportResultAvailability: null, reportResultHash: null,
       reportResultTurnId: null, reportPreparedAt: null,
       attemptHistory: aiDelegationAttemptHistory(delegation, '같은 실행의 재개 확인'),
@@ -3163,6 +3187,7 @@ async function refreshSuspendedAiDelegation(delegation) {
       parentDispatchState: 'not-sent', parentError: null, childTurnId: status.turnId ?? delegation.childTurnId,
       childResultSnapshot: null, childResultHash: null, childResultTurnId: null,
       childResultCapturedAt: null, childResultCaptureAttemptedAt: null,
+      reportReceipt: null, reportWaitReason: null,
       reportPayloadHash: null, reportResultAvailability: null, reportResultHash: null,
       reportResultTurnId: null, reportPreparedAt: null,
       attemptHistory: aiDelegationAttemptHistory(delegation, '같은 실행 완료 확인 · 결과 전달은 사용자 요청 대기'),
@@ -3899,9 +3924,14 @@ async function pollAiDelegations() {
         'waiting-integration', 'integration-starting', 'integration-waiting-resource',
         'integration-running', 'integration-waiting-resume', 'integration-recovery-required',
         'waiting-parent', 'waking-parent',
-      ].includes(delegation.state) || delegation.pendingRecovery)
+      ].includes(delegation.state) || delegation.pendingRecovery || aiDelegationStoredReportDeliveryPatch(delegation))
     for (const delegation of active) {
       if (aiDelegationActions.has(delegation.id)) continue
+      const delivered = aiDelegationStoredReportDeliveryPatch(delegation)
+      if (delivered) {
+        await updateAiDelegation(delegation.id, delivered)
+        continue
+      }
       if (delegation.pendingRecovery) {
         if (!aiDelegationWaitPollDue(aiDelegationWaitPolls.get(delegation.id), delegation)) continue
         try { await settlePendingAiRecovery(delegation) } catch { /* 같은 operation의 확인 전에는 새 실행을 만들지 않는다. */ }
@@ -4118,7 +4148,10 @@ async function pollAiDelegations() {
           candidate.id !== delegation.id
           && candidate.parentConversationId === delegation.parentConversationId
           && candidate.state === 'waking-parent')
-        if (anotherWakeInProgress) continue
+        if (anotherWakeInProgress) {
+          await updateAiDelegation(delegation.id, { reportWaitReason: 'earlier-report' })
+          continue
+        }
         try {
           if (delegation.childStatus === 'completed' && await documentCoordinationPending(delegation)) {
             await updateAiDelegation(delegation.id, {
@@ -4134,7 +4167,11 @@ async function pollAiDelegations() {
           }
           const parent = await fetchAiConversationRuntime(delegation.parentConversationId)
           const runtime = normalizeAiConversationRuntime(delegation.parentConversationId, parent)
-          if (runtime.state !== 'idle') continue
+          if (runtime.state !== 'idle') {
+            await updateAiDelegation(delegation.id, { reportWaitReason: runtime.state === 'running'
+              ? 'parent-busy' : runtime.state === 'waiting-confirmation' ? 'parent-confirmation' : 'parent-unavailable' })
+            continue
+          }
           const reportResult = aiDelegationReportResult(delegation)
           const parentWakeAttempt = Number(delegation.parentWakeAttempt ?? 0) + 1
           const wakeOperationId = boundedAionOperationId(delegation.id, `wake-${parentWakeAttempt}`)
@@ -4142,7 +4179,8 @@ async function pollAiDelegations() {
           const reportPreparedAt = new Date().toISOString()
           // 전달 의도를 먼저 저장하여 응답 유실·재시작 뒤에도 같은 요청을 조회한다.
           await updateAiDelegation(delegation.id, {
-            state: 'waking-parent', wakeOperationId, parentWakeAttempt,
+            state: 'waking-parent', wakeOperationId, parentWakeAttempt, reportWaitReason: null,
+            parentTurnId: null, parentDispatchState: null, reportReceipt: null,
             reportPayloadHash: createHash('sha256').update(wakeInstruction).digest('hex'),
             reportResultAvailability: reportResult.availability,
             reportResultHash: reportResult.hash,
@@ -4159,11 +4197,13 @@ async function pollAiDelegations() {
               instruction: wakeInstruction,
             },
           })
+          const received = aiDelegationDeliveredReportPatch(aiDelegations.get(delegation.id), response)
           await updateAiDelegation(delegation.id, {
             state: 'waking-parent',
             wakeOperationId,
             parentWakeAttempt,
             parentTurnId: response.turnId ?? null,
+            ...received,
           })
         } catch (error) {
           await updateAiDelegation(delegation.id, { state: 'parent-wake-failed', parentDispatchState: 'unknown', parentError: error?.message ?? '결과 전달 상태를 확인하지 못했습니다. 상태 확인 후 재시도하세요.' })
@@ -4174,6 +4214,11 @@ async function pollAiDelegations() {
 
       try {
         const status = await fetchAionUiOn(delegationParentMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.wakeOperationId)}`)
+        const received = aiDelegationDeliveredReportPatch(delegation, status)
+        if (received) {
+          await updateAiDelegation(delegation.id, received)
+          continue
+        }
         if (status.state === 'recovery_required') {
           await updateAiDelegation(delegation.id, {
             state: 'parent-wake-failed',
@@ -5906,7 +5951,17 @@ const server = createServer(async (request, response) => {
         const supersede = actionRoute[3] === 'supersede'
         const close = actionRoute[3] === 'close'
         const validated = await validateAiDelegationAction(request, delegation, body, retryReport || finalizeCoordination, { requireConversationLinks: !supersede && !close })
-        if (!retryReport && !finalizeCoordination && !supersede && !close) return sendJson(response, 200, { delegation: delegationPublicView(await refreshSuspendedAiDelegation(delegation)), executionRequested: false })
+        if (!retryReport && !finalizeCoordination && !supersede && !close) {
+          if (body.acknowledgeResultHash !== undefined) {
+            const source = delegationSourceForRequest(integrationRequestScope(request), delegation.parentMapId ?? delegation.mapId)
+            if (validated.human || !source || source.cardId !== delegation.parentCardId) return sendJson(response, 403, { error: '담당 상위 AI 대화에서만 결과 수신을 확인할 수 있습니다.' })
+            if (body.expectedUpdatedAt !== delegation.updatedAt) return sendJson(response, 409, { error: '최신 위임 상태를 조회한 뒤 수신 확인하세요.' })
+            if (await documentCoordinationPending(delegation)) return sendJson(response, 409, { error: '미완료 하위 업무가 남아 문서 조정 결과를 수신 완료로 처리할 수 없습니다.' })
+            const patch = acknowledgeAiDelegationReport(delegation, { conversationId: source.conversationId, resultHash: body.acknowledgeResultHash })
+            return sendJson(response, 200, { delegation: delegationPublicView(await updateAiDelegation(id, patch)), executionRequested: false, resultAcknowledged: true, cardChanged: false })
+          }
+          return sendJson(response, 200, { delegation: delegationPublicView(await refreshSuspendedAiDelegation(delegation)), executionRequested: false })
+        }
         if (close) {
           if (body.confirmClosedWithoutCompletion !== true || body.confirmResultReportDiscarded !== true) {
             return sendJson(response, 400, { error: '완료 처리와 결과 보고 없이 위임 기록을 종료할지 모두 확인해야 합니다.' })
@@ -6015,6 +6070,7 @@ const server = createServer(async (request, response) => {
           reportApprovalRequired: false,
           attemptHistory: aiDelegationAttemptHistory(delegation, '사용자 요청에 따른 결과 재전달'),
           reportRetryRequestedAt: new Date().toISOString(), reportRetryRequestedBy: user.id,
+          reportReceipt: null, reportWaitReason: null,
           reportPayloadHash: null, reportResultAvailability: null, reportResultHash: null,
           reportResultTurnId: null, reportPreparedAt: null,
         })
@@ -7425,6 +7481,7 @@ const server = createServer(async (request, response) => {
           childResultTurnId: null,
           childResultCapturedAt: null,
           childResultCaptureAttemptedAt: null,
+          reportReceipt: null, reportWaitReason: null,
           reportPayloadHash: null,
           reportResultAvailability: null,
           reportResultHash: null,
@@ -7452,7 +7509,7 @@ const server = createServer(async (request, response) => {
           && (!parentCardId || delegation.parentCardId === parentCardId)
           && (!targetCardId || delegation.targetCardId === targetCardId))
         .sort((first, second) => String(second.createdAt).localeCompare(String(first.createdAt)))
-        .map(delegationPublicView)
+        .map((delegation) => delegationPublicView(delegation, url.searchParams.get('includeResult') === 'true'))
       return sendJson(response, 200, { mapId, delegations })
     }
 

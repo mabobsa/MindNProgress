@@ -3,7 +3,7 @@ import type { AiConversationExplicitTarget } from '../utils/aiConversationLaunch
 import { buildGroupCoordinatorRequest, buildGroupDocumentRequest, buildGroupDocumentProposalRequest } from '../utils/aiApprovalInstructions.mjs'
 import { copyTextToClipboard } from '../utils/clipboardText.mjs'
 import { groupPageUrl } from '../utils/groupDeepLink.mjs'
-import { filterGroupOverviewRows, groupDelegationPresentation, groupOverviewRows, groupProjectDraftAfterRefresh } from '../utils/groupOverview.mjs'
+import { filterGroupOverviewRows, groupDelegationPresentation, groupDelegationReportHint, groupOverviewRows, groupProjectDraftAfterRefresh } from '../utils/groupOverview.mjs'
 import type { GroupContext, GroupDelegation as Delegation, GroupDocument, GroupProject as Project } from '../utils/groupOverview.mjs'
 import { AiConversationRuntimeBadge } from './AiConversationRuntimeBadge'
 import { groupOverviewFilters, groupWaitingCategories } from '../utils/groupWaiting.mjs'
@@ -23,7 +23,7 @@ function RuntimeStatus({ document }: { document: GroupDocument }) {
 }
 function DelegationStatus({ item }: { item?: Delegation | null }) {
   const status = groupDelegationPresentation(item)
-  return <span className={`group-status ${status.tone}`}>{status.label}</span>
+  return <span className={`group-status ${status.tone}`} title={groupDelegationReportHint(item)}>{status.label}</span>
 }
 const formatTime = (value: string) => new Date(value).toLocaleString()
 
@@ -288,6 +288,7 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
                   : detailTab === 'history' ? <><p className="group-muted">선택한 위임의 이전 실행·복구 기록입니다. 현재 결과와 구분해 확인하세요.</p>{delegation.attemptHistory?.length ? delegation.attemptHistory.map((attempt, index) => <article className="group-attempt" key={index}><h3>{formatTime(attempt.at)} · {attempt.reason}</h3>{attempt.childError && <p className="group-inline-error">문서 AI: {attempt.childError}</p>}{attempt.parentError && <p className="group-inline-error">총괄 AI: {attempt.parentError}</p>}{attempt.result && <pre className="group-full-text">{attempt.result}</pre>}</article>) : <p className="group-empty">이 위임에 기록된 복구 이력이 없습니다.</p>}</>
                     : <><div className="group-result-status"><DelegationStatus item={delegation} /><small>상태 변경 {formatTime(delegation.updatedAt || delegation.createdAt)}</small></div><h3>위임 지시</h3><p className="group-full-text">{delegation.instructionPreview || '기록된 지시가 없습니다.'}</p>
                       {([['문서 AI', delegation.childError], ['총괄 AI', delegation.parentError], ['연결', delegation.linkError], ['복구 전달', delegation.recoveryWakeError]] as const).map(([label, message]) => message && <p className="group-inline-error" key={label}>{label}: {message}</p>)}
+                      {groupDelegationReportHint(delegation) && <p className="group-muted">{groupDelegationReportHint(delegation)}</p>}
                       <h3>{delegation.workCompleted ? '실행 결과 요약' : '중간 결과'}</h3><p className="group-muted">{delegation.workCompleted ? '실행 완료와 요구사항 검증 완료는 다릅니다. 검증 근거는 문서에서 확인하세요.' : '중단 시점의 결과는 완료 근거가 아닙니다.'}</p>
                       {delegation.resultAvailability === 'integrity-failed' && <p className="group-inline-error">저장된 결과의 해시 또는 실행 턴이 위임 기록과 일치하지 않아 원문을 표시하거나 재전달하지 않습니다.</p>}
                       {delegation.resultAvailability === 'unavailable' && <p className="group-inline-error">이 위임의 결과 원문이 캡처되지 않았습니다. 재전달 시 다른 작업의 최신 응답으로 대체하지 않고 메타데이터만 전달합니다.</p>}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { filterGroupOverviewRows, groupDelegationPresentation, groupOverviewRows } from '../src/utils/groupOverview.mjs'
+import { filterGroupOverviewRows, groupDelegationPresentation, groupDelegationReportHint, groupOverviewRows } from '../src/utils/groupOverview.mjs'
 
 const document = (id, title = id) => ({ id, title, root: { data: { description: '담당 범위 원문' } }, runtime: null, work: { total: 5, done: 2, waiting: 0 } })
 const delegation = (id, mapId, state, createdAt = '2026-09-10T00:00:00Z') => ({ id, mapId, state, createdAt, targetCardLabel: `${mapId} 담당`, result: `${id} 결과 원문` })
@@ -31,11 +31,22 @@ test('그룹에서 제외된 문서의 위임도 이력 행으로 남긴다', ()
 
 test('현재 확인이 필요한 상태와 완료 결과 전달 대기를 구분한다', () => {
   const report = { ...delegation('report', 'a', 'parent-wake-failed'), workCompleted: true, reportPending: true }
-  assert.deepEqual(groupDelegationPresentation(report), { label: '작업 완료 · 총괄 보고 대기', tone: 'warning', attention: true })
+  assert.deepEqual(groupDelegationPresentation(report), { label: '작업 완료 · 총괄 보고 실패', tone: 'warning', attention: true })
   assert.equal(groupDelegationPresentation(delegation('limit', 'a', 'waiting-usage-limit')).attention, true)
   assert.equal(groupDelegationPresentation({ state: 'failed', displayState: 'recovery-dispatch-pending' }).tone, 'warning')
   assert.equal(groupDelegationPresentation({ state: 'failed' }).tone, 'danger')
   assert.equal(groupDelegationPresentation(null).label, '위임 없음')
+})
+
+test('보고 전달 대기·전달 중·수신 완료와 상위 실행 상태를 분리해 표시한다', () => {
+  assert.equal(groupDelegationPresentation({ state: 'waiting-parent', workCompleted: true, reportPending: true }).label, '작업 완료 · 총괄에 결과 전달 대기')
+  assert.equal(groupDelegationPresentation({ state: 'waking-parent', workCompleted: true, reportPending: true }).label, '작업 완료 · 총괄에 결과 전달 중')
+  assert.equal(groupDelegationPresentation({ state: 'completed', workCompleted: true, reportStatus: 'received' }).label, '작업 완료 · 총괄 수신 완료')
+  assert.match(groupDelegationReportHint({ state: 'waiting-parent', reportWaitReason: 'parent-busy' }), /상위 AI가 작업 중/)
+  assert.match(groupDelegationReportHint({ state: 'waiting-parent', reportWaitReason: 'parent-confirmation' }), /사용자 확인/)
+  assert.match(groupDelegationReportHint({ reportStatus: 'received' }), /품질 검수 완료를 뜻하지/)
+  assert.equal(groupDelegationReportHint({ state: 'running' }), '')
+  assert.equal(groupDelegationPresentation({ state: 'parent-wake-failed', displayState: 'recovery-dispatch-pending', workCompleted: true, reportPending: true }).label, '복구 요청 전달 확인 대기')
 })
 
 test('업무 대기와 AI 확인 대기는 위임 완료 집계와 별도로 필터링한다', () => {

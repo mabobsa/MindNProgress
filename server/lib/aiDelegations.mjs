@@ -316,6 +316,7 @@ export function aiDelegationAttemptHistory(delegation, reason, at = new Date().t
     reportResultHash: delegation.reportResultHash ?? null,
     reportResultTurnId: delegation.reportResultTurnId ?? null,
     reportPreparedAt: delegation.reportPreparedAt ?? null,
+    reportReceipt: delegation.reportReceipt ?? null,
   }]
 }
 

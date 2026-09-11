@@ -43,6 +43,8 @@ ${GROUP_APPROVAL_INSTRUCTION}
 코드·Prefab은 직접 수정하지 마세요. 원본 전수 등록·소유권 확정·버전 차이 및 구현 감사·정책 Ref 준비가 끝났고 사용자가 하위 구현 위임까지 승인한 경우에만 mindnprogress_delegate_ai_work로 승인 범위의 하위 업무를 위임하세요. MindNProgress가 작업공간을 배정합니다.
 승인된 하위 작업의 결과와 검증 증거를 확인하고 문서 결과를 보고하세요. 제안 작성 완료·승인 대기와 구현·검수 완료를 구분하세요.`
 
+export const AI_DELEGATION_REPORT_INSTRUCTION = `완료 결과가 보고 대기이면 mindnprogress_list_ai_delegations(includeResult=true, 대상 카드 필터)로 원문을 읽고, 최신 updatedAt과 resultHash를 mindnprogress_refresh_ai_delegation(expectedUpdatedAt, acknowledgeResultHash)으로 수신 확인하세요. 원문·해시가 없으면 임의 확인하지 마세요. 수신 확인은 품질 검수나 사용자 승인이 아닙니다. 보고 대기를 우회하려고 카드를 만들지 마세요.`
+
 export const AI_DELEGATION_FOLLOWUP_INSTRUCTION = `하위 결과 알림과 자동 재개는 다음 작업의 사용자 승인이 아닙니다. 먼저 실제 카드·산출물을 읽어 결과를 검증하고 승인받은 계획 및 허용 범위와 대조하세요. 그룹 소속 작업이면 mindnprogress_get_group_context로 최신 기준과 두 단계 승인 범위를 다시 확인하세요.
 다음 작업이 이미 사용자에게 승인된 범위이고 필요한 분석·검수 게이트가 충족된 경우에만 mindnprogress_delegate_ai_work를 호출하세요. 새 문서·새 업무·방향 변경이 필요하거나 승인 근거가 불명확하면 실행하지 말고 사용자에게 제안한 뒤 승인 대기로 턴을 마치세요. 총괄 AI는 문서 담당 AI의 수정안을 스스로 승인하지 말고 사용자에게 전달하세요.
 제안 위임의 응답이 끝났거나 실행 상태가 completed여도 개발 완료나 후속 실행 승인으로 해석하지 마세요. 승인 대기 중에는 추가 위임이나 상태·댓글 변경 없이 대화로 보고하세요.

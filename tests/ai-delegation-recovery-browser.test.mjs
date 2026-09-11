@@ -28,6 +28,9 @@ window.fetch = async (url, init = {}) => {
 let sequence = 0;
 window.renderRecovery = (props={}) => root.render(React.createElement(AiDelegationRecovery,{key:++sequence,mapId:'child-map',cardId:'child',...props}));
 window.reportOnly = () => {item.state='parent-wake-failed';item.childError=null;item.parentError='보고 사용량 초과';item.workCompleted=true;item.reportPending=true;item.recovery={recoveryAvailable:false,reportRetryAvailable:true};item.closure={closeAvailable:true,reason:'completed-child-report-abandonment'};window.renderRecovery()};
+window.waitingReport = () => {item.state='waiting-parent';item.childError=null;item.parentError=null;item.workCompleted=true;item.reportPending=true;item.reportStatus='waiting';item.reportWaitReason='parent-busy';item.recovery=null;item.closure=null;window.renderRecovery()};
+window.deliveringReport = () => {item.state='waking-parent';item.reportStatus='delivering';window.renderRecovery()};
+window.receivedReport = () => {item.state='completed';item.reportPending=false;item.reportStatus='received';window.renderRecovery()};
 window.fixtureReady = true;
 `
 
@@ -132,6 +135,14 @@ test('하위 카드 복구 화면은 AI 없이 재개·보고 재시도를 구�
     assert.ok(last.url.endsWith('/close'))
     assert.equal(last.body.confirmClosedWithoutCompletion, true)
     assert.equal(last.body.confirmResultReportDiscarded, true)
+    await evaluate('window.waitingReport()'); await ready()
+    assert.match(await evaluate('document.body.textContent'), /총괄에 결과 전달 대기/)
+    assert.match(await evaluate('document.body.textContent'), /상위 AI가 작업 중/)
+    assert.equal(await evaluate('Array.from(document.querySelectorAll("button")).some(b=>b.textContent==="기존 작업 재개" || b.textContent==="결과 전달 재시도")'), false)
+    await evaluate('window.deliveringReport()'); await ready()
+    assert.match(await evaluate('document.body.textContent'), /총괄에 결과 전달 중/)
+    await evaluate('window.receivedReport()')
+    await waitFor(() => evaluate('!document.querySelector(".ai-delegation-recovery")'))
   } finally {
     if (send && socket?.readyState === WebSocket.OPEN) await send('Browser.close').catch(() => {})
     for (const item of pending.values()) clearTimeout(item.timer)

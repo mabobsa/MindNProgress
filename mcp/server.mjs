@@ -1509,6 +1509,7 @@ async function main() {
             delegateTool: 'mindnprogress_delegate_ai_work',
             statusTool: 'mindnprogress_list_ai_delegations',
             recoveryTool: 'mindnprogress_recover_ai_delegation',
+            reportReceipt: '보고 대기는 statusTool(includeResult=true)로 원문을 읽고 mindnprogress_refresh_ai_delegation의 acknowledgeResultHash로 수신 확인합니다. 검수 완료·후속 실행 승인은 아닙니다.',
             waitStateInstruction: 'delegateTool 응답이 waiting-integration-clean이면 통합 작업공간의 추적 변경 때문에 하위 AI 전문이 아직 전달되지 않은 상태입니다. 차단 파일을 사용자에게 알리고 같은 위임의 자동 시작을 기다리며 재위임하지 마세요.',
             instruction: `사용자 승인 근거와 허용 범위가 확인된 하위 작업만 위임하세요. 이 대화가 시작된 카드의 계층상 하위 카드에 작업을 맡길 때는 후보 목록과 필요한 대화 전문을 근거로 resume 또는 new를 선택하고 실행 가능한 지시를 전달하세요. 위임 기준은 AionUi 대화 ID에 영속 기록되므로 MCP 재연결·프로세스 재생성이나 다른 카드의 get_context 조회와 무관하게 유지되며, 직계 자식뿐 아니라 모든 깊이의 하위 카드에 위임할 수 있습니다. AI 작업공간 pool에 등록된 Unity 프로젝트의 독립 하위 작업은 MindNProgress가 서로 다른 worker와 브랜치를 배정하므로 병렬 위임할 수 있습니다. 가용 worker가 없어 waiting-workspace로 접수되면 서버가 대기열을 보존하고 자동 시작하므로 동일 위임을 재호출하거나 순차 우회하지 마세요. 중지된 위임을 resume하면 같은 AI 대화뿐 아니라 기존 worker lease와 변경도 이어서 사용하며, 같은 카드·대화에 다른 활성 위임이 있으면 중복 실행하지 않습니다. 완료 변경의 통합 충돌은 main이 아닌 같은 worker에서 해당 하위 AI 대화를 자동 재개해 해결하며, 통합과 최종 검증이 끝난 뒤에만 상위 대화가 재개됩니다. recovery-required 또는 integration-recovery-required는 AionCore 재시작, 재시도 가능한 연결 끊김 또는 필수 체크포인트·통합 실패로 명시적 재개가 필요한 상태이므로 새 위임이나 원 지시 자동 반복 대신 recoveryTool로 기존 대화·작업공간을 이어가세요. parent-wake-failed는 statusTool의 recovery를 확인하고 recoveryAvailable=true일 때만 사용자가 사용량·요청 한도 해제를 확인한 뒤 recoveryTool로 같은 대화·작업공간을 재개하세요. pool 미등록 프로젝트만 같은 작업공간 충돌을 피하도록 순차 위임하세요. 하위 AI 턴이 사용자에 의해 중지되거나 재시도 가능한 Agent 연결 끊김이 발생하면 위임은 재개 대기 상태를 유지하고, 같은 하위 대화에서 이어진 턴이 실제 완료된 뒤에만 현재 대화를 자동으로 다시 시작합니다. ${AI_DELEGATION_FOLLOWUP_INSTRUCTION}`,
           },
@@ -1710,10 +1711,12 @@ async function main() {
     mapId: z.string().min(1),
     parentCardId: z.string().min(1).max(120).optional().describe('상위 카드로 필터'),
     targetCardId: z.string().min(1).max(120).optional().describe('하위 대상 카드로 필터'),
-  }, async ({ mapId, parentCardId, targetCardId }) => {
+    includeResult: z.boolean().optional().describe('결과 원문과 검증된 resultHash/resultTurnId 포함. 필요한 대상만 필터해서 읽으세요. 조회만으로 보고를 수신 확인하지 않습니다. 담당 상위 AI는 읽은 결과를 refresh_ai_delegation의 acknowledgeResultHash로 명시적으로 수신 확인할 수 있습니다.'),
+  }, async ({ mapId, parentCardId, targetCardId, includeResult }) => {
     const query = new URLSearchParams()
     if (parentCardId) query.set('parentCardId', parentCardId)
     if (targetCardId) query.set('targetCardId', targetCardId)
+    if (includeResult) query.set('includeResult', 'true')
     const suffix = query.size > 0 ? `?${query}` : ''
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/ai-delegations${suffix}`, { aiMapId: mapId })
   })
@@ -2046,20 +2049,21 @@ async function main() {
   })
 
   for (const [name, action, description] of [
-    ['mindnprogress_refresh_ai_delegation', 'refresh', '기존 위임 operation의 실제 상태를 다시 확인하고 위임 메타데이터를 동기화합니다. AI 실행 요청·재위임·카드 변경은 하지 않습니다. 같은 대화의 다른 턴을 임의로 완료 근거로 삼지 않습니다.'],
+    ['mindnprogress_refresh_ai_delegation', 'refresh', '기존 위임 operation의 실제 상태를 다시 확인하고 위임 메타데이터를 동기화합니다. AI 실행 요청·재위임·카드 변경은 하지 않습니다. 같은 대화의 다른 턴을 임의로 완료 근거로 삼지 않습니다. 담당 상위 AI가 list_ai_delegations(includeResult=true)로 원문을 읽은 뒤 acknowledgeResultHash에 반환된 resultHash를 명시하면 실행·통합이 끝난 해당 결과의 수신만 확인합니다. 이 확인은 품질 검증 완료나 후속 작업의 사용자 승인이 아닙니다.'],
     ['mindnprogress_retry_ai_delegation_report', 'retry-report', '사용자 요청과 기존 승인 범위를 확인한 뒤, 작업 완료가 확인됐으나 상위 보고만 실패한 위임의 결과를 재전달합니다. 상위 AI가 재개될 수 있지만 하위 작업은 재실행하지 않습니다. 캡처된 원문이 없거나 해시·실행 턴 무결성이 맞지 않으면 같은 대화의 최신 응답으로 대체하지 않고 원문 미포함 메타데이터만 전달합니다. 상태 조회와 실제 작업 복구를 구분하세요.'],
   ]) {
     registerTool(server, name, description, {
       mapId: z.string().min(1).describe('이 위임을 시작한 상위 문서 ID'),
       delegationId: z.string().regex(AI_DELEGATION_ID_PATTERN),
       expectedUpdatedAt: z.string().min(1).describe('위임 목록에서 확인한 최신 updatedAt'),
-    }, async ({ mapId, delegationId, expectedUpdatedAt }) => {
+      ...(action === 'refresh' ? { acknowledgeResultHash: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('담당 상위 AI가 실제 읽은 결과의 resultHash. 생략하면 상태만 다시 확인합니다.') } : {}),
+    }, async ({ mapId, delegationId, expectedUpdatedAt, acknowledgeResultHash }) => {
       const origin = delegationOriginForMap(mapId)
       return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/ai-delegations/${encodeURIComponent(delegationId)}/${action}`, {
         method: 'POST', aiMapId: origin.mapId, aiCardId: origin.cardId,
         aiAttributionToken: origin.attributionToken, aiEditorId: origin.editorId,
         aiType: origin.aiType, aiModel: origin.aiModel,
-        body: JSON.stringify({ expectedUpdatedAt }),
+        body: JSON.stringify({ expectedUpdatedAt, ...(action === 'refresh' && acknowledgeResultHash ? { acknowledgeResultHash } : {}) }),
       })
     })
   }

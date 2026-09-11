@@ -277,6 +277,29 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
       const response = await fetch(`${baseUrl}${delegateUrl}/usage-run/${action}`, { method: 'POST', headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       return { status: response.status, body: await response.json() }
     }
+    const assertMissingStatusPreserved = async (phase) => {
+      const storedDelegation = async () => JSON.parse(await readFile(storedPath, 'utf8')).find((item) => item.id === 'usage-run')
+      const before = await storedDelegation()
+      const beforeParent = (await api(`/api/maps/${coordinatorId}`)).body.map
+      const beforeTarget = (await api(`/api/maps/${target.id}`)).body.map
+      const callCount = calls.length
+      const missing = await humanAction('refresh', await actionBody())
+      assert.equal(missing.status, 409, JSON.stringify(missing.body))
+      assert.equal(missing.body.code, 'AI_DELEGATION_STATUS_NOT_FOUND')
+      assert.deepEqual(missing.body.statusCheck, { state: 'unavailable', reason: 'operation-not-found', phase })
+      assert.match(missing.body.error, /저장된 위임 상태와 결과는 그대로 유지/)
+      assert.equal(missing.body.executionRequested, false)
+      assert.equal(missing.body.storedStatePreserved, true)
+      await pause(250)
+      assert.deepEqual(await storedDelegation(), before, '실행 기록 404가 저장된 상태·결과·복구 정보를 변경했습니다.')
+      assert.deepEqual((await api(`/api/maps/${coordinatorId}`)).body.map, beforeParent)
+      assert.deepEqual((await api(`/api/maps/${target.id}`)).body.map, beforeTarget)
+      assert.equal(calls.length, callCount, '조회 실패가 AI 실행·결과 전달을 새로 요청했습니다.')
+    }
+    const missingChildDispatch = dispatches.get('usage-run')
+    dispatches.delete('usage-run')
+    await assertMissingStatusPreserved('child')
+    dispatches.set('usage-run', missingChildDispatch)
     assert.equal((await humanAction('recover', { ...await actionBody(), confirmApprovedScope: false })).status, 400)
     assert.equal((await humanAction('recover', { ...await actionBody(), expectedUpdatedAt: '오래된 값' })).status, 409)
     assert.ok([401, 403].includes((await humanAction('recover', await actionBody(), cookie)).status))
@@ -301,9 +324,14 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     holdRecoveryResponse = false
     failWake = true
     dispatches.get(secondRecoveryId).state = 'completed'
+    const missingRecoveryDispatch = dispatches.get(secondRecoveryId)
+    dispatches.delete(secondRecoveryId)
     await start()
     const restartedLogin = await fetch(baseUrl + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'group-test@mind.local', password: 'GroupTest!2026' }) })
     editorCookie = restartedLogin.headers.get('set-cookie').split(';')[0]
+    await assertMissingStatusPreserved('recovery')
+    assert.ok((await latestUsage()).pendingRecovery, '404가 전달 미확인 복구 정보를 삭제했습니다.')
+    dispatches.set(secondRecoveryId, missingRecoveryDispatch)
     await until(async () => { const value = await latestUsage(); return value.childOperationId === secondRecoveryId && !value.pendingRecovery }, '재시작 뒤 복구 요청을 회수하지 못했습니다.')
     assert.equal(calls.filter((call) => call.operationId === secondRecoveryId).length, 1)
     assert.ok((await latestUsage()).attemptHistory.length >= 3)
@@ -319,6 +347,7 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     assert.equal(calls.length, completedCallCount, '보고 실패를 무제한 재시도했습니다.')
     assert.equal((await humanAction('refresh', await actionBody())).body.executionRequested, false)
     dispatches.delete(reportFailed.wakeOperationId)
+    await assertMissingStatusPreserved('report')
     failWake = false
     const reportRetryBody = await actionBody()
     const reports = await Promise.all([humanAction('retry-report', reportRetryBody), humanAction('retry-report', reportRetryBody)])

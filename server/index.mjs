@@ -13,6 +13,7 @@ import { applyProgressRollup } from './lib/progressRollup.mjs'
 import { detectReleasedWaitingItems } from './lib/waitingItems.mjs'
 import { resolveAttributionWithoutToken, resolveScopedAttribution } from './lib/attributionScope.mjs'
 import { readAionUiSubscriptionUsage } from './lib/aionUiSubscriptionUsage.mjs'
+import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
 import {
   inactiveAiConversationRuntime,
   normalizeAionUiConversationRuntime,
@@ -2916,7 +2917,7 @@ async function validateAiDelegationAction(request, delegation, body, approvalReq
 async function settlePendingAiRecovery(delegation) {
   const pending = delegation.pendingRecovery
   if (!pending) return null
-  const dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(pending.operationId)}`)
+  const dispatch = await readAiDelegationDispatchStatus(fetchAionUiOn, { machineId: delegationTargetMachineId(delegation), operationId: pending.operationId, phase: 'recovery' })
   if (dispatch.conversationId !== delegation.targetConversationId || !aiDelegationWorkspaceLeaseMatches(pending.workspaceLease ?? null, dispatch.workspaceLease ?? null)) throw aiDelegationDispatchError('복구 실행의 대화·작업공간이 저장된 요청과 일치하지 않습니다.', 409)
   if (!['starting', 'running', 'waiting_resource', 'waiting_resume', 'recovery_required', 'completed', 'failed'].includes(dispatch.state)) throw aiDelegationDispatchError('복구 실행 상태를 아직 확인할 수 없습니다.', 409)
   const now = new Date().toISOString()
@@ -2942,7 +2943,10 @@ async function refreshSuspendedAiDelegation(delegation) {
   const reportOnly = aiDelegationSucceeded(delegation) && delegation.state === 'parent-wake-failed'
   const operationId = reportOnly ? delegation.wakeOperationId : delegation.childOperationId
   if (!operationId) return delegation
-  const status = await fetchAionUiOn(reportOnly ? delegationParentMachineId(delegation) : delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
+  const status = await readAiDelegationDispatchStatus(fetchAionUiOn, {
+    machineId: reportOnly ? delegationParentMachineId(delegation) : delegationTargetMachineId(delegation),
+    operationId, phase: reportOnly ? 'report' : 'child',
+  })
   const expectedConversation = reportOnly ? delegation.parentConversationId : delegation.targetConversationId
   if (status.conversationId && status.conversationId !== expectedConversation) throw aiDelegationDispatchError('실행 대화가 위임 기록과 일치하지 않습니다.', 409)
   if (reportOnly) {
@@ -9650,6 +9654,7 @@ const server = createServer(async (request, response) => {
 
     return sendJson(response, 404, { error: '요청한 경로를 찾을 수 없습니다.' })
   } catch (error) {
+    if (error instanceof AiDelegationStatusLookupError) return sendJson(response, error.status, error.responseBody())
     if (error?.reconstructionError) return sendJson(response, error.status, { error: error.message, code: error.code })
     if (error?.groupProjectError) return sendJson(response, error.status, { error: error.message })
     if (error?.message === 'PAYLOAD_TOO_LARGE') return sendJson(response, 413, { error: '요청 데이터가 너무 큽니다.' })

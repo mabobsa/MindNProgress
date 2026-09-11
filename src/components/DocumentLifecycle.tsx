@@ -97,6 +97,17 @@ export function DocumentLifecycle({ api, editable, documents, initialIds, scope,
     return () => previous?.focus()
   }, [])
   useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented || launchRequest) return
+      // 포커스가 팝업 밖으로 빠져도 처리하고, 같은 ESC가 배경 화면에 전달되지 않게 한다.
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      if (!busy && !event.repeat) onClose()
+    }
+    window.addEventListener('keydown', closeOnEscape, true)
+    return () => window.removeEventListener('keydown', closeOnEscape, true)
+  }, [busy, launchRequest, onClose])
+  useEffect(() => {
     if (applyError && tab === 'reconstruction' && preview) {
       applyErrorElement.current?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
     }
@@ -169,7 +180,6 @@ export function DocumentLifecycle({ api, editable, documents, initialIds, scope,
   const labels: Record<keyof Stats, string> = { documents: '문서', cards: '전체 카드', work: '실제 업무', done: '완료 업무', unfinished: '미완료 업무', waitingCards: '대기 카드', references: 'Ref' }
   return <><div className="lifecycle-backdrop" inert={Boolean(launchRequest)} onKeyDown={(event) => {
     event.stopPropagation()
-    if (event.key === 'Escape' && !busy) { event.stopPropagation(); onClose() }
     if (event.key !== 'Tab') return
     const focusable = [...(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary') ?? [])].filter((element) => element.getClientRects().length > 0)
     if (event.shiftKey && document.activeElement === focusable[0]) { event.preventDefault(); focusable.at(-1)?.focus() }

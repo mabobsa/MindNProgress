@@ -35,6 +35,9 @@ export async function documentLifecycleBrowser(base, directory, sourceId, nextId
       if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails))
       return result.result.value
     }
+    const pressEscape = async () => {
+      for (const type of ['keyDown', 'keyUp']) await command('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    }
     await command('Runtime.enable'); await command('Page.enable')
     await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
     await command('Page.navigate', { url: base })
@@ -84,7 +87,10 @@ export async function documentLifecycleBrowser(base, directory, sourceId, nextId
     await evaluate('[...document.querySelectorAll("[role=menu] button")].find(b=>b.textContent.includes("문서 정리")).click()')
     await until(() => evaluate('document.querySelectorAll(".lifecycle-sources input:checked").length === 2'), '그룹 하위 문서 자동 선택 실패')
     assert.equal(await evaluate('document.querySelector(".lifecycle-dialog nav button[aria-pressed=true]").textContent'), '문서 정리')
-    await evaluate('[...document.querySelectorAll(".lifecycle-dialog header button")].find(b=>b.textContent === "닫기").click()')
+    await evaluate('document.activeElement?.blur()')
+    assert.equal(await evaluate('document.activeElement === document.body'), true, '팝업 밖으로 키보드 포커스가 빠진 상태 재현')
+    await pressEscape()
+    await until(() => evaluate('document.querySelector(".lifecycle-dialog") === null'), '포커스가 밖에 있어도 ESC로 문서 정리 닫기')
     await evaluate(`const toggle = document.querySelector('.document-group-toggle'); if (toggle?.getAttribute('aria-expanded') === 'false') toggle.click();`)
     await until(() => evaluate('[...document.querySelectorAll(".map-item")].some(e=>e.textContent.includes("정리된 현재 업무"))'), '시험 문서 행 없음')
     await evaluate(`const row = [...document.querySelectorAll('.map-item')].find(e=>e.textContent.includes('정리된 현재 업무')); row.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:130,clientY:320}));`)
@@ -129,6 +135,8 @@ export async function documentLifecycleBrowser(base, directory, sourceId, nextId
     await until(() => evaluate(`getComputedStyle(document.querySelector('.lifecycle-dialog')).backgroundColor === ${JSON.stringify(lightBackground)}`), '밝은 테마 복원 실패')
     await evaluate('[...document.querySelectorAll(".lifecycle-dialog button")].find(b=>b.textContent === "AI 정리안 요청").click()')
     await until(() => evaluate('document.querySelector(".ai-dialog") !== null'), '기존 AI 선택 화면 연결 실패')
+    await pressEscape()
+    assert.equal(await evaluate('document.querySelector(".ai-dialog") !== null && document.querySelector(".lifecycle-dialog") !== null'), true, 'AI 옵션이 열려 있으면 부모 문서 정리의 ESC는 동작하지 않는다')
     // AI를 실제 실행하지 않고 옵션 화면을 닫는다. 가짜 제안을 시험 서버에 제출한다.
     await evaluate('document.querySelector("button[aria-label=\\"AI 대화 옵션 닫기\\"]").click()')
     const browserProposal = await evaluate(`(async()=>{
@@ -168,7 +176,10 @@ export async function documentLifecycleBrowser(base, directory, sourceId, nextId
       await until(() => evaluate('document.querySelector(".lifecycle-dialog")?.innerText.includes("최소 여백 검증을 통과했습니다")'), '재진입 후 실제 렌더 검증 실패')
       assert.equal(await evaluate('[...document.querySelectorAll(".lifecycle-dialog button")].find(b=>b.textContent === "승인한 전환안 적용").disabled'), true, '재진입 후 별도 승인 필요')
     }
-    await evaluate('[...document.querySelectorAll(".lifecycle-dialog header button")].find(b=>b.textContent === "닫기").click()')
+    await evaluate(`document.querySelector('textarea[aria-label="정리 요청사항"]').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true,isComposing:true}));`)
+    assert.equal(await evaluate('document.querySelector(".lifecycle-dialog") !== null'), true, '한글 조합 중 ESC로 팝업을 닫지 않는다')
+    await pressEscape()
+    await until(() => evaluate('document.querySelector(".lifecycle-dialog") === null'), '입력란에 포커스가 있어도 ESC로 닫기')
     await reopenSaved()
     await evaluate('[...document.querySelectorAll(".lifecycle-dialog label")].find(e=>e.textContent.includes("카드 대응표와 현재 지식")).querySelector("input").click()')
     assert.equal(await evaluate('[...document.querySelectorAll(".lifecycle-dialog button")].find(b=>b.textContent === "승인한 전환안 적용").disabled'), false)
@@ -180,7 +191,7 @@ export async function documentLifecycleBrowser(base, directory, sourceId, nextId
         globalThis.fetch = async (...args) => {
           if (args[0] === '/api/document-reconstructions/apply' && args[1]?.method === 'POST') {
             globalThis.fetch = fetchBeforeFailure;
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise(resolve => { globalThis.releaseApplyFailure = resolve; });
             return new Response(JSON.stringify({error:${JSON.stringify(message)},code:'RECONSTRUCTION_AI_BUSY'}), {status:409,headers:{'Content-Type':'application/json'}});
           }
           return fetchBeforeFailure(...args);
@@ -189,6 +200,13 @@ export async function documentLifecycleBrowser(base, directory, sourceId, nextId
         document.querySelector('.lifecycle-dialog').scrollTop = document.querySelector('.lifecycle-dialog').scrollHeight;
       })()`)
       await evaluate('document.querySelector(".lifecycle-apply-action button").click()')
+      await until(() => evaluate('typeof globalThis.releaseApplyFailure === "function" && document.querySelector(".lifecycle-dialog header button").disabled'), '적용 요청 처리 중 상태 진입 실패')
+      try {
+        await pressEscape()
+        assert.equal(await evaluate('document.querySelector(".lifecycle-dialog") !== null'), true, '적용 처리 중에는 닫기 버튼과 동일하게 ESC도 차단한다')
+      } finally {
+        await evaluate('globalThis.releaseApplyFailure(); delete globalThis.releaseApplyFailure;')
+      }
       await until(() => evaluate(`document.querySelector('.lifecycle-apply-error')?.textContent.includes(${JSON.stringify(message)}) && !document.querySelector('.lifecycle-apply-action button').disabled`), '적용 차단 사유를 버튼 아래에 표시하지 못했습니다.')
       const visibility = await evaluate(`(() => {
         const dialog = document.querySelector('.lifecycle-dialog');
@@ -231,8 +249,11 @@ export async function documentLifecycleBrowser(base, directory, sourceId, nextId
     const savedPositions = await evaluate(`(async()=>{const result=await (await fetch('/api/document-reconstructions/browser-proposal')).json(); const map=(await (await fetch('/api/maps/'+result.targetMapIds[0])).json()).map; return map.nodes.map(n=>({id:n.id,transform:'translate('+n.position.x+'px, '+n.position.y+'px)'}));})()`)
     assert.deepEqual(savedPositions, expectedPositions, '미리보기와 실제 저장 좌표 일치')
     assert.equal(await evaluate(`fetch('/api/document-reconstructions/browser-proposal/rollback',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)`), 200, '시험 전환 되돌리기')
+    await pressEscape()
+    await until(() => evaluate('document.querySelector(".lifecycle-dialog") === null'), '전환 이력 탭도 ESC로 닫기')
+    assert.equal(await evaluate(`(() => { const event = new KeyboardEvent('keydown', {key:'Escape',bubbles:true,cancelable:true}); window.dispatchEvent(event); return event.defaultPrevented; })()`), false, '팝업을 닫으면 전역 ESC 처리기도 제거한다')
     assert.deepEqual(errors, [], '브라우저 실행 오류 없음')
-    return { screenshotPath, proposalScreenshotPath: path.join(artifactDirectory, 'right-click-proposal.png'), typography, checked: ['기존 MnP 제목 크기 비교', '본문·입력·버튼 크기', '밝은·어두운 테마', '실제 카드 타이포그래피 격리', '보관 원본 딥링크', '읽기 전용', '그룹·문서 우클릭', '정확한 정리 대상', '새 기획 원본 필수', 'AI 옵션 연결·실행 전 취소', '제안함 자동 수신', 'JSON 없는 대응표 검토', '실제 가변 카드·Ref 렌더 배치 검증', '창 닫기·새로고침 후 제안 복원과 승인 초기화', '실제 렌더 좌표와 UI 적용 결과 일치', '별도 적용 승인', '전환 이력', '후속 카드 출처', '모바일 폭', '브라우저 실행 오류 없음'] }
+    return { screenshotPath, proposalScreenshotPath: path.join(artifactDirectory, 'right-click-proposal.png'), typography, checked: ['기존 MnP 제목 크기 비교', '본문·입력·버튼 크기', '밝은·어두운 테마', '실제 카드 타이포그래피 격리', '보관 원본 딥링크', '읽기 전용', '그룹·문서 우클릭', '정확한 정리 대상', '새 기획 원본 필수', 'AI 옵션 연결·실행 전 취소', '제안함 자동 수신', 'JSON 없는 대응표 검토', '실제 가변 카드·Ref 렌더 배치 검증', 'ESC 닫기·포커스 이탈·입력 조합·처리 중·중첩 팝업 보호', '창 닫기·새로고침 후 제안 복원과 승인 초기화', '실제 렌더 좌표와 UI 적용 결과 일치', '별도 적용 승인', '전환 이력', '후속 카드 출처', '모바일 폭', '브라우저 실행 오류 없음'] }
   } catch (error) {
     if (command && socket?.readyState === WebSocket.OPEN) {
       const diagnostic = await command('Runtime.evaluate', { expression: '({text:document.querySelector(".lifecycle-dialog")?.innerText, measurements:globalThis.layoutRequests?.map(r=>({url:r.url,measurements:JSON.parse(r.request).measurements,layout:r.response.targets?.map(t=>t.layout),error:r.response.error})), nodes:[...document.querySelectorAll(".reconstruction-map .react-flow__node")].map(e=>({id:e.dataset.id,style:e.getAttribute("style"),body:e.querySelector(".mind-node")?.getBoundingClientRect().toJSON()}))})', returnByValue: true }).catch(() => null)

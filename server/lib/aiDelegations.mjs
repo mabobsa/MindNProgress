@@ -198,6 +198,7 @@ export function aiDelegationWorkspaceLeaseMatches(expected, actual) {
     && String(expected.jobId ?? '') === String(actual.jobId ?? '')
     && String(expected.leaseId ?? '') === String(actual.leaseId ?? '')
     && normalizedWorkspaceRoot(expected.projectRoot) === normalizedWorkspaceRoot(actual.projectRoot)
+    && (!expected.branch || expected.branch === actual.branch)
 }
 
 export function failedAiIntegrationRecoveryRuntime(dispatch, recoveredAt = new Date().toISOString()) {
@@ -240,7 +241,7 @@ export function aiDelegationReportResult(delegation) {
 export function retryableExternalLimitCategory(error) {
   const message = String(error ?? '').trim()
   if (!message) return null
-  if (/usage limit|usage cap|credit limit|insufficient credits?|사용량.{0,12}(제한|한도|초과)|크레딧.{0,12}(부족|소진)/iu.test(message)) {
+  if (/usage[_ -]?(limit|cap)|credit[_ -]?limit|insufficient[_ -]?(credits?|quota)|quota.{0,24}(exceed|exhaust)|exceeded.{0,24}quota|(?:hit|reached|exceeded) your (?:weekly |daily |session )?limit|out of (?:extra )?usage|사용량.{0,12}(제한|한도|초과|소진)|크레딧.{0,12}(부족|소진)/iu.test(message)) {
     return 'usage-limit'
   }
   if (/rate.?limit|too many requests|요청.{0,12}(제한|한도|초과)/iu.test(message)) return 'rate-limit'
@@ -267,7 +268,7 @@ export function aiDelegationRecoveryAvailability(delegation) {
   const failureCategory = retryableExternalLimitCategory(childFailure)
   const hasRecoverableWorkspace = Boolean(
     delegation?.workspaceLease?.leaseId
-    && delegation?.workspaceResult?.status === 'quarantined'
+    && ['quarantined', 'failed-clean'].includes(delegation?.workspaceResult?.status)
     && delegation?.workspaceResult?.childStatus === 'failed',
   )
   const canResume = Boolean(failureCategory && (hasRecoverableWorkspace || !delegation?.workspaceLease?.leaseId))
@@ -296,6 +297,7 @@ export function aiDelegationAttemptHistory(delegation, reason, at = new Date().t
     at, reason, state: delegation.state, operationId: delegation.childOperationId,
     childTurnId: delegation.childTurnId, childStatus: delegation.childStatus,
     childError: delegation.childError ?? null, parentError: delegation.parentError ?? null,
+    workspaceLease: delegation.workspaceLease ?? null, workspaceResult: delegation.workspaceResult ?? null,
     parentDispatchState: delegation.parentDispatchState, wakeOperationId: delegation.wakeOperationId,
     result: delegation.childResultSnapshot ?? '', resultCapturedAt: delegation.childResultCapturedAt ?? null,
     reportPayloadHash: delegation.reportPayloadHash ?? null,

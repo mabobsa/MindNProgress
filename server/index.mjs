@@ -2909,7 +2909,10 @@ async function validateAiDelegationAction(request, delegation, body, approvalReq
   const human = !hasValidIntegrationBearer(request) && Boolean(getSignedInUser(request))
   if (!human) {
     const source = delegationSourceForRequest(integrationRequestScope(request), parentMapId)
-    if (!source || source.cardId !== delegation.parentCardId || (source.conversationId && source.conversationId !== delegation.parentConversationId)) fail('이 위임을 시작한 상위 카드와 AI 대화에서만 처리할 수 있습니다.', 403)
+    if (!source || source.cardId !== delegation.parentCardId) fail('이 위임을 관리하는 상위 카드에서만 처리할 수 있습니다.', 403)
+    const ownerMap = await readMap(parentMapId)
+    const owner = ownerMap?.nodes.find((node) => node.id === delegation.parentCardId)
+    if (source.conversationId && !isAiConversationLinked(owner?.data, source.conversationId)) fail('현재 AI 대화가 상위 카드에 연결되어 있지 않습니다.', 403)
   }
   if (body.expectedUpdatedAt && body.expectedUpdatedAt !== delegation.updatedAt) fail('위임 상태가 변경됐습니다. 상태를 다시 확인하세요.')
   const map = await readMap(delegation.mapId)
@@ -2949,7 +2952,7 @@ async function settlePendingAiRecovery(delegation) {
     workspaceResult: null, workspaceError: null,
   }
   return updateAiDelegation(delegation.id, {
-    ...runtime, pendingRecovery: null, recoveryAttempt: pending.attempt, recoveryOperationId: pending.operationId,
+    ...runtime, pendingRecovery: null, recoveryWorkspaceLease: null, recoveryAttempt: pending.attempt, recoveryOperationId: pending.operationId,
     recoverySourceState: pending.sourceState, workspaceLease: pending.workspaceLease,
     recoveryDispatchError: null, parentError: null, parentDispatchState: null, completedAt: null,
   })
@@ -3754,6 +3757,13 @@ async function pollAiDelegations() {
       if (['waiting-usage-limit', 'waiting-rate-limit'].includes(delegation.state)) {
         if (!aiDelegationWaitPollDue(aiDelegationWaitPolls.get(delegation.id), delegation)) continue
         try { await refreshSuspendedAiDelegation(delegation) } catch { /* 확인 실패 시 보존하고 다음 조회를 기다린다. */ }
+        try {
+          const current = aiDelegations.get(delegation.id)
+          if (['waiting-usage-limit', 'waiting-rate-limit'].includes(current?.state)) await ensureAiDelegationNotification(current, {
+            kind: 'limit', dedupeKey: `ai-delegation-limit:${delegation.id}:${delegation.childOperationId ?? delegation.id}`,
+            message: 'AI 한도로 작업이 중단되었습니다. 작업과 변경은 보존되어 있으며, 한도 해제 후 카드 세부 정보의 AI 작업 복구에서 이어갈 수 있습니다.',
+          })
+        } catch (error) { console.warn('[AI delegation limit notification]', error) }
         scheduleAiDelegationWaitPoll(delegation)
         continue
       }
@@ -6908,10 +6918,9 @@ const server = createServer(async (request, response) => {
           code: 'AIONCORE_EXPLICIT_COMPLETION_UNAVAILABLE',
         })
       }
-      if (!humanAction && (delegation.parentCardId !== source.cardId
-        || (source.conversationId && delegation.parentConversationId !== source.conversationId))) {
+      if (!humanAction && delegation.parentCardId !== source.cardId) {
         return sendJson(response, 403, {
-          error: '이 위임을 시작한 상위 카드와 AI 대화에서만 복구할 수 있습니다.',
+          error: '이 위임을 관리하는 상위 카드에서만 복구할 수 있습니다.',
           code: 'AI_DELEGATION_RECOVERY_ORIGIN_MISMATCH',
         })
       }
@@ -6920,7 +6929,7 @@ const server = createServer(async (request, response) => {
         && recoveryAvailability?.recoveryAvailable === true
         && recoveryAvailability.recommendedAction === 'resume-existing'
       if (!['recovery-required', 'integration-recovery-required', 'waiting-child-resume'].includes(delegation.state)
-        && !retryableParentWakeFailure) {
+        && !retryableParentWakeFailure && !delegation.pendingRecovery) {
         return sendJson(response, 409, {
           error: `현재 위임 상태(${delegation.state})는 명시적인 재시작 복구 대상이 아닙니다.`,
           code: 'AI_DELEGATION_RECOVERY_NOT_REQUIRED',
@@ -6994,11 +7003,21 @@ const server = createServer(async (request, response) => {
       }
       if (!selection) return sendJson(response, 409, { error: '복구할 AI 대화의 실행 환경을 확인하지 못했습니다.' })
 
-      let workspaceLease = delegation.workspaceLease ?? null
+      let workspaceLease = delegation.recoveryWorkspaceLease ?? delegation.workspaceLease ?? null
       let reactivatedWorkspaceLease = false
+      let replacedWorkspaceLease = Boolean(delegation.recoveryWorkspaceLease && delegation.recoveryWorkspaceLease.leaseId !== delegation.workspaceLease?.leaseId)
       if (workspaceLease?.leaseId) {
         try {
-          workspaceLease = await (retryableParentWakeFailure
+          const scope = { mapId, cardId: targetCard.id, conversationId: delegation.targetConversationId }
+          if (retryableParentWakeFailure && delegation.workspaceResult?.status === 'failed-clean' && !delegation.recoveryWorkspaceLease) {
+            const replacement = await workspacePoolManager.acquire({
+              ...scope, cardLabel: targetCard.data.label, workspaceHint: workspaceLease.projectRoot,
+              replacesLeaseId: workspaceLease.leaseId,
+            })
+            if (!replacement) throw new Error('복구할 작업공간 풀이 등록되어 있지 않습니다.')
+            workspaceLease = await workspacePoolManager.reuseLease(replacement.leaseId, scope)
+            replacedWorkspaceLease = true
+          } else workspaceLease = await (retryableParentWakeFailure
             ? workspacePoolManager.reactivateQuarantinedLease(workspaceLease.leaseId, {
                 mapId,
                 cardId: targetCard.id,
@@ -7010,8 +7029,9 @@ const server = createServer(async (request, response) => {
                 cardId: targetCard.id,
                 conversationId: delegation.targetConversationId,
               }))
-          reactivatedWorkspaceLease = retryableParentWakeFailure
+          reactivatedWorkspaceLease = retryableParentWakeFailure && !replacedWorkspaceLease
           selection.workspace = workspaceLease.projectRoot
+          await updateAiDelegation(delegation.id, { recoveryWorkspaceLease: workspaceLease })
         } catch (error) {
           return sendJson(response, 409, {
             error: `기존 작업공간 lease를 복구하지 못했습니다: ${error?.message ?? String(error)}`,
@@ -7032,12 +7052,9 @@ const server = createServer(async (request, response) => {
         await persistAiAttributions()
       } catch (error) {
         aiAttributions.delete(sessionTokenKey(attributionToken))
-        if (reactivatedWorkspaceLease) {
+        if (reactivatedWorkspaceLease || replacedWorkspaceLease) {
           try {
-            await workspacePoolManager.quarantine(
-              workspaceLease.leaseId,
-              `사용량 제한 복구 귀속을 저장하지 못했습니다: ${error?.message ?? String(error)}`,
-            )
+            await finalizeDelegationWorkspace({ ...delegation, workspaceLease }, 'failed', delegation.childError ?? delegation.workspaceResult?.childError)
           } catch {
             // Preserve the attribution persistence error below.
           }
@@ -7054,11 +7071,15 @@ const server = createServer(async (request, response) => {
         delegation.id,
         `${integrationRecovery ? 'integrate-' : ''}recover-${recoveryAttempt}`,
       )
-      const requestedInstruction = integrationRecovery
+      const recoveryContext = { ...delegation, workspaceLease }
+      const replacementNotice = replacedWorkspaceLease
+        ? '이전 작업공간은 변경 없이 반납되어 MindNProgress가 복구용 작업공간을 새로 배정했습니다. 과거 대화에 남은 경로·브랜치·lease 대신 이번 전문의 할당된 작업공간과 .ai-session.json을 사용하세요.\n\n'
+        : ''
+      const requestedInstruction = replacementNotice + (integrationRecovery
         ? `${delegation.workspaceResult?.status === 'checkpoint-required'
             ? workspaceCheckpointInstruction(delegation, delegation.workspaceResult)
-            : workspaceConflictInstruction(delegation, delegation.workspaceResult)}\n\n${delegationRecoveryInstruction(delegation, instruction, recoveryAvailability)}`
-        : delegationRecoveryInstruction(delegation, instruction, recoveryAvailability)
+            : workspaceConflictInstruction(delegation, delegation.workspaceResult)}\n\n${delegationRecoveryInstruction(recoveryContext, instruction, recoveryAvailability)}`
+        : delegationRecoveryInstruction(recoveryContext, instruction, recoveryAvailability))
       const delegatedInstruction = buildDelegatedInstruction({
         mapId,
         cardId: targetCard.id,
@@ -7134,6 +7155,7 @@ const server = createServer(async (request, response) => {
       const updated = await updateAiDelegation(delegation.id, {
         state: nextState,
         pendingRecovery: null,
+        recoveryWorkspaceLease: null,
         recoveryDispatchError: null,
         childOperationId: integrationRecovery ? delegation.childOperationId : operationId,
         integrationOperationId: integrationRecovery ? operationId : delegation.integrationOperationId,
@@ -7177,7 +7199,7 @@ const server = createServer(async (request, response) => {
       })
       return sendJson(response, 202, {
         delegation: delegationPublicView(updated),
-        recovery: { operationId, attempt: recoveryAttempt, reusedConversation: true, reusedWorkspace: Boolean(workspaceLease) },
+        recovery: { operationId, attempt: recoveryAttempt, reusedConversation: true, reusedWorkspace: Boolean(workspaceLease) && !replacedWorkspaceLease, replacedWorkspace: replacedWorkspaceLease },
       })
     }
 

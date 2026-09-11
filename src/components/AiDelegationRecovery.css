@@ -1,0 +1,8 @@
+.ai-delegation-recovery { border: 1px solid var(--border-color, #cbd5e1); border-radius: 8px; padding: 12px; margin-bottom: 12px; font-size: 12px; }
+.ai-delegation-recovery p { margin: 6px 0; overflow-wrap: anywhere; }
+.ai-delegation-recovery-item { border-top: 1px solid var(--border-color, #cbd5e1); padding-top: 8px; margin-top: 8px; }
+.ai-delegation-recovery-item > b, .ai-delegation-recovery-item > span { display: block; overflow-wrap: anywhere; }
+.ai-delegation-recovery-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.ai-delegation-recovery-actions button { border: 1px solid var(--border-color, #cbd5e1); border-radius: 5px; padding: 5px 8px; background: transparent; color: inherit; cursor: pointer; }
+.ai-delegation-recovery-actions button:disabled { opacity: .5; cursor: wait; }
+.ai-delegation-recovery [role="alert"] { color: #b91c1c; }

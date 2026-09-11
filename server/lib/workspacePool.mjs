@@ -4,6 +4,7 @@ import { copyFile, lstat, mkdir, readFile, readlink, rename, rm, stat, writeFile
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
+import { retryableExternalLimitCategory } from './aiDelegations.mjs'
 
 const execFileAsync = promisify(execFile)
 const idleDriftReason = '작업공간에 소유자를 확정할 수 없는 변경이 있습니다.'
@@ -479,6 +480,7 @@ export class WorkspacePoolManager {
     if (!lease || lease.status !== 'quarantined') return false
     const result = lease.result
     if (!result) return false
+    if (retryableExternalLimitCategory(result.childError)) return false
     if (result.headCommit && result.headCommit !== lease.baseCommit) return false
     if (lease.integrationBranch || result.integrationBranch) return false
     if (Array.isArray(lease.commits) && lease.commits.length > 0) return false
@@ -763,6 +765,8 @@ export class WorkspacePoolManager {
 
   async recoverCleanFailureWorkspace(workspace, current) {
     const lease = current.leaseId ? this.state?.leases?.[current.leaseId] : null
+    // 사용량 대기는 작업 소유권을 유지한다. 다른 위임의 배정 과정에서 회수하지 않는다.
+    if (retryableExternalLimitCategory(lease?.result?.childError)) return false
     if (!this.recoverableCleanFailureLease(lease)) return false
 
     const sessionFile = path.join(workspace.root, '.ai-session.json')
@@ -1051,9 +1055,25 @@ export class WorkspacePoolManager {
     })
   }
 
-  async acquire({ workspaceHint, mapId, cardId, conversationId, cardLabel } = {}) {
+  async acquire({ workspaceHint, mapId, cardId, conversationId, cardLabel, replacesLeaseId } = {}) {
     return this.runExclusive(async () => {
       if (!this.poolForWorkspace(workspaceHint)) return null
+      if (replacesLeaseId) {
+        const previous = this.state.leases[replacesLeaseId]
+        if (previous?.status !== 'cancelled' || previous.result?.status !== 'failed-clean'
+          || previous.result?.childStatus !== 'failed'
+          || !retryableExternalLimitCategory(previous.result.childError)
+          || previous.mapId !== mapId || previous.cardId !== cardId
+          || !conversationId || previous.conversationId !== conversationId) {
+          throw new WorkspacePoolUnavailableError('변경 없이 반납된 한도 중단 작업의 소유권을 확인할 수 없습니다.', [], 'RELEASED_LEASE_RECOVERY_MISMATCH')
+        }
+        // 배정 후 응답 유실·재시작이 있어도 같은 복구용 lease를 다시 사용한다.
+        const existing = Object.values(this.state.leases).find((item) => item.replacesLeaseId === replacesLeaseId && item.status === 'leased')
+        if (existing) return publicLease(existing)
+        if (Object.values(this.state.leases).some((item) => item.conversationId === conversationId && !['completed', 'cancelled'].includes(item.status))) {
+          throw new WorkspacePoolUnavailableError('같은 대화의 작업공간이 이미 점유되어 있습니다.', [], 'CONVERSATION_ALREADY_LEASED')
+        }
+      }
       const integration = this.registry.integration
       const integrationChanges = await this.integrationTrackedChanges(integration)
       if (integrationChanges.dirty) {
@@ -1160,6 +1180,7 @@ export class WorkspacePoolManager {
             conversationId: String(conversationId ?? ''),
             startedAt,
             status: 'leased',
+            ...(replacesLeaseId ? { replacesLeaseId } : {}),
           }
           await atomicJson(sessionFile, {
             schemaVersion: 1,
@@ -1217,6 +1238,10 @@ export class WorkspacePoolManager {
     conversationId,
     failureCategory,
   } = {}) {
+    // 재활성화 뒤 복구 요청 저장에 실패했어도 이미 확보한 소유권으로 재시도한다.
+    if (this.state?.leases?.[leaseId]?.status === 'leased') {
+      return this.reuseLease(leaseId, { mapId, cardId, conversationId })
+    }
     return this.runExclusive(async () => {
       const normalizedLeaseId = String(leaseId ?? '').trim()
       const normalizedConversationId = String(conversationId ?? '').trim()
@@ -1261,7 +1286,7 @@ export class WorkspacePoolManager {
 
       const workspace = this.registry?.workspaces.find((candidate) => candidate.id === lease.workspaceId)
       const workspaceState = this.state?.workspaces?.[lease.workspaceId]
-      if (!workspace || workspaceState?.status !== 'quarantined'
+      if (!workspace || workspace.role !== 'worker' || workspace.enabled === false || workspaceState?.status !== 'quarantined'
         || workspaceState?.leaseId !== normalizedLeaseId) {
         throw new WorkspacePoolUnavailableError(
           '격리 작업공간의 점유 상태가 lease와 일치하지 않습니다.',
@@ -1301,7 +1326,7 @@ export class WorkspacePoolManager {
         )
       }
 
-      const [dirty, currentBranch, currentHead, mergeHead, cherryPickHead, rebaseApply, rebaseMerge] = await Promise.all([
+      const [dirty, currentBranch, currentHead, mergeHead, cherryPickHead, rebaseApply, rebaseMerge, unmerged] = await Promise.all([
         this.git(workspace.root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']),
         this.git(workspace.root, ['branch', '--show-current']),
         this.git(workspace.root, ['rev-parse', 'HEAD']),
@@ -1309,14 +1334,10 @@ export class WorkspacePoolManager {
         this.gitPathExists(workspace.root, 'CHERRY_PICK_HEAD'),
         this.gitPathExists(workspace.root, 'rebase-apply'),
         this.gitPathExists(workspace.root, 'rebase-merge'),
+        this.git(workspace.root, ['diff', '--name-only', '--diff-filter=U']),
       ])
-      if (dirty) {
-        throw new WorkspacePoolUnavailableError(
-          '격리 작업공간에 커밋되지 않은 변경이 남아 있어 자동 재개하지 않았습니다.',
-          [],
-          'QUARANTINED_LEASE_WORKTREE_DIRTY',
-        )
-      }
+      // 같은 세션의 작업 중 변경은 복구할 대상이다. 아래 소유권·HEAD·Git 작업 검증 후
+      // 그대로 이어가며, 커밋이나 정리 작업을 강제하지 않는다.
       if (currentBranch !== lease.branch) {
         throw new WorkspacePoolUnavailableError(
           `격리 작업공간 브랜치가 ${lease.branch}가 아닙니다.`,
@@ -1332,7 +1353,7 @@ export class WorkspacePoolManager {
           'QUARANTINED_LEASE_HEAD_MISMATCH',
         )
       }
-      if (mergeHead || cherryPickHead || rebaseApply || rebaseMerge) {
+      if (mergeHead || cherryPickHead || rebaseApply || rebaseMerge || unmerged) {
         throw new WorkspacePoolUnavailableError(
           '격리 작업공간에 완료되지 않은 Git 작업이 남아 있어 자동 재개하지 않았습니다.',
           [],
@@ -1359,6 +1380,7 @@ export class WorkspacePoolManager {
         type: 'retryable-child-failure',
         previousStatus: lease.status,
         previousResult: lease.result,
+        uncommittedChangesPreserved: Boolean(dirty),
         recoveredAt,
       })
       lease.recoveryHistory = lease.recoveryHistory.slice(-20)
@@ -1750,7 +1772,8 @@ export class WorkspacePoolManager {
         const currentHead = await this.git(workspace.root, ['rev-parse', 'HEAD'])
         const hasCheckpoint = currentHead !== lease.baseCommit
           || (Array.isArray(lease.checkpoints) && lease.checkpoints.length > 0)
-        if (!completed && !dirty && !lease.integrationBranch && !hasCheckpoint) {
+        if (!completed && !dirty && !lease.integrationBranch && !hasCheckpoint
+          && !retryableExternalLimitCategory(childError)) {
           return await this.releaseCleanFailure(lease, workspace, {
             childStatus: childStatus ?? null,
             childError: childError ?? null,

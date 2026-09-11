@@ -305,8 +305,18 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     assert.equal((await humanAction('recover', { ...await actionBody(), expectedUpdatedAt: '오래된 값' })).status, 409)
     assert.ok([401, 403].includes((await humanAction('recover', await actionBody(), cookie)).status))
     assert.equal((await humanAction('refresh', await actionBody())).body.executionRequested, false)
+    // 원래 상위 AI가 한도에 막혀도 같은 카드에 연결된 새 대화가 복구할 수 있다.
+    const recoveryAttribution = await api('/api/integrations/aionui/attributions', 'POST', { agentId: 'claude', modelId: 'opus', mapId: coordinatorId, cardId: coordinatorRoot, purpose: 'group-coordination', workspace: projectDirectory })
+    conversations.set('new-parent', { id: 'new-parent', name: '복구 담당', extra: { agent_id: 'claude', current_model_id: 'opus', backend: 'claude' } })
+    const recoveryLink = await fetch(recoveryAttribution.body.completionUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId: 'new-parent' }) })
+    assert.equal(recoveryLink.status, 200)
+    const recoveryHeaders = { ...sourceHeaders, 'X-MNP-AI-Conversation-Id': 'new-parent', 'X-MNP-AI-Attribution': recoveryAttribution.body.attributionToken, 'X-MNP-AI-Editor-Id': recoveryAttribution.body.editorId }
+    parent.version = (await api(`/api/maps/${coordinatorId}`)).body.map.version
+    args.sourceRevision = parent.version
+    const newParentRefresh = await api(`${delegateUrl}/usage-run/refresh`, 'POST', await actionBody(), recoveryHeaders)
+    assert.equal(newParentRefresh.status, 200, JSON.stringify(newParentRefresh.body))
     const concurrentBody = await actionBody()
-    const concurrent = await Promise.all([humanAction('recover', concurrentBody), humanAction('recover', concurrentBody)])
+    const concurrent = await Promise.all([api(`${delegateUrl}/usage-run/recover`, 'POST', concurrentBody, recoveryHeaders), humanAction('recover', concurrentBody)])
     assert.deepEqual(concurrent.map((result) => result.status).sort(), [202, 409])
     const firstRecoveryId = concurrent.find((result) => result.status === 202).body.recovery.operationId
     assert.equal(calls.filter((call) => call.operationId === firstRecoveryId).length, 1)
@@ -332,6 +342,11 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     editorCookie = restartedLogin.headers.get('set-cookie').split(';')[0]
     await assertMissingStatusPreserved('recovery')
     assert.ok((await latestUsage()).pendingRecovery, '404가 전달 미확인 복구 정보를 삭제했습니다.')
+    const pendingRetryCalls = calls.length
+    const pendingRetry = await humanAction('recover', await actionBody())
+    assert.equal(pendingRetry.status, 409)
+    assert.equal(pendingRetry.body.code, 'AI_DELEGATION_RECOVERY_DISPATCH_UNCERTAIN')
+    assert.equal(calls.length, pendingRetryCalls, '전달 확인 대기를 재개 실패로 오인해 중복 실행했습니다.')
     dispatches.set(secondRecoveryId, missingRecoveryDispatch)
     await until(async () => { const value = await latestUsage(); return value.childOperationId === secondRecoveryId && !value.pendingRecovery }, '재시작 뒤 복구 요청을 회수하지 못했습니다.')
     assert.equal(calls.filter((call) => call.operationId === secondRecoveryId).length, 1)

@@ -786,7 +786,7 @@ test('변경과 체크포인트 없이 종료된 하위 AI 작업은 worker를 �
   }
 })
 
-test('외부 한도로 중단된 격리 lease는 동일 세션과 깨끗한 체크포인트 HEAD일 때만 재활성화한다', async () => {
+test('외부 한도로 중단된 격리 lease는 동일 세션의 미커밋 변경을 보존하고 HEAD 불일치를 차단한다', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'mnp-workspace-reactivate-limit-'))
   try {
     const integrationRoot = path.join(root, 'main')
@@ -856,15 +856,15 @@ test('외부 한도로 중단된 격리 lease는 동일 세션과 깨끗한 체�
       baseCommit: lease.baseCommit,
     }), 'utf8')
 
-    let dirty = true
+    let currentHead = 'unexpected789'
     const manager = new WorkspacePoolManager({
       registryFile,
       stateFile,
       gitRunner: async (_cwd, args) => {
-        if (args[0] === 'status') return dirty ? ' M Assets/Changed.cs' : ''
+        if (args[0] === 'status') return ' M Assets/Changed.cs'
         if (args[0] === 'branch') return lease.branch
         if (args[0] === 'rev-parse' && args[1] === '--git-path') return path.join('.git', args[2])
-        if (args[0] === 'rev-parse') return 'checkpoint456'
+        if (args[0] === 'rev-parse') return currentHead
         if (args[0] === 'merge-base') return ''
         return ''
       },
@@ -879,11 +879,11 @@ test('외부 한도로 중단된 격리 lease는 동일 세션과 깨끗한 체�
         failureCategory: 'usage-limit',
       }),
       (error) => error instanceof WorkspacePoolUnavailableError
-        && error.reasonCode === 'QUARANTINED_LEASE_WORKTREE_DIRTY',
+        && error.reasonCode === 'QUARANTINED_LEASE_HEAD_MISMATCH',
     )
     assert.equal(manager.state.leases[lease.leaseId].status, 'quarantined')
 
-    dirty = false
+    currentHead = 'checkpoint456'
     const reactivated = await manager.reactivateQuarantinedLease(lease.leaseId, {
       mapId: lease.mapId,
       cardId: lease.cardId,
@@ -896,6 +896,7 @@ test('외부 한도로 중단된 격리 lease는 동일 세션과 깨끗한 체�
     assert.equal(manager.state.leases[lease.leaseId].headCommit, undefined)
     assert.equal(manager.state.leases[lease.leaseId].commits, undefined)
     assert.equal(manager.state.leases[lease.leaseId].recoveryHistory.length, 1)
+    assert.equal(manager.state.leases[lease.leaseId].recoveryHistory[0].uncommittedChangesPreserved, true)
     assert.equal(manager.state.workspaces.fork2.status, 'leased')
     const session = JSON.parse(await readFile(path.join(workerRoot, '.ai-session.json'), 'utf8'))
     assert.equal(session.recovery.type, 'retryable-child-failure')

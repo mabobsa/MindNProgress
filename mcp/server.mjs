@@ -2024,9 +2024,9 @@ async function main() {
   ))
 
   registerTool(server, 'mindnprogress_recover_ai_delegation', '복구 전에 기존 사용자 승인 근거와 현재 허용 범위를 확인하세요. 복구는 새 실행 범위의 승인이 아니며 계획·기획 기준 변경 또는 승인 불명확 시 제안 후 재승인을 기다립니다. AionCore 재시작, 연결 끊김 또는 필수 체크포인트·통합 실패로 recovery-required 또는 integration-recovery-required가 된 AI 위임을 기존 대화와 기존 작업공간에서 명시적으로 재개합니다. parent-wake-failed는 list_ai_delegations가 recoveryAvailable=true를 반환하고 사용자가 사용량·요청 한도 해제를 확인한 경우에만 같은 방식으로 재개할 수 있습니다. waiting-usage-limit, waiting-rate-limit도 같은 조건으로 재개하며 worker가 없는 문서 조정 위임도 지원합니다. waiting-child-resume은 사용자가 중지 후 재개를 요청한 경우에만 처리합니다. 접수 여부가 불명확하면 새 실행을 만들지 말고 mindnprogress_refresh_ai_delegation으로 확인하세요. 원래 지시를 자동 재생하지 않으며, 현재 카드·Git·작업공간 상태를 확인한 뒤 미완료 부분만 수행하도록 새 복구 지시를 전달합니다.', {
-    mapId: z.string().min(1).describe('복구할 위임이 속한 문서 ID'),
+    mapId: z.string().min(1).describe('위임을 시작한 상위 문서 ID. 원래 상위 대화가 중단되었어도 같은 상위 카드에 연결된 새 대화에서 복구할 수 있습니다.'),
     delegationId: z.string().regex(AI_DELEGATION_ID_PATTERN).describe('mindnprogress_list_ai_delegations에서 확인한 복구 대상 위임 ID'),
-    instruction: z.string().min(1).max(100000).describe('현재 상태를 확인한 뒤 이어서 수행할 범위와 완료 조건. 원래 지시의 단순 복사 대신 중복 실행을 피할 확인 기준을 포함'),
+    instruction: z.string().min(1).max(100000).describe('현재 상태를 확인한 뒤 이어서 수행할 범위와 완료 조건. 커밋 전 변경은 보존하고 완료된 작업은 반복하지 않습니다. 구버전 failed-clean 작업은 MindNProgress가 새 lease를 배정할 수 있으므로 이번 전문의 할당 경로·브랜치·세션을 확인하도록 지시하세요.'),
     sourceRevision: z.number().int().positive().describe('get_context 또는 get_document에서 확인한 현재 문서 version'),
   }, async ({ mapId, delegationId, instruction, sourceRevision }) => {
     const origin = delegationOriginForMap(mapId)

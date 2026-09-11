@@ -26,7 +26,21 @@ import {
   isValidAiDelegationId,
   nextAiDelegationWaitPoll,
   shouldReconcileAiDelegationChildWorkspace,
+  retryableExternalLimitCategory,
 } from '../server/lib/aiDelegations.mjs'
+
+test('CLI 한도 오류 문구와 변경 없이 반납된 과거 위임도 복구 대상으로 인식한다', () => {
+  for (const message of ["You've hit your limit", 'insufficient_quota', 'quota exhausted', 'You exceeded your current quota', 'out of extra usage', '사용량이 소진되었습니다.']) {
+    assert.equal(retryableExternalLimitCategory(message), 'usage-limit', message)
+  }
+  assert.equal(retryableExternalLimitCategory('rate_limit_exceeded'), 'rate-limit')
+  assert.equal(retryableExternalLimitCategory('컴파일러의 배열 인덱스 초과'), null)
+  assert.equal(aiDelegationRecoveryAvailability({
+    state: 'waiting-usage-limit', childStatus: 'failed', childError: 'usage limit exceeded',
+    workspaceLease: { leaseId: 'released' },
+    workspaceResult: { status: 'failed-clean', childStatus: 'failed', childError: 'usage limit exceeded' },
+  }).recoveryAvailable, true)
+})
 
 test('완료 보고는 캡처된 원문만 사용하고 해시·턴 불일치를 차단한다', () => {
   const text = '이 위임에서 캡처한 결과입니다.'
@@ -247,6 +261,7 @@ test('AionCore가 실제 사용한 작업공간 lease를 모든 식별자로 비
     leaseId: 'lease-other',
   }), false)
   assert.equal(aiDelegationWorkspaceLeaseMatches(expected, null), false)
+  assert.equal(aiDelegationWorkspaceLeaseMatches({ ...expected, branch: 'mnp/job-a' }, { ...expected, branch: 'main' }), false)
   assert.equal(aiDelegationWorkspaceLeaseMatches(null, null), true)
 })
 

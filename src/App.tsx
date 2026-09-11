@@ -34,6 +34,7 @@ import { DoorayTaskLinkLabel } from './components/DoorayTaskLinkLabel'
 import { MentionText } from './components/MentionText'
 import { AdminEditorPanel } from './components/AdminEditorPanel'
 import { AiConversationDialog } from './components/AiConversationDialog'
+import { AiDelegationRecovery } from './components/AiDelegationRecovery'
 import { AiConversationPickerDialog } from './components/AiConversationPickerDialog'
 import { AiConversationActivityIndicator } from './components/AiConversationRuntimeBadge'
 import { DailyBackupPreviewDialog, type DailyBackupPreview } from './components/DailyBackupPreviewDialog'
@@ -7934,6 +7935,10 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                 </div>
               </div>
               <div className="inspector-content">
+                {mode === 'editor' && !documentArchived && <AiDelegationRecovery
+                  key={`${selectedCommentMapId}:${selectedCommentNodeId ?? selectedNode.id}`}
+                  mapId={selectedCommentMapId} cardId={selectedCommentNodeId ?? selectedNode.id}
+                />}
                 {selectedNode.data.reference && (
                   <div className="task-link-field reference-source-field">
                     <div className="field-heading">

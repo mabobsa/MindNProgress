@@ -8,6 +8,7 @@ import {
   aiDelegationRecoveryAvailability,
   aiDelegationLimitState,
   aiDelegationAttemptHistory,
+  aiDelegationCanBeSupersededBy,
   aiDelegationWorkPending,
   aiDelegationDisplayState,
   aiDelegationStateAfterParentWake,
@@ -109,6 +110,22 @@ test('보고 실패는 작업 완료를 뒤집지 않고 이전 결과와 오류
   assert.equal(history[0].result, '검증한 결과')
   assert.equal(history[0].parentError, 'usage limit')
   assert.deepEqual(record.attemptHistory, [])
+})
+
+test('변경 없이 한도에 막힌 과거 시도는 같은 카드의 후속 성공 위임으로만 종료할 수 있다', () => {
+  const waiting = {
+    id: 'first', state: 'waiting-usage-limit', mapId: 'map-a', parentCardId: 'root', targetCardId: 'task-a',
+    createdAt: '2026-09-08T00:00:00.000Z', workspaceLease: { leaseId: 'lease-a' }, workspaceResult: { status: 'failed-clean' },
+  }
+  const completed = {
+    id: 'retry', state: 'completed', childStatus: 'completed', mapId: 'map-a', parentCardId: 'root', targetCardId: 'task-a',
+    createdAt: '2026-09-09T00:00:00.000Z', workspaceLease: { leaseId: 'lease-b' }, workspaceResult: { status: 'completed' },
+  }
+  assert.equal(aiDelegationCanBeSupersededBy(waiting, completed), true)
+  assert.equal(aiDelegationCanBeSupersededBy(waiting, { ...completed, targetCardId: 'task-b' }), false)
+  assert.equal(aiDelegationCanBeSupersededBy(waiting, { ...completed, createdAt: '2026-09-07T00:00:00.000Z' }), false)
+  assert.equal(aiDelegationCanBeSupersededBy({ ...waiting, workspaceResult: { status: 'quarantined' } }, completed), false)
+  assert.equal(aiDelegationCanBeSupersededBy(waiting, { ...completed, state: 'running' }), false)
 })
 
 test('복구 접수 확인 전에는 새 재개를 막고 상태 조회로 안내한다', () => {

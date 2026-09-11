@@ -290,6 +290,19 @@ export function aiDelegationWorkPending(delegation) {
   return !aiDelegationSucceeded(delegation) && !['completed', 'failed', 'superseded'].includes(delegation.state)
 }
 
+export function aiDelegationCanBeSupersededBy(delegation, replacement) {
+  if (!['waiting-usage-limit', 'waiting-rate-limit'].includes(delegation?.state)) return false
+  if (!replacement || replacement.id === delegation.id || replacement.state !== 'completed' || !aiDelegationSucceeded(replacement)) return false
+  if (replacement.mapId !== delegation.mapId
+      || (replacement.parentMapId ?? replacement.mapId) !== (delegation.parentMapId ?? delegation.mapId)
+      || replacement.parentCardId !== delegation.parentCardId
+      || replacement.targetCardId !== delegation.targetCardId) return false
+  if (String(replacement.createdAt ?? '') <= String(delegation.createdAt ?? '')) return false
+  if (delegation.workspaceLease?.leaseId
+      && !['failed-clean', 'cancelled'].includes(delegation.workspaceResult?.status)) return false
+  return true
+}
+
 export function aiDelegationDisplayState(delegation) {
   if (delegation.pendingRecovery) return 'recovery-dispatch-pending'
   return aiDelegationLimitState(delegation) ?? delegation.state

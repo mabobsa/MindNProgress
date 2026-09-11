@@ -216,8 +216,23 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     dispatches.get(operationId).state = 'completed'
     await until(async () => (await api(`/api/groups/${groupId}`)).body.delegations.some((item) => item.state === 'waiting-document-work'), '하위 구현을 기다리지 않고 총괄에 완료를 보고했습니다.')
     assert.equal(calls.some((call) => /^group-first-wake-/.test(call.operationId)), false)
+    const waitingCoordinator = (await api(`/api/groups/${groupId}`)).body.delegations.find((item) => item.id === 'group-first')
+    const beforeCoordinationFinalization = (await api(`/api/maps/${target.id}`)).body.map
+    const missingConfirmation = await api(`${delegateUrl}/group-first/finalize-coordination`, 'POST', { expectedUpdatedAt: waitingCoordinator.updatedAt }, sourceHeaders)
+    assert.equal(missingConfirmation.status, 400)
+    const finalizedCoordination = await api(`${delegateUrl}/group-first/finalize-coordination`, 'POST', {
+      expectedUpdatedAt: waitingCoordinator.updatedAt,
+      confirmPendingWorkPreserved: true,
+    }, sourceHeaders)
+    assert.equal(finalizedCoordination.status, 202, JSON.stringify(finalizedCoordination.body))
+    assert.equal(finalizedCoordination.body.childExecutionRequested, false)
+    assert.equal(finalizedCoordination.body.pendingWorkPreserved, true)
+    assert.deepEqual(finalizedCoordination.body.preserved.pendingDelegationIds, ['nested-leaf'])
+    assert.deepEqual((await api(`/api/maps/${target.id}`)).body.map, beforeCoordinationFinalization, '조정 종료가 카드·진행률·외부 대기를 변경했습니다.')
+    assert.notEqual((await api(`/api/maps/${target.id}/ai-delegations`)).body.delegations.find((item) => item.id === 'nested-leaf').state, 'completed', '조정 종료가 하위 위임을 완료 처리했습니다.')
+    await until(async () => (await api(`/api/groups/${groupId}`)).body.delegations.some((item) => item.id === 'group-first' && item.state === 'completed'), '명시적으로 종료한 조정 결과가 총괄에 전달되지 않았습니다.')
     dispatches.get('nested-leaf').state = 'completed'
-    await until(async () => (await api(`/api/groups/${groupId}`)).body.delegations.some((item) => item.state === 'completed'), '총괄 결과 회수가 완료되지 않았습니다.')
+    await until(async () => (await api(`/api/maps/${target.id}/ai-delegations`)).body.delegations.some((item) => item.id === 'nested-leaf' && item.state === 'completed'), '보존된 하위 위임의 후속 완료를 처리하지 못했습니다.')
     const finished = (await api(`/api/groups/${groupId}`)).body
     assert.match(finished.delegations[0].result, /문서 분석과 하위 업무 검증/)
     const wake = calls.find((call) => /^group-first-wake-\d+$/.test(call.operationId))
@@ -319,7 +334,11 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     await until(async () => (await latestPassive()).state === 'waiting-usage-limit', '상태 확인 검증용 대기에 들어가지 못했습니다.')
     const passiveCallCount = calls.length
     Object.assign(dispatches.get('passive-run'), { state: 'completed', errorMessage: null })
-    const refreshed = await api(`${delegateUrl}/passive-run/refresh`, 'POST', { expectedUpdatedAt: (await latestPassive()).updatedAt }, sourceHeaders)
+    let refreshed = await api(`${delegateUrl}/passive-run/refresh`, 'POST', { expectedUpdatedAt: (await latestPassive()).updatedAt }, sourceHeaders)
+    if (refreshed.status === 409 && /위임 상태가 변경/.test(refreshed.body.error ?? '')) {
+      // 자동 폴링의 완료 관측과 결과 캡처 사이에 updatedAt이 한 번 더 바뀔 수 있다.
+      refreshed = await api(`${delegateUrl}/passive-run/refresh`, 'POST', { expectedUpdatedAt: (await latestPassive()).updatedAt }, sourceHeaders)
+    }
     assert.equal(refreshed.status, 200)
     assert.equal(refreshed.body.delegation.workCompleted, true)
     assert.equal(refreshed.body.delegation.reportPending, true)

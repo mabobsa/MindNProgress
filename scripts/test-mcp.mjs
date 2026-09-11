@@ -376,7 +376,7 @@ async function main() {
     await client.connect(transport)
     const listedTools = await client.listTools()
     const registeredToolNames = listedTools.tools.map((tool) => tool.name).sort()
-    assert.equal(registeredToolNames.length, 63, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
+    assert.equal(registeredToolNames.length, 66, `예상과 다른 MCP 도구 수: ${registeredToolNames.length}`)
     for (const suffix of ['list_archived_documents', 'set_document_archive', 'get_reconstruction_context', 'preview_reconstruction', 'apply_reconstruction', 'get_reconstructions', 'rollback_reconstruction']) {
       assert.ok(registeredToolNames.includes(`mindnprogress_${suffix}`), `문서 재구성 도구 누락: ${suffix}`)
     }
@@ -422,6 +422,8 @@ async function main() {
     assert.ok(toolSchema('mindnprogress_confirm_ai_workspace_no_changes')?.properties?.leaseId)
     assert.ok(toolSchema('mindnprogress_confirm_ai_workspace_no_changes')?.properties?.jobId)
     assert.ok(toolSchema('mindnprogress_complete_ai_delegation')?.required?.includes('mapId'))
+    assert.ok(toolSchema('mindnprogress_finalize_ai_coordination')?.required?.includes('expectedUpdatedAt'))
+    assert.ok(toolSchema('mindnprogress_supersede_ai_delegation')?.required?.includes('replacementDelegationId'))
 
     const invoke = async (name, args = {}) => {
       calledTools.set(name, (calledTools.get(name) ?? 0) + 1)
@@ -437,11 +439,13 @@ async function main() {
 
     const guide = await invoke('mindnprogress_read_me_first')
     assert.equal(guide.guide.product.name, 'MindNProgress')
-    assert.equal(guide.guide.version, '4.17')
+    assert.equal(guide.guide.version, '4.19')
     assert.equal(guide.guide.documentReconstruction.contextTool, 'mindnprogress_get_reconstruction_context')
     assert.match(guide.guide.operationRules.join('\n'), /AionUi에서 시작한 대화.*임시 귀속.*AI_ATTRIBUTION_UNRESOLVED/)
     assert.match(guide.guide.operationRules.join('\n'), /응답을 받지 못한 시도는 횟수에 포함하지 않고/)
     assert.match(guide.guide.operationRules.join('\n'), /mindnprogress_complete_ai_delegation/)
+    assert.match(guide.guide.operationRules.join('\n'), /mindnprogress_finalize_ai_coordination/)
+    assert.match(guide.guide.operationRules.join('\n'), /mindnprogress_supersede_ai_delegation/)
     assert.match(guide.guide.operationRules.join('\n'), /중지된 위임을 resume하면 같은 AI 대화와 기존 worker lease/)
     assert.match(guide.guide.dataModel.cardContent.sharedKnowledge, /재사용/)
     assert.match(guide.guide.sharedKnowledgePolicy.writeWhen, /새 사실·결정·제약·검증 결과.*기존 내용이 더 이상 유효하지 않을 때만 수정/)
@@ -1217,6 +1221,8 @@ async function main() {
     assert.equal(recoveredRun.recovery.reusedConversation, true)
     await invoke('mindnprogress_refresh_ai_delegation', { mapId, delegationId: recoveredRun.delegation.id, expectedUpdatedAt: recoveredRun.delegation.updatedAt })
     await invokeExpectError('mindnprogress_retry_ai_delegation_report', { mapId, delegationId: recoveredRun.delegation.id, expectedUpdatedAt: recoveredRun.delegation.updatedAt }, /작업 완료|상태가 변경/)
+    await invokeExpectError('mindnprogress_finalize_ai_coordination', { mapId, delegationId: recoveredRun.delegation.id, expectedUpdatedAt: recoveredRun.delegation.updatedAt }, /문서 조정 전용|상태가 변경/)
+    await invokeExpectError('mindnprogress_supersede_ai_delegation', { mapId, delegationId: recoveredRun.delegation.id, replacementDelegationId: recoveredRun.delegation.id, expectedUpdatedAt: recoveredRun.delegation.updatedAt }, /후속 위임|상태가 변경/)
     assert.equal(mockAionUi.dispatchRequests.length, 2)
     assert.equal(mockAionUi.dispatchRequests[1].targetConversationId, 'conversation-delegated')
     assert.match(mockAionUi.dispatchRequests[1].instruction, /원래 지시를 처음부터 반복하지 말고/)
@@ -2328,6 +2334,25 @@ async function main() {
       groupId: groupTestId, baseVersion: 0, objective: '오래된 설정으로 변경',
     }, /그룹 설정이 변경/)
 
+    const lifecycleAttributionResponse = await fetch(`${apiBaseUrl}/api/integrations/aionui/attributions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: editorSessionCookie },
+      body: JSON.stringify({
+        agentId: 'agent-codex-restarted',
+        modelId: 'gpt-restarted',
+        conversationId: 'conversation-test',
+        mapId,
+        cardId: 'task-a',
+      }),
+    })
+    assert.equal(lifecycleAttributionResponse.status, 201)
+    const lifecycleAttribution = await lifecycleAttributionResponse.json()
+    await invoke('mindnprogress_get_context', {
+      mapId,
+      cardId: 'task-a',
+      editorId: attribution.editorId,
+      attributionToken: lifecycleAttribution.attributionToken,
+    })
     const lifecycleSource = (await invoke('mindnprogress_create_document', { title: '재구성 MCP 검증', rootLabel: '현재 기준', rootDescription: '기준 원문' })).map
     const lifecycleContext = await invoke('mindnprogress_get_reconstruction_context', { mapIds: [lifecycleSource.id] })
     const lifecyclePlan = {
@@ -2364,6 +2389,11 @@ async function main() {
     const lifecycleArchived = await invoke('mindnprogress_set_document_archive', { mapId: lifecycleSource.id, baseVersion: lifecycleCurrent.version, baseLifecycleVersion: lifecycleCurrent.lifecycleVersion, archived: true, reason: '개별 보관 검증' })
     assert.ok(lifecycleArchived.map.archivedAt)
     await invoke('mindnprogress_set_document_archive', { mapId: lifecycleSource.id, baseVersion: lifecycleArchived.map.version, baseLifecycleVersion: lifecycleArchived.map.lifecycleVersion, archived: false, reason: '개별 복원 검증' })
+
+    await invokeExpectError('mindnprogress_get_dooray_response_approval', {
+      responseId: 'missing-response', proposalRevision: '0'.repeat(64),
+      editorId: 'missing-editor', attributionToken: 'x'.repeat(32),
+    }, /./)
 
     const uncalledTools = registeredToolNames.filter((name) => !calledTools.has(name))
     assert.deepEqual(uncalledTools, [], `호출되지 않은 MCP 도구: ${uncalledTools.join(', ')}`)

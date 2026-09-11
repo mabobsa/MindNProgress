@@ -26,6 +26,7 @@ import {
   aiDelegationRecoveryAvailability,
   aiDelegationLimitState,
   aiDelegationAttemptHistory,
+  aiDelegationCanBeSupersededBy,
   aiDelegationWorkPending,
   aiDelegationDisplayState,
   aiDelegationStateAfterParentWake,
@@ -2973,7 +2974,8 @@ async function refreshSuspendedAiDelegation(delegation) {
   if (status.state === 'completed' && !delegation.workspaceLease?.leaseId) {
     const workPending = await documentCoordinationPending(delegation)
     const updated = await updateAiDelegation(delegation.id, {
-      state: workPending ? 'waiting-document-work' : 'parent-wake-failed', childStatus: workPending ? null : 'completed', childError: null,
+      state: workPending ? 'waiting-document-work' : 'parent-wake-failed', childStatus: 'completed', childError: null,
+      childCompletedAt: delegation.childCompletedAt ?? new Date().toISOString(),
       reportApprovalRequired: true,
       parentDispatchState: 'not-sent', parentError: null, childTurnId: status.turnId ?? delegation.childTurnId,
       childResultSnapshot: null, childResultHash: null, childResultCaptureAttemptedAt: null,
@@ -2984,9 +2986,27 @@ async function refreshSuspendedAiDelegation(delegation) {
   return delegation
 }
 
+function pendingDocumentCoordinationDelegations(delegation) {
+  if (!delegation?.coordinationOnly) return []
+  return [...aiDelegations.values()].filter((item) =>
+    item.parentConversationId === delegation.targetConversationId
+    && aiDelegationWorkPending(item))
+}
+
+function canFinalizeDocumentCoordination(delegation) {
+  if (!delegation?.coordinationOnly || delegation.workspaceLease?.leaseId) return false
+  if (delegation.state === 'waiting-document-work') return true
+  // 구버전 waiting-document-work가 재시작 뒤 과거 operation 404로 recovery-required에
+  // 후퇴했더라도 당시 캡처한 결과가 있으면 사용자 확인으로 조정 실행만 종료할 수 있다.
+  return delegation.state === 'recovery-required' && Boolean(delegation.childResultHash)
+}
+
 async function documentCoordinationPending(delegation) {
   if (!delegation.coordinationOnly) return false
-  if ([...aiDelegations.values()].some((item) => item.parentConversationId === delegation.targetConversationId && aiDelegationWorkPending(item))) return true
+  // 사용자가 미완료 카드와 하위 위임을 보존한 채 조정 실행만 명시적으로 끝낸 경우에는
+  // 이후 폴링에서도 다시 waiting-document-work로 되돌리지 않는다.
+  if (delegation.coordinationFinalizedAt) return false
+  if (pendingDocumentCoordinationDelegations(delegation).length > 0) return true
   const conversation = await fetchAiConversationRuntime(delegation.targetConversationId)
   return normalizeAiConversationRuntime(delegation.targetConversationId, conversation).state !== 'idle'
 }
@@ -3772,7 +3792,13 @@ async function pollAiDelegations() {
             continue
           }
           if (childStatus === 'completed' && await documentCoordinationPending(delegation)) {
-            if (delegation.state !== 'waiting-document-work') await updateAiDelegation(delegation.id, { state: 'waiting-document-work' })
+            if (delegation.state !== 'waiting-document-work' || delegation.childStatus !== 'completed' || delegation.childError) {
+              await updateAiDelegation(delegation.id, {
+                state: 'waiting-document-work', childStatus: 'completed', childError: null,
+                childTurnId: status.turnId ?? delegation.childTurnId ?? null,
+                childCompletedAt: delegation.childCompletedAt ?? new Date().toISOString(),
+              })
+            }
             continue
           }
           const capturedDelegation = await captureAiDelegationChildResult(delegation)
@@ -3791,6 +3817,17 @@ async function pollAiDelegations() {
           })
         } catch (error) {
           if (error?.status !== 404) continue
+          if (delegation.coordinationOnly && delegation.state === 'waiting-document-work') {
+            // 이 상태는 같은 child operation의 completed 응답을 이미 관측한 내구 증거다.
+            // 재시작 뒤 AionCore가 operation을 잃어도 미완료 실행으로 되돌리지 않는다.
+            if (delegation.childStatus !== 'completed' || delegation.childError) {
+              await updateAiDelegation(delegation.id, {
+                childStatus: 'completed', childError: null,
+                childCompletedAt: delegation.childCompletedAt ?? new Date().toISOString(),
+              })
+            }
+            continue
+          }
           await updateAiDelegation(delegation.id, {
             state: 'recovery-required',
             childStatus: 'interrupted-by-restart',
@@ -5621,7 +5658,7 @@ const server = createServer(async (request, response) => {
       }
       return sendJson(response, 404, { error: '지원하지 않는 재구성 작업입니다.' })
     }
-    const actionRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/ai-delegations\/([^/]+)\/(recover|refresh|retry-report)$/)
+    const actionRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/ai-delegations\/([^/]+)\/(recover|refresh|retry-report|finalize-coordination|supersede)$/)
     if (actionRoute && request.method === 'POST') {
       const id = decodeURIComponent(actionRoute[2])
       for (let attempt = 0; aiDelegationPollRunning && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 25))
@@ -5636,8 +5673,60 @@ const server = createServer(async (request, response) => {
         if (!delegation || (delegation.parentMapId ?? delegation.mapId) !== decodeURIComponent(actionRoute[1])) return sendJson(response, 404, { error: '위임을 찾을 수 없습니다.' })
         const body = await readJsonBody(request)
         const retryReport = actionRoute[3] === 'retry-report'
-        await validateAiDelegationAction(request, delegation, body, retryReport)
-        if (!retryReport) return sendJson(response, 200, { delegation: delegationPublicView(await refreshSuspendedAiDelegation(delegation)), executionRequested: false })
+        const finalizeCoordination = actionRoute[3] === 'finalize-coordination'
+        const supersede = actionRoute[3] === 'supersede'
+        const validated = await validateAiDelegationAction(request, delegation, body, retryReport || finalizeCoordination)
+        if (!retryReport && !finalizeCoordination && !supersede) return sendJson(response, 200, { delegation: delegationPublicView(await refreshSuspendedAiDelegation(delegation)), executionRequested: false })
+        if (supersede) {
+          if (body.confirmSupersededByCompletedDelegation !== true) return sendJson(response, 400, { error: '완료된 후속 위임으로 기존 한도 대기 위임을 종료할지 확인해야 합니다.' })
+          const replacementId = String(body.replacementDelegationId ?? '').trim()
+          const replacement = aiDelegations.get(replacementId)
+          if (!aiDelegationCanBeSupersededBy(delegation, replacement)) {
+            return sendJson(response, 409, { error: '같은 상위 카드와 대상 카드에서 나중에 성공한 위임이며, 기존 작업공간에 보존할 변경이 없는 경우에만 후속 위임으로 종료할 수 있습니다.' })
+          }
+          const supersededAt = new Date().toISOString()
+          const updated = await updateAiDelegation(id, {
+            state: 'superseded', supersededByDelegationId: replacement.id,
+            supersededAt, supersededByUserId: user.id,
+            supersessionReason: '같은 카드의 후속 위임이 작업과 결과 전달을 완료했습니다.',
+          })
+          return sendJson(response, 200, {
+            delegation: delegationPublicView(updated), replacement: delegationPublicView(replacement),
+            childExecutionRequested: false, cardChanged: false,
+          })
+        }
+        if (finalizeCoordination) {
+          if (body.confirmPendingWorkPreserved !== true) return sendJson(response, 400, { error: '미완료 하위 업무와 카드의 상태·진행률·외부 대기를 그대로 보존할지 확인해야 합니다.' })
+          if (!canFinalizeDocumentCoordination(delegation)) {
+            return sendJson(response, 409, { error: '완료 관측 또는 보존 결과가 있는 문서 조정 전용 위임만 조정 실행을 종료할 수 있습니다.' })
+          }
+          // waiting-document-work는 해당 child operation의 completed 응답을 관측한 뒤에만 저장된다.
+          // AionCore가 재시작되어 operation을 잃어도 이 내구 상태와 사용자 확인으로 복구할 수 있다.
+          const pendingDelegationIds = pendingDocumentCoordinationDelegations(delegation).map((item) => item.id)
+          const captured = await captureAiDelegationChildResult(delegation)
+          const finalizedAt = new Date().toISOString()
+          const updated = await updateAiDelegation(id, {
+            state: 'waiting-parent', childStatus: 'completed', childError: null,
+            childCompletedAt: captured.childCompletedAt ?? finalizedAt,
+            parentDispatchState: null, parentError: null, completedAt: null,
+            reportApprovalRequired: false,
+            coordinationFinalizedAt: finalizedAt,
+            coordinationFinalizedBy: user.id,
+            coordinationFinalizationSourceState: delegation.state,
+            coordinationPendingDelegationIds: pendingDelegationIds,
+          })
+          return sendJson(response, 202, {
+            delegation: delegationPublicView(updated), childExecutionRequested: false,
+            pendingWorkPreserved: true,
+            preserved: {
+              mapVersion: validated.map.version,
+              targetCardStatus: validated.target.data?.status ?? null,
+              targetCardProgress: validated.target.data?.progress ?? null,
+              waitingItemCount: Array.isArray(validated.target.data?.waitingItems) ? validated.target.data.waitingItems.length : 0,
+              pendingDelegationIds,
+            },
+          })
+        }
         if (delegation.state !== 'parent-wake-failed' || !aiDelegationSucceeded(delegation)) return sendJson(response, 409, { error: '실제 작업 완료가 확인된 보고 대기 위임만 결과를 재전달할 수 있습니다.' })
         if (delegation.wakeOperationId) {
           let previous

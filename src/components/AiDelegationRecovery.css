@@ -1,15 +1,194 @@
-.ai-delegation-recovery { border: 1px solid var(--border-color, #cbd5e1); border-radius: 8px; padding: 12px; margin-bottom: 12px; font-size: 12px; }
-.ai-delegation-recovery p { margin: 6px 0; overflow-wrap: anywhere; }
-.ai-delegation-recovery-item { border-top: 1px solid var(--border-color, #cbd5e1); padding-top: 8px; margin-top: 8px; }
-.ai-delegation-recovery-item > b, .ai-delegation-recovery-item > span { display: block; overflow-wrap: anywhere; }
-.ai-delegation-recovery-id { display: block; margin-top: 3px; color: var(--text-muted, #64748b); overflow-wrap: anywhere; }
-.ai-delegation-recovery-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.ai-delegation-recovery-actions button { border: 1px solid var(--border-color, #cbd5e1); border-radius: 5px; padding: 5px 8px; background: transparent; color: inherit; cursor: pointer; }
-.ai-delegation-recovery-actions button.danger { color: #c94954; border-color: rgba(201, 73, 84, .55); }
-.ai-delegation-recovery-actions button:disabled { opacity: .5; cursor: wait; }
-.ai-delegation-replacement, .ai-delegation-close-form label { display: grid; gap: 5px; margin-top: 8px; }
-.ai-delegation-replacement select, .ai-delegation-close-form select, .ai-delegation-close-form textarea { width: 100%; box-sizing: border-box; }
-.ai-delegation-close-form { margin-top: 8px; padding: 8px; border: 1px solid rgba(201, 73, 84, .4); border-radius: 6px; background: rgba(201, 73, 84, .08); }
-.ai-delegation-close-form textarea { resize: vertical; }
-.ai-delegation-recovery p.ai-delegation-recovery-guidance { color: #b7791f; }
-.ai-delegation-recovery [role="alert"] { color: #b91c1c; }
+.ai-delegation-recovery {
+  margin: -2px 0 19px;
+  padding: 0 0 19px;
+  color: var(--theme-text-secondary, #5e5865);
+  border-bottom: 1px solid var(--theme-border, #eeecf1);
+  font-size: 10px;
+}
+
+.ai-delegation-recovery-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ai-delegation-recovery-heading > strong {
+  color: var(--theme-text-secondary, #514b58);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.ai-delegation-recovery-heading > small {
+  flex: 0 0 auto;
+  color: var(--theme-text-muted, #9d97a4);
+  font-size: 8px;
+}
+
+.ai-delegation-recovery p {
+  margin: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ai-delegation-recovery-summary {
+  margin-top: 5px !important;
+  color: var(--theme-text-muted, #8e8895);
+  font-size: 9px;
+}
+
+.ai-delegation-recovery-item {
+  margin-top: 10px;
+  padding: 10px 11px;
+  border: 1px solid var(--theme-border, #e8e5ed);
+  border-radius: 9px;
+  background: var(--theme-surface-raised, #faf9fc);
+}
+
+.ai-delegation-recovery-item-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 9px;
+}
+
+.ai-delegation-recovery-item-heading > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ai-delegation-recovery-item-heading b {
+  display: block;
+  color: var(--theme-text, #3f3946);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ai-delegation-recovery-item-heading > span {
+  max-width: 48%;
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  color: var(--theme-warning, #9a6a24);
+  border-radius: 6px;
+  background: var(--theme-warning-soft, #fff5df);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.ai-delegation-recovery-id {
+  display: block;
+  margin-top: 2px;
+  color: var(--theme-text-muted, #9d97a4);
+  font-size: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-delegation-recovery-error-detail {
+  margin-top: 8px !important;
+  padding: 6px 8px;
+  color: var(--theme-danger, #a44149);
+  border-left: 2px solid var(--theme-danger, #d76670);
+  border-radius: 0 6px 6px 0;
+  background: var(--theme-danger-soft, #fff3f4);
+  font-size: 9px;
+}
+
+.ai-delegation-recovery-actions {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 9px;
+}
+
+.ai-delegation-recovery-actions button {
+  min-height: 27px;
+  padding: 5px 8px;
+  color: var(--theme-accent, #5d50ca);
+  border: 1px solid color-mix(in srgb, var(--theme-accent, #6657d9) 28%, transparent);
+  border-radius: 7px;
+  outline: none;
+  background: var(--theme-accent-soft, #f5f3fd);
+  font: inherit;
+  font-size: 9px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+
+.ai-delegation-recovery-actions button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-accent, #6657d9) 52%, transparent);
+  background: color-mix(in srgb, var(--theme-accent-soft, #f5f3fd) 84%, var(--theme-accent, #6657d9));
+}
+
+.ai-delegation-recovery-actions button:focus-visible {
+  border-color: var(--theme-accent, #6657d9);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-accent, #6657d9) 14%, transparent);
+}
+
+.ai-delegation-recovery-actions button.danger {
+  color: var(--theme-danger, #b44952);
+  border-color: color-mix(in srgb, var(--theme-danger, #c94954) 34%, transparent);
+  background: var(--theme-danger-soft, #fff3f4);
+}
+
+.ai-delegation-recovery-actions button.danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-danger, #c94954) 58%, transparent);
+  background: color-mix(in srgb, var(--theme-danger-soft, #fff3f4) 84%, var(--theme-danger, #c94954));
+}
+
+.ai-delegation-recovery-actions button:disabled {
+  opacity: .5;
+  cursor: wait;
+}
+
+.inspector-content .ai-delegation-recovery label {
+  display: grid;
+  gap: 5px;
+  margin: 9px 0 0;
+}
+
+.ai-delegation-replacement select,
+.ai-delegation-close-form select,
+.ai-delegation-close-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.ai-delegation-close-form {
+  margin-top: 10px;
+  padding-top: 1px;
+  border-top: 1px dashed color-mix(in srgb, var(--theme-danger, #c94954) 32%, transparent);
+}
+
+.ai-delegation-close-form textarea {
+  resize: vertical;
+}
+
+.ai-delegation-recovery p.ai-delegation-recovery-guidance {
+  margin-top: 8px;
+  color: var(--theme-warning, #9a6a24);
+  font-size: 9px;
+}
+
+.ai-delegation-recovery > [role="alert"],
+.ai-delegation-recovery > [role="status"] {
+  margin-top: 9px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 9px;
+}
+
+.ai-delegation-recovery > [role="alert"] {
+  color: var(--theme-danger, #a44149);
+  background: var(--theme-danger-soft, #fff3f4);
+}
+
+.ai-delegation-recovery > [role="status"] {
+  color: var(--theme-success, #2e8065);
+  background: var(--theme-success-soft, #e7f7f1);
+}

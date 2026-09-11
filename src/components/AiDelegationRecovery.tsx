@@ -137,17 +137,24 @@ export function AiDelegationRecovery({ mapId, cardId }: { mapId: string; cardId:
   const pending = items.filter((item) => !['completed', 'failed', 'superseded', 'closed'].includes(item.state))
   if (!pending.length && !error && !notice) return null
   return <section className="ai-delegation-recovery" aria-label="AI 작업 복구">
-    <strong>AI 작업 복구</strong>
-    <p>중단 작업을 이어가거나, 복구할 수 없는 기록을 완료로 표시하지 않고 정리할 수 있습니다.</p>
+    <div className="ai-delegation-recovery-heading">
+      <strong>AI 작업 복구</strong>
+      <small>{pending.length ? `미종료 위임 ${pending.length}건` : '상태 확인'}</small>
+    </div>
+    <p className="ai-delegation-recovery-summary">중단 작업을 이어가거나, 복구할 수 없는 기록을 완료로 표시하지 않고 정리할 수 있습니다.</p>
     {pending.map((item) => {
       const candidates = completedReplacementDelegations(item, items)
       const selectedReplacementId = replacementIds[item.id] ?? candidates[0]?.id ?? ''
       const closing = closeDraft?.id === item.id
       return <div className="ai-delegation-recovery-item" key={item.id}>
-        <b>{item.targetCardLabel}</b>
-        <span>{groupDelegationPresentation(item).label}</span>
-        <small className="ai-delegation-recovery-id">{item.id}</small>
-        {(item.recoveryDispatchError || item.childError || item.parentError) && <p>{item.recoveryDispatchError || item.childError || item.parentError}</p>}
+        <div className="ai-delegation-recovery-item-heading">
+          <div>
+            <b>{item.targetCardLabel}</b>
+            <small className="ai-delegation-recovery-id" title={item.id}>{item.id}</small>
+          </div>
+          <span>{groupDelegationPresentation(item).label}</span>
+        </div>
+        {(item.recoveryDispatchError || item.childError || item.parentError) && <p className="ai-delegation-recovery-error-detail">{item.recoveryDispatchError || item.childError || item.parentError}</p>}
         {candidates.length > 1 && <label className="ai-delegation-replacement">
           <span>완료된 후속 위임</span>
           <select disabled={busy} value={selectedReplacementId} onChange={(event) => setReplacementIds((current) => ({ ...current, [item.id]: event.target.value }))}>

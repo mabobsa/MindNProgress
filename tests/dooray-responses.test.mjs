@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { buildDoorayHandoffPrompt, buildDoorayRoutingCatalog, createDoorayResponseService, parseDoorayAiResult, readDoorayResponseSource, validateDoorayRoute } from '../server/lib/doorayResponses.mjs'
+import { buildDoorayHandoffPrompt, buildDoorayRoutingCatalog, createDoorayResponseService, parseDoorayAiResult, publicDoorayResponse, readDoorayResponseSource, validateDoorayRoute } from '../server/lib/doorayResponses.mjs'
 
 const item = { key: 'comment:post1:comment1', kind: 'mention-comment', projectId: 'p1', postId: 'post1', commentId: 'comment1',
   subject: '베팅 표시 수정', excerpt: '금액 표시를 확인해 주세요.', url: 'https://nhnent.dooray.com/project/posts/post1#comment-comment1' }
@@ -476,8 +476,32 @@ test('담당 카드 전달은 제안과 본문·코멘트 URL을 보존하고 �
   }
 })
 
+test('제안 대화 보기는 현재 회차에 전달이 확인된 담당 대화와 실행 머신을 우선한다', () => {
+  const job = { id: 'job-1', source, status: 'proposal', attempt: 2, proposal: '대응 제안',
+    settings: { machineId: 'main', machineRole: 'main' },
+    router: { conversationId: 'router-chat' }, review: { conversationId: 'review-chat', machineId: 'main' },
+    handoff: { attempt: 2, conversationId: 'card-chat', machineId: 'worker-pc', homeMachineRole: 'sub', sentAt: '2026-09-11T00:00:00Z' } }
+  const snapshot = structuredClone(job)
+  for (const state of [job, { ...job, status: 'completed', completedAt: '2026-09-11T00:01:00Z' }]) {
+    const result = publicDoorayResponse(state)
+    assert.equal(result.conversationId, 'card-chat')
+    assert.equal(result.homeMachineId, 'worker-pc')
+    assert.equal(result.homeMachineRole, 'sub')
+  }
+  for (const handoff of [undefined, { ...job.handoff, attempt: 1 }, { ...job.handoff, sentAt: null }, { ...job.handoff, conversationId: '' }]) {
+    const result = publicDoorayResponse({ ...job, handoff })
+    assert.equal(result.conversationId, 'review-chat')
+    assert.equal(result.homeMachineId, 'main')
+    assert.equal(result.homeMachineRole, 'main')
+  }
+  assert.equal(publicDoorayResponse({ ...job, handoff: null, review: null }).conversationId, 'router-chat')
+  assert.deepEqual(job, snapshot, '조회 시 원래 제안 대화와 전달 기록을 덮어쓰지 않는다')
+})
+
 test('담당 전달은 계정·대화·실행 상태를 검사하고 응답 유실 재시도에도 같은 실행을 회수한다', async (t) => {
   const { service, deps, counts } = await fixture(t)
+  const archived = []
+  deps.archiveConversation = async (_user, reference) => { archived.push(reference.conversationId) }
   let idle = true
   deps.handoffTarget = async () => ({ route, conversations: [{ conversationId: 'old-chat', machineId: 'main', homeMachineRole: 'main', available: true, idle }] })
   await service.start({ id: 'user1' }, item)
@@ -490,13 +514,18 @@ test('담당 전달은 계정·대화·실행 상태를 검사하고 응답 유�
   const dispatch = deps.dispatch
   deps.dispatch = async (op) => { await dispatch(op); throw new Error('전송 응답 유실') }
   await assert.rejects(service.handoff('user1', job.id, 'old-chat'), /응답 유실/)
+  assert.equal((await service.list('user1'))[0].conversationId, job.conversationId, '응답이 확인되기 전에는 대화 보기 대상을 바꾸지 않는다')
   const sent = await service.handoff('user1', job.id, 'old-chat')
   assert.equal(sent.conversationId, 'old-chat')
   assert.ok(sent.sentAt)
   await service.handoff('user1', job.id, 'old-chat')
   assert.equal(counts.dispatch, 3)
   assert.equal((await service.list('user1'))[0].status, 'proposal', '전달 접수는 대응 완료를 뜻하지 않는다')
+  assert.equal((await service.list('user1'))[0].conversationId, 'old-chat')
   await service.complete('user1', job.id)
+  const completed = (await createDoorayResponseService(deps).list('user1'))[0]
+  assert.equal(completed.conversationId, 'old-chat', '기존 완료 기록을 다시 읽어도 담당 카드 대화를 연다')
+  assert.deepEqual(archived.sort(), ['new-chat-1', 'new-chat-2'], '담당 카드 대화는 보관하지 않는다')
   await assert.rejects(service.handoff('user1', job.id, 'old-chat'), /제안 도착/)
 })
 
@@ -561,6 +590,9 @@ test('새 승인 대화는 요청에 한 번 연결되고 제안 전용 대화 �
   const conversation = { conversationId: 'approved-work', homeMachineRole: 'main', homeMachineId: 'main', linkedAt: new Date().toISOString() }
   await service.linkApprovalConversation('user1', job.id, job.proposalRevision, conversation)
   await service.linkApprovalConversation('user1', job.id, job.proposalRevision, conversation)
+  const recorded = (await createDoorayResponseService(deps).list('user1'))[0]
+  assert.equal(recorded.conversationId, job.conversationId, '새 대화 시작 후에도 제안 대화 연결을 유지한다')
+  assert.deepEqual(recorded.approval.conversation, conversation, '승인 실행 대화 ID·머신·연결 시각을 별도로 저장한다')
   await assert.rejects(service.linkApprovalConversation('user1', job.id, job.proposalRevision, { ...conversation, conversationId: 'other-chat' }), /이미 연결/)
   await assert.rejects(service.refine('user1', job.id, '계획 수정'), /승인 대화/)
   const execution = { execution: true, conversationId: conversation.conversationId }
@@ -570,6 +602,9 @@ test('새 승인 대화는 요청에 한 번 연결되고 제안 전용 대화 �
   // 이미 완료 저장된 기록도 서버 재시작 후 데이터 수정 없이 다시 검증할 수 있다.
   const restarted = createDoorayResponseService(deps)
   const completed = await restarted.approvalContext('user1', job.id, job.proposalRevision, execution)
+  const completedList = (await restarted.list('user1'))[0]
+  assert.equal(completedList.conversationId, job.conversationId)
+  assert.deepEqual(completedList.approval.conversation, conversation, '기존 완료 기록도 두 대화 연결을 구분해 반환한다')
   assert.equal(completed.job.status, 'completed')
   assert.ok(completed.job.completedAt)
   assert.deepEqual(completed.job.approval, before.job.approval)

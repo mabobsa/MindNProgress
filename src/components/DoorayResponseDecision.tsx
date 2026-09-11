@@ -2,9 +2,9 @@ import { useState } from 'react'
 import type { DoorayResponseJob, useDoorayResponses } from './useDoorayResponses'
 import type { DoorayHandoffLaunch } from './DoorayResponseHandoff'
 
-export function DoorayResponseDecision({ job, response, disabled, onLaunchCard, onOpenConversation }: {
+export function DoorayResponseDecision({ job, response, disabled, onLaunchCard }: {
   job: DoorayResponseJob; response: ReturnType<typeof useDoorayResponses>; disabled: boolean
-  onLaunchCard: (launch: DoorayHandoffLaunch) => void; onOpenConversation: (job: DoorayResponseJob) => void
+  onLaunchCard: (launch: DoorayHandoffLaunch) => void
 }) {
   const [pending, setPending] = useState(false)
   const decision = job.decision
@@ -26,7 +26,6 @@ export function DoorayResponseDecision({ job, response, disabled, onLaunchCard, 
       {!job.completedAt && (job.status === 'needs-approval' || job.status === 'approved') && !approval?.conversation && <button type="button" disabled={pending || disabled}
         onClick={() => { setPending(true); void response.approve(job).then((launch) => { if (launch) onLaunchCard(launch) }).finally(() => setPending(false)) }}>
         {pending ? '승인 확인 중…' : approval ? '승인한 제안으로 AI 대화 시작' : '제안 승인 · AI 대화 시작'}</button>}
-      {approval?.conversation && <button type="button" onClick={() => onOpenConversation({ ...job, ...approval.conversation })}>승인 대화 열기</button>}
       {!job.completedAt && legacy && <button type="button" disabled={pending || disabled} onClick={() => {
         setPending(true)
         void response.refine(job.id, '기존 답변을 새 기준으로 다시 판단해 주세요. 실제로 답변이 필요한 사실 질문과 사용자 동의만 필요한 구체적인 실행안을 구분하여 decision에 반환하세요. 정보가 충분하면 승인 범위와 제외 범위를 명시하고, 혼합되었거나 불명확하면 질문을 우선하세요. 이것은 승인이나 실행 요청이 아닙니다.').finally(() => setPending(false))

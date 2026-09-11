@@ -161,11 +161,14 @@ ${doorayDecisionInstructions}
 }
 
 export function publicDoorayResponse(job) {
+  // 제안 보기의 최종 도착지는 실제 전달이 확인된 이번 회차의 담당 대화다.
+  // 원래 router/review 기록은 그대로 두어 완료 시 전용 대화만 보관한다.
+  const handoff = job.handoff?.attempt === job.attempt && job.handoff?.sentAt && job.handoff?.conversationId ? job.handoff : null
   return { id: job.id, itemKey: job.source.item.key, postId: job.source.item.postId, sourceUrl: job.source.item.url,
     subject: job.source.subject, status: job.status, route: job.route ?? null, proposal: job.proposal ?? '', error: job.error ?? '',
-    createdAt: job.createdAt, updatedAt: job.updatedAt, conversationId: job.review?.conversationId ?? job.router?.conversationId ?? null,
-    homeMachineId: job.review?.machineId ?? job.settings.machineId,
-    homeMachineRole: job.operation?.settings?.machineRole ?? job.settings.machineRole ?? 'main',
+    createdAt: job.createdAt, updatedAt: job.updatedAt, conversationId: handoff?.conversationId ?? job.review?.conversationId ?? job.router?.conversationId ?? null,
+    homeMachineId: handoff?.machineId ?? job.review?.machineId ?? job.settings.machineId,
+    homeMachineRole: handoff?.homeMachineRole ?? job.operation?.settings?.machineRole ?? job.settings.machineRole ?? 'main',
     canRetry: job.status === 'failed' && Boolean(job.operation?.conversationId || job.operation?.dispatchAttempted),
     completedAt: job.completedAt ?? null, archiveStatus: job.archiveStatus ?? null, archiveError: job.archiveError ?? '',
     handedOffAt: job.handoff && job.handoff.attempt === job.attempt ? job.handoff.sentAt ?? null : null,

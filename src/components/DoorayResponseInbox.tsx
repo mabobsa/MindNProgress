@@ -28,6 +28,7 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
   const completed = response.jobs.filter((entry) => entry.completedAt)
   const visibleJobs = response.showCompleted ? completed : outstanding
   const job = visibleJobs.find((entry) => entry.id === response.selectedId) ?? visibleJobs[0]
+  const approvalConversation = job?.approval?.conversation
   useEffect(() => { setHint('') }, [job?.id])
   const running = response.jobs.filter((entry) => ['routing', 'reviewing', 'waiting-target'].includes(entry.status)).length
   useEffect(() => {
@@ -112,12 +113,13 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
             </>}
             {job.proposal && <div className="dooray-response-proposal">{job.proposal}</div>}
             {job.proposal && <DoorayResponseDecision key={`${job.id}:${job.proposalRevision}`} job={job} response={response}
-              disabled={completing || refining} onLaunchCard={onLaunchCard} onOpenConversation={onOpenConversation} />}
+              disabled={completing || refining} onLaunchCard={onLaunchCard} />}
             {job.error && <p className="dooray-response-error">{job.error}</p>}
             {job.completedAt && <p>완료: {new Date(job.completedAt).toLocaleString('ko-KR')} · 제안과 완료 기록은 대화 삭제 후에도 보존됩니다.</p>}
             {job.archiveError && <p className="dooray-response-error">{job.archiveError}</p>}
             <div className="dooray-response-actions">
-              {job.conversationId && <button type="button" onClick={() => onOpenConversation(job)}>{job.completedAt ? '대화 보기' : '대화에서 이어가기'}</button>}
+              {job.conversationId && <button type="button" onClick={() => onOpenConversation(job)}>제안 대화 보기</button>}
+              {approvalConversation && <button type="button" onClick={() => onOpenConversation({ ...job, ...approvalConversation })}>승인 대화 보기</button>}
               {['proposal', 'needs-approval', 'approved'].includes(job.status) && job.route && <button type="button" disabled={completing || refining} onClick={() => setHandoffId(job.id)}>담당 카드로 전달하기</button>}
               {job.canRetry && <button type="button" onClick={() => void response.retry(job.id)}>상태 다시 확인</button>}
               {(['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'].includes(job.status) || (job.completedAt && job.archiveStatus !== 'done')) && <button type="button"

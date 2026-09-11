@@ -224,6 +224,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     assert.equal(sent.status, 202, JSON.stringify(await sent.json()))
   }
   assert.equal(operations.size, 7, '명시적 전달만 업무 대화를 실행하며 중복 클릭은 한 실행으로 유지한다')
+  assert.equal((await (await fetch(endpoint, { headers })).json()).jobs[0].conversationId, 'existing-chat', '제안 대화 보기는 실제 전달한 담당 카드 대화를 반환한다')
   if (process.env.MNP_RESPONSE_BROWSER_CHECK === '1') {
     await checkDoorayResponseBrowser({ directory, baseUrl, password, complete: true, deleteConversation: () => { deleted.add('created-3'); deleted.add('created-4') } })
   } else {
@@ -235,6 +236,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   assert.equal(final.status, 'completed')
   assert.equal(final.proposal, latest.proposal)
   assert.equal(final.archiveStatus, 'done')
+  assert.equal(final.conversationId, 'existing-chat', '완료 내역에도 담당 카드 대화 연결을 유지한다')
   assert.deepEqual(archived.sort(), ['created-3', 'created-4'])
   const repeated = await (await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: item.key }) })).json()
   assert.equal(repeated.job.id, final.id)
@@ -305,7 +307,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     await verifyApprovalMcp()
   }
   if (['1', 'approval'].includes(process.env.MNP_RESPONSE_BROWSER_CHECK)) {
-    await checkDoorayResponseBrowser({ directory, baseUrl, password, approvalFlow: { verifyNoLaunch, completeLaunch } })
+    await checkDoorayResponseBrowser({ directory, baseUrl, password, approvalFlow: { verifyNoLaunch, completeLaunch, proposalConversationId: approvalJob.conversationId } })
   } else {
     const approval = await fetch(approveUrl, { method: 'POST', headers, body: JSON.stringify({ proposalRevision: approvalJob.proposalRevision }) })
     assert.equal(approval.status, 200)

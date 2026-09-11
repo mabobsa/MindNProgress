@@ -227,6 +227,7 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     assert.equal(finalizedCoordination.status, 202, JSON.stringify(finalizedCoordination.body))
     assert.equal(finalizedCoordination.body.childExecutionRequested, false)
     assert.equal(finalizedCoordination.body.pendingWorkPreserved, true)
+    assert.deepEqual(finalizedCoordination.body.supersededDelegations, [])
     assert.deepEqual(finalizedCoordination.body.preserved.pendingDelegationIds, ['nested-leaf'])
     assert.deepEqual((await api(`/api/maps/${target.id}`)).body.map, beforeCoordinationFinalization, '조정 종료가 카드·진행률·외부 대기를 변경했습니다.')
     assert.notEqual((await api(`/api/maps/${target.id}/ai-delegations`)).body.delegations.find((item) => item.id === 'nested-leaf').state, 'completed', '조정 종료가 하위 위임을 완료 처리했습니다.')

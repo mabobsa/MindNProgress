@@ -439,7 +439,7 @@ async function main() {
 
     const guide = await invoke('mindnprogress_read_me_first')
     assert.equal(guide.guide.product.name, 'MindNProgress')
-    assert.equal(guide.guide.version, '4.19')
+    assert.equal(guide.guide.version, '4.20')
     assert.equal(guide.guide.documentReconstruction.contextTool, 'mindnprogress_get_reconstruction_context')
     assert.match(guide.guide.operationRules.join('\n'), /AionUi에서 시작한 대화.*임시 귀속.*AI_ATTRIBUTION_UNRESOLVED/)
     assert.match(guide.guide.operationRules.join('\n'), /응답을 받지 못한 시도는 횟수에 포함하지 않고/)

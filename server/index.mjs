@@ -33,6 +33,7 @@ import {
   aiDelegationSucceeded,
   aiDelegationWorkspaceLeaseMatches,
   aiDelegationSelectionFromSource,
+  completedAiDelegationReplacement,
   createAiDelegationRequestSignature,
   explicitCompletionAiDelegationsForConversation,
   failedAiIntegrationRecoveryRuntime,
@@ -5702,6 +5703,18 @@ const server = createServer(async (request, response) => {
           }
           // waiting-document-work는 해당 child operation의 completed 응답을 관측한 뒤에만 저장된다.
           // AionCore가 재시작되어 operation을 잃어도 이 내구 상태와 사용자 확인으로 복구할 수 있다.
+          const supersededDelegations = []
+          for (const pending of pendingDocumentCoordinationDelegations(delegation)) {
+            const replacement = completedAiDelegationReplacement(pending, aiDelegations.values())
+            if (!replacement) continue
+            const supersededAt = new Date().toISOString()
+            await updateAiDelegation(pending.id, {
+              state: 'superseded', supersededByDelegationId: replacement.id,
+              supersededAt, supersededByUserId: user.id,
+              supersessionReason: '문서 조정 종료 시 같은 카드의 완료된 후속 위임을 확인했습니다.',
+            })
+            supersededDelegations.push({ delegationId: pending.id, replacementDelegationId: replacement.id })
+          }
           const pendingDelegationIds = pendingDocumentCoordinationDelegations(delegation).map((item) => item.id)
           const captured = await captureAiDelegationChildResult(delegation)
           const finalizedAt = new Date().toISOString()
@@ -5714,10 +5727,11 @@ const server = createServer(async (request, response) => {
             coordinationFinalizedBy: user.id,
             coordinationFinalizationSourceState: delegation.state,
             coordinationPendingDelegationIds: pendingDelegationIds,
+            coordinationSupersededDelegations: supersededDelegations,
           })
           return sendJson(response, 202, {
             delegation: delegationPublicView(updated), childExecutionRequested: false,
-            pendingWorkPreserved: true,
+            pendingWorkPreserved: true, supersededDelegations,
             preserved: {
               mapVersion: validated.map.version,
               targetCardStatus: validated.target.data?.status ?? null,

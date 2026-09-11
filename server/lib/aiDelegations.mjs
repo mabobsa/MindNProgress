@@ -303,6 +303,13 @@ export function aiDelegationCanBeSupersededBy(delegation, replacement) {
   return true
 }
 
+export function completedAiDelegationReplacement(delegation, delegations) {
+  return [...delegations]
+    .filter((candidate) => aiDelegationCanBeSupersededBy(delegation, candidate))
+    .sort((first, second) => String(second.createdAt ?? '').localeCompare(String(first.createdAt ?? '')))[0]
+    ?? null
+}
+
 export function aiDelegationDisplayState(delegation) {
   if (delegation.pendingRecovery) return 'recovery-dispatch-pending'
   return aiDelegationLimitState(delegation) ?? delegation.state

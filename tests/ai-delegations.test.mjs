@@ -14,6 +14,7 @@ import {
   aiDelegationStateAfterParentWake,
   aiDelegationSucceeded,
   aiDelegationWorkspaceLeaseMatches,
+  completedAiDelegationReplacement,
   createAiDelegationRequestSignature,
   explicitCompletionAiDelegationsForConversation,
   failedAiIntegrationRecoveryRuntime,
@@ -126,6 +127,9 @@ test('변경 없이 한도에 막힌 과거 시도는 같은 카드의 후속 �
   assert.equal(aiDelegationCanBeSupersededBy(waiting, { ...completed, createdAt: '2026-09-07T00:00:00.000Z' }), false)
   assert.equal(aiDelegationCanBeSupersededBy({ ...waiting, workspaceResult: { status: 'quarantined' } }, completed), false)
   assert.equal(aiDelegationCanBeSupersededBy(waiting, { ...completed, state: 'running' }), false)
+  const olderCompleted = { ...completed, id: 'older-retry', createdAt: '2026-09-08T12:00:00.000Z' }
+  assert.equal(completedAiDelegationReplacement(waiting, [olderCompleted, completed])?.id, 'retry')
+  assert.equal(completedAiDelegationReplacement({ ...waiting, targetCardId: 'task-c' }, [completed]), null)
 })
 
 test('복구 접수 확인 전에는 새 재개를 막고 상태 조회로 안내한다', () => {

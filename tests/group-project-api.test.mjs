@@ -35,6 +35,7 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
   const calls = []
   let failWake = false
   let holdRecoveryResponse = false
+  let assistantResult = '문서 분석과 하위 업무 검증 결과입니다.'
   let child
   const fake = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1')
@@ -68,7 +69,7 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
       if (req.method === 'PATCH') { conversations.set(id, { ...saved, ...body }); return send(conversations.get(id)) }
       return send({ ...saved, runtime: { state: 'idle', is_processing: false, can_send_message: true, pending_confirmations: 0 } })
     }
-    if (url.pathname.endsWith('/messages')) return send({ items: [{ type: 'text', position: 'left', content: '문서 분석과 하위 업무 검증 결과입니다.' }] })
+    if (url.pathname.endsWith('/messages')) return send({ items: [{ type: 'text', position: 'left', content: assistantResult }] })
     return send({}, 404)
   })
   const fakePort = await listen(fake)
@@ -348,6 +349,26 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     assert.equal((await humanAction('refresh', await actionBody())).body.executionRequested, false)
     dispatches.delete(reportFailed.wakeOperationId)
     await assertMissingStatusPreserved('report')
+
+    // 구버전 위임처럼 결과 스냅샷이 없는 상태에서 같은 대화에 후속 응답이 생겨도
+    // 재전달은 최신 응답을 원래 결과로 오인하지 않고 메타데이터만 전달한다.
+    await stop(child)
+    const legacyStored = JSON.parse(await readFile(storedPath, 'utf8'))
+    const legacyReport = legacyStored.find((item) => item.id === 'usage-run')
+    Object.assign(legacyReport, {
+      childResultSnapshot: null,
+      childResultHash: null,
+      childResultTurnId: null,
+      childResultCapturedAt: null,
+      childResultCaptureAttemptedAt: null,
+    })
+    await writeFile(storedPath, JSON.stringify(legacyStored))
+    assistantResult = '같은 대화에서 나중에 실행된 다른 위임의 결과입니다.'
+    await start()
+    const legacyLogin = await fetch(baseUrl + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'group-test@mind.local', password: 'GroupTest!2026' }) })
+    editorCookie = legacyLogin.headers.get('set-cookie').split(';')[0]
+    assert.equal((await latestUsage()).resultAvailability, 'unavailable')
+
     failWake = false
     const reportRetryBody = await actionBody()
     const reports = await Promise.all([humanAction('retry-report', reportRetryBody), humanAction('retry-report', reportRetryBody)])
@@ -355,6 +376,14 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     await until(async () => (await latestUsage()).state === 'completed', '기존 결과 재전달이 완료되지 않았습니다.')
     assert.ok(calls.slice(completedCallCount).every((call) => /-wake-\d+$/.test(call.operationId)), '보고 재시도에서 하위 작업을 다시 실행했습니다.')
     assert.equal((await latestUsage()).childOperationId, secondRecoveryId)
+    const retriedWake = calls.find((call) => call.operationId === 'usage-run-wake-2')
+    assert.ok(retriedWake)
+    assert.match(retriedWake.instruction, /하위 AI 원문 미캡처/)
+    assert.match(retriedWake.instruction, /대화의 최신 응답으로 대체하지 않았/)
+    assert.doesNotMatch(retriedWake.instruction, /나중에 실행된 다른 위임의 결과/)
+    const retriedReport = await latestUsage()
+    assert.equal(retriedReport.reportResultAvailability, 'unavailable')
+    assert.match(retriedReport.reportPayloadHash, /^[a-f0-9]{64}$/)
 
     // 같은 실행이 실제로 완료된 경우만 조회로 갱신하고, 상위 재개는 별도 요청을 기다린다.
     const passive = await api(delegateUrl, 'POST', { ...args, targetRevision: (await api(`/api/maps/${target.id}`)).body.map.version, strategy: 'resume', conversationId: documentConversationId, idempotencyKey: 'passive-run' }, sourceHeaders)

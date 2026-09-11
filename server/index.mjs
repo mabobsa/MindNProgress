@@ -25,6 +25,7 @@ import {
   aiDelegationWaitPollDue,
   aiDelegationBlocksResume,
   aiDelegationRecoveryAvailability,
+  aiDelegationReportResult,
   aiDelegationLimitState,
   aiDelegationAttemptHistory,
   aiDelegationCanBeSupersededBy,
@@ -2135,6 +2136,7 @@ function delegationPublicView(delegation) {
   publicDelegation.displayState = aiDelegationDisplayState(delegation)
   publicDelegation.workCompleted = aiDelegationSucceeded(delegation)
   publicDelegation.reportPending = aiDelegationSucceeded(delegation) && delegation.parentDispatchState !== 'completed'
+  publicDelegation.resultAvailability = aiDelegationReportResult(delegation).availability
   return publicDelegation
 }
 
@@ -2790,13 +2792,24 @@ async function captureAiDelegationChildResult(delegation) {
     ? {
         childResultSnapshot: result,
         childResultHash: createHash('sha256').update(result).digest('hex'),
+        childResultTurnId: delegation?.childTurnId ?? null,
         childResultCapturedAt: attemptedAt,
         childResultCaptureAttemptedAt: attemptedAt,
       }
     : { childResultCaptureAttemptedAt: attemptedAt })
 }
 
-function parentWakeInstruction(delegation, result) {
+function aiDelegationResultSection(reportResult) {
+  if (reportResult.availability === 'captured') {
+    return `## 하위 AI의 마지막 응답\n\n${reportResult.text}\n\n`
+  }
+  if (reportResult.availability === 'integrity-failed') {
+    return `## 하위 AI 원문 무결성 오류\n\n저장된 결과의 해시 또는 실행 턴이 위임 기록과 일치하지 않아 원문을 전달하지 않았습니다. 대화의 최신 응답으로 대체하지 말고 위임 기록과 원본 대화를 별도로 검토하세요.\n\n`
+  }
+  return `## 하위 AI 원문 미캡처\n\n이 위임의 하위 AI 원문은 MindNProgress 위임 기록에 캡처되지 않아 재전달할 수 없습니다. 다른 작업이 이어졌을 수 있는 대화의 최신 응답으로 대체하지 않았으며, 아래 작업공간·체크포인트·통합 정보만 확인된 결과입니다.\n\n`
+}
+
+function parentWakeInstruction(delegation, reportResult = aiDelegationReportResult(delegation)) {
   const integrationFailure = delegation.integrationStatus && delegation.integrationStatus !== 'completed'
     ? delegation.integrationError ?? delegation.workspaceError ?? delegation.integrationStatus
     : null
@@ -2818,13 +2831,15 @@ function parentWakeInstruction(delegation, result) {
 - 위임 ID: ${delegation.id}
 - 하위 카드: ${delegation.targetCardLabel} (${delegation.targetCardId})
 - 실행 대화: ${delegation.targetConversationId}
+- 하위 실행 턴: ${delegation.childTurnId ?? '미확인'}
+- 결과 원문: ${reportResult.availability === 'captured' ? '캡처됨' : reportResult.availability === 'integrity-failed' ? '무결성 오류로 제외됨' : '캡처되지 않음'}
 - 선택 방식: ${delegation.strategy === 'resume' ? '기존 대화 이어가기' : '새 대화 시작'}
 - 선택 이유: ${delegation.decisionReason}
 ${workspaceResult}
 
 ${AI_EXECUTION_APPROVAL_INSTRUCTION}
 
-${result ? `## 하위 AI의 마지막 응답\n\n${result}\n\n` : ''}${AI_DELEGATION_FOLLOWUP_INSTRUCTION}`
+${aiDelegationResultSection(reportResult)}${AI_DELEGATION_FOLLOWUP_INSTRUCTION}`
 }
 
 function aiDelegationRecoveryKey(delegation) {
@@ -2927,7 +2942,10 @@ async function settlePendingAiRecovery(delegation) {
     ...(['completed', 'failed'].includes(dispatch.state) ? { state: 'starting' } : {}),
     childStatus: dispatch.state === 'waiting_resume' ? 'interrupted' : null,
     childError: dispatch.errorMessage ?? null,
-    childResultSnapshot: null, childResultHash: null, childResultCapturedAt: null, childResultCaptureAttemptedAt: null,
+    childResultSnapshot: null, childResultHash: null, childResultTurnId: null,
+    childResultCapturedAt: null, childResultCaptureAttemptedAt: null,
+    reportPayloadHash: null, reportResultAvailability: null, reportResultHash: null,
+    reportResultTurnId: null, reportPreparedAt: null,
     workspaceResult: null, workspaceError: null,
   }
   return updateAiDelegation(delegation.id, {
@@ -2972,7 +2990,10 @@ async function refreshSuspendedAiDelegation(delegation) {
       ...initialAiDelegationRuntime(status), childError: status.errorMessage ?? null,
       childStatus: status.state === 'waiting_resume' ? 'interrupted' : null,
       parentError: null, parentDispatchState: null, completedAt: null,
-      childResultSnapshot: null, childResultHash: null, childResultCaptureAttemptedAt: null,
+      childResultSnapshot: null, childResultHash: null, childResultTurnId: null,
+      childResultCapturedAt: null, childResultCaptureAttemptedAt: null,
+      reportPayloadHash: null, reportResultAvailability: null, reportResultHash: null,
+      reportResultTurnId: null, reportPreparedAt: null,
       attemptHistory: aiDelegationAttemptHistory(delegation, '같은 실행의 재개 확인'),
     })
   }
@@ -2983,7 +3004,10 @@ async function refreshSuspendedAiDelegation(delegation) {
       childCompletedAt: delegation.childCompletedAt ?? new Date().toISOString(),
       reportApprovalRequired: true,
       parentDispatchState: 'not-sent', parentError: null, childTurnId: status.turnId ?? delegation.childTurnId,
-      childResultSnapshot: null, childResultHash: null, childResultCaptureAttemptedAt: null,
+      childResultSnapshot: null, childResultHash: null, childResultTurnId: null,
+      childResultCapturedAt: null, childResultCaptureAttemptedAt: null,
+      reportPayloadHash: null, reportResultAvailability: null, reportResultHash: null,
+      reportResultTurnId: null, reportPreparedAt: null,
       attemptHistory: aiDelegationAttemptHistory(delegation, '같은 실행 완료 확인 · 결과 전달은 사용자 요청 대기'),
     })
     return workPending ? updated : captureAiDelegationChildResult(updated)
@@ -3787,7 +3811,10 @@ async function pollAiDelegations() {
           if (!['completed', 'failed'].includes(childStatus)) continue
           const limitState = aiDelegationLimitState({ ...delegation, childStatus, childError })
           if (limitState) {
-            const captured = await captureAiDelegationChildResult(delegation)
+            const captured = await captureAiDelegationChildResult({
+              ...delegation,
+              childTurnId: status.turnId ?? delegation.childTurnId ?? null,
+            })
             const workspace = await finalizeDelegationWorkspace(captured, childStatus, childError)
             await updateAiDelegation(delegation.id, {
               state: limitState, childStatus, childError, childTurnId: status.turnId ?? delegation.childTurnId,
@@ -3806,7 +3833,10 @@ async function pollAiDelegations() {
             }
             continue
           }
-          const capturedDelegation = await captureAiDelegationChildResult(delegation)
+          const capturedDelegation = await captureAiDelegationChildResult({
+            ...delegation,
+            childTurnId: status.turnId ?? delegation.childTurnId ?? null,
+          })
           const workspace = await finalizeDelegationWorkspace(capturedDelegation, childStatus, childError)
           const updated = await updateAiDelegation(capturedDelegation.id, {
             childStatus,
@@ -3927,7 +3957,11 @@ async function pollAiDelegations() {
         if (anotherWakeInProgress) continue
         try {
           if (delegation.childStatus === 'completed' && await documentCoordinationPending(delegation)) {
-            await updateAiDelegation(delegation.id, { state: 'waiting-document-work', childResultSnapshot: null, childResultHash: null })
+            await updateAiDelegation(delegation.id, {
+              state: 'waiting-document-work',
+              childResultSnapshot: null, childResultHash: null, childResultTurnId: null,
+              childResultCapturedAt: null, childResultCaptureAttemptedAt: null,
+            })
             continue
           }
           if (delegation.reportApprovalRequired) {
@@ -3937,11 +3971,20 @@ async function pollAiDelegations() {
           const parent = await fetchAiConversationRuntime(delegation.parentConversationId)
           const runtime = normalizeAiConversationRuntime(delegation.parentConversationId, parent)
           if (runtime.state !== 'idle') continue
-          const result = delegation.childResultSnapshot || await latestAssistantResult(delegation.targetConversationId)
+          const reportResult = aiDelegationReportResult(delegation)
           const parentWakeAttempt = Number(delegation.parentWakeAttempt ?? 0) + 1
           const wakeOperationId = boundedAionOperationId(delegation.id, `wake-${parentWakeAttempt}`)
+          const wakeInstruction = parentWakeInstruction(delegation, reportResult)
+          const reportPreparedAt = new Date().toISOString()
           // 전달 의도를 먼저 저장하여 응답 유실·재시작 뒤에도 같은 요청을 조회한다.
-          await updateAiDelegation(delegation.id, { state: 'waking-parent', wakeOperationId, parentWakeAttempt })
+          await updateAiDelegation(delegation.id, {
+            state: 'waking-parent', wakeOperationId, parentWakeAttempt,
+            reportPayloadHash: createHash('sha256').update(wakeInstruction).digest('hex'),
+            reportResultAvailability: reportResult.availability,
+            reportResultHash: reportResult.hash,
+            reportResultTurnId: reportResult.turnId,
+            reportPreparedAt,
+          })
           const response = await fetchAionUiOn(delegationParentMachineId(delegation), '/api/internal/external-conversation-dispatches', {
             method: 'POST',
             body: {
@@ -3949,7 +3992,7 @@ async function pollAiDelegations() {
               actorConversationId: delegation.parentConversationId,
               strategy: 'resume',
               targetConversationId: delegation.parentConversationId,
-              instruction: parentWakeInstruction(delegation, result),
+              instruction: wakeInstruction,
             },
           })
           await updateAiDelegation(delegation.id, {
@@ -5763,6 +5806,8 @@ const server = createServer(async (request, response) => {
           reportApprovalRequired: false,
           attemptHistory: aiDelegationAttemptHistory(delegation, '사용자 요청에 따른 결과 재전달'),
           reportRetryRequestedAt: new Date().toISOString(), reportRetryRequestedBy: user.id,
+          reportPayloadHash: null, reportResultAvailability: null, reportResultHash: null,
+          reportResultTurnId: null, reportPreparedAt: null,
         })
         return sendJson(response, 202, { delegation: delegationPublicView(updated), childExecutionRequested: false })
       }
@@ -7119,8 +7164,14 @@ const server = createServer(async (request, response) => {
         ...(integrationRecovery ? {} : {
           childResultSnapshot: null,
           childResultHash: null,
+          childResultTurnId: null,
           childResultCapturedAt: null,
           childResultCaptureAttemptedAt: null,
+          reportPayloadHash: null,
+          reportResultAvailability: null,
+          reportResultHash: null,
+          reportResultTurnId: null,
+          reportPreparedAt: null,
         }),
         workspaceLease,
       })
@@ -7340,9 +7391,12 @@ const server = createServer(async (request, response) => {
           }
           aiDelegations.set(id, delegation)
           await persistAiDelegations()
-          broadcastEvent({ type: 'ai-delegation-changed', delegation: delegationPublicView(delegation) })
+          const recoveredDelegation = ['completed', 'failed'].includes(delegation.childStatus)
+            ? await captureAiDelegationChildResult(delegation)
+            : delegation
+          broadcastEvent({ type: 'ai-delegation-changed', delegation: delegationPublicView(recoveredDelegation) })
           return sendJson(response, 202, {
-            delegation: delegationPublicView(delegation),
+            delegation: delegationPublicView(recoveredDelegation),
             mapVersion: map.version,
             repeated: true,
             recovered: true,

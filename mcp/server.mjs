@@ -245,7 +245,7 @@ const productGuide = {
     'mindnprogress_delegate_ai_work의 위임 기준은 AionUi 대화 ID에 영속 기록된 시작 카드로 고정되며, MCP 재연결·프로세스 재생성이나 다른 카드의 get_context 추가 조회에도 바뀌지 않음. 직계 자식뿐 아니라 모든 깊이의 계층상 하위 카드에 위임 가능',
     'AI 위임이 recovery-required 또는 integration-recovery-required이면 AionCore 재시작, 재시도 가능한 연결 끊김 또는 필수 체크포인트·통합 실패로 이전 실행을 명시적으로 이어야 하는 상태임. 원 지시를 자동 반복하거나 새 위임을 만들지 말고 mindnprogress_recover_ai_delegation으로 기존 대화와 작업공간을 재개함',
     'AI 위임이 parent-wake-failed이고 list_ai_delegations의 recovery.recoveryAvailable=true이면 하위 AI가 사용량 또는 요청 한도로 중단된 뒤 기존 작업공간이 안전하게 보존된 상태임. 사용자가 한도 해제를 확인한 뒤 mindnprogress_recover_ai_delegation으로 같은 대화·작업공간을 재개함. recoveryAvailable=false이면 자동 정리하거나 새 위임을 만들지 말고 recommendedAction과 실패 원인을 보고함',
-    '사용량 또는 요청 제한은 waiting-usage-limit 또는 waiting-rate-limit로 보존하며 자동으로 작업을 재실행하지 않음. 작업공간이 없는 총괄→문서 위임도 사용자 요청 후 기존 위임으로 복구할 수 있음. 상태만 확인할 때는 mindnprogress_refresh_ai_delegation을 사용하고, 작업은 완료됐으나 결과 전달만 실패한 경우에는 사용자 요청 후 mindnprogress_retry_ai_delegation_report로 결과만 재전달함. 이때 하위 업무를 다시 실행하거나 새 위임을 만들지 않음',
+    '사용량 또는 요청 제한은 waiting-usage-limit 또는 waiting-rate-limit로 보존하며 자동으로 작업을 재실행하지 않음. 작업공간이 없는 총괄→문서 위임도 사용자 요청 후 기존 위임으로 복구할 수 있음. 상태만 확인할 때는 mindnprogress_refresh_ai_delegation을 사용하고, 작업은 완료됐으나 결과 전달만 실패한 경우에는 사용자 요청 후 mindnprogress_retry_ai_delegation_report로 결과만 재전달함. 이때 하위 업무를 다시 실행하거나 새 위임을 만들지 않음. 캡처된 원문이 없거나 무결성이 맞지 않으면 같은 대화의 최신 응답으로 대체하지 않고 원문 미포함 메타데이터 보고만 전달함',
     'coordination-only 위임의 실행이 완료됐지만 하위 업무·문서 검수 대기에 남았거나 그 상태가 재시작 뒤 recovery-required로 후퇴했고 보존 결과가 있으며, 사용자가 현재 미완료 상태와 외부 대기를 보존한 종료를 명시적으로 요청한 경우에만 mindnprogress_finalize_ai_coordination을 사용함. 이 도구는 카드 상태·진행률·대기 항목과 실제 미완료 하위 위임을 보존하고 하위 AI를 재실행하지 않음. 변경 없이 한도에 막힌 과거 시도와 같은 카드의 완료된 후속 위임이 확인되면 그 과거 시도만 superseded 감사 이력으로 함께 정리한 뒤 현재 조정 결과의 상위 보고를 진행함',
     'waiting-usage-limit 또는 waiting-rate-limit인 과거 위임 뒤 같은 상위 카드와 대상 카드에서 새 위임이 실제 완료됐고, 과거 작업공간에 보존할 변경이 없음을 확인했으며 사용자가 명시적으로 정리를 요청한 경우에만 mindnprogress_supersede_ai_delegation을 사용함. 과거 위임을 completed로 위조하지 않고 성공한 후속 위임 ID를 남긴 superseded 상태로 종료함',
     '현재 위임 실행이 사용자의 중지로 끊긴 뒤 같은 AI 대화에서 직접 이어 실제 작업을 완료했다면 카드 결과와 필요한 작업공간 체크포인트까지 마친 마지막 턴에서 최종 답변 직전에 mindnprogress_complete_ai_delegation을 호출함. 같은 대화의 과거 위임이 중지된 적이 있더라도 현재 위임이 중단 없이 진행됐다면 호출하지 않음. 도구가 required=false를 반환하면 오류가 아니며 최종 답변을 마치면 자동으로 상위 AI에 보고됨. mindnprogress_recover_ai_delegation으로 시작한 복구 operation도 다시 중지된 경우에만 같은 규칙을 적용함',
@@ -2045,7 +2045,7 @@ async function main() {
 
   for (const [name, action, description] of [
     ['mindnprogress_refresh_ai_delegation', 'refresh', '기존 위임 operation의 실제 상태를 다시 확인하고 위임 메타데이터를 동기화합니다. AI 실행 요청·재위임·카드 변경은 하지 않습니다. 같은 대화의 다른 턴을 임의로 완료 근거로 삼지 않습니다.'],
-    ['mindnprogress_retry_ai_delegation_report', 'retry-report', '사용자 요청과 기존 승인 범위를 확인한 뒤, 작업 완료가 확인됐으나 상위 보고만 실패한 위임의 결과를 재전달합니다. 상위 AI가 재개될 수 있지만 하위 작업은 재실행하지 않습니다. 상태 조회와 실제 작업 복구를 구분하세요.'],
+    ['mindnprogress_retry_ai_delegation_report', 'retry-report', '사용자 요청과 기존 승인 범위를 확인한 뒤, 작업 완료가 확인됐으나 상위 보고만 실패한 위임의 결과를 재전달합니다. 상위 AI가 재개될 수 있지만 하위 작업은 재실행하지 않습니다. 캡처된 원문이 없거나 해시·실행 턴 무결성이 맞지 않으면 같은 대화의 최신 응답으로 대체하지 않고 원문 미포함 메타데이터만 전달합니다. 상태 조회와 실제 작업 복구를 구분하세요.'],
   ]) {
     registerTool(server, name, description, {
       mapId: z.string().min(1).describe('이 위임을 시작한 상위 문서 ID'),

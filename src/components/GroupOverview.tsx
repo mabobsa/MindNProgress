@@ -201,7 +201,9 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
         ? '문서 조정 AI의 실행만 종료해 현재 결과를 총괄 AI에 전달합니다. 카드 상태·진행률·외부 대기와 실제 미완료 하위 위임은 그대로 유지합니다. 변경 없이 한도에 막힌 과거 시도에 같은 카드의 완료된 후속 위임이 있으면 그 과거 시도만 후속 성공 이력으로 함께 정리합니다. 이 상태로 조정 실행을 종료할까요?'
         : action === 'supersede'
           ? `과거 한도 대기 위임을 완료 처리하지 않고, 성공한 후속 위임 ${replacement?.id}으로 이어졌다는 감사 이력을 남겨 종료합니다. 카드와 작업공간은 변경하지 않습니다. 계속할까요?`
-        : '하위 작업은 재실행하지 않고 기존 완료 결과를 총괄 AI에 전달합니다. 총괄 AI가 실행 중이면 전달 순서를 기다립니다. 기존 승인 범위에서 결과를 검토하도록 재개할까요?')) return
+        : item.resultAvailability === 'captured'
+          ? '하위 작업은 재실행하지 않고 캡처된 기존 완료 결과를 총괄 AI에 전달합니다. 총괄 AI가 실행 중이면 전달 순서를 기다립니다. 기존 승인 범위에서 결과를 검토하도록 재개할까요?'
+          : '하위 작업은 재실행하지 않습니다. 이 위임의 결과 원문이 캡처되지 않았거나 무결성을 확인할 수 없어, 다른 작업의 최신 응답 대신 작업공간·체크포인트·통합 메타데이터만 총괄 AI에 전달합니다. 계속할까요?')) return
     setBusy(true); setError(''); setNotice('')
     try {
       const actionResult = await request<{ supersededDelegations?: Array<{ delegationId: string; replacementDelegationId: string }> }>(`/api/maps/${encodeURIComponent(coordinator.id)}/ai-delegations/${encodeURIComponent(item.id)}/${action}`, clientId, { method: 'POST', body: JSON.stringify({
@@ -214,7 +216,7 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
       }) })
       await refresh()
       const supersededCount = actionResult.supersededDelegations?.length ?? 0
-      if (mounted.current) setNotice(`${target.title}: ${action === 'refresh' ? '실행 요청 없이 기존 위임 상태를 확인했습니다.' : action === 'recover' ? '기존 대화에 재개 요청을 전달했습니다. 완료된 작업은 확인하고 미완료 부분만 이어갑니다.' : action === 'finalize-coordination' ? `카드와 외부 대기를 유지한 채 문서 조정 종료와 총괄 보고를 접수했습니다.${supersededCount ? ` 후속 성공으로 해소된 과거 한도 대기 ${supersededCount}건도 함께 정리했습니다.` : ''}` : action === 'supersede' ? '과거 한도 대기 위임을 성공한 후속 위임과 연결해 종료했습니다.' : '결과 재전달을 접수했습니다. 하위 작업은 재실행하지 않습니다.'}`)
+      if (mounted.current) setNotice(`${target.title}: ${action === 'refresh' ? '실행 요청 없이 기존 위임 상태를 확인했습니다.' : action === 'recover' ? '기존 대화에 재개 요청을 전달했습니다. 완료된 작업은 확인하고 미완료 부분만 이어갑니다.' : action === 'finalize-coordination' ? `카드와 외부 대기를 유지한 채 문서 조정 종료와 총괄 보고를 접수했습니다.${supersededCount ? ` 후속 성공으로 해소된 과거 한도 대기 ${supersededCount}건도 함께 정리했습니다.` : ''}` : action === 'supersede' ? '과거 한도 대기 위임을 성공한 후속 위임과 연결해 종료했습니다.' : item.resultAvailability === 'captured' ? '캡처된 결과 재전달을 접수했습니다. 하위 작업은 재실행하지 않습니다.' : '결과 원문을 제외한 메타데이터 전용 재전달을 접수했습니다. 하위 작업은 재실행하지 않습니다.'}`)
     } catch (reason) {
       await refresh()
       if (mounted.current) setError(`${target.title}: ${reason instanceof Error ? reason.message : '위임 상태를 처리하지 못했습니다.'}`)
@@ -283,7 +285,10 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
                   : detailTab === 'history' ? <><p className="group-muted">선택한 위임의 이전 실행·복구 기록입니다. 현재 결과와 구분해 확인하세요.</p>{delegation.attemptHistory?.length ? delegation.attemptHistory.map((attempt, index) => <article className="group-attempt" key={index}><h3>{formatTime(attempt.at)} · {attempt.reason}</h3>{attempt.childError && <p className="group-inline-error">문서 AI: {attempt.childError}</p>}{attempt.parentError && <p className="group-inline-error">총괄 AI: {attempt.parentError}</p>}{attempt.result && <pre className="group-full-text">{attempt.result}</pre>}</article>) : <p className="group-empty">이 위임에 기록된 복구 이력이 없습니다.</p>}</>
                     : <><div className="group-result-status"><DelegationStatus item={delegation} /><small>상태 변경 {formatTime(delegation.updatedAt || delegation.createdAt)}</small></div><h3>위임 지시</h3><p className="group-full-text">{delegation.instructionPreview || '기록된 지시가 없습니다.'}</p>
                       {([['문서 AI', delegation.childError], ['총괄 AI', delegation.parentError], ['연결', delegation.linkError], ['복구 전달', delegation.recoveryWakeError]] as const).map(([label, message]) => message && <p className="group-inline-error" key={label}>{label}: {message}</p>)}
-                      <h3>{delegation.workCompleted ? '실행 결과 요약' : '중간 결과'}</h3><p className="group-muted">{delegation.workCompleted ? '실행 완료와 요구사항 검증 완료는 다릅니다. 검증 근거는 문서에서 확인하세요.' : '중단 시점의 결과는 완료 근거가 아닙니다.'}</p><pre className="group-full-text">{delegation.result || '아직 전달된 결과가 없습니다.'}</pre>
+                      <h3>{delegation.workCompleted ? '실행 결과 요약' : '중간 결과'}</h3><p className="group-muted">{delegation.workCompleted ? '실행 완료와 요구사항 검증 완료는 다릅니다. 검증 근거는 문서에서 확인하세요.' : '중단 시점의 결과는 완료 근거가 아닙니다.'}</p>
+                      {delegation.resultAvailability === 'integrity-failed' && <p className="group-inline-error">저장된 결과의 해시 또는 실행 턴이 위임 기록과 일치하지 않아 원문을 표시하거나 재전달하지 않습니다.</p>}
+                      {delegation.resultAvailability === 'unavailable' && <p className="group-inline-error">이 위임의 결과 원문이 캡처되지 않았습니다. 재전달 시 다른 작업의 최신 응답으로 대체하지 않고 메타데이터만 전달합니다.</p>}
+                      <pre className="group-full-text">{delegation.result || (delegation.resultAvailability === 'integrity-failed' ? '무결성을 확인할 수 없는 결과는 제외했습니다.' : delegation.resultAvailability === 'unavailable' ? '캡처된 결과 원문이 없습니다.' : '아직 전달된 결과가 없습니다.')}</pre>
                     </>}
             </div>
             <div className="group-detail-footer">

@@ -221,6 +221,22 @@ export function aiDelegationSucceeded(delegation) {
   return true
 }
 
+export function aiDelegationReportResult(delegation) {
+  const text = typeof delegation?.childResultSnapshot === 'string'
+    ? delegation.childResultSnapshot
+    : ''
+  if (!text.trim()) return { availability: 'unavailable', text: '', hash: null, turnId: null }
+
+  const hash = createHash('sha256').update(text).digest('hex')
+  const storedHash = String(delegation?.childResultHash ?? '').trim()
+  const capturedTurnId = String(delegation?.childResultTurnId ?? '').trim()
+  const childTurnId = String(delegation?.childTurnId ?? '').trim()
+  if ((storedHash && storedHash !== hash) || (capturedTurnId && childTurnId && capturedTurnId !== childTurnId)) {
+    return { availability: 'integrity-failed', text: '', hash: null, turnId: null }
+  }
+  return { availability: 'captured', text, hash, turnId: capturedTurnId || childTurnId || null }
+}
+
 export function retryableExternalLimitCategory(error) {
   const message = String(error ?? '').trim()
   if (!message) return null
@@ -282,6 +298,11 @@ export function aiDelegationAttemptHistory(delegation, reason, at = new Date().t
     childError: delegation.childError ?? null, parentError: delegation.parentError ?? null,
     parentDispatchState: delegation.parentDispatchState, wakeOperationId: delegation.wakeOperationId,
     result: delegation.childResultSnapshot ?? '', resultCapturedAt: delegation.childResultCapturedAt ?? null,
+    reportPayloadHash: delegation.reportPayloadHash ?? null,
+    reportResultAvailability: delegation.reportResultAvailability ?? null,
+    reportResultHash: delegation.reportResultHash ?? null,
+    reportResultTurnId: delegation.reportResultTurnId ?? null,
+    reportPreparedAt: delegation.reportPreparedAt ?? null,
   }]
 }
 

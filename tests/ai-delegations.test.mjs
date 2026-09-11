@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import {
   AI_DELEGATION_WAIT_POLL_DELAYS_MS,
@@ -6,6 +7,7 @@ import {
   aiDelegationWaitPollDue,
   aiDelegationBlocksResume,
   aiDelegationRecoveryAvailability,
+  aiDelegationReportResult,
   aiDelegationLimitState,
   aiDelegationAttemptHistory,
   aiDelegationCanBeSupersededBy,
@@ -25,6 +27,30 @@ import {
   nextAiDelegationWaitPoll,
   shouldReconcileAiDelegationChildWorkspace,
 } from '../server/lib/aiDelegations.mjs'
+
+test('완료 보고는 캡처된 원문만 사용하고 해시·턴 불일치를 차단한다', () => {
+  const text = '이 위임에서 캡처한 결과입니다.'
+  const hash = createHash('sha256').update(text).digest('hex')
+  assert.deepEqual(aiDelegationReportResult({
+    childResultSnapshot: text,
+    childResultHash: hash,
+    childResultTurnId: 'turn-a',
+    childTurnId: 'turn-a',
+  }), { availability: 'captured', text, hash, turnId: 'turn-a' })
+  assert.equal(aiDelegationReportResult({ childTurnId: 'turn-a' }).availability, 'unavailable')
+  assert.equal(aiDelegationReportResult({
+    childResultSnapshot: text,
+    childResultHash: '잘못된 해시',
+    childResultTurnId: 'turn-a',
+    childTurnId: 'turn-a',
+  }).availability, 'integrity-failed')
+  assert.equal(aiDelegationReportResult({
+    childResultSnapshot: text,
+    childResultHash: hash,
+    childResultTurnId: 'turn-b-b',
+    childTurnId: 'turn-a',
+  }).availability, 'integrity-failed')
+})
 
 test('사용량 또는 요청 한도로 격리된 parent-wake-failed 위임은 기존 실행 재개 대상으로 안내한다', () => {
   const base = {

@@ -261,7 +261,15 @@ test('AionCore가 실제 사용한 작업공간 lease를 모든 식별자로 비
     leaseId: 'lease-other',
   }), false)
   assert.equal(aiDelegationWorkspaceLeaseMatches(expected, null), false)
+  assert.equal(aiDelegationWorkspaceLeaseMatches({ ...expected, branch: 'mnp/job-a' }, expected), true,
+    'AionCore 응답에 없는 branch를 소유권 불일치로 판정하지 않는다')
   assert.equal(aiDelegationWorkspaceLeaseMatches({ ...expected, branch: 'mnp/job-a' }, { ...expected, branch: 'main' }), false)
+  assert.equal(aiDelegationWorkspaceLeaseMatches({ ...expected, branch: 'mnp/job-a' }, { ...expected, branch: '' }), false)
+  for (const key of ['workspaceId', 'jobId', 'leaseId', 'projectRoot']) {
+    assert.equal(aiDelegationWorkspaceLeaseMatches(expected, { ...expected, [key]: 'other' }), false)
+    assert.equal(aiDelegationWorkspaceLeaseMatches({ ...expected, [key]: '' }, { ...expected, [key]: '' }), false)
+  }
+  assert.equal(aiDelegationWorkspaceLeaseMatches({}, {}), false)
   assert.equal(aiDelegationWorkspaceLeaseMatches(null, null), true)
 })
 

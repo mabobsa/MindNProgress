@@ -26,6 +26,12 @@ async function waitFor(check, timeout = 20_000) {
 
 test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기화·새 제안을 연결한다', { timeout: 90_000 }, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), 'mnp-dooray-response-api-'))
+  const executionWorkspace = path.join(directory, 'integration')
+  const registryFile = path.join(directory, '_test-workspaces.json')
+  await writeFile(registryFile, JSON.stringify({ schemaVersion: 1, poolId: 'test-project', workspaces: [
+    { id: 'main', root: executionWorkspace, role: 'integration', enabled: true },
+    { id: 'worker', root: path.join(directory, 'worker'), role: 'worker', enabled: true },
+  ] }))
   const operations = new Map()
   const created = []
   const paths = []
@@ -81,6 +87,9 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     }
     const messageMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/)
     if (messageMatch) {
+      if (messageMatch[1] === 'approved-work') return send(url.searchParams.has('before') ? {
+        items: [{ id: 'approval-user', position: 'right', type: 'text', created_at: 1, content: { content: '2단계 분석 계획 승인. 기존 결과는 재사용하세요.' } }], has_more_before: false,
+      } : { items: [{ id: 'approval-answer', position: 'left', type: 'text', created_at: 2, content: { content: '문서 구성 완료. 남은 분석만 진행합니다.\n- attributionToken: secret-only-for-test-1234567890' } }], has_more_before: true, oldest_cursor: 'earlier-page' })
       if (messageMatch[1] === 'existing-chat') return send({ items: [{ position: 'left', type: 'text', content: { content: '기존 담당 대화의 확정 사항: 소수점 둘째 자리까지 표시' } }] })
       const op = [...operations.values()].reverse().find((entry) => entry.targetConversationId === messageMatch[1])
       if (!op) return send({ items: [] })
@@ -96,7 +105,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
       return response.end(JSON.stringify({ success: false, error: { code: currentFailure.code } }))
     }
     if (conversation) return send({ id: conversation[1], name: '베팅 표시 대화', runtime: { state: 'idle', isProcessing: false, pendingConfirmations: 0 },
-      extra: { agent_id: 'test-agent', current_model_id: 'test-model', ...extraByConversation.get(conversation[1]) } })
+      extra: { agent_id: 'test-agent', current_model_id: 'test-model', workspace: executionWorkspace, ...extraByConversation.get(conversation[1]) } })
     if (url.pathname === '/api/internal/external-conversation-dispatches' && request.method === 'POST') {
       assert.equal(body.strategy, 'resume')
       assert.equal(body.actorConversationId, body.targetConversationId)
@@ -134,10 +143,13 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   const port = 20_000 + Math.floor(Math.random() * 8000)
   const baseUrl = `http://127.0.0.1:${port}`
   const password = 'response-test-password'
-  const server = spawn(process.execPath, ['server/index.mjs'], { cwd: projectDirectory, stdio: 'ignore', env: {
+  let serverErrors = ''
+  const server = spawn(process.execPath, ['server/index.mjs'], { cwd: projectDirectory, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: {
     ...process.env, MNP_DATA_DIR: directory, MNP_API_HOST: '127.0.0.1', MNP_API_PORT: String(port), MNP_WEB_PORT: String(port),
+    MNP_WORKSPACE_POOL_REGISTRY: registryFile,
     MNP_ADMIN_PASSWORD: password, MNP_DOORAY_API_KEY: 'test-only', MNP_DOORAY_BASE_URL: upstreamUrl, MNP_AIONUI_URL: upstreamUrl, MNP_AIONUI_WEB_URL: upstreamUrl,
   } })
+  server.stderr.on('data', (chunk) => { serverErrors += chunk })
   t.after(async () => {
     server.kill()
     await new Promise((resolve) => { if (server.exitCode !== null) resolve(); else server.once('exit', resolve) })
@@ -145,12 +157,25 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     await new Promise((resolve) => upstream.close(resolve))
     await rm(directory, { recursive: true, force: true })
   })
-  await waitFor(async () => (await fetch(`${baseUrl}/api/health`)).ok)
+  try { await waitFor(async () => (await fetch(`${baseUrl}/api/health`)).ok) }
+  catch (failure) { throw new Error(`${failure.message}\n${serverErrors}`) }
   const endpoint = `${baseUrl}/api/integrations/dooray/mentions/responses`
   assert.equal((await fetch(endpoint)).status, 401)
   const login = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@mind.local', password }) })
   assert.equal(login.status, 200)
   const headers = { Cookie: login.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' }
+  const executionOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options?purpose=dooray-response`, { headers })).json()
+  assert.equal(executionOptions.defaultWorkspace, '', '담당 미지정 시 MnP나 Holdem으로 임의 귀속하지 않는다')
+  assert.deepEqual(executionOptions.workspaceChoices, [executionWorkspace, projectDirectory])
+  const cardWorkspaceOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options?purpose=dooray-response&mapId=map-test&cardId=task1`, { headers })).json()
+  assert.equal(cardWorkspaceOptions.defaultWorkspace, executionWorkspace)
+  const originalExtra = extraByConversation.get('existing-chat')
+  extraByConversation.set('existing-chat', { ...originalExtra, workspace: projectDirectory })
+  const maintenanceOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options?purpose=dooray-response&mapId=map-test&cardId=task1`, { headers })).json()
+  assert.equal(maintenanceOptions.defaultWorkspace, projectDirectory, 'MnP 대화가 연결된 유지보수 카드는 MnP 경로를 기본값으로 제안한다')
+  extraByConversation.set('existing-chat', originalExtra)
+  const normalOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options`, { headers })).json()
+  assert.equal(normalOptions.defaultWorkspace, projectDirectory, '일반 카드의 기존 기본값은 변경하지 않는다')
   assert.deepEqual((await (await fetch(endpoint, { headers })).json()).jobs, [])
   assert.equal((await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: 'foreign' }) })).status, 404)
   const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: item.key, settings: { agentId: 'test-agent', modelId: 'test-model' }, url: 'http://untrusted.invalid' }) })
@@ -295,7 +320,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     assert.ok(payload.prompt.includes(reviewProposal))
     assert.match(payload.prompt, /서버에 저장된 사용자 승인을 검증/)
     assert.match(payload.title, /^\[Dooray 승인\]/)
-    assert.equal(payload.workspace, 'C:/test-approved-workspace')
+    assert.equal(payload.workspace, executionWorkspace)
     assert.equal(payload.agentId, 'test-agent')
     assert.equal(payload.autoSend, true)
     assert.equal((await fetch(`${contextUrl}&execution=1&conversationId=approved-work`, { headers })).status, 409)
@@ -307,7 +332,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     await verifyApprovalMcp()
   }
   if (['1', 'approval'].includes(process.env.MNP_RESPONSE_BROWSER_CHECK)) {
-    await checkDoorayResponseBrowser({ directory, baseUrl, password, approvalFlow: { verifyNoLaunch, completeLaunch, proposalConversationId: approvalJob.conversationId } })
+    await checkDoorayResponseBrowser({ directory, baseUrl, password, approvalFlow: { verifyNoLaunch, completeLaunch, proposalConversationId: approvalJob.conversationId, executionWorkspace } })
   } else {
     const approval = await fetch(approveUrl, { method: 'POST', headers, body: JSON.stringify({ proposalRevision: approvalJob.proposalRevision }) })
     assert.equal(approval.status, 200)
@@ -315,14 +340,17 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     const { launch } = await (await fetch(contextUrl, { headers })).json()
     const attributionResponse = await fetch(`${baseUrl}/api/integrations/aionui/attributions`, { method: 'POST', headers, body: JSON.stringify({
       agentId: 'test-agent', modelId: 'test-model', purpose: launch.purpose, mapId: launch.mapId, cardId: launch.cardId,
-      doorayApproval: launch.doorayApproval, workspace: 'C:/test-approved-workspace',
+      doorayApproval: launch.doorayApproval, workspace: executionWorkspace,
     }) })
     const attribution = await attributionResponse.json()
     assert.equal(attributionResponse.status, 201, JSON.stringify(attribution))
     const { buildAiConversationPrompt, aiConversationTitle } = await import('../src/utils/aiConversationLaunch.mjs')
     const prompt = buildAiConversationPrompt({ ...launch, editorId: attribution.editorId, attributionToken: attribution.attributionToken, request: attribution.approvalRequest })
     const payload = { agentId: 'test-agent', modelId: 'test-model', completionUrl: attribution.completionUrl, prompt,
-      title: aiConversationTitle(launch), workspace: 'C:/test-approved-workspace', autoSend: true }
+      title: aiConversationTitle(launch), workspace: executionWorkspace, autoSend: true }
+    const wrongWorkspace = await fetch(`${baseUrl}/api/integrations/aionui/external-conversation-launches`, { method: 'POST', headers, body: JSON.stringify({ ...payload, workspace: projectDirectory }) })
+    assert.equal(wrongWorkspace.status, 409)
+    assert.equal(approvalTickets.length, 0, '실행 요청의 작업공간 변조는 AionCore 전달 전에 막는다')
     const bad = await fetch(`${baseUrl}/api/integrations/aionui/external-conversation-launches`, { method: 'POST', headers, body: JSON.stringify({ ...payload, prompt: '전문 누락' }) })
     assert.equal(bad.status, 409)
     const ticket = await fetch(`${baseUrl}/api/integrations/aionui/external-conversation-launches`, { method: 'POST', headers, body: JSON.stringify(payload) })
@@ -348,7 +376,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   assert.equal((await fetch(executionUrl.replace(approvalJob.proposalRevision, '0'.repeat(64)), { headers })).status, 409)
   assert.equal((await fetch(approveUrl, { method: 'POST', headers, body: JSON.stringify({ proposalRevision: approvalJob.proposalRevision }) })).status, 409)
   const duplicateAttribution = await fetch(`${baseUrl}/api/integrations/aionui/attributions`, { method: 'POST', headers, body: JSON.stringify({
-    agentId: 'test-agent', modelId: 'test-model', purpose: 'dooray-response', mapId: '', cardId: '', workspace: 'C:/test-approved-workspace',
+    agentId: 'test-agent', modelId: 'test-model', purpose: 'dooray-response', mapId: '', cardId: '', workspace: executionWorkspace,
     doorayApproval: { responseId: approvalJob.id, proposalRevision: approvalJob.proposalRevision },
   }) })
   assert.equal(duplicateAttribution.status, 409)
@@ -358,4 +386,67 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   await verifyApprovalMcp()
   assert.equal(JSON.parse(await readFile(path.join(directory, 'map-test.json'), 'utf8')).version, 1)
   assert.deepEqual({ created: created.length, operations: operations.size }, beforeApproval)
+
+  // 완료한 승인 기록에서도 사용자가 루트와 전문을 확인해 정식 카드 대화로 인계한다.
+  const executionHandoffUrl = `${endpoint}/${approvalJob.id}/execution-handoff`
+  assert.equal((await fetch(executionHandoffUrl)).status, 401)
+  const options = await (await fetch(executionHandoffUrl, { headers })).json()
+  assert.equal(options.targets[0].cardId, 'root1')
+  const prepared = await (await fetch(`${executionHandoffUrl}?mapId=map-test`, { headers })).json()
+  assert.ok(prepared.preview.request.includes('2단계 분석 계획 승인'))
+  assert.ok(prepared.preview.request.includes('문서 구성 완료'))
+  assert.ok(prepared.preview.request.indexOf('2단계 분석 계획 승인') < prepared.preview.request.indexOf('문서 구성 완료'))
+  assert.ok(!prepared.preview.request.includes('secret-only-for-test'))
+  assert.ok(prepared.preview.request.includes(item.url))
+  const handoffInput = { mapId: 'map-test', proposalRevision: approvalJob.proposalRevision, fingerprint: prepared.preview.fingerprint, confirmApprovedScope: true }
+  assert.equal((await fetch(executionHandoffUrl, { method: 'POST', headers, body: JSON.stringify({ ...handoffInput, confirmApprovedScope: false }) })).status, 409)
+  assert.equal((await fetch(executionHandoffUrl, { method: 'POST', headers, body: JSON.stringify({ ...handoffInput, fingerprint: 'stale' }) })).status, 409)
+  const handoffResponse = await fetch(executionHandoffUrl, { method: 'POST', headers, body: JSON.stringify(handoffInput) })
+  const handoffContext = await handoffResponse.json()
+  assert.equal(handoffResponse.status, 200, JSON.stringify(handoffContext))
+  assert.equal(handoffContext.launch.cardId, 'root1')
+  const repeatedHandoff = await (await fetch(executionHandoffUrl, { method: 'POST', headers, body: JSON.stringify(handoffInput) })).json()
+  assert.equal(repeatedHandoff.launch.doorayApproval.handoffId, handoffContext.launch.doorayApproval.handoffId)
+  const launch = handoffContext.launch
+  for (const workspace of ['', 'relative-path', path.join(directory, '_dooray-response-workspaces', 'user')]) {
+    const rejected = await fetch(`${baseUrl}/api/integrations/aionui/attributions`, { method: 'POST', headers, body: JSON.stringify({
+      agentId: 'test-agent', modelId: 'test-model', ...launch, workspace,
+    }) })
+    assert.equal(rejected.status, 409, '빈 경로·상대 경로·제안 보관 폴더에서 승인 인계를 시작하지 않는다')
+  }
+  const mnpChoice = await fetch(`${baseUrl}/api/integrations/aionui/attributions`, { method: 'POST', headers, body: JSON.stringify({
+    agentId: 'test-agent', modelId: 'test-model', ...launch, workspace: projectDirectory,
+  }) })
+  assert.equal(mnpChoice.status, 201, '사용자가 선택한 MnP 작업공간을 차단하지 않는다')
+  const attributionResponse = await fetch(`${baseUrl}/api/integrations/aionui/attributions`, { method: 'POST', headers, body: JSON.stringify({
+    agentId: 'test-agent', modelId: 'test-model', ...launch, workspace: executionWorkspace,
+  }) })
+  const attribution = await attributionResponse.json()
+  assert.equal(attributionResponse.status, 201, JSON.stringify(attribution))
+  const { buildAiConversationPrompt, aiConversationTitle } = await import('../src/utils/aiConversationLaunch.mjs')
+  const payload = { agentId: 'test-agent', modelId: 'test-model', title: aiConversationTitle(launch), completionUrl: attribution.completionUrl,
+    workspace: executionWorkspace, autoSend: true,
+    prompt: buildAiConversationPrompt({ ...launch, editorId: attribution.editorId, attributionToken: attribution.attributionToken, request: attribution.approvalRequest }) }
+  const ticket = await fetch(`${baseUrl}/api/integrations/aionui/external-conversation-launches`, { method: 'POST', headers, body: JSON.stringify(payload) })
+  assert.equal(ticket.status, 201, JSON.stringify(await ticket.json()))
+  const wrongOrigin = await fetch(attribution.completionUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId: 'existing-chat' }) })
+  assert.equal(wrongOrigin.status, 409, '다른 카드의 대화를 인계 루트 소속으로 옮기지 않는다')
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const completion = await fetch(attribution.completionUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId: 'root-approved-work' }) })
+    assert.equal(completion.status, 200, JSON.stringify(await completion.json()))
+  }
+  const mapLinked = JSON.parse(await readFile(path.join(directory, 'map-test.json'), 'utf8'))
+  assert.equal(mapLinked.version, 2, '중복 완료 통보는 문서 버전을 늘리지 않는다')
+  assert.equal(mapLinked.nodes.find((node) => node.id === 'root1').data.aiConversationId, 'root-approved-work')
+  assert.equal(mapLinked.nodes.find((node) => node.id === 'root1').data.aiConversations.at(-1).workspace, executionWorkspace, '하위 위임도 등록된 pool을 상속할 수 있도록 작업공간을 연결 정보에 저장한다')
+  const origins = JSON.parse(await readFile(path.join(directory, '_ai-conversation-origins.json'), 'utf8'))
+  assert.equal(origins.find((entry) => entry.conversationId === 'root-approved-work').cardId, 'root1')
+  assert.ok(!origins.some((entry) => entry.conversationId === 'approved-work'), '기존 무소속 구성 대화의 시작 카드를 바꾸지 않는다')
+  const verifiedHandoff = await (await fetch(`${contextUrl}&execution=1&conversationId=root-approved-work`, { headers })).json()
+  assert.equal(verifiedHandoff.launch.cardId, 'root1')
+  assert.equal(verifiedHandoff.job.approval.conversation.conversationId, 'approved-work')
+  assert.equal(verifiedHandoff.job.approval.handoffs[0].conversation.conversationId, 'root-approved-work')
+  assert.equal(verifiedHandoff.job.approval.handoffs[0].request, undefined, '목록에는 긴 전문을 반복하지 않는다')
+  assert.equal((await fetch(`${contextUrl}&execution=1&conversationId=unrelated-work`, { headers })).status, 409)
+  assert.equal((await fetch(`${contextUrl}&execution=1&conversationId=approved-work`, { headers })).status, 200)
 })

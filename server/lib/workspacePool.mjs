@@ -4,7 +4,7 @@ import { copyFile, lstat, mkdir, readFile, readlink, rename, rm, stat, writeFile
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
-import { retryableExternalLimitCategory } from './aiDelegations.mjs'
+import { aiDelegationWorkspaceLeaseMatches, retryableExternalLimitCategory } from './aiDelegations.mjs'
 
 const execFileAsync = promisify(execFile)
 const idleDriftReason = '작업공간에 소유자를 확정할 수 없는 변경이 있습니다.'
@@ -345,7 +345,7 @@ export class WorkspacePoolManager {
     return result
   }
 
-  async initialize() {
+  async initialize({ unconfirmedLeaseIds = [] } = {}) {
     return this.runExclusive(async () => {
       const rawRegistry = await readJson(this.registryFile, null)
       if (!rawRegistry) return false
@@ -361,6 +361,10 @@ export class WorkspacePoolManager {
       }
       this.state.workspaces ??= {}
       this.state.leases ??= {}
+      for (const leaseId of unconfirmedLeaseIds) {
+        const lease = this.state.leases[leaseId]
+        if (lease?.status === 'quarantined') lease.executionUnconfirmed = true
+      }
       this.state.integrationLeaseId ??= null
       this.state.poolId = this.registry.poolId
       for (const workspace of this.registry.workspaces) {
@@ -480,6 +484,9 @@ export class WorkspacePoolManager {
     if (!lease || lease.status !== 'quarantined') return false
     const result = lease.result
     if (!result) return false
+    // 실행 응답이 유실되어 대화를 아직 연결하지 못한 lease는 Git이 clean이어도
+    // 실제 AI가 시작됐을 수 있다. 재시작 시 회수하지 않고 명시적 복구로 확인한다.
+    if (lease.executionUnconfirmed) return false
     if (retryableExternalLimitCategory(result.childError)) return false
     if (result.headCommit && result.headCommit !== lease.baseCommit) return false
     if (lease.integrationBranch || result.integrationBranch) return false
@@ -1237,7 +1244,14 @@ export class WorkspacePoolManager {
     cardId,
     conversationId,
     failureCategory,
+    confirmedDispatchLease,
   } = {}) {
+    // 서버가 원본 operation 또는 만료 후 최초 위임 전문을 직접 검증한 경우에만 사용한다.
+    // 요청 본문이나 AI가 주장한 대화 ID만으로 격리를 해제하지 않는다.
+    const dispatchRecovery = failureCategory === 'confirmed-dispatch'
+    if (dispatchRecovery && !aiDelegationWorkspaceLeaseMatches(this.state?.leases?.[leaseId], confirmedDispatchLease)) {
+      throw new WorkspacePoolUnavailableError('기존 실행의 작업공간 소유권을 확인하지 못했습니다.')
+    }
     // 재활성화 뒤 복구 요청 저장에 실패했어도 이미 확보한 소유권으로 재시도한다.
     if (this.state?.leases?.[leaseId]?.status === 'leased') {
       return this.reuseLease(leaseId, { mapId, cardId, conversationId })
@@ -1245,7 +1259,7 @@ export class WorkspacePoolManager {
     return this.runExclusive(async () => {
       const normalizedLeaseId = String(leaseId ?? '').trim()
       const normalizedConversationId = String(conversationId ?? '').trim()
-      if (!['usage-limit', 'rate-limit'].includes(String(failureCategory ?? '').trim())) {
+      if (!dispatchRecovery && !['usage-limit', 'rate-limit'].includes(String(failureCategory ?? '').trim())) {
         throw new WorkspacePoolUnavailableError(
           '외부 사용량 또는 요청 한도로 확인된 격리 lease만 재활성화할 수 있습니다.',
           [],
@@ -1254,7 +1268,7 @@ export class WorkspacePoolManager {
       }
       const lease = this.state?.leases?.[normalizedLeaseId]
       if (!lease || lease.status !== 'quarantined' || lease.result?.status !== 'quarantined'
-        || lease.result?.childStatus !== 'failed') {
+        || (!dispatchRecovery && lease.result?.childStatus !== 'failed')) {
         throw new WorkspacePoolUnavailableError(
           '재개할 격리 AI 작업공간 lease를 찾지 못했습니다.',
           [],
@@ -1268,7 +1282,7 @@ export class WorkspacePoolManager {
           'QUARANTINED_LEASE_SCOPE_MISMATCH',
         )
       }
-      if (!normalizedConversationId || lease.conversationId !== normalizedConversationId) {
+      if (!normalizedConversationId || (lease.conversationId !== normalizedConversationId && !(dispatchRecovery && !lease.conversationId))) {
         throw new WorkspacePoolUnavailableError(
           '재개할 격리 AI 작업공간 lease의 대화가 일치하지 않습니다.',
           [],
@@ -1316,7 +1330,8 @@ export class WorkspacePoolManager {
         || session.workspaceId !== lease.workspaceId
         || session.jobId !== lease.jobId
         || session.leaseId !== normalizedLeaseId
-        || session.conversationId !== normalizedConversationId
+        || (session.conversationId !== normalizedConversationId && !(dispatchRecovery && !session.conversationId))
+        || (dispatchRecovery && (normalizedPath(session.projectRoot) !== normalizedPath(workspace.root) || normalizedPath(lease.projectRoot) !== normalizedPath(workspace.root)))
         || session.branch !== lease.branch
         || session.baseCommit !== lease.baseCommit) {
         throw new WorkspacePoolUnavailableError(
@@ -1377,7 +1392,7 @@ export class WorkspacePoolManager {
       const recoveredAt = new Date().toISOString()
       lease.recoveryHistory ??= []
       lease.recoveryHistory.push({
-        type: 'retryable-child-failure',
+        type: dispatchRecovery ? 'confirmed-dispatch' : 'retryable-child-failure',
         previousStatus: lease.status,
         previousResult: lease.result,
         uncommittedChangesPreserved: Boolean(dirty),
@@ -1385,6 +1400,8 @@ export class WorkspacePoolManager {
       })
       lease.recoveryHistory = lease.recoveryHistory.slice(-20)
       lease.status = 'leased'
+      lease.conversationId = normalizedConversationId
+      delete lease.executionUnconfirmed
       lease.updatedAt = recoveredAt
       delete lease.result
       delete lease.headCommit
@@ -1398,8 +1415,9 @@ export class WorkspacePoolManager {
       }
       await atomicJson(sessionFile, {
         ...session,
+        conversationId: normalizedConversationId,
         recovery: {
-          type: 'retryable-child-failure',
+          type: dispatchRecovery ? 'confirmed-dispatch' : 'retryable-child-failure',
           recoveredAt,
         },
         updatedAt: recoveredAt,
@@ -2271,6 +2289,7 @@ export class WorkspacePoolManager {
       const lease = this.state?.leases?.[leaseId]
       if (!lease) return null
       if (lease.status === 'quarantined') return lease.result ?? null
+      if (!lease.conversationId) lease.executionUnconfirmed = true
       const completedAt = new Date().toISOString()
       const result = await this.writeResult(lease, {
         status: 'quarantined',

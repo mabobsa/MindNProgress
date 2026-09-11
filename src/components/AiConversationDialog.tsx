@@ -48,6 +48,8 @@ type AionOptions = {
   machines: AionMachine[]
   protocol: string
   defaultWorkspace: string
+  workspaceChoices?: string[]
+  workspaceNeedsSelection?: boolean
   workspaceBrowseAvailable: boolean
   agents: AionAgent[]
   skills: AionSkill[]
@@ -301,7 +303,14 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
     setLoading(true)
     setError('')
     setBrowserOpen(false)
-    const query = machineId ? `?machineId=${encodeURIComponent(machineId)}` : ''
+    const params = new URLSearchParams()
+    if (machineId) params.set('machineId', machineId)
+    if (doorayApproval) {
+      params.set('purpose', 'dooray-response')
+      params.set('mapId', documentId)
+      params.set('cardId', cardId)
+    }
+    const query = params.size ? `?${params}` : ''
     fetch(`/api/integrations/aionui/options${query}`, { credentials: 'include', signal: controller.signal })
       .then(async (response) => {
         const body = await response.json().catch(() => ({})) as AionOptions & { error?: string }
@@ -317,7 +326,10 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
       .then((body) => {
         setOptions(body)
         if (body.machineId !== machineId) setMachineId(body.machineId)
-        if (hasStoredDocumentWorkspace(userId, documentId, body.machineId)) {
+        if (doorayApproval) {
+          // 승인 실행은 제안 보관 폴더나 이전 MnP 기본값을 상속하지 않는다.
+          setWorkspace(body.defaultWorkspace?.trim() ?? '')
+        } else if (hasStoredDocumentWorkspace(userId, documentId, body.machineId)) {
           setWorkspace(readDocumentWorkspace(userId, documentId, body.machineId))
         } else if (body.machineRole === 'main' && hasStoredDocumentWorkspace(userId, documentId)) {
           setWorkspace(readDocumentWorkspace(userId, documentId))
@@ -345,7 +357,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
       })
       .finally(() => setLoading(false))
     return () => controller.abort()
-  }, [documentId, machineId, userId])
+  }, [documentId, cardId, machineId, userId, doorayApproval])
 
   useEffect(() => {
     if (!options || !agentId) return
@@ -559,7 +571,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           <div><span>AionUi 연동</span><strong>AI 대화 시작</strong><small>{cardTitle}</small></div>
           <button type="button" onClick={onClose} aria-label="AI 대화 옵션 닫기">×</button>
         </header>
-        {doorayApproval && <p className="ai-dialog-message">승인한 제안을 새 대화에 전달합니다. 사용할 작업공간을 확인하세요. 취소하면 대화를 시작하지 않습니다.</p>}
+        {doorayApproval && <p className="ai-dialog-message">{documentId && cardId ? `시작 카드: ${documentTitle} → ${cardTitle}` : '담당 카드 미지정: 승인된 문서 구성만 진행하며, 하위 작업은 생성된 문서의 상위 카드 대화로 인계해야 합니다.'}<br />승인한 제안을 새 대화에 전달합니다. 사용할 작업공간을 확인하세요. 취소하면 대화를 시작하지 않습니다.</p>}
         {roleLoading ? <div className="ai-dialog-message" role="status">문서의 대화 역할과 자동 적용 내용을 확인하는 중…</div> : roleError ? (
           <div className="ai-dialog-message error" role="alert"><strong>대화 역할을 확인할 수 없습니다.</strong><span>{roleError}</span><small>일반 카드용 요청으로 대신 시작하지 않았습니다. 팝업을 닫고 다시 열어 주세요.</small></div>
         ) : loading ? <div className="ai-dialog-message">AionUi의 새 채팅 옵션을 불러오는 중…</div> : error ? (
@@ -628,7 +640,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
               <label className="ai-workspace-input">
                 <span>작업공간</span>
                 <div className="ai-workspace-input-row">
-                  <input value={workspace} onChange={(event) => updateWorkspace(event.target.value)} placeholder="선택사항" maxLength={AI_WORKSPACE_MAX_LENGTH} />
+                  <input value={workspace} onChange={(event) => updateWorkspace(event.target.value)} placeholder={doorayApproval ? '업무 작업공간 필수' : '선택사항'} maxLength={AI_WORKSPACE_MAX_LENGTH} />
                   <button
                     type="button"
                     className="ai-workspace-browse"
@@ -647,6 +659,13 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
                   </button>
                 </div>
               </label>
+              {doorayApproval && <small>{options.workspaceNeedsSelection ? '담당 작업공간을 하나로 확정하지 못했습니다. 이번 업무의 경로를 선택해 주세요.' : '담당 카드의 작업공간을 제안합니다. 다른 프로젝트 업무라면 변경할 수 있습니다.'} Holdem 업무는 등록된 통합 경로, MnP 유지보수는 MnP 경로를 사용하세요. worker는 하위 위임 시 별도로 배정합니다.</small>}
+              {doorayApproval && Boolean(options.workspaceChoices?.length) && <div className="ai-workspace-history">
+                <div className="ai-workspace-history-heading"><span>문서·등록 작업공간</span></div>
+                <div className="ai-workspace-history-list">{options.workspaceChoices?.map((item) => <div className={`ai-workspace-history-item ${workspace.trim() === item ? 'selected' : ''}`} key={item}>
+                  <button type="button" className="ai-workspace-history-select" title={item} onClick={() => updateWorkspace(item)}><span>{item}</span></button>
+                </div>)}</div>
+              </div>}
               {browserOpen && (
                 <div className="ai-workspace-browser">
                   <div className="ai-workspace-browser-bar">

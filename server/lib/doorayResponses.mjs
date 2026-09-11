@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createDoorayRequester, plainDoorayText } from './doorayMentions.mjs'
 import { aiConversationLinksFromData } from '../../src/utils/aiConversations.mjs'
 import { assertDoorayApproval, buildDoorayApprovalRequest, doorayDecisionInstructions, doorayProposalRevision, readDoorayDecision } from './doorayResponseDecision.mjs'
+import { buildDoorayExecutionHandoff, currentDoorayExecution, doorayExecutionTargets } from './doorayExecutionHandoff.mjs'
 
 const activeStates = new Set(['routing', 'reviewing', 'waiting-target'])
 const finishableStates = new Set(['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'])
@@ -172,7 +173,8 @@ export function publicDoorayResponse(job) {
     canRetry: job.status === 'failed' && Boolean(job.operation?.conversationId || job.operation?.dispatchAttempted),
     completedAt: job.completedAt ?? null, archiveStatus: job.archiveStatus ?? null, archiveError: job.archiveError ?? '',
     handedOffAt: job.handoff && job.handoff.attempt === job.attempt ? job.handoff.sentAt ?? null : null,
-    decision: job.decision ?? null, proposalRevision: doorayProposalRevision(job), approval: job.approval ?? null,
+    decision: job.decision ?? null, proposalRevision: doorayProposalRevision(job), approval: job.approval
+      ? { ...job.approval, handoffs: (job.approval.handoffs ?? []).map(({ request: _request, ...entry }) => entry) } : null,
     approvalHistory: job.approvalHistory ?? [],
   }
 }
@@ -458,23 +460,75 @@ export function createDoorayResponseService(deps) {
   async function approvalContext(userId, id, revision, options = {}) {
     const job = (await read(userId)).jobs.find((entry) => entry.id === id)
     if (!job) throw error('AI 대응 요청을 찾을 수 없습니다.', 404)
-    assertDoorayApproval(job, revision, options)
-    return { job: publicDoorayResponse(job), launch: { purpose: 'dooray-response', mapId: job.route?.mapId ?? '', cardId: job.route?.cardId ?? '',
-      cardTitle: job.approval.title, documentTitle: job.source.subject, initialRequest: buildDoorayApprovalRequest(job, options), fullInitialRequest: true,
-      doorayApproval: { responseId: id, proposalRevision: revision } } }
+    const handoff = (job.approval?.handoffs ?? []).find((entry) => options.handoffId ? entry.id === options.handoffId
+      : options.execution && entry.conversation?.conversationId === options.conversationId)
+    if (options.handoffId && !handoff) throw error('인계 기록을 찾을 수 없습니다.', 409)
+    if (handoff && options.execution && handoff.conversation?.conversationId !== options.conversationId) throw error('현재 대화에 연결된 인계 기록이 아닙니다.', 409)
+    if (handoff && !options.execution) {
+      const target = doorayExecutionTargets(await deps.loadMaps()).find((entry) => entry.mapId === handoff.target.mapId)
+      if (!target || target.cardId !== handoff.target.cardId) throw error('인계 대상의 활성 루트 카드가 변경됐습니다.', 409)
+    }
+    const validation = handoff && !options.execution ? { execution: true, conversationId: handoff.sourceConversationId } : options
+    assertDoorayApproval(job, revision, validation)
+    const target = handoff?.target ?? job.route
+    return { job: publicDoorayResponse(job), linkedConversation: handoff?.conversation ?? (!handoff ? job.approval.conversation : null),
+      launch: { purpose: 'dooray-response', mapId: target?.mapId ?? '', cardId: target?.cardId ?? '',
+      cardTitle: target?.cardTitle ?? job.approval.title, documentTitle: target?.documentTitle ?? job.source.subject,
+      initialRequest: handoff?.request ?? buildDoorayApprovalRequest(job, options), fullInitialRequest: true,
+      doorayApproval: { responseId: id, proposalRevision: revision, ...(handoff ? { handoffId: handoff.id } : {}) } } }
+  }
+  async function executionHandoffOptions(userId, id, mapId) {
+    const job = (await read(userId)).jobs.find((entry) => entry.id === id)
+    if (!job) throw error('AI 대응 요청을 찾을 수 없습니다.', 404)
+    const source = currentDoorayExecution(job)
+    assertDoorayApproval(job, job.approval?.revision, { execution: true, conversationId: source?.conversationId })
+    const targets = doorayExecutionTargets(await deps.loadMaps())
+    if (!mapId) return { targets }
+    const target = targets.find((entry) => entry.mapId === mapId)
+    if (!target) throw error('활성 문서의 원본 루트 카드를 선택해 주세요.', 409)
+    const user = await deps.user(userId)
+    const transcript = await deps.executionTranscript(user, source)
+    return { targets, preview: buildDoorayExecutionHandoff(job, target, transcript) }
   }
   return {
-    start, complete, approvalContext,
-    async linkApprovalConversation(userId, id, revision, conversation) {
-      await approvalContext(userId, id, revision)
+    start, complete, approvalContext, executionHandoffOptions,
+    async prepareExecutionHandoff(userId, id, input) {
+      if (input.confirmApprovedScope !== true) throw error('인계 대상·전문과 기존 승인 범위를 확인해 주세요.', 409)
+      const { preview } = await executionHandoffOptions(userId, id, input.mapId)
+      if (!preview || preview.fingerprint !== input.fingerprint) throw error('대화 또는 대상 문서가 변경됐습니다. 인계 전문을 다시 확인해 주세요.', 409)
+      const handoffId = await update(userId, (state) => {
+        const job = state.jobs.find((entry) => entry.id === id)
+        assertDoorayApproval(job, input.proposalRevision, { execution: true, conversationId: preview.sourceConversationId })
+        if (currentDoorayExecution(job).conversationId !== preview.sourceConversationId) throw error('인계할 실행 대화가 변경됐습니다.', 409)
+        const pending = (job.approval.handoffs ?? []).find((entry) => !entry.conversation)
+        if (pending) {
+          if (pending.fingerprint !== preview.fingerprint) throw error('이미 준비한 인계가 있습니다. 해당 대상의 인계 대화를 먼저 시작해 주세요.', 409)
+          return pending.id
+        }
+        const entry = { id: `handoff-${randomBytes(12).toString('hex')}`, ...preview,
+          createdAt: new Date().toISOString(), createdBy: userId }
+        job.approval.handoffs = [...(job.approval.handoffs ?? []), entry]
+        job.updatedAt = entry.createdAt
+        return entry.id
+      })
+      return approvalContext(userId, id, input.proposalRevision, { handoffId })
+    },
+    async linkApprovalConversation(userId, id, revision, conversation, options = {}) {
+      const context = await approvalContext(userId, id, revision, options)
+      if (context.linkedConversation) {
+        if (context.linkedConversation.conversationId !== conversation.conversationId) throw error('이미 연결된 승인 대화가 있습니다.', 409)
+        return context.job
+      }
       return update(userId, (state) => {
         const job = state.jobs.find((entry) => entry.id === id)
-        if (!job || job.completedAt || job.approval?.revision !== revision || doorayProposalRevision(job) !== revision) throw error('승인 내용이 변경되었습니다.', 409)
-        if (job.approval.conversation) {
-          if (job.approval.conversation.conversationId !== conversation.conversationId) throw error('이미 연결된 승인 대화가 있습니다. 해당 대화에서 이어가 주세요.', 409)
+        if (!job || (job.completedAt && !options.handoffId) || job.approval?.revision !== revision || doorayProposalRevision(job) !== revision) throw error('승인 내용이 변경되었습니다.', 409)
+        const owner = options.handoffId ? job.approval.handoffs?.find((entry) => entry.id === options.handoffId) : job.approval
+        if (!owner) throw error('인계 기록이 변경됐습니다.', 409)
+        if (owner.conversation) {
+          if (owner.conversation.conversationId !== conversation.conversationId) throw error('이미 연결된 승인 대화가 있습니다. 해당 대화에서 이어가 주세요.', 409)
           return publicDoorayResponse(job)
         }
-        job.approval.conversation = conversation
+        owner.conversation = conversation
         job.updatedAt = new Date().toISOString()
         return publicDoorayResponse(job)
       })

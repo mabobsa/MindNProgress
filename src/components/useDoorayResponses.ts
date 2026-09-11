@@ -6,7 +6,9 @@ export type DoorayDecision = { kind: 'input' | 'approval' | 'proposal'; reason: 
   approval: { title: string; scope: string[]; exclusions: string[] } | null }
 type DoorayApproval = { revision: string; approvedAt: string; approvedBy: { id: string; name: string }; proposal: string;
   title: string; scope: string[]; exclusions: string[];
-  conversation?: { conversationId: string; homeMachineRole: 'main' | 'sub'; linkedAt: string } }
+  conversation?: { conversationId: string; homeMachineRole: 'main' | 'sub'; linkedAt: string };
+  handoffs?: { id: string; target: { mapId: string; cardId: string; documentTitle: string; cardTitle: string };
+    conversation?: { conversationId: string; homeMachineRole: 'main' | 'sub'; linkedAt: string } }[] }
 
 type ResponseSettings = { agentId?: string; modelId?: string; mode?: string; thoughtLevel?: string; machineId?: string; proposalWorkspace?: string }
 type Option = { id: string; label: string }
@@ -71,7 +73,8 @@ export function useDoorayResponses(clientId: string, userId: string) {
     void load()
     return () => { controller.abort(); if (controllerRef.current === controller) controllerRef.current = null }
   }, [load])
-  const needsRefresh = jobs.some((job) => !job.completedAt && (active.has(job.status) || job.conversationId))
+  const needsRefresh = jobs.some((job) => (!job.completedAt && (active.has(job.status) || job.conversationId))
+    || job.approval?.handoffs?.some((entry) => !entry.conversation))
   useEffect(() => {
     if (!needsRefresh) return
     const timer = window.setInterval(() => void load(), 3000)

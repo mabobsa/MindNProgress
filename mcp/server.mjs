@@ -1054,7 +1054,8 @@ async function main() {
     if (context.job.approval.approvedBy.id !== editorId) throw new Error('승인 기록의 편집자와 요청한 편집자 계정이 다릅니다.')
     activeEditorId = editorId
     activeAttributionToken = attributionToken
-    return { approval: context.job.approval, route: context.job.route, sourceUrl: context.job.sourceUrl, request: context.launch.initialRequest,
+    return { approval: context.job.approval, route: context.launch.mapId ? { ...context.job.route, mapId: context.launch.mapId, cardId: context.launch.cardId,
+      documentTitle: context.launch.documentTitle, cardTitle: context.launch.cardTitle } : null, sourceUrl: context.job.sourceUrl, request: context.launch.initialRequest,
       nextStep: '서버 승인과 인계 전문의 범위를 대조하세요. 담당이 있으면 get_context, 없으면 read_me_first로 제품 지침을 읽고 최신 문서를 조회한 뒤 승인된 범위만 수행하세요. 범위가 달라졌다면 실행을 보류하고 사용자에게 확인하세요.' }
   })
 

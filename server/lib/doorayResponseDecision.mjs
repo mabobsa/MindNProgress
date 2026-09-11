@@ -55,7 +55,8 @@ export function assertDoorayApproval(job, revision, { execution = false, convers
   if ((!approved && !(execution && completed)) || !job.approval || revision !== doorayProposalRevision(job) || job.approval.revision !== revision) {
     throw fail('제안이 변경되었거나 유효한 승인이 없습니다. 최신 제안을 확인해 주세요.')
   }
-  if (execution && (!conversationId || job.approval.conversation?.conversationId !== conversationId)) {
+  if (execution && (!conversationId || (job.approval.conversation?.conversationId !== conversationId
+    && !(job.approval.handoffs ?? []).some((handoff) => handoff.conversation?.conversationId === conversationId)))) {
     throw fail('이 승인에 연결된 새 대화를 확인할 수 없습니다. 대화 연결 완료 후 다시 확인하세요.')
   }
 }
@@ -104,6 +105,7 @@ ${approval.proposal}
 2. 기존 그룹·문서·카드가 이미 생성되었거나 작업이 진행 중인지 확인해 중복 생성·동시 수정을 피하세요. 자료가 바뀌어 범위나 결론이 달라지면 변경된 부분을 재제안하고 승인을 기다리세요.
 3. 승인된 대상·행동만 수행하세요. 그룹 구성 승인은 기능 구현·댓글 작성·하위 AI 실행의 포괄 승인이 아닙니다. 필요한 지침과 스킬을 읽고 원문·요구사항을 보존하세요.
 4. 사용자가 선택한 작업공간이 승인 대상 프로젝트인지 확인하세요. 제안 공통 보관 폴더에서 구현하지 말고, Holdem 작업공간 선택·점유는 MindNProgress의 배정 규칙을 따르세요. 대상이 불명확하면 실행하지 말고 질문하세요.
+   새 문서를 생성해도 현재 대화의 시작 카드와 위임 범위는 바뀌지 않습니다. aiConversationId를 직접 수정해 다른 카드의 담당자가 되지 마세요. 새 문서의 실행 담당이 필요하면 Dooray 참조의 ‘새 문서의 상위 카드에서 이어가기’에서 사용자가 루트를 선택하고 새 대화를 시작하도록 안내하세요. 기존 총괄은 기존 제품 규칙으로 허용된 담당 문서 위임만 수행하세요.
 5. 수행 결과·변경 대상·검증 결과·남은 작업을 한국어로 보고하세요. 대화 시작이나 승인 자체를 작업 완료로 보고하거나 Dooray 참조의 대응 완료 상태를 자동 변경하지 마세요.`
   if (request.length > 95_000 || Buffer.byteLength(request, 'utf8') > 240_000) throw fail('승인 인계 전문이 전달 한도를 넘었습니다. 내용을 임의로 자르지 않았습니다.')
   return request

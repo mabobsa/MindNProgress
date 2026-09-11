@@ -4,6 +4,7 @@ import { doorayResponseStatus, type Options, type DoorayResponseJob, type useDoo
 import './DoorayResponseInbox.css'
 import { DoorayResponseHandoff, type DoorayHandoffLaunch } from './DoorayResponseHandoff'
 import { DoorayResponseDecision } from './DoorayResponseDecision'
+import { DoorayExecutionHandoff } from './DoorayExecutionHandoff'
 
 export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, onLaunchCard }: {
   response: ReturnType<typeof useDoorayResponses>
@@ -24,11 +25,13 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
   const [refining, setRefining] = useState(false)
   const [completing, setCompleting] = useState(false)
   const [handoffId, setHandoffId] = useState('')
+  const [executionHandoffId, setExecutionHandoffId] = useState('')
   const outstanding = response.jobs.filter((entry) => !entry.completedAt)
   const completed = response.jobs.filter((entry) => entry.completedAt)
   const visibleJobs = response.showCompleted ? completed : outstanding
   const job = visibleJobs.find((entry) => entry.id === response.selectedId) ?? visibleJobs[0]
   const approvalConversation = job?.approval?.conversation
+  const executionHandoffs = job?.approval?.handoffs?.filter((entry) => entry.conversation) ?? []
   useEffect(() => { setHint('') }, [job?.id])
   const running = response.jobs.filter((entry) => ['routing', 'reviewing', 'waiting-target'].includes(entry.status)).length
   useEffect(() => {
@@ -120,6 +123,8 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
             <div className="dooray-response-actions">
               {job.conversationId && <button type="button" onClick={() => onOpenConversation(job)}>제안 대화 보기</button>}
               {approvalConversation && <button type="button" onClick={() => onOpenConversation({ ...job, ...approvalConversation })}>승인 대화 보기</button>}
+              {executionHandoffs.map((entry) => <button type="button" key={entry.id} onClick={() => onOpenConversation({ ...job, ...entry.conversation! })}>인계 대화 보기 · {entry.target.documentTitle}</button>)}
+              {approvalConversation && <button type="button" disabled={completing || refining} onClick={() => setExecutionHandoffId(job.id)}>새 문서의 상위 카드에서 이어가기</button>}
               {['proposal', 'needs-approval', 'approved'].includes(job.status) && job.route && <button type="button" disabled={completing || refining} onClick={() => setHandoffId(job.id)}>담당 카드로 전달하기</button>}
               {job.canRetry && <button type="button" onClick={() => void response.retry(job.id)}>상태 다시 확인</button>}
               {(['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'].includes(job.status) || (job.completedAt && job.archiveStatus !== 'done')) && <button type="button"
@@ -130,6 +135,8 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
             </div>
             {['proposal', 'needs-approval', 'approved'].includes(job.status) && handoffId === job.id && <DoorayResponseHandoff key={job.id} job={job} response={response}
               onLaunchCard={onLaunchCard} onOpenConversation={onOpenConversation} onClose={() => setHandoffId('')} />}
+            {approvalConversation && executionHandoffId === job.id && <DoorayExecutionHandoff key={job.id} job={job} response={response}
+              onLaunchCard={onLaunchCard} onClose={() => setExecutionHandoffId('')} />}
             {!job.completedAt && ['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'].includes(job.status) && <p className="dooray-response-completion-help">대응 완료 시 건수에서 제외하고 제안 전용 대화를 보관합니다. 이미 연결된 실행 대화의 승인은 유지하며, Dooray 업무 상태와 실행 대화·기존 업무 대화는 변경하지 않습니다.</p>}
             {['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'].includes(job.status) && !job.approval?.conversation && <form className="dooray-response-refine" onSubmit={(event) => {
               event.preventDefault()

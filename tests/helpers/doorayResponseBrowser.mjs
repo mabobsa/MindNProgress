@@ -86,6 +86,8 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
       await evaluate('void (window.approvalDoorayPanel = document.querySelector(".dooray-mentions-panel"))')
       await evaluate('Array.from(document.querySelectorAll(".dooray-response-decision button")).find(b => b.textContent === "제안 승인 · AI 대화 시작").click()')
       await waitFor(() => evaluate('Boolean(document.querySelector(".ai-auto-request textarea"))'))
+      assert.equal(await evaluate('document.querySelector(".ai-workspace-input input").value'), '', '미지정 담당의 기본값을 MnP로 넣지 않는다')
+      assert.equal(await evaluate('document.querySelector(".ai-workspace-input input").readOnly'), false, '사용자 작업공간 변경을 허용한다')
       const request = await evaluate('document.querySelector(".ai-auto-request textarea").value')
       assert.ok(request.length > 4000)
       for (const text of ['승인에서 제외한 작업', '#comment-comment1', '마지막 검증 조건', '담당 경로: 미지정', 'mindnprogress_get_dooray_response_approval']) assert.ok(request.includes(text), text)
@@ -96,11 +98,8 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
       assert.equal(await evaluate('Array.from(document.querySelectorAll(".dooray-response-actions button")).some(b => b.textContent === "승인 대화 보기")'), false, '옵션 취소만으로 승인 대화를 기록하지 않는다')
       await evaluate('Array.from(document.querySelectorAll(".dooray-response-decision button")).find(b => b.textContent === "승인한 제안으로 AI 대화 시작").click()')
       await waitFor(() => evaluate('Boolean(document.querySelector(".ai-workspace-input input"))'))
-      await evaluate(`(() => {
-        const input = document.querySelector('.ai-workspace-input input');
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'C:/test-approved-workspace');
-        input.dispatchEvent(new Event('input', {bubbles:true}));
-      })()`)
+      await evaluate(`Array.from(document.querySelectorAll('.ai-workspace-history-select')).find(button => button.textContent === ${JSON.stringify(approvalFlow.executionWorkspace)}).click()`)
+      assert.equal(await evaluate('document.querySelector(".ai-workspace-input input").value'), approvalFlow.executionWorkspace)
       await evaluate('document.querySelector(".ai-dialog footer button.primary").click()', true)
       await waitFor(() => evaluate('!document.querySelector(".ai-dialog") || Boolean(document.querySelector(".ai-launch-error"))'))
       assert.equal(await evaluate('document.querySelector(".ai-launch-error")?.textContent ?? ""'), '', '승인된 새 대화 시작은 오류 없이 완료되어야 한다')
@@ -124,6 +123,26 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
       await waitFor(() => evaluate('document.querySelector(".dooray-response-heading")?.textContent.includes("대응 완료")'))
       await checkConversationViews()
       await send('Page.bringToFront')
+      await evaluate('Array.from(document.querySelectorAll(".dooray-response-actions button")).find(b => b.textContent === "새 문서의 상위 카드에서 이어가기").click()')
+      await waitFor(() => evaluate('document.querySelector(\'section[aria-label="승인 작업 상위 카드 인계"] select\')?.options.length > 1'))
+      await evaluate(`(() => {
+        const select = document.querySelector('section[aria-label="승인 작업 상위 카드 인계"] select');
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, 'map-test');
+        select.dispatchEvent(new Event('change', {bubbles:true}));
+      })()`)
+      await waitFor(() => evaluate('Boolean(document.querySelector(\'section[aria-label="승인 작업 상위 카드 인계"] input[type="checkbox"]\'))'))
+      assert.ok(await evaluate('document.querySelector(\'section[aria-label="승인 작업 상위 카드 인계"] pre\').textContent.includes("2단계 분석 계획 승인")'))
+      assert.equal(await evaluate('document.querySelector(\'section[aria-label="승인 작업 상위 카드 인계"] > button\').disabled'), true)
+      await evaluate('document.querySelector(\'section[aria-label="승인 작업 상위 카드 인계"] input[type="checkbox"]\').click()')
+      await evaluate('document.querySelector(\'section[aria-label="승인 작업 상위 카드 인계"] > button\').click()')
+      await waitFor(() => evaluate('Boolean(document.querySelector(".ai-auto-request textarea"))'))
+      assert.ok(await evaluate('document.querySelector(".ai-auto-request textarea").value.includes("시작 카드: root1")'))
+      assert.ok(await evaluate('document.querySelector(".ai-dialog").textContent.includes("시작 카드: 홀덤 UI → UI")'))
+      assert.equal(await evaluate('document.querySelector(".ai-workspace-input input").value'), approvalFlow.executionWorkspace)
+      assert.ok(await evaluate('Boolean(document.querySelector(".dooray-mentions-panel"))'), '인계 옵션을 열어도 Dooray 참조 팝업을 유지한다')
+      await evaluate('document.querySelector(\'button[aria-label="AI 대화 옵션 닫기"]\').click()')
+      await waitFor(() => evaluate('!document.querySelector(".ai-dialog")'))
+      await checkConversationViews()
       await evaluate('document.querySelector(".dooray-response-detail article > .dooray-response-actions").scrollIntoView({block:"center"})')
       const screenshot = await send('Page.captureScreenshot', { format: 'png' })
       const screenshotPath = path.join(tmpdir(), `mnp-dooray-approval-ui-${Date.now()}.png`)

@@ -4,6 +4,7 @@ import { createAionUiCaller } from '../../runner/lib/aionUiClient.mjs'
 import { aiConversationLinksFromData } from '../../src/utils/aiConversations.mjs'
 import { createDoorayResponseService, readDoorayResponseSource, validateDoorayRoute } from './doorayResponses.mjs'
 import { createDoorayRateLimiter } from './doorayMentions.mjs'
+import { redactDoorayTranscript } from './doorayExecutionHandoff.mjs'
 
 const fail = (message, status = 409) => Object.assign(new Error(message), { status, doorayResponseError: true })
 const excerpt = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : ''
@@ -131,6 +132,29 @@ export function createDoorayResponseIntegration(d) {
   return createDoorayResponseService({
     directory: path.join(d.dataDirectory, '_dooray-responses'), read: d.readStoredRecord, write: d.writeStoredRecord,
     user: d.user, resolveSettings, loadMaps,
+    async executionTranscript(user, source) {
+      const machineId = d.conversationHomeMachineId(source.conversationId, source)
+      if (!d.machineAccessibleByUser(user, machineId)) throw fail('기존 실행 머신에 접근할 수 없습니다.', 403)
+      const conversation = await readConversation(machineId, source.conversationId)
+      if (!conversation || d.normalizeAiConversationRuntime(source.conversationId, conversation).state !== 'idle') throw fail('기존 승인 대화가 끝난 뒤 인계해 주세요. 삭제되었거나 상태를 확인할 수 없는 대화는 인계하지 않습니다.')
+      const messages = new Map()
+      let before = ''
+      for (let page = 0; page < 20; page++) {
+        const query = new URLSearchParams({ limit: '100', content_mode: 'full', ...(before ? { before } : {}) })
+        const result = await call(machineId, `/api/conversations/${encodeURIComponent(source.conversationId)}/messages?${query}`)
+        if (!Array.isArray(result?.items)) throw fail('이전 대화 전문을 확인하지 못했습니다.')
+        for (const message of result.items) if (message.type === 'text') messages.set(message.id, message)
+        if (!result.has_more_before) {
+          if (!messages.size) throw fail('이전 승인 대화의 텍스트 전문이 비어 있어 인계하지 않았습니다.')
+          if (result.has_more_before === undefined && result.items.length >= 100) throw fail('대화 전문의 조회 범위를 확인할 수 없습니다.')
+          return [...messages.values()].sort((a, b) => Number(a.created_at) - Number(b.created_at) || String(a.id).localeCompare(String(b.id)))
+            .map((message) => `### ${message.position === 'right' ? '사용자' : 'AI'} · 메시지 ${message.id} · ${message.created_at ?? ''}\n${redactDoorayTranscript(d.readAionUiMessageContent(message))}`).join('\n\n')
+        }
+        if (!result.oldest_cursor || result.oldest_cursor === before) throw fail('대화 전문 페이지를 이어서 확인하지 못했습니다.')
+        before = result.oldest_cursor
+      }
+      throw fail('대화 전문 조회 한도를 넘었습니다. 내용을 임의로 자르지 않았습니다.')
+    },
     authorize: (user, machineId) => { if (!d.machineAccessibleByUser(user, machineId)) throw fail('이 AI 실행 머신에 접근할 수 없습니다.', 403) },
     async conversationExists(user, conversation) {
       if (!d.machineAccessibleByUser(user, conversation.machineId)) throw fail('이 AI 실행 머신에 접근할 수 없습니다.', 403)

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { buildDoorayHandoffPrompt, buildDoorayRoutingCatalog, createDoorayResponseService, parseDoorayAiResult, publicDoorayResponse, readDoorayResponseSource, validateDoorayRoute } from '../server/lib/doorayResponses.mjs'
+import { redactDoorayTranscript } from '../server/lib/doorayExecutionHandoff.mjs'
 
 const item = { key: 'comment:post1:comment1', kind: 'mention-comment', projectId: 'p1', postId: 'post1', commentId: 'comment1',
   subject: '베팅 표시 수정', excerpt: '금액 표시를 확인해 주세요.', url: 'https://nhnent.dooray.com/project/posts/post1#comment-comment1' }
@@ -531,6 +532,45 @@ test('담당 전달은 계정·대화·실행 상태를 검사하고 응답 유�
 
 const approvalDecision = { kind: 'approval', reason: '그룹과 총괄 문서의 구성은 정해졌고 사용자 동의만 필요합니다.', questions: [],
   approval: { title: '연동 그룹과 총괄 구성', scope: ['연동 그룹과 총괄 문서를 생성하고 관련 문서를 연결한다.'], exclusions: ['기능 구현, Dooray 댓글 작성 및 하위 AI 위임은 제외한다.'] } }
+
+test('승인 실행 인계는 원본 루트·최신 전문·사용자 확인을 고정하고 기존 승인과 시작 대화를 보존한다', async (t) => {
+  let transcript = '사용자: 문서 구성 범위만 승인합니다.\nAI: 새 문서를 생성했고 구현은 하지 않았습니다.'
+  const { service, deps, counts } = await fixture(t, {
+    messages: async (op) => [assistant({ requestId: op.id, action: 'clarify', proposal: '새 문서 구성안', decision: approvalDecision })],
+    executionTranscript: async () => transcript,
+  })
+  await service.start({ id: 'user1' }, item)
+  const [job] = await until(service, 'user1', 'needs-approval')
+  await service.approve('user1', job.id, job.proposalRevision)
+  await assert.rejects(service.executionHandoffOptions('user1', job.id, 'map1'), /연결된 새 대화/)
+  await service.linkApprovalConversation('user1', job.id, job.proposalRevision, { conversationId: 'initial-execution' })
+  const before = { ...counts }
+  const { preview, targets } = await service.executionHandoffOptions('user1', job.id, 'map1')
+  assert.deepEqual(targets.map((target) => target.cardId), ['root1'])
+  assert.ok(preview.request.includes(transcript))
+  assert.ok(preview.request.includes(approvalDecision.approval.exclusions[0]))
+  const input = { mapId: 'map1', proposalRevision: job.proposalRevision, fingerprint: preview.fingerprint, confirmApprovedScope: true }
+  transcript += '\n사용자: 최신 보완 정보'
+  await assert.rejects(service.prepareExecutionHandoff('user1', job.id, input), /변경/)
+  input.fingerprint = (await service.executionHandoffOptions('user1', job.id, 'map1')).preview.fingerprint
+  await assert.rejects(service.prepareExecutionHandoff('user2', job.id, input), /찾을 수/)
+  const { launch } = await service.prepareExecutionHandoff('user1', job.id, input)
+  assert.equal(launch.cardId, 'root1')
+  const options = { handoffId: launch.doorayApproval.handoffId }
+  await assert.rejects(service.approvalContext('user1', job.id, job.proposalRevision, { ...options, execution: true, conversationId: 'initial-execution' }), /현재 대화/)
+  await service.complete('user1', job.id)
+  const restarted = createDoorayResponseService(deps)
+  await restarted.linkApprovalConversation('user1', job.id, job.proposalRevision, { conversationId: 'root-execution' }, options)
+  const verified = await restarted.approvalContext('user1', job.id, job.proposalRevision, { execution: true, conversationId: 'root-execution' })
+  assert.equal(verified.launch.initialRequest, launch.initialRequest)
+  assert.equal(verified.job.approval.conversation.conversationId, 'initial-execution')
+  assert.equal(verified.job.approval.handoffs[0].conversation.conversationId, 'root-execution')
+  assert.deepEqual(verified.job.approval.scope, approvalDecision.approval.scope)
+  assert.deepEqual(counts, before, '인계 준비와 승인 조회는 AI를 직접 실행하지 않는다')
+  transcript = '가'.repeat(100_000)
+  await assert.rejects(restarted.executionHandoffOptions('user1', job.id, 'map1'), /한도/)
+  assert.equal(redactDoorayTranscript('attributionToken: secret-only-for-test-1234567890'), 'attributionToken: [비공개]')
+})
 
 test('담당이 없는 구성안도 승인 대기가 되며 승인 버튼은 현재 버전만 기록하고 AI를 실행하지 않는다', async (t) => {
   const proposal = '새 그룹과 총괄을 생성하는 제안입니다.\n' + '보존할 세부 근거\n'.repeat(500) + '마지막 완료 조건'

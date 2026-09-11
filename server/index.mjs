@@ -109,6 +109,9 @@ import {
 } from './lib/aionUiExternalLaunch.mjs'
 import { isLocalLoopbackRequest, localLoopbackRedirectLocation } from './lib/localLoopbackRedirect.mjs'
 import { listWorkspaceDirectory, listWorkspaceRoots } from './lib/workspaceBrowse.mjs'
+import { assertDoorayExecutionWorkspace, doorayExecutionWorkspace, sameExecutionWorkspace } from './lib/doorayExecutionWorkspace.mjs'
+import { aiDelegationNewWorkspace } from './lib/aiDelegations.mjs'
+import { verifyAiDelegationOriginalMessage } from './lib/aiDelegationDispatchRecovery.mjs'
 import { buildSharedKnowledgeAudit } from './lib/sharedKnowledgeAudit.mjs'
 import {
   SubMachinePayloadError,
@@ -2013,6 +2016,9 @@ async function delegationCreateSelection(targetCard, requestedSelection, parentA
     parentFallback,
   )
   if (!selection) throw new AionUiExternalLaunchPayloadError('새 AI 대화에 사용할 AI 종류와 모델을 확인할 수 없습니다.')
+  // AI 종류·모델의 재사용과 작업 디렉토리의 상속은 별개다. 과거 하위 카드의
+  // 폴더가 사용자가 새 상위 대화에서 선택한 프로젝트를 덮어쓰지 않게 한다.
+  selection.workspace = aiDelegationNewWorkspace(requestedSelection, parentFallback, latestLink)
 
   const [agents, providers, rawMcpServers] = await Promise.all([
     fetchAionUiOn(machineId, '/api/agents/management'),
@@ -2156,6 +2162,9 @@ function delegationParentMachineId(delegation) {
 }
 
 async function resolveAiDelegationWorkspacePool({ selection, targetCard, parentAttribution, requested }) {
+  const selectedWorkspace = String(selection?.workspace ?? '').trim()
+  if (selectedWorkspace) return { known: true, workspaceHint: selectedWorkspace,
+    expectsWorkspacePool: Boolean(workspacePoolManager.poolForWorkspace(selectedWorkspace)) }
   const candidates = [
     selection?.workspace,
     requested?.workspace,
@@ -2212,6 +2221,12 @@ function aiDelegationWorkspaceLeaseError(message, expected, actual) {
     expectedWorkspaceId: expected?.workspaceId ?? null,
     actualLeaseId: actual?.leaseId ?? null,
     actualWorkspaceId: actual?.workspaceId ?? null,
+    mismatchedFields: ['workspaceId', 'jobId', 'leaseId', 'projectRoot', 'branch'].filter((key) => {
+      if (key === 'branch') return Boolean(expected?.branch && Object.hasOwn(actual ?? {}, key) && expected[key] !== actual[key])
+      if (typeof expected?.[key] !== 'string' || !expected[key].trim() || typeof actual?.[key] !== 'string' || !actual[key].trim()) return true
+      if (key === 'projectRoot') return !sameExecutionWorkspace(expected[key], actual[key])
+      return expected[key] !== actual[key]
+    }),
   }
   return error
 }
@@ -2804,6 +2819,24 @@ async function captureAiDelegationChildResult(delegation) {
     : { childResultCaptureAttemptedAt: attemptedAt })
 }
 
+async function doorayApprovalWorkspaceOptions(mapId, cardId, machineId) {
+  const map = isValidMapId(mapId) ? await readMap(mapId) : null
+  const target = map?.nodes.find((node) => node.id === cardId)
+  let links = aiConversationLinksFromData(target?.data)
+  if (!links.length && map) links = aiConversationLinksFromData(documentRoot(map)?.data)
+  if (!links.length && map) links = map.nodes.flatMap((node) => aiConversationLinksFromData(node.data))
+  const sameMachineLinks = links.filter((link) => conversationHomeMachineId(link.conversationId, link) === machineId)
+  const candidates = sameMachineLinks.map((link) => link.workspace).filter(Boolean)
+  const unresolved = [...new Map(sameMachineLinks.filter((link) => !link.workspace).map((link) => [link.conversationId, link])).values()].slice(-3)
+  candidates.push(...await Promise.all(unresolved.map(async (link) => {
+    try {
+      const conversation = await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(link.conversationId)}`)
+      return aiConversationLinkFromAionUiConversation(conversation)?.workspace
+    } catch { return null }
+  })))
+  return doorayExecutionWorkspace(workspacePoolManager.registry, machineId === machineRegistry.mainMachineId, candidates, projectDirectory)
+}
+
 function aiDelegationResultSection(reportResult) {
   if (reportResult.availability === 'captured') {
     return `## 하위 AI의 마지막 응답\n\n${reportResult.text}\n\n`
@@ -2936,6 +2969,98 @@ async function validateAiDelegationAction(request, delegation, body, approvalReq
   if (human && (body.expectedUpdatedAt !== delegation.updatedAt || body.sourceRevision !== parent.version || body.targetRevision !== map.version)) fail('문서 또는 위임 상태가 변경됐습니다. 최신 내용을 불러오세요.')
   if (approvalRequired && human && body.confirmApprovedScope !== true) fail('기존 승인 계획과 현재 범위가 같음을 사용자가 확인해야 재개할 수 있습니다.', 400)
   return { human, map, parent, target }
+}
+
+async function recoverExpiredAiDelegationDispatch(delegation, machineId) {
+  const origins = [...aiConversationOrigins.values()].filter((origin) => origin.mapId === delegation.mapId
+    && origin.cardId === delegation.targetCardId && origin.startedBy === delegation.startedBy
+    && conversationHomeMachineId(origin.conversationId, origin) === machineId)
+  if (!origins.length || origins.length > 10) throw aiDelegationDispatchError('원본 실행 기록이 만료됐고 시작 카드 기준으로 복구 대화를 한정하지 못했습니다.', 409)
+  const matches = []
+  for (const origin of origins) {
+    const conversation = await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(origin.conversationId)}`).catch((error) => {
+      if (error.status === 404) return null
+      throw error
+    })
+    if (!conversation || !sameExecutionWorkspace(conversation.extra?.workspace, delegation.workspaceLease.projectRoot)) continue
+    let before = ''
+    for (let page = 0; page < 20; page++) {
+      const query = new URLSearchParams({ limit: '100', content_mode: 'full', ...(before ? { before } : {}) })
+      const messages = await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(origin.conversationId)}/messages?${query}`)
+      if (!Array.isArray(messages?.items) || typeof messages.has_more_before !== 'boolean') throw aiDelegationDispatchError('최초 위임 전문의 조회 범위를 확증하지 못했습니다.', 409)
+      if (!messages.has_more_before) {
+        const first = [...messages.items].sort((a, b) => Number(a.created_at) - Number(b.created_at)).find((message) => message.type === 'text')
+        try { matches.push(verifyAiDelegationOriginalMessage(delegation, origin, conversation, first)) }
+        catch (error) { if (error.code !== 'AI_DELEGATION_ORIGINAL_MESSAGE_UNCONFIRMED') throw error }
+        break
+      }
+      if (!messages.oldest_cursor || messages.oldest_cursor === before || page === 19) throw aiDelegationDispatchError('최초 위임 전문까지 확인하지 못했습니다. 내용을 생략하여 복구하지 않습니다.', 409)
+      before = messages.oldest_cursor
+    }
+  }
+  if (matches.length !== 1) throw aiDelegationDispatchError('최초 위임 전문·해시·시작 카드·lease가 일치하는 대화를 하나로 확증하지 못했습니다.', 409)
+  return { ...matches[0], operationId: delegation.childOperationId, turnId: null }
+}
+
+async function restoreConfirmedAiDelegationDispatch(delegation, map, parentMap, user) {
+  const machineId = delegationTargetMachineId(delegation)
+  let dispatch
+  try { dispatch = await readAiDelegationDispatchStatus(fetchAionUiOn, { machineId, operationId: delegation.childOperationId }) }
+  catch (error) {
+    if (error.code !== 'AI_DELEGATION_STATUS_NOT_FOUND') throw error
+    dispatch = await recoverExpiredAiDelegationDispatch(delegation, machineId)
+  }
+  const conversationId = String(dispatch.conversationId ?? '')
+  if (!dispatch.recoveryProof && !['completed', 'failed', 'recovery_required', 'waiting_resume'].includes(dispatch.state)) {
+    throw aiDelegationDispatchError('기존 실행이 아직 진행·대기 중이거나 상태가 불명확하여 복구하지 않았습니다.', 409)
+  }
+  if (dispatch.operationId !== delegation.childOperationId || !validAiConversationId(conversationId)
+    || !aiDelegationWorkspaceLeaseMatches(delegation.workspaceLease, dispatch.workspaceLease)) {
+    throw aiDelegationWorkspaceLeaseError('기존 실행의 대화·작업공간을 확증하지 못해 복구하지 않았습니다.', delegation.workspaceLease, dispatch.workspaceLease)
+  }
+  const parent = parentMap.nodes.find((node) => node.id === delegation.parentCardId)
+  if (!isAiConversationLinked(parent?.data, delegation.parentConversationId)
+    || (!delegation.groupId && !isHierarchyDescendant(map, delegation.parentCardId, delegation.targetCardId))) {
+    throw aiDelegationDispatchError('기존 상위 대화 연결 또는 하위 카드 관계가 변경되었습니다.', 409)
+  }
+  const origin = aiConversationOrigins.get(conversationId)
+  if (origin && (origin.mapId !== map.id || origin.cardId !== delegation.targetCardId)) {
+    throw aiDelegationDispatchError('생성된 대화는 다른 시작 카드에 귀속되어 있습니다.', 409)
+  }
+  const conversation = await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(conversationId)}`)
+  if (conversation?.id !== conversationId || normalizeAiConversationRuntime(conversationId, conversation).state !== 'idle') {
+    throw aiDelegationDispatchError('기존 대화가 실행 중이거나 상태를 확인할 수 없어 복구하지 않았습니다.', 409)
+  }
+  if (!sameExecutionWorkspace(aiConversationLinkFromAionUiConversation(conversation)?.workspace, delegation.workspaceLease.projectRoot)) {
+    throw aiDelegationDispatchError('기존 대화의 실제 작업 디렉토리가 배정된 작업공간과 달라 복구하지 않았습니다.', 409)
+  }
+  const selection = aiDelegationSelectionFromSource(delegation.pendingSelection)
+  if (!selection) throw aiDelegationDispatchError('기존 실행의 AI 설정을 확인할 수 없습니다.', 409)
+  const workspaceLease = await workspacePoolManager.reactivateQuarantinedLease(delegation.workspaceLease.leaseId, {
+    mapId: map.id, cardId: delegation.targetCardId, conversationId,
+    failureCategory: 'confirmed-dispatch', confirmedDispatchLease: dispatch.workspaceLease,
+  })
+  const link = normalizeAiConversationLink({
+    conversationId, homeMachineId: machineId, agent: selection.agent, model: selection.model,
+    providerId: selection.providerId, mode: selection.mode, thoughtLevel: selection.thoughtLevel,
+    skills: selection.enabledSkillIds.map((id) => ({ id, label: id })),
+    mcpServers: selection.mcpIds.map((id) => ({ id, label: id })), workspace: workspaceLease.projectRoot,
+    startedBy: { id: delegation.startedBy, label: user.name },
+    startedAt: normalizedIsoDate(conversation.created_at) ?? delegation.createdAt, linkedAt: new Date().toISOString(),
+  })
+  const updatedMap = await saveMap(map.id, { nodes: map.nodes.map((node) => node.id === delegation.targetCardId
+    ? { ...node, data: { ...node.data, aiConversationId: conversationId, aiConversations: appendAiConversationLink(node.data, link) } } : node), edges: map.edges }, user, map.title, map.color, 'content')
+  rememberAiConversationOrigin({ conversationId, mapId: map.id, cardId: delegation.targetCardId,
+    startedBy: delegation.startedBy, homeMachineId: machineId, linkedAt: link.linkedAt,
+    workspace: workspaceLease.projectRoot, workspacePoolId: workspaceLease.poolId })
+  await persistAiConversationOrigins()
+  const updated = await updateAiDelegation(delegation.id, { targetConversationId: conversationId, workspaceLease,
+    dispatchRecoveryProof: dispatch.recoveryProof ?? { kind: 'original-operation', operationId: delegation.childOperationId },
+    childTurnId: dispatch.turnId ?? null, dispatchLinkRecoveredAt: new Date().toISOString(),
+    attemptHistory: aiDelegationAttemptHistory(delegation, '기존 실행 조회와 Git·세션 검증 후 누락된 대화 연결 복구') })
+  broadcastEvent({ type: 'ai-conversation-linked', mapId: map.id, nodeId: delegation.targetCardId,
+    conversationId, conversation: link, sourceClientId: null, updatedAt: updatedMap.updatedAt, updatedBy: publicUser(user) })
+  return { delegation: updated, map: updatedMap }
 }
 
 async function ensureAiDelegationTerminalResolutionIdle(delegation) {
@@ -5629,7 +5754,10 @@ documentReconstruction = await createDocumentReconstruction({
 })
 const reconstructionRequests = await createReconstructionRequests({ dataDirectory, writeJson: writeStoredArray, lifecycle: documentReconstruction, readMap })
 try {
-  if (await workspacePoolManager.initialize()) {
+  const unconfirmedLeaseIds = [...aiDelegations.values()].filter((delegation) => delegation.state === 'recovery-required'
+    && !delegation.targetConversationId && delegation.childOperationId && delegation.workspaceLease?.leaseId)
+    .map((delegation) => delegation.workspaceLease.leaseId)
+  if (await workspacePoolManager.initialize({ unconfirmedLeaseIds })) {
     console.log(`[Mind & Progress] AI 작업공간 pool registry를 불러왔습니다: ${workspacePoolRegistryFile}`)
     await reconcileAiDelegationWorkspaceLeases()
   }
@@ -6149,17 +6277,23 @@ const server = createServer(async (request, response) => {
       try {
         const result = await doorayResponses.approvalContext(user.id, doorayApprovalContextRoute[1], url.searchParams.get('revision'), {
           execution: url.searchParams.get('execution') === '1', conversationId: url.searchParams.get('conversationId'),
+          handoffId: url.searchParams.get('handoffId'),
         })
         return sendJson(response, 200, result)
       } catch (error) { return sendJson(response, error.status ?? 500, { error: error.message }) }
     }
 
-    const doorayResponseRoute = url.pathname.match(/^\/api\/integrations\/dooray\/mentions\/responses(?:\/([a-zA-Z0-9_-]+)\/(retry|refine|complete|handoff|approve))?$/)
+    const doorayResponseRoute = url.pathname.match(/^\/api\/integrations\/dooray\/mentions\/responses(?:\/([a-zA-Z0-9_-]+)\/(retry|refine|complete|handoff|execution-handoff|approve))?$/)
     if (doorayResponseRoute) {
       const user = requireSignedInUser(request, response)
       if (!user) return
       if (!canEdit(user) || isPublicViewer(user)) return sendJson(response, 403, { error: '편집자만 AI 대응을 요청할 수 있습니다.' })
       try {
+        if (doorayResponseRoute[2] === 'execution-handoff') {
+          if (request.method === 'GET') return sendJson(response, 200, await doorayResponses.executionHandoffOptions(user.id, doorayResponseRoute[1], url.searchParams.get('mapId')))
+          if (request.method === 'POST') return sendJson(response, 200, await doorayResponses.prepareExecutionHandoff(user.id, doorayResponseRoute[1], await readJsonBody(request)))
+          return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
+        }
         if (doorayResponseRoute[2] === 'handoff') {
           if (request.method === 'GET') return sendJson(response, 200, await doorayResponses.handoffOptions(user.id, doorayResponseRoute[1]))
           if (request.method === 'POST') {
@@ -6381,10 +6515,10 @@ const server = createServer(async (request, response) => {
       if (purpose === 'dooray-response') {
         // 문서가 아직 없는 구성 제안도 지원하되 임의의 카드로 귀속하지 않는다.
         try {
-          doorayApprovalContext = await doorayResponses.approvalContext(user.id, body.doorayApproval?.responseId, body.doorayApproval?.proposalRevision)
+          doorayApprovalContext = await doorayResponses.approvalContext(user.id, body.doorayApproval?.responseId, body.doorayApproval?.proposalRevision, { handoffId: body.doorayApproval?.handoffId })
           if (doorayApprovalContext.launch.mapId !== mapId || doorayApprovalContext.launch.cardId !== cardId) return sendJson(response, 409, { error: '승인한 담당 경로와 대화 시작 대상이 다릅니다.' })
-          if (doorayApprovalContext.job.approval.conversation) return sendJson(response, 409, { error: '이미 시작한 승인 대화가 있습니다. 해당 대화에서 이어가 주세요.' })
-          if (/(^|[\\/])_dooray-response-workspaces([\\/]|$)/i.test(String(body.workspace ?? ''))) return sendJson(response, 400, { error: '제안 공통 보관 폴더가 아닌 업무 작업공간을 선택해 주세요.' })
+          if (doorayApprovalContext.linkedConversation) return sendJson(response, 409, { error: '이미 시작한 승인 대화가 있습니다. 해당 대화에서 이어가 주세요.' })
+          assertDoorayExecutionWorkspace(body.workspace)
         } catch (error) { return sendJson(response, error.status ?? 500, { error: error.message }) }
       }
       if (!agentId || !modelId || (!doorayApprovalContext && (!isValidMapId(mapId) || !cardId))) {
@@ -6534,8 +6668,10 @@ const server = createServer(async (request, response) => {
         }
 
         if (launch.doorayApproval) {
-          const context = await doorayResponses.approvalContext(user.id, launch.doorayApproval.responseId, launch.doorayApproval.proposalRevision)
-          if (context.job.approval.conversation) return sendJson(response, 409, { error: '이미 연결된 승인 대화에서 이어가 주세요.' })
+          const context = await doorayResponses.approvalContext(user.id, launch.doorayApproval.responseId, launch.doorayApproval.proposalRevision, { handoffId: launch.doorayApproval.handoffId })
+          if (context.linkedConversation) return sendJson(response, 409, { error: '이미 연결된 승인 대화에서 이어가 주세요.' })
+          assertDoorayExecutionWorkspace(payload.workspace)
+          if (!sameExecutionWorkspace(attribution.selection?.workspace, payload.workspace)) return sendJson(response, 409, { error: '확인한 작업공간과 실행할 작업공간이 다릅니다. 다시 시작해 주세요.' })
           if (!payload.prompt.includes(context.launch.initialRequest)) return sendJson(response, 409, { error: '승인 전문이 변경되거나 누락되었습니다. 다시 확인해 주세요.' })
         }
         const ticket = await fetchAionUiOn(launch.homeMachineId, '/api/internal/external-conversation-launches', {
@@ -6584,12 +6720,21 @@ const server = createServer(async (request, response) => {
           return sendJson(response, 409, { error: '생성된 AionUi 대화를 확인할 수 없습니다.' })
         }
         if (launch.purpose === 'dooray-response') {
-          await doorayResponses.linkApprovalConversation(launch.startedBy, launch.doorayApproval.responseId, launch.doorayApproval.proposalRevision,
-            { conversationId, homeMachineId: launch.homeMachineId, homeMachineRole: launch.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub', linkedAt: new Date().toISOString() })
-          const attribution = aiAttributions.get(launch.attributionKey)
-          if (attribution) { attribution.conversationId = conversationId; await persistAiAttributions() }
-          // 승인 실행 대화는 제안용 보관 대상에 넣지 않는다. 구성 전 카드가 없어도 요청에 연결한다.
-          return sendJson(response, 200, { conversationId, linked: true, purpose: launch.purpose })
+          const actualWorkspace = aiConversationLinkFromAionUiConversation(conversation)?.workspace
+          assertDoorayExecutionWorkspace(actualWorkspace)
+          if (!sameExecutionWorkspace(aiAttributions.get(launch.attributionKey)?.selection?.workspace, actualWorkspace)) return sendJson(response, 409, { error: '생성된 대화의 작업공간이 시작 요청과 다릅니다.' })
+          const approvalOptions = { handoffId: launch.doorayApproval.handoffId }
+          const context = await doorayResponses.approvalContext(launch.startedBy, launch.doorayApproval.responseId, launch.doorayApproval.proposalRevision, approvalOptions)
+          if (context.linkedConversation && context.linkedConversation.conversationId !== conversationId) return sendJson(response, 409, { error: '이미 연결된 승인 대화가 있습니다.' })
+          // 담당이 없을 때만 구성용 대화로 연결한다. 담당이 있으면 아래 공통 카드
+          // 연결·시작 카드 저장을 모두 마친 뒤 승인 실행을 허용한다.
+          if (!launch.mapId && !launch.cardId) {
+            await doorayResponses.linkApprovalConversation(launch.startedBy, launch.doorayApproval.responseId, launch.doorayApproval.proposalRevision,
+              { conversationId, homeMachineId: launch.homeMachineId, homeMachineRole: launch.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub', linkedAt: new Date().toISOString() }, approvalOptions)
+            const attribution = aiAttributions.get(launch.attributionKey)
+            if (attribution) { attribution.conversationId = conversationId; await persistAiAttributions() }
+            return sendJson(response, 200, { conversationId, linked: true, purpose: launch.purpose })
+          }
         }
         const map = await readMap(launch.mapId)
         const targetNode = map?.nodes.find((node) => node.id === launch.cardId)
@@ -6598,6 +6743,8 @@ const server = createServer(async (request, response) => {
           return sendJson(response, 404, { error: 'AI 대화를 연결할 문서 또는 카드를 찾을 수 없습니다.' })
         }
         const attribution = aiAttributions.get(launch.attributionKey)
+        const origin = aiConversationOrigins.get(conversationId)
+        if (origin && (origin.mapId !== launch.mapId || origin.cardId !== launch.cardId)) return sendJson(response, 409, { error: '다른 카드에서 시작한 대화의 소속을 변경할 수 없습니다.' })
         if (attribution) {
           attribution.conversationId = conversationId
           await persistAiAttributions()
@@ -6630,7 +6777,7 @@ const server = createServer(async (request, response) => {
           startedAt: normalizedIsoDate(conversation.created_at),
           linkedAt: new Date().toISOString(),
         })
-        const updatedMap = await saveMap(launch.mapId, {
+        const updatedMap = isAiConversationLinked(targetNode.data, conversationId) ? map : await saveMap(launch.mapId, {
           nodes: map.nodes.map((node) => node.id === launch.cardId
             ? {
                 ...node,
@@ -6678,7 +6825,12 @@ const server = createServer(async (request, response) => {
             console.warn('[AI conversation attribution link]', error)
           }
         }
-        aiConversationLaunches.delete(tokenKey)
+        if (launch.purpose === 'dooray-response') {
+          await doorayResponses.linkApprovalConversation(launch.startedBy, launch.doorayApproval.responseId, launch.doorayApproval.proposalRevision,
+            { conversationId, mapId: launch.mapId, cardId: launch.cardId, homeMachineId: launch.homeMachineId,
+              homeMachineRole: launch.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub', linkedAt: conversationLink.linkedAt },
+            { handoffId: launch.doorayApproval.handoffId })
+        } else aiConversationLaunches.delete(tokenKey)
         broadcastEvent({
           type: 'ai-conversation-linked',
           mapId: launch.mapId,
@@ -6695,7 +6847,7 @@ const server = createServer(async (request, response) => {
         return sendJson(response, 200, { conversationId, homeMachineId: launch.homeMachineId })
       } catch (error) {
         console.error('[AionUi conversation completion]', error)
-        return sendJson(response, 503, { error: '생성된 AionUi 대화를 확인하지 못했습니다.' })
+        return sendJson(response, error.status ?? 503, { error: error.status ? error.message : '생성된 AionUi 대화를 확인하지 못했습니다.' })
       }
     }
 
@@ -6978,7 +7130,7 @@ const server = createServer(async (request, response) => {
         return sendJson(response, 400, { error: '복구할 AI 위임의 문서, 대화 또는 위임 ID가 올바르지 않습니다.' })
       }
 
-      const delegation = aiDelegations.get(delegationId)
+      let delegation = aiDelegations.get(delegationId)
       if (!delegation || (delegation.parentMapId ?? delegation.mapId) !== parentMapId) {
         return sendJson(response, 404, { error: '복구할 AI 위임을 찾을 수 없습니다.' })
       }
@@ -7015,7 +7167,9 @@ const server = createServer(async (request, response) => {
         || !Number.isInteger(sourceRevision) || sourceRevision < 1) {
         return sendJson(response, 400, { error: '복구 지시와 최신 문서 version이 필요합니다.' })
       }
-      await validateAiDelegationAction(request, delegation, body, true)
+      const missingDispatchLink = delegation.state === 'recovery-required' && !delegation.targetConversationId
+        && delegation.strategy === 'new' && Boolean(delegation.workspaceLease && delegation.pendingSelection && delegation.childOperationId)
+      await validateAiDelegationAction(request, delegation, body, true, { requireConversationLinks: !missingDispatchLink })
       if (delegation.pendingRecovery) {
         try {
           const updated = await settlePendingAiRecovery(delegation)
@@ -7027,8 +7181,8 @@ const server = createServer(async (request, response) => {
       const competing = activeAiDelegationsForConversation(aiDelegations.values(), { mapId, targetCardId: delegation.targetCardId, targetConversationId: delegation.targetConversationId, excludeId: delegation.id })
       if (competing.length) return sendJson(response, 409, { error: '같은 대화에서 다른 위임이 진행 중입니다.', code: 'AI_DELEGATION_ALREADY_ACTIVE' })
 
-      const map = await readMap(mapId)
-      const parentMap = parentMapId === mapId ? map : await readMap(parentMapId)
+      let map = await readMap(mapId)
+      let parentMap = parentMapId === mapId ? map : await readMap(parentMapId)
       const parentCard = parentMap?.nodes.find((node) => node.id === delegation.parentCardId)
       const targetCard = map?.nodes.find((node) => node.id === delegation.targetCardId)
       if (!map || map.trashedAt || !parentMap || parentMap.trashedAt || !parentCard || !targetCard) {
@@ -7041,11 +7195,22 @@ const server = createServer(async (request, response) => {
           currentVersion: parentMap.version,
         })
       }
-      if (!isAiConversationLinked(targetCard.data, delegation.targetConversationId)) {
+      if (missingDispatchLink) {
+        try {
+          const restored = await restoreConfirmedAiDelegationDispatch(delegation, map, parentMap, user)
+          delegation = restored.delegation
+          map = restored.map
+          if (parentMapId === mapId) parentMap = map
+        } catch (error) {
+          return sendJson(response, error.status ?? 409, { error: error.message, code: error.code ?? 'AI_DELEGATION_RECOVERY_UNCONFIRMED', details: error.details })
+        }
+      }
+      const restoredTargetCard = map.nodes.find((node) => node.id === delegation.targetCardId)
+      if (!isAiConversationLinked(restoredTargetCard.data, delegation.targetConversationId)) {
         return sendJson(response, 409, { error: '위임 대상 카드와 기존 AI 대화의 연결을 확인할 수 없습니다.' })
       }
 
-      const linked = aiConversationLinksFromData(targetCard.data)
+      const linked = aiConversationLinksFromData(restoredTargetCard.data)
         .find((candidate) => candidate.conversationId === delegation.targetConversationId)
       let selection
       try {
@@ -7523,7 +7688,7 @@ const server = createServer(async (request, response) => {
             thoughtLevel: linked?.thoughtLevel ?? recovered?.thoughtLevel,
             skills: linked?.skills?.length ? linked.skills : recovered?.skills,
             mcpServers: linked?.mcpServers?.length ? linked.mcpServers : recovered?.mcpServers,
-            workspace: linked?.workspace ?? recovered?.workspace,
+            workspace: recovered?.workspace ?? linked?.workspace,
           })
         } catch {
           return sendJson(response, 503, { error: '이어갈 AionUi 대화 상태를 확인하지 못했습니다.' })
@@ -8656,6 +8821,9 @@ const server = createServer(async (request, response) => {
       try {
         resolvedTarget = resolveTargetMachineForUser(user, url.searchParams.get('machineId'))
         const { machineId, machine, targets } = resolvedTarget
+        const workspaceOptions = url.searchParams.get('purpose') === 'dooray-response'
+          ? await doorayApprovalWorkspaceOptions(url.searchParams.get('mapId'), url.searchParams.get('cardId'), machineId)
+          : { defaultWorkspace: machine.role === 'main' ? projectDirectory : '' }
         const [agents, providers, skills, mcpServers] = await Promise.all([
           fetchAionUiOn(machineId, '/api/agents/management'),
           fetchAionUiOn(machineId, '/api/providers'),
@@ -8676,7 +8844,7 @@ const server = createServer(async (request, response) => {
           machines: targets.machines,
           aionUiUrl: machine.role === 'main' ? activeAionUiBaseUrl : null,
           protocol: 'aionui://conversation/new',
-          defaultWorkspace: machine.role === 'main' ? projectDirectory : '',
+          ...workspaceOptions,
           workspaceBrowseAvailable: machine.role === 'main' && isLocalLoopbackRequest(request),
           agents: normalizedAgents,
           skills: normalizedSkills,
@@ -8685,8 +8853,8 @@ const server = createServer(async (request, response) => {
       } catch (error) {
         if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
         console.error('[AionUi integration]', error)
-        return sendJson(response, 503, {
-          error: 'AionUi에 연결할 수 없습니다. AionUi가 실행 중인지 확인해 주세요.',
+        return sendJson(response, error.status ?? 503, {
+          error: error.status === 409 ? error.message : 'AionUi에 연결할 수 없습니다. AionUi가 실행 중인지 확인해 주세요.',
           connected: false,
           ...(resolvedTarget ? {
             machineId: resolvedTarget.machineId,

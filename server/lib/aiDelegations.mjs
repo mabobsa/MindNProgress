@@ -195,11 +195,21 @@ function normalizedWorkspaceRoot(value) {
 export function aiDelegationWorkspaceLeaseMatches(expected, actual) {
   if (!expected && !actual) return true
   if (!expected || !actual) return false
-  return String(expected.workspaceId ?? '') === String(actual.workspaceId ?? '')
-    && String(expected.jobId ?? '') === String(actual.jobId ?? '')
-    && String(expected.leaseId ?? '') === String(actual.leaseId ?? '')
+  // AionCore의 lease 응답 계약은 네 소유권 필드다. branch는 MnP 로컬
+  // 세션/Git 검사 대상이며 응답에 포함된 경우에만 추가로 대조한다.
+  return ['workspaceId', 'jobId', 'leaseId', 'projectRoot'].every((key) =>
+    typeof expected[key] === 'string' && Boolean(expected[key].trim())
+      && typeof actual[key] === 'string' && Boolean(actual[key].trim()))
+    && expected.workspaceId === actual.workspaceId
+    && expected.jobId === actual.jobId
+    && expected.leaseId === actual.leaseId
     && normalizedWorkspaceRoot(expected.projectRoot) === normalizedWorkspaceRoot(actual.projectRoot)
-    && (!expected.branch || expected.branch === actual.branch)
+    && (!expected.branch || !Object.hasOwn(actual, 'branch') || expected.branch === actual.branch)
+}
+
+export function aiDelegationNewWorkspace(requested, parent, target) {
+  return [requested?.workspace, parent?.selection?.workspace, parent?.workspace, target?.workspace]
+    .map((value) => String(value ?? '').trim()).find(Boolean) ?? null
 }
 
 export function failedAiIntegrationRecoveryRuntime(dispatch, recoveredAt = new Date().toISOString()) {

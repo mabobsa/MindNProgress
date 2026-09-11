@@ -5,6 +5,7 @@ import { documentReconstructionGuide } from '../../src/utils/documentReconstruct
 import { layoutMindMap, verifyRenderedLayout, MIND_MAP_LAYOUT_VERSION } from '../../src/utils/mindMapLayout.mjs'
 import { applyProgressRollup } from '../../src/utils/progressRollup.mjs'
 import { impactHash, inspectReconstructionImpact } from './reconstructionImpact.mjs'
+import { groupPlanningBaseline } from '../../src/utils/groupPlanningSources.mjs'
 
 export function reconstructionError(message, status = 400, code = 'RECONSTRUCTION_INVALID', details = undefined) {
   return Object.assign(new Error(message), { status, code, reconstructionError: true, ...(details ? { details } : {}) })
@@ -341,7 +342,7 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
       if (!documents.length) throw reconstructionError('활성 문서를 찾을 수 없습니다.', 404)
     }
     const groups = documents.length ? await groupContext(documents.map((map) => map.id)) : []
-    return { baseline: groups.length === 1 ? groups[0].project?.sourceVersion ?? '' : '', documents: documents.map((map) => ({
+    return { baseline: groups.length === 1 ? groupPlanningBaseline(groups[0].project ?? {}) : '', documents: documents.map((map) => ({
       id: map.id, title: map.title, nodeCount: map.nodeCount,
       excluded: groups.some((group) => group.project?.coordinatorMapId === map.id),
     })) }

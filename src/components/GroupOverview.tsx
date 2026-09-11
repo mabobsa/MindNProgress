@@ -8,6 +8,8 @@ import type { GroupContext, GroupDelegation as Delegation, GroupDocument, GroupP
 import { AiConversationRuntimeBadge } from './AiConversationRuntimeBadge'
 import { groupOverviewFilters, groupWaitingCategories } from '../utils/groupWaiting.mjs'
 import { GroupWaitingReasons, type GroupWaitingReviewInput } from './GroupWaitingReasons'
+import { groupPlanningSources, groupPlanningSourceSummary, groupPlanningBaseline, groupProjectCriteriaEqual, withGroupPlanningSources } from '../utils/groupPlanningSources.mjs'
+import { GroupPlanningSourceEditor, GroupPlanningSourceList } from './GroupPlanningSources'
 import './GroupOverview.css'
 
 export type GroupAiTarget = AiConversationExplicitTarget & { initialRequest: string }
@@ -103,15 +105,15 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
     }
   }
 
-  const changed = Boolean(draft && context && ['source', 'sourceVersion', 'objective', 'instructions'].some((key) => draft[key as keyof Project] !== context.project[key as keyof Project]))
+  const changed = Boolean(draft && context && !groupProjectCriteriaEqual(draft, context.project))
   const stale = draft && context && draft.version !== context.project.version
-  const updateField = (key: 'source' | 'sourceVersion' | 'objective' | 'instructions', value: string) => setDraft((current) => current ? { ...current, [key]: value } : current)
+  const updateField = (key: 'objective' | 'instructions', value: string) => setDraft((current) => current ? { ...current, [key]: value } : current)
   const save = async (prepare = false) => {
-    if (!draft || !editable || busy || stale || loadError || (!prepare && !changed)) return
+    if (!draft || !editable || !context?.sourcesSupported || busy || stale || loadError || (!prepare && !changed)) return
     setBusy(true); setError(''); setNotice('')
     try {
       const value = await request<GroupContext>(baseUrl, clientId, { method: 'PATCH', body: JSON.stringify({
-        baseVersion: draft.version, source: draft.source, sourceVersion: draft.sourceVersion, objective: draft.objective, instructions: draft.instructions,
+        baseVersion: draft.version, sources: groupPlanningSources(draft), objective: draft.objective, instructions: draft.instructions,
         ...(prepare ? coordinatorChoice ? { coordinatorMapId: coordinatorChoice } : { createCoordinator: true } : {}),
       }) })
       if (!mounted.current) return
@@ -236,7 +238,7 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
     {!context || !draft ? <div className="group-empty" aria-live="polite">{loadError ? '그룹 정보를 불러오지 못했습니다. 새로고침으로 다시 시도해 주세요.' : '그룹 정보를 불러오는 중…'}</div> : <>
       <div className="group-criteria-strip">
         <button aria-pressed={panel === 'criteria'} onClick={() => setPanel(panel === 'criteria' ? 'document' : 'criteria')}>기획 기준{changed ? ' · 미저장' : ''}</button>
-        <strong>{context.project.sourceVersion || '버전 미등록'}</strong><span title={context.project.objective}>{context.project.objective || '전체 목표를 등록해 주세요.'}</span>
+        <strong title={groupPlanningBaseline(context.project)}>{groupPlanningSourceSummary(context.project)}</strong><span title={context.project.objective}>{context.project.objective || '전체 목표를 등록해 주세요.'}</span>
       </div>
       <div className="group-master-detail">
         <section className="group-list-panel" aria-label="담당 문서 목록">
@@ -262,14 +264,15 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
             <div className="group-panel-heading"><h2>기획 기준</h2><button onClick={() => setPanel('document')}>문서로 돌아가기</button></div>
             <div className="group-detail-scroll">
               <p className="group-muted">총괄 AI와 문서 AI가 공유하는 기준입니다. 저장만으로 AI 작업이 실행되지는 않습니다.</p>
+              {!context.sourcesSupported && <p className="group-inline-error" role="alert">여러 기획서 등록을 사용하려면 MnP 서버를 재시작한 뒤 새로고침해 주세요. 현재 기준은 그대로 보존됩니다.</p>}
               {editable ? <form id="group-criteria-form" onSubmit={(event) => { event.preventDefault(); void save() }}>
-                <fieldset disabled={busy}><div className="group-source-fields"><label>원본 링크 또는 파일 경로<input value={draft.source} maxLength={4096} onChange={(event) => updateField('source', event.target.value)} placeholder="기획서 업무 링크 또는 AI가 읽을 수 있는 파일 경로" /></label><label>기준 버전<input value={draft.sourceVersion} maxLength={240} onChange={(event) => updateField('sourceVersion', event.target.value)} placeholder="예: v0.3" /></label></div>
+                <fieldset disabled={busy || !context.sourcesSupported}><GroupPlanningSourceEditor sources={groupPlanningSources(draft)} onChange={(sources) => setDraft((current) => current ? withGroupPlanningSources(current, sources) : current)} />
                 <label>전체 목표<textarea value={draft.objective} maxLength={10000} rows={5} onChange={(event) => updateField('objective', event.target.value)} placeholder="완성할 사용자 흐름과 개발 범위" /></label>
                 <label>공통 지침<textarea value={draft.instructions} maxLength={20000} rows={8} onChange={(event) => updateField('instructions', event.target.value)} placeholder="공통 제약, 기존 구현 활용 기준, 외부 대기와 완료 조건" /></label></fieldset>
-              </form> : <><h3>원본 · {context.project.sourceVersion || '버전 미등록'}</h3><p className="group-full-text">{context.project.source || '원본 미등록'}</p><h3>전체 목표</h3><p className="group-full-text">{context.project.objective || '목표 미등록'}</p><h3>공통 지침</h3><p className="group-full-text">{context.project.instructions || '지침 미등록'}</p></>}
+              </form> : <><h3>기획서</h3><GroupPlanningSourceList project={context.project} /><h3>전체 목표</h3><p className="group-full-text">{context.project.objective || '목표 미등록'}</p><h3>공통 지침</h3><p className="group-full-text">{context.project.instructions || '지침 미등록'}</p></>}
               <div className="group-coordinator-settings"><h3>총괄 문서</h3>{coordinator ? <p>결정과 검증 근거는 <button className="group-text-button" onClick={() => onNavigate(coordinator.id, coordinator.root?.id)}>{coordinator.title}</button>에 기록합니다.</p> : <><p>통합 관리 문서에 총괄 대화와 전역 요구사항 원장을 연결합니다.</p>{editable && <label>통합 관리 문서 선택<select value={coordinatorChoice} disabled={busy} onChange={(event) => setCoordinatorChoice(event.target.value)}><option value="">새 통합 관리 문서 만들기</option>{context.documents.map((document) => <option key={document.id} value={document.id}>{document.title}</option>)}</select></label>}</>}</div>
             </div>
-            {editable && <div className="group-detail-actions"><button type="submit" form="group-criteria-form" className="primary" disabled={busy || Boolean(stale) || Boolean(loadError) || !changed}>기준 저장</button>{!coordinator && <button disabled={busy || Boolean(stale) || Boolean(loadError)} onClick={() => void save(true)}>기준 저장 · 총괄 준비</button>}</div>}
+            {editable && <div className="group-detail-actions"><button type="submit" form="group-criteria-form" className="primary" disabled={busy || !context.sourcesSupported || Boolean(stale) || Boolean(loadError) || !changed}>기준 저장</button>{!coordinator && <button disabled={busy || !context.sourcesSupported || Boolean(stale) || Boolean(loadError)} onClick={() => void save(true)}>기준 저장 · 총괄 준비</button>}</div>}
           </> : panel === 'create' && editable ? <>
             <div className="group-panel-heading"><h2>문서 추가</h2><button onClick={() => setPanel('document')}>문서로 돌아가기</button></div>
             <div className="group-detail-scroll"><p className="group-muted">문서와 최상위 카드만 만듭니다. AI 위임은 별도로 제안받고 승인합니다.</p><form id="group-create-form" onSubmit={(event) => { event.preventDefault(); void createDocument() }}><fieldset disabled={busy}><label>문서 이름<input value={newTitle} maxLength={80} required onChange={(event) => setNewTitle(event.target.value)} /></label><label>최상위 카드의 담당 범위와 완료 조건<textarea value={newDescription} maxLength={100000} rows={12} onChange={(event) => setNewDescription(event.target.value)} /></label></fieldset></form></div>

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { groupPlanningSources, withGroupPlanningSources } from '../../src/utils/groupPlanningSources.mjs'
 
 const canonical = (value) => Array.isArray(value) ? value.map(canonical)
   : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value
@@ -6,6 +7,8 @@ export const impactHash = (value) => createHash('sha256').update(JSON.stringify(
 export const proposalHash = ({ approval: _approval, ...plan }) => impactHash(plan)
 const membership = (groups, id) => groups.find((group) => group.mapIds.includes(id))?.groupId ?? null
 const sorted = (values) => [...new Set(values)].sort()
+// 저장 형식의 단일 원본→목록 호환만 정규화한다. 버전·전체 기준·총괄 정보는 계속 비교한다.
+const criteriaHash = (criteria) => impactHash(criteria.project ? { ...criteria, project: withGroupPlanningSources(criteria.project, groupPlanningSources(criteria.project)) } : criteria)
 const fail = (message, code = 'RECONSTRUCTION_GROUP_STALE') => {
   throw Object.assign(new Error(message), { status: 409, code, reconstructionError: true })
 }
@@ -25,7 +28,7 @@ export async function inspectReconstructionImpact({ plan, sources, targets, grou
     const before = previous.find((group) => group.groupId === current.groupId)
     const { mapIds: oldIds, ...oldCriteria } = before
     const { mapIds: newIds, ...newCriteria } = current
-    if (impactHash(oldCriteria) !== impactHash(newCriteria)) fail(`그룹 기획 기준·전체 방향·총괄 정보가 변경되었습니다: ${current.name}. 기준을 다시 검토하세요.`)
+    if (criteriaHash(oldCriteria) !== criteriaHash(newCriteria)) fail(`그룹 기획 기준·전체 방향·총괄 정보가 변경되었습니다: ${current.name}. 기준을 다시 검토하세요.`)
     for (const id of [...oldIds, ...newIds]) if (oldIds.includes(id) !== newIds.includes(id)) changes.add(id)
   }
   for (const id of sourceIds) {

@@ -82,6 +82,14 @@
 .group-overview input, .group-overview textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--theme-control-border, #d9d4e2); border-radius: 5px; background: var(--theme-canvas, #faf9fc); color: inherit; font: inherit; font-size: 11px; font-weight: 400; line-height: 1.6; }
 .group-overview textarea { resize: vertical; }
 .group-source-fields { display: grid; grid-template-columns: minmax(0, 3fr) minmax(75px, 1fr); gap: 8px; }
+.group-source-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.group-overview .group-source-heading h3 { margin: 0; }
+.group-source-heading h3 span { color: var(--theme-text-muted, #817a8c); font-size: 9px; font-weight: 400; }
+.group-source-entry { margin-bottom: 8px; padding: 8px; border: 1px solid var(--theme-border, #dfdbe8); border-radius: 5px; }
+.group-source-entry .group-source-fields > label { margin-bottom: 0; }
+.group-source-list { margin: 6px 0 12px; padding-left: 20px; }
+.group-source-list > li { padding: 4px 0; overflow-wrap: anywhere; }
+.group-overview .group-source-list .group-full-text { margin: 2px 0 6px; }
 .group-overview .group-text-button { min-height: 24px; padding: 0 2px; border: 0; background: transparent; color: var(--theme-accent, #6550b4); font-size: inherit; text-align: left; }
 .group-empty { padding: 18px 12px; color: var(--theme-text-muted, #817a8c); }
 .group-empty > button { display: block; margin-top: 8px; }

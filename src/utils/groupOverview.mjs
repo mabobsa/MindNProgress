@@ -1,12 +1,12 @@
 import { groupWaitingPresentation } from './groupWaiting.mjs'
+import { groupProjectCriteriaEqual } from './groupPlanningSources.mjs'
 
-const criteriaFields = ['source', 'sourceVersion', 'objective', 'instructions']
 export function groupProjectDraftAfterRefresh(current, previousBase, incoming) {
   if (!current || !previousBase) return incoming
-  const edited = criteriaFields.some((key) => current[key] !== previousBase[key])
+  const edited = !groupProjectCriteriaEqual(current, previousBase)
   const alreadyStale = current.version !== previousBase.version
   if (!edited && !alreadyStale) return incoming
-  const criteriaChanged = criteriaFields.some((key) => incoming[key] !== previousBase[key])
+  const criteriaChanged = !groupProjectCriteriaEqual(incoming, previousBase)
   // 분류만 저장된 경우 원문 편집을 보존하고 버전만 따라간다. 실제 기준 충돌은 확인 전까지 유지한다.
   return criteriaChanged || alreadyStale ? current : { ...current, version: incoming.version }
 }

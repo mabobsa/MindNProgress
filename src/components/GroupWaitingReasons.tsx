@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { groupWaitingCategories, groupWaitingImpacts } from '../utils/groupWaiting.mjs'
+import { groupPlanningSourceSummary } from '../utils/groupPlanningSources.mjs'
+import { GroupPlanningSourceList } from './GroupPlanningSources'
 import type { GroupOverviewRow, GroupProject, GroupWaitingCategory, GroupWaitingImpact, GroupWaitingReason } from '../utils/groupOverview.mjs'
 
 export type GroupWaitingReviewInput = { mapId: string; cardId: string; waitingId: string; expectedFingerprint: string; category: GroupWaitingCategory; impact: GroupWaitingImpact }
@@ -49,7 +51,7 @@ export function GroupWaitingReasons({ row, project, editable, disabled, supporte
   const rootItems = row.reasons.filter((reason) => reason.isRoot).length
   return <div className="group-waiting-reasons">
     <p className="group-waiting-explanation">분류는 문서를 찾기 위한 참고이며 승인 요청 수가 아닙니다. 미확인 항목은 현재 범위 차단으로 세지 않습니다. 과거 버전 기록도 포함될 수 있습니다.</p>
-    <details className="group-waiting-evidence"><summary>판단 기준 · {project.sourceVersion || '버전 미등록'}</summary><h4>전체 목표</h4><p className="group-full-text">{project.objective || '전체 목표 미등록'}</p><h4>공통 지침</h4><p className="group-full-text">{project.instructions || '공통 지침 미등록'}</p></details>
+    <details className="group-waiting-evidence"><summary>판단 기준 · {groupPlanningSourceSummary(project)}</summary><GroupPlanningSourceList project={project} /><h4>전체 목표</h4><p className="group-full-text">{project.objective || '전체 목표 미등록'}</p><h4>공통 지침</h4><p className="group-full-text">{project.instructions || '공통 지침 미등록'}</p></details>
     {row.aiAttention && <div className="group-ai-attention"><h3>AI 확인·복구</h3>{row.document?.runtime?.state === 'waiting-confirmation' && <p>AionUi의 실행 권한 확인이 대기 중입니다. 기획 실행 계획의 사용자 승인과는 별개입니다. <button onClick={onConversations}>AI 대화 확인</button></p>}{row.latest && <p>선택 문서의 최신 위임 상태를 확인하세요. 재개·보고 재시도는 별도 요청이 필요합니다. <button onClick={onAiDetails}>위임 상태·결과 확인</button></p>}</div>}
     {row.waitingUnavailable && <p className="group-review-stale">현재 서버는 대기 건수만 제공합니다. MnP 서버를 재시작한 뒤 새로고침하면 사유를 볼 수 있습니다. 기존 대기는 범위 영향 미확인으로 유지합니다.</p>}
     <div className="group-waiting-summary"><strong>대기 업무 {workCards}개 · {row.waitingUnavailable ? '사유 상세 조회 필요' : `사유 ${row.reasons.length}개`}{rootItems ? ` (최상위 ${rootItems}개 포함)` : ''}</strong>{reasonFilter && <label><input type="checkbox" checked={matchingOnly} onChange={(event) => setMatchingOnly(event.target.checked)} />현재 필터에 해당하는 사유만</label>}</div>

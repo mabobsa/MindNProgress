@@ -1,8 +1,15 @@
 import { createHash } from 'node:crypto'
 import { groupWaitingCategories, groupWaitingImpacts } from '../../src/utils/groupWaiting.mjs'
+import { groupPlanningSources } from '../../src/utils/groupPlanningSources.mjs'
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
-export const groupCriteriaFingerprint = (project) => hash(['source', 'sourceVersion', 'objective', 'instructions'].map((key) => project[key] ?? ''))
+export function groupCriteriaFingerprint(project) {
+  const sources = groupPlanningSources(project)
+  const content = [sources[0]?.source ?? '', sources[0]?.sourceVersion ?? '', project.objective ?? '', project.instructions ?? '']
+  // 단일 원본을 목록으로 읽는 것만으로 이전 분류를 무효화하지 않는다. 실제 추가·수정은 모두 포함한다.
+  if (sources.length > 1 || sources[0]?.title) content.push(sources.map(({ title, source, sourceVersion }) => [title, source, sourceVersion]))
+  return hash(content)
+}
 const waitingFingerprint = (card, item) => hash([card.id, card.data.label, card.data.status, card.data.isWork, card.data.kind, item.id, item.label, item.note ?? '', item.resumeCondition ?? '', item.since ?? ''])
 
 export function groupWaitingDetails(map, root, project) {

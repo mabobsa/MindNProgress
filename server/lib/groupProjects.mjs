@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { GROUP_COORDINATOR_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, DOCUMENT_COORDINATOR_INSTRUCTION } from '../../src/utils/aiApprovalInstructions.mjs'
 import { applyGroupWaitingReview, groupWaitingDetails } from './groupWaitingReviews.mjs'
+import { GROUP_PLANNING_SOURCE_LIMIT, groupPlanningSources, withGroupPlanningSources } from '../../src/utils/groupPlanningSources.mjs'
 
 export { GROUP_COORDINATOR_INSTRUCTION, DOCUMENT_COORDINATOR_INSTRUCTION }
 
@@ -14,6 +15,22 @@ export function documentRoot(map) {
 
 export function groupProjectError(message, status = 400) {
   return Object.assign(new Error(message), { groupProjectError: true, status })
+}
+
+function validateSources(value) {
+  if (!Array.isArray(value) || value.length > GROUP_PLANNING_SOURCE_LIMIT) throw groupProjectError(`기획서는 최대 ${GROUP_PLANNING_SOURCE_LIMIT}개까지 등록할 수 있습니다.`)
+  const ids = new Set()
+  return value.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)
+      || typeof item.id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(item.id) || ids.has(item.id)
+      || Object.keys(item).some((key) => !['id', 'title', 'source', 'sourceVersion'].includes(key))
+      || Object.entries({ title: 120, source: 4096, sourceVersion: 240 }).some(([key, limit]) => typeof item[key] !== 'string' || item[key].length > limit)
+      || ![item.title, item.source, item.sourceVersion].some((text) => text.trim())) {
+      throw groupProjectError(`기획서 ${index + 1}의 이름·주소·버전 또는 고유 ID를 확인해 주세요. 빈 항목이나 중복 ID는 저장할 수 없습니다.`)
+    }
+    ids.add(item.id)
+    return { id: item.id, title: item.title, source: item.source, sourceVersion: item.sourceVersion }
+  })
 }
 
 // 그룹 설정은 목록 배치와 분리해 보관한다. 이전 클라이언트의 정렬 저장이 설정을 지우지 않는다.
@@ -31,10 +48,13 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
     return path.join(directory, `${id}.json`)
   }
   async function read(id) {
-    try { return JSON.parse(await readFile(fileFor(id), 'utf8')) }
+    try {
+      const project = JSON.parse(await readFile(fileFor(id), 'utf8'))
+      return withGroupPlanningSources(project, groupPlanningSources(project))
+    }
     catch (error) {
       if (error.code !== 'ENOENT') throw error
-      return { version: 0, coordinatorMapId: null, source: '', sourceVersion: '', objective: '', instructions: '' }
+      return { version: 0, coordinatorMapId: null, sources: [], source: '', sourceVersion: '', objective: '', instructions: '' }
     }
   }
   async function write(id, value) {
@@ -68,13 +88,14 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
     })
     const coordinator = documents.find((map) => map.id === project.coordinatorMapId) ?? null
     return {
-      group, project, coordinator, documents, waitingReviewSupported: true,
+      group, project, coordinator, documents, waitingReviewSupported: true, sourcesSupported: true,
       delegations: [...delegations.values()].filter((item) => item.groupId === id).map((item) => ({ ...publicDelegation(item), result: item.childResultSnapshot ?? '' }))
         .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
       guide: {
         coordinator: GROUP_COORDINATOR_INSTRUCTION,
         documentCoordinator: DOCUMENT_COORDINATOR_INSTRUCTION,
         approval: GROUP_APPROVAL_INSTRUCTION,
+        sources: 'project.sources에 등록된 모든 기획서의 주소·개별 버전을 확인하세요. source와 sourceVersion은 첫 항목의 구버전 호환 별칭이며 전체 기준이 아닙니다. 추가 기획서를 기존 원본의 대체본으로 간주하거나 버전 숫자만으로 서로 다른 기획서의 우선순위를 정하지 마세요. 원본별 요구사항·변경 범위·충돌을 분석하고 변경된 실행 범위는 사용자 재승인을 받으세요.',
         documentDelegation: 'mindnprogress_delegate_ai_work의 mapId는 총괄 문서, targetMapId와 targetCardId는 소속 문서와 루트입니다. sourceRevision과 targetRevision은 두 문서의 최신 버전입니다. 그룹→문서 위임은 분석·조정 전용이며 worker를 점유하지 않습니다.',
         membership: '문서 편입은 실행을 시작하지 않습니다. 실행 중인 그룹 위임의 대상이나 총괄 문서는 그룹 이동·휴지통 이동 전에 위임을 마쳐야 합니다.',
         evidence: '업무 카드 완료 수는 요구사항 구현률이 아닙니다. 소유권 원장과 검증 근거는 총괄 문서 및 추적 카드에서 관리하세요.',
@@ -102,7 +123,7 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
       const { group } = await find(id)
       const current = await read(id)
       assertVersion(current, body.baseVersion)
-      const next = { ...current }
+      let next = { ...current }
       if (body.waitingReview !== undefined) {
         // 기준 변경과 대기 분류를 한 요청에서 섞어 미확인 기준을 승인하지 않는다.
         if (Object.keys(body).some((key) => !['baseVersion', 'baseWaitingReviewVersion', 'waitingReview'].includes(key))) throw groupProjectError('대기 분류는 기획 기준 저장과 별도로 요청해 주세요.')
@@ -116,10 +137,18 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
         await write(id, next)
         return context(id)
       }
+      if (body.sources !== undefined && (body.source !== undefined || body.sourceVersion !== undefined)) throw groupProjectError('기획서 목록과 구버전 단일 원본 필드는 함께 저장할 수 없습니다. sources만 전달해 주세요.')
+      if (body.sources !== undefined) next = withGroupPlanningSources(next, validateSources(body.sources))
       for (const [key, limit] of Object.entries({ source: 4096, sourceVersion: 240, objective: 10000, instructions: 20000 })) {
         if (body[key] === undefined) continue
         if (typeof body[key] !== 'string' || body[key].length > limit) throw groupProjectError(`${key} 값의 형식 또는 길이가 올바르지 않습니다.`)
         next[key] = body[key]
+      }
+      if (body.source !== undefined || body.sourceVersion !== undefined) {
+        const sources = groupPlanningSources(current)
+        const first = { ...(sources[0] ?? { id: 'source-legacy', title: '' }), source: next.source, sourceVersion: next.sourceVersion }
+        // 이전 클라이언트의 단일 필드 저장으로 추가 기획서를 유실하지 않는다.
+        next = withGroupPlanningSources(next, [...(first.title || first.source || first.sourceVersion ? [first] : []), ...sources.slice(1)])
       }
       if (body.coordinatorMapId !== undefined && body.coordinatorMapId !== current.coordinatorMapId) {
         if (hasActive(id)) throw groupProjectError('그룹 위임이 진행 중이므로 총괄 문서를 변경할 수 없습니다.', 409)

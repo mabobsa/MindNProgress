@@ -1521,13 +1521,14 @@ async function main() {
     }
   })
 
-  registerTool(server, 'mindnprogress_get_group_context', '그룹의 최신 기획 원본·버전, 목표·공통 지침, 통합 관리 문서, 소속 문서의 루트 업무 설명·대화와 그룹→문서 위임 현황을 조회합니다. 총괄 AI는 이 문맥의 guide.approval에 있는 전체 방향·문서별 실행 계획의 두 단계 사용자 승인을 확인하세요. 미승인 상태에서는 읽기 전용 분석과 제안만 합니다. 이 문맥을 먼저 읽고 원본 전수 분석, 요구사항 주 소유권, 문서 경계와 실행 순서를 관리하세요. 카드 완료 수는 기획 구현률이 아닙니다.', {
+  registerTool(server, 'mindnprogress_get_group_context', '그룹의 최신 기획서 목록(project.sources: 이름·주소·개별 버전), 목표·공통 지침, 통합 관리 문서, 소속 문서의 루트 업무 설명·대화와 그룹→문서 위임 현황을 조회합니다. source/sourceVersion은 첫 항목의 호환 별칭이며 모든 기획서는 sources와 guide.sources를 확인하세요. 총괄 AI는 guide.approval에 있는 전체 방향·문서별 실행 계획의 두 단계 사용자 승인을 확인하세요. 미승인 상태에서는 읽기 전용 분석과 제안만 합니다. 이 문맥을 먼저 읽고 원본 전수 분석, 요구사항 주 소유권, 문서 경계와 실행 순서를 관리하세요. 카드 완료 수는 기획 구현률이 아닙니다.', {
     groupId: z.string().min(1),
   }, async ({ groupId }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}`))
 
-  registerTool(server, 'mindnprogress_update_group_project', '사용자가 승인한 설정·정비 범위에서만 그룹의 기획 원본·버전, 목표와 공통 지침을 부분 수정합니다. 미승인 방향을 설정에 확정하려고 호출하지 마세요. get_group_context의 project.version을 baseVersion으로 전달하세요. createCoordinator=true는 총괄 문서가 없을 때 통합 관리 문서와 집계 루트를 만들며 AI 실행을 시작하지 않습니다. 기존 문서는 coordinatorMapId로 연결합니다. 장문은 원문을 보존하고 수정 후 재조회해 비교하세요.', {
+  registerTool(server, 'mindnprogress_update_group_project', '사용자가 승인한 설정·정비 범위에서만 그룹의 기획서 목록, 목표와 공통 지침을 부분 수정합니다. 미승인 방향을 설정에 확정하려고 호출하지 마세요. get_group_context의 project.version을 baseVersion으로 전달하세요. sources는 전체 목록 교체이며 기존 항목·ID를 보존하고 승인된 추가·수정·제거만 반영하세요. 생략하면 목록 유지, 빈 배열은 전체 제거입니다. source/sourceVersion은 첫 항목만 수정하는 구버전 호환 필드로 sources와 함께 전달하지 마세요. createCoordinator=true는 총괄 문서가 없을 때 통합 관리 문서와 집계 루트를 만들며 AI 실행을 시작하지 않습니다. 기존 문서는 coordinatorMapId로 연결합니다. 장문은 원문을 보존하고 수정 후 재조회해 비교하세요.', {
     groupId: z.string().min(1), baseVersion: z.number().int().nonnegative(),
     source: z.string().max(4096).optional(), sourceVersion: z.string().max(240).optional(),
+    sources: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), title: z.string().max(120), source: z.string().max(4096), sourceVersion: z.string().max(240) }).strict()).max(50).optional(),
     objective: z.string().max(10000).optional(), instructions: z.string().max(20000).optional(),
     coordinatorMapId: z.string().min(1).optional(), createCoordinator: z.boolean().optional(),
   }, async ({ groupId, ...body }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}`, { method: 'PATCH', body: JSON.stringify(body) }))

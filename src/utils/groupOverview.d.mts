@@ -1,6 +1,7 @@
 import type { MindNodeData, AiConversationRuntime } from '../types/mindMap'
+import type { GroupPlanningSource } from './groupPlanningSources.mjs'
 
-export type GroupProject = { version: number; coordinatorMapId: string | null; source: string; sourceVersion: string; objective: string; instructions: string; waitingReviewVersion?: number }
+export type GroupProject = { version: number; coordinatorMapId: string | null; sources?: GroupPlanningSource[]; source: string; sourceVersion: string; objective: string; instructions: string; waitingReviewVersion?: number }
 export function groupProjectDraftAfterRefresh(current: GroupProject | null, previousBase: GroupProject | null, incoming: GroupProject): GroupProject
 export type GroupWaitingCategory = 'external' | 'decision' | 'verification' | 'other'
 export type GroupWaitingImpact = 'unreviewed' | 'blocking' | 'deferred'
@@ -8,7 +9,7 @@ export type GroupWaitingDetail = { cardId: string; cardTitle: string; cardStatus
 export type GroupWaitingReason = GroupWaitingDetail & { category: GroupWaitingCategory; impact: GroupWaitingImpact; reviewed: boolean; stale: boolean }
 export type GroupDocument = { id: string; title: string; version: number; root: { id: string; data: MindNodeData } | null; runtime: AiConversationRuntime | null; work: { total: number; done: number; waiting: number }; waitingDetails?: GroupWaitingDetail[] }
 export type GroupDelegation = { id: string; mapId: string; targetCardId: string; targetCardLabel: string; state: string; displayState?: string; coordinationOnly?: boolean; instructionPreview: string; childError?: string; parentError?: string; recoveryWakeError?: string; linkError?: string; createdAt: string; updatedAt: string; result?: string; resultAvailability?: 'captured' | 'unavailable' | 'integrity-failed'; reportResultAvailability?: 'captured' | 'unavailable' | 'integrity-failed'; reportPayloadHash?: string; workCompleted?: boolean; reportPending?: boolean; recovery?: { recoveryAvailable: boolean; reportRetryAvailable?: boolean; failureCategory?: string }; attemptHistory?: Array<{ at: string; reason: string; childError?: string; parentError?: string; result?: string; reportResultAvailability?: string; reportPayloadHash?: string }> }
-export type GroupContext = { group: { id: string; name: string; mapIds: string[] }; project: GroupProject; coordinator: GroupDocument | null; documents: GroupDocument[]; delegations: GroupDelegation[]; guide: { coordinator: string }; waitingReviewSupported?: boolean }
+export type GroupContext = { group: { id: string; name: string; mapIds: string[] }; project: GroupProject; coordinator: GroupDocument | null; documents: GroupDocument[]; delegations: GroupDelegation[]; guide: { coordinator: string }; waitingReviewSupported?: boolean; sourcesSupported?: boolean }
 export type GroupOverviewRow = { mapId: string; title: string; document: GroupDocument | null; delegations: GroupDelegation[]; latest: GroupDelegation | null; attention: boolean; aiAttention: boolean; reasons: GroupWaitingReason[]; waitingUnavailable: boolean; filters: string[] }
 export function groupDelegationPresentation(item?: GroupDelegation | null): { label: string; tone: string; attention: boolean }
 export function groupOverviewRows(context?: GroupContext | null): GroupOverviewRow[]

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { createDocumentReconstruction } from '../server/lib/documentReconstruction.mjs'
 import { proposalHash } from '../server/lib/reconstructionImpact.mjs'
 import { reconstructionLayoutFixture } from './helpers/reconstructionLayoutFixture.mjs'
+import { groupPlanningSources, withGroupPlanningSources } from '../src/utils/groupPlanningSources.mjs'
 
 const card = (id, data = {}) => ({ id, type: 'mind', position: { x: 0, y: 0 }, data: { label: id, description: '유지할 현재 기준', kind: 'task', isWork: true, status: 'planned', progress: 0, ...data } })
 const map = (id) => ({ id, title: id, version: 1, nodes: [card('root', { kind: 'root', isWork: false }), card('work')], edges: [{ id: 'edge', source: 'root', target: 'work' }] })
@@ -44,6 +45,20 @@ async function fixture(t, setup = () => {}) {
     onSave: (fn) => { onSave = fn }, unreadable: (id) => { unreadable = id } }
 }
 const ref = (owner, target) => { owner.nodes.push(card('ref-' + target, { isWork: false, reference: { mapId: target, nodeId: 'work' } })); owner.edges.push({ id: 'edge-' + target, source: 'root', target: 'ref-' + target }) }
+
+test('단일 기획서의 목록 호환은 기존 정리안을 유지하고 추가 원본·개별 버전 변경은 차단한다', async (t) => {
+  const f = await fixture(t)
+  const plan = await f.planFor('map-a'); await f.submit(plan)
+  const verified = await f.verify(plan)
+  Object.assign(f.project, withGroupPlanningSources(f.project, groupPlanningSources(f.project)))
+  assert.equal((await f.manager.preview(plan)).previewHash, verified.previewHash)
+  f.project.sources.push({ id: 'extra', title: '추가 기획', source: 'C:\\기획\\추가.pptx', sourceVersion: 'v0.1' })
+  await assert.rejects(f.manager.preview(plan), (error) => error.code === 'RECONSTRUCTION_GROUP_STALE')
+  const expanded = await f.planFor('map-a', '-expanded'); await f.submit(expanded)
+  f.project.sources[1].sourceVersion = 'v0.2'
+  await assert.rejects(f.manager.preview(expanded), (error) => error.code === 'RECONSTRUCTION_GROUP_STALE')
+  assert.equal(f.manager.metadata('map-a').archivedAt, undefined)
+})
 
 test('A가 C를 참조해도 무관한 B 전환은 허용하고 원래 제안·검증 좌표를 보존한다', async (t) => {
   const f = await fixture(t, (maps) => { ref(maps.get('map-a'), 'map-c'); ref(maps.get('map-b'), 'map-c') })

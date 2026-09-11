@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 
 export const AI_DELEGATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$/
 export const AI_DELEGATION_WAIT_POLL_DELAYS_MS = Object.freeze([3_000, 5_000, 10_000, 30_000])
+export const AI_DELEGATION_TERMINAL_STATES = new Set(['completed', 'failed', 'superseded', 'closed'])
 
 export const ACTIVE_AI_DELEGATION_STATES = new Set([
   'waiting-usage-limit',
@@ -310,18 +311,44 @@ export function aiDelegationAttemptHistory(delegation, reason, at = new Date().t
 
 export function aiDelegationWorkPending(delegation) {
   // 업무 성공과 상위 결과 전달을 구분한다. 보고 실패만으로 하위 업무를 미완료 처리하지 않는다.
-  return !aiDelegationSucceeded(delegation) && !['completed', 'failed', 'superseded'].includes(delegation.state)
+  return !aiDelegationSucceeded(delegation) && !aiDelegationIsTerminal(delegation)
+}
+
+export function aiDelegationIsTerminal(delegation) {
+  return AI_DELEGATION_TERMINAL_STATES.has(String(delegation?.state ?? ''))
+}
+
+export function aiDelegationClosureAvailability(delegation) {
+  if (!delegation || aiDelegationIsTerminal(delegation) || delegation.pendingRecovery) return null
+  if (delegation.groupId) return { closeAvailable: false, reason: 'group-managed' }
+  if (delegation.state === 'parent-wake-failed' && aiDelegationSucceeded(delegation)) {
+    return { closeAvailable: true, reason: 'completed-child-report-abandonment' }
+  }
+  if (['waiting-usage-limit', 'waiting-rate-limit'].includes(delegation.state)) {
+    const workspaceSafe = !delegation.workspaceLease?.leaseId
+      || ['failed-clean', 'cancelled'].includes(delegation.workspaceResult?.status)
+    return {
+      closeAvailable: workspaceSafe,
+      reason: workspaceSafe ? 'failed-child-no-preserved-changes' : 'workspace-changes-preserved',
+    }
+  }
+  return { closeAvailable: false, reason: 'execution-or-recovery-still-active' }
 }
 
 export function aiDelegationCanBeSupersededBy(delegation, replacement) {
-  if (!['waiting-usage-limit', 'waiting-rate-limit'].includes(delegation?.state)) return false
+  const failedCleanLimit = ['waiting-usage-limit', 'waiting-rate-limit'].includes(delegation?.state)
+  const completedReportFailure = !delegation?.groupId
+    && delegation?.state === 'parent-wake-failed'
+    && aiDelegationSucceeded(delegation)
+  if (!failedCleanLimit && !completedReportFailure) return false
   if (!replacement || replacement.id === delegation.id || replacement.state !== 'completed' || !aiDelegationSucceeded(replacement)) return false
+  if ((replacement.groupId ?? null) !== (delegation.groupId ?? null)) return false
   if (replacement.mapId !== delegation.mapId
       || (replacement.parentMapId ?? replacement.mapId) !== (delegation.parentMapId ?? delegation.mapId)
       || replacement.parentCardId !== delegation.parentCardId
       || replacement.targetCardId !== delegation.targetCardId) return false
   if (String(replacement.createdAt ?? '') <= String(delegation.createdAt ?? '')) return false
-  if (delegation.workspaceLease?.leaseId
+  if (failedCleanLimit && delegation.workspaceLease?.leaseId
       && !['failed-clean', 'cancelled'].includes(delegation.workspaceResult?.status)) return false
   return true
 }

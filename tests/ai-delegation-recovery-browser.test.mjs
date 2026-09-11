@@ -14,6 +14,7 @@ const originalFetch = window.fetch.bind(window);
 window.audit = { calls: [], confirm: true, fail: false };
 window.confirm = () => window.audit.confirm;
 const item = { id:'limited',mapId:'child-map',parentMapId:'parent-map',parentCardId:'parent',targetCardId:'child',targetCardLabel:'하위 작업',state:'waiting-usage-limit',createdAt:'2026-09-11',updatedAt:'current',recovery:{recoveryAvailable:true},childError:'사용량 초과' };
+const replacement = {...item,id:'replacement',state:'completed',createdAt:'2026-09-12',updatedAt:'replacement-current',workCompleted:true,recovery:null,childError:null};
 window.fetch = async (url, init = {}) => {
   if (!String(url).startsWith('/api/')) return originalFetch(url, init);
   window.audit.calls.push({url,method:init.method || 'GET',body:init.body ? JSON.parse(init.body) : null});
@@ -21,12 +22,12 @@ window.fetch = async (url, init = {}) => {
     if (window.audit.fail) return new Response(JSON.stringify({error:'서버 상태가 변경되었습니다.'}),{status:409});
     return new Response(JSON.stringify({delegation:item}));
   }
-  if (url.endsWith('/ai-delegations')) return new Response(JSON.stringify({delegations:[item,{...item,id:'unrelated',targetCardId:'someone-else',parentCardId:'someone-else',targetCardLabel:'다른 카드 작업'}]}));
+  if (url.endsWith('/ai-delegations')) return new Response(JSON.stringify({delegations:[item,replacement,{...item,id:'unrelated',targetCardId:'someone-else',parentCardId:'someone-else',targetCardLabel:'다른 카드 작업'}]}));
   return new Response(JSON.stringify({map:{version:url.includes('parent-map') ? 7 : 9}}));
 };
 let sequence = 0;
 window.renderRecovery = (props={}) => root.render(React.createElement(AiDelegationRecovery,{key:++sequence,mapId:'child-map',cardId:'child',...props}));
-window.reportOnly = () => {item.state='parent-wake-failed';item.childError=null;item.parentError='보고 사용량 초과';item.workCompleted=true;item.reportPending=true;item.recovery={recoveryAvailable:false,reportRetryAvailable:true};window.renderRecovery()};
+window.reportOnly = () => {item.state='parent-wake-failed';item.childError=null;item.parentError='보고 사용량 초과';item.workCompleted=true;item.reportPending=true;item.recovery={recoveryAvailable:false,reportRetryAvailable:true};item.closure={closeAvailable:true,reason:'completed-child-report-abandonment'};window.renderRecovery()};
 window.fixtureReady = true;
 `
 
@@ -109,6 +110,21 @@ test('하위 카드 복구 화면은 AI 없이 재개·보고 재시도를 구�
     await click('결과 전달 재시도')
     await waitFor(() => evaluate('document.querySelector("[role=status]")?.textContent.includes("재전달을 접수")'))
     assert.ok((await evaluate('window.audit.calls.filter(c=>c.method==="POST").at(-1).url')).endsWith('/retry-report'))
+    await click('후속 성공으로 종료')
+    await waitFor(() => evaluate('document.querySelector("[role=status]")?.textContent.includes("후속 성공 위임")'))
+    let last = await evaluate('window.audit.calls.filter(c=>c.method==="POST").at(-1)')
+    assert.ok(last.url.endsWith('/supersede'))
+    assert.equal(last.body.replacementDelegationId, 'replacement')
+    assert.equal(last.body.confirmSupersededByCompletedDelegation, true)
+    await click('보고하지 않고 종료')
+    await evaluate(`(() => { const textarea=document.querySelector('.ai-delegation-close-form textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(textarea,'되돌린 결과이므로 상위 보고 없이 종료합니다.');textarea.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:'종료'})); })()`)
+    await waitFor(() => evaluate('!Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="보고하지 않고 종료").disabled'))
+    await click('보고하지 않고 종료')
+    await waitFor(() => evaluate('document.querySelector("[role=status]")?.textContent.includes("사용자 종료 상태")'))
+    last = await evaluate('window.audit.calls.filter(c=>c.method==="POST").at(-1)')
+    assert.ok(last.url.endsWith('/close'))
+    assert.equal(last.body.confirmClosedWithoutCompletion, true)
+    assert.equal(last.body.confirmResultReportDiscarded, true)
   } finally {
     if (send && socket?.readyState === WebSocket.OPEN) await send('Browser.close').catch(() => {})
     for (const item of pending.values()) clearTimeout(item.timer)

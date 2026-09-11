@@ -6,8 +6,8 @@ import { layoutMindMap, verifyRenderedLayout, MIND_MAP_LAYOUT_VERSION } from '..
 import { applyProgressRollup } from '../../src/utils/progressRollup.mjs'
 import { impactHash, inspectReconstructionImpact } from './reconstructionImpact.mjs'
 
-export function reconstructionError(message, status = 400, code = 'RECONSTRUCTION_INVALID') {
-  return Object.assign(new Error(message), { status, code, reconstructionError: true })
+export function reconstructionError(message, status = 400, code = 'RECONSTRUCTION_INVALID', details = undefined) {
+  return Object.assign(new Error(message), { status, code, reconstructionError: true, ...(details ? { details } : {}) })
 }
 
 // 평소 문서 요청은 병렬 실행하고, 보관·전환만 진행 중인 변경을 기다려 독점한다.

@@ -24,11 +24,13 @@ import {
   activeAiDelegationsForConversation,
   aiDelegationWaitPollDue,
   aiDelegationBlocksResume,
+  aiDelegationClosureAvailability,
   aiDelegationRecoveryAvailability,
   aiDelegationReportResult,
   aiDelegationLimitState,
   aiDelegationAttemptHistory,
   aiDelegationCanBeSupersededBy,
+  aiDelegationIsTerminal,
   aiDelegationWorkPending,
   aiDelegationDisplayState,
   aiDelegationStateAfterParentWake,
@@ -2133,9 +2135,12 @@ function delegationPublicView(delegation) {
   delete publicDelegation.childResultSnapshot
   const recovery = aiDelegationRecoveryAvailability(delegation)
   if (recovery) publicDelegation.recovery = recovery
+  const closure = aiDelegationClosureAvailability(delegation)
+  if (closure) publicDelegation.closure = closure
   publicDelegation.displayState = aiDelegationDisplayState(delegation)
   publicDelegation.workCompleted = aiDelegationSucceeded(delegation)
-  publicDelegation.reportPending = aiDelegationSucceeded(delegation) && delegation.parentDispatchState !== 'completed'
+  publicDelegation.reportPending = !aiDelegationIsTerminal(delegation)
+    && aiDelegationSucceeded(delegation) && delegation.parentDispatchState !== 'completed'
   publicDelegation.resultAvailability = aiDelegationReportResult(delegation).availability
   return publicDelegation
 }
@@ -2903,7 +2908,7 @@ async function ensureCheckpointRequiredNotification(delegation, workspaceResult)
   })
 }
 
-async function validateAiDelegationAction(request, delegation, body, approvalRequired = false) {
+async function validateAiDelegationAction(request, delegation, body, approvalRequired = false, { requireConversationLinks = true } = {}) {
   const fail = (message, status = 409) => { throw Object.assign(new Error(message), { status, groupProjectError: true }) }
   const parentMapId = delegation.parentMapId ?? delegation.mapId
   const human = !hasValidIntegrationBearer(request) && Boolean(getSignedInUser(request))
@@ -2920,7 +2925,8 @@ async function validateAiDelegationAction(request, delegation, body, approvalReq
   const target = map?.nodes.find((node) => node.id === delegation.targetCardId)
   const parentCard = parent?.nodes.find((node) => node.id === delegation.parentCardId)
   if (!target || !parentCard || map.trashedAt || parent.trashedAt) fail('위임 문서 또는 카드를 찾을 수 없습니다.', 404)
-  if (!isAiConversationLinked(target.data, delegation.targetConversationId) || !isAiConversationLinked(parentCard.data, delegation.parentConversationId)) fail('기존 상위·대상 대화의 카드 연결이 변경됐습니다.')
+  if (requireConversationLinks
+    && (!isAiConversationLinked(target.data, delegation.targetConversationId) || !isAiConversationLinked(parentCard.data, delegation.parentConversationId))) fail('기존 상위·대상 대화의 카드 연결이 변경됐습니다.')
   if (delegation.groupId) {
     if (await groupProjects.authorizeDelegation(parent, parentCard.id, map, target.id) !== delegation.groupId) fail('그룹 소속 또는 총괄 문서가 변경됐습니다.')
     const context = await groupProjects.context(delegation.groupId)
@@ -2930,6 +2936,29 @@ async function validateAiDelegationAction(request, delegation, body, approvalReq
   if (human && (body.expectedUpdatedAt !== delegation.updatedAt || body.sourceRevision !== parent.version || body.targetRevision !== map.version)) fail('문서 또는 위임 상태가 변경됐습니다. 최신 내용을 불러오세요.')
   if (approvalRequired && human && body.confirmApprovedScope !== true) fail('기존 승인 계획과 현재 범위가 같음을 사용자가 확인해야 재개할 수 있습니다.', 400)
   return { human, map, parent, target }
+}
+
+async function ensureAiDelegationTerminalResolutionIdle(delegation) {
+  const operationId = delegation.state === 'parent-wake-failed'
+    ? delegation.wakeOperationId
+    : delegation.childOperationId
+  if (!operationId) return
+  const machineId = delegation.state === 'parent-wake-failed'
+    ? delegationParentMachineId(delegation)
+    : delegationTargetMachineId(delegation)
+  let dispatch
+  try {
+    dispatch = await fetchAionUiOn(machineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
+  } catch (error) {
+    if (error?.status === 404) return
+    throw Object.assign(new Error('실행 상태를 확인할 수 없어 위임을 종료하지 않았습니다. 연결을 확인한 뒤 다시 시도하세요.'), { status: 409, groupProjectError: true })
+  }
+  if (['starting', 'running', 'waiting_resource', 'waiting_resume'].includes(dispatch?.state)) {
+    throw Object.assign(new Error('AionUi에 아직 실행 또는 재개 대기 중인 작업이 있어 위임을 종료할 수 없습니다. 해당 대화를 먼저 중지하거나 마무리하세요.'), { status: 409, groupProjectError: true })
+  }
+  if (dispatch?.state === 'completed') {
+    throw Object.assign(new Error('저장된 기록보다 실행 상태가 앞서 있습니다. 상태 다시 확인 후 처리하세요.'), { status: 409, groupProjectError: true })
+  }
 }
 
 async function settlePendingAiRecovery(delegation) {
@@ -5555,8 +5584,22 @@ documentReconstruction = await createDocumentReconstruction({
   saveMap: (...args) => saveMap(...args, { reconstructionCreate: true }),
   checkIdle: async (mapIds) => {
     for (const mapId of mapIds) {
-      const delegation = [...aiDelegations.values()].find((item) => [item.mapId, item.parentMapId].includes(mapId) && !['completed', 'failed', 'superseded'].includes(item.state))
-      if (delegation) throw reconstructionError(`미종료 AI 위임이 있습니다: ${delegation.id} (${delegation.state})`, 409, 'RECONSTRUCTION_AI_BUSY')
+      const delegation = [...aiDelegations.values()].find((item) => [item.mapId, item.parentMapId].includes(mapId) && !aiDelegationIsTerminal(item))
+      if (delegation) {
+        const targetSide = delegation.mapId === mapId
+        throw reconstructionError(
+          `미종료 AI 위임이 있습니다: ${delegation.id} (${delegation.state})`,
+          409,
+          'RECONSTRUCTION_AI_BUSY',
+          { delegation: {
+            id: delegation.id,
+            state: delegation.state,
+            mapId,
+            cardId: targetSide ? delegation.targetCardId : delegation.parentCardId,
+            cardLabel: targetSide ? delegation.targetCardLabel : delegation.parentCardLabel,
+          } },
+        )
+      }
       const map = await readMap(mapId)
       if (!map) throw reconstructionError('원본 문서를 찾을 수 없습니다.', 404)
       const links = map.nodes.flatMap((node) => aiConversationLinksFromData(node.data))
@@ -5634,7 +5677,7 @@ const doorayResponses = createDoorayResponseIntegration({
   mainMachineId: machineRegistry.mainMachineId,
   user: (id) => users.find((user) => user.id === id && user.active !== false && canEdit(user)),
   activeDelegations: (mapId, cardId) => [...aiDelegations.values()].some((delegation) => delegation.mapId === mapId
-    && delegation.targetCardId === cardId && !['completed', 'failed', 'superseded'].includes(delegation.state)),
+    && delegation.targetCardId === cardId && !aiDelegationIsTerminal(delegation)),
 })
 
 const acquireDocumentMutation = createDocumentMutationGate()
@@ -5716,7 +5759,7 @@ const server = createServer(async (request, response) => {
       }
       return sendJson(response, 404, { error: '지원하지 않는 재구성 작업입니다.' })
     }
-    const actionRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/ai-delegations\/([^/]+)\/(recover|refresh|retry-report|finalize-coordination|supersede)$/)
+    const actionRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/ai-delegations\/([^/]+)\/(recover|refresh|retry-report|finalize-coordination|supersede|close)$/)
     if (actionRoute && request.method === 'POST') {
       const id = decodeURIComponent(actionRoute[2])
       for (let attempt = 0; aiDelegationPollRunning && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 25))
@@ -5733,15 +5776,43 @@ const server = createServer(async (request, response) => {
         const retryReport = actionRoute[3] === 'retry-report'
         const finalizeCoordination = actionRoute[3] === 'finalize-coordination'
         const supersede = actionRoute[3] === 'supersede'
-        const validated = await validateAiDelegationAction(request, delegation, body, retryReport || finalizeCoordination)
-        if (!retryReport && !finalizeCoordination && !supersede) return sendJson(response, 200, { delegation: delegationPublicView(await refreshSuspendedAiDelegation(delegation)), executionRequested: false })
+        const close = actionRoute[3] === 'close'
+        const validated = await validateAiDelegationAction(request, delegation, body, retryReport || finalizeCoordination, { requireConversationLinks: !supersede && !close })
+        if (!retryReport && !finalizeCoordination && !supersede && !close) return sendJson(response, 200, { delegation: delegationPublicView(await refreshSuspendedAiDelegation(delegation)), executionRequested: false })
+        if (close) {
+          if (body.confirmClosedWithoutCompletion !== true || body.confirmResultReportDiscarded !== true) {
+            return sendJson(response, 400, { error: '완료 처리와 결과 보고 없이 위임 기록을 종료할지 모두 확인해야 합니다.' })
+          }
+          const reason = String(body.reason ?? '').trim()
+          const note = String(body.note ?? '').trim()
+          if (!['result-invalidated', 'conversation-removed', 'no-longer-needed'].includes(reason)) return sendJson(response, 400, { error: '사용자 종료 사유를 선택하세요.' })
+          if (note.length < 3 || note.length > 1000) return sendJson(response, 400, { error: '사용자 종료 감사 메모를 3자 이상 1000자 이하로 입력하세요.' })
+          const closure = aiDelegationClosureAvailability(delegation)
+          if (!closure?.closeAvailable) {
+            return sendJson(response, 409, { error: closure?.reason === 'workspace-changes-preserved'
+              ? '작업공간에 보존할 변경이 있어 위임을 종료할 수 없습니다. 기존 작업을 복구하거나 작업공간을 먼저 안전하게 정리하세요.'
+              : '실행 또는 복구 가능성이 남은 위임은 사용자 종료할 수 없습니다. 상태를 다시 확인하세요.' })
+          }
+          await ensureAiDelegationTerminalResolutionIdle(delegation)
+          const closedAt = new Date().toISOString()
+          const updated = await updateAiDelegation(id, {
+            state: 'closed', closedAt, closedByUserId: user.id,
+            closureSourceState: delegation.state, closureReason: reason, closureNote: note,
+            reportApprovalRequired: false, reportCancelledAt: closedAt,
+          })
+          return sendJson(response, 200, {
+            delegation: delegationPublicView(updated), childExecutionRequested: false,
+            resultReported: false, cardChanged: false, workspaceChanged: false,
+          })
+        }
         if (supersede) {
-          if (body.confirmSupersededByCompletedDelegation !== true) return sendJson(response, 400, { error: '완료된 후속 위임으로 기존 한도 대기 위임을 종료할지 확인해야 합니다.' })
+          if (body.confirmSupersededByCompletedDelegation !== true) return sendJson(response, 400, { error: '완료된 후속 위임으로 기존 미종료 위임을 종료할지 확인해야 합니다.' })
           const replacementId = String(body.replacementDelegationId ?? '').trim()
           const replacement = aiDelegations.get(replacementId)
           if (!aiDelegationCanBeSupersededBy(delegation, replacement)) {
-            return sendJson(response, 409, { error: '같은 상위 카드와 대상 카드에서 나중에 성공한 위임이며, 기존 작업공간에 보존할 변경이 없는 경우에만 후속 위임으로 종료할 수 있습니다.' })
+            return sendJson(response, 409, { error: '같은 상위 카드와 대상 카드에서 나중에 성공한 위임이며, 기존 실행이 결과 보고 실패 또는 변경 없는 한도 중단인 경우에만 후속 위임으로 종료할 수 있습니다.' })
           }
+          await ensureAiDelegationTerminalResolutionIdle(delegation)
           const supersededAt = new Date().toISOString()
           const updated = await updateAiDelegation(id, {
             state: 'superseded', supersededByDelegationId: replacement.id,
@@ -7468,7 +7539,7 @@ const server = createServer(async (request, response) => {
 
       let resumedDelegation = null
       if (crossDocument && strategy === 'new') {
-        const activeTarget = [...aiDelegations.values()].find((item) => item.mapId === mapId && item.targetCardId === targetCard.id && !['completed', 'failed', 'superseded'].includes(item.state))
+        const activeTarget = [...aiDelegations.values()].find((item) => item.mapId === mapId && item.targetCardId === targetCard.id && !aiDelegationIsTerminal(item))
         if (activeTarget) return sendJson(response, 409, { error: '이 문서 루트에 아직 끝나지 않은 위임이 있습니다. 기존 위임을 확인하세요.', code: 'AI_DELEGATION_ALREADY_ACTIVE', delegation: delegationPublicView(activeTarget) })
         const workStates = await aiConversationWorkStates(mapId, [targetCard.id])
         if (workStates?.cards.some((card) => !['idle', 'unlinked'].includes(card.state))) return sendJson(response, 409, { error: '문서 루트의 AI가 작업 중이거나 상태를 확인할 수 없습니다. 기존 대화를 먼저 확인하세요.' })
@@ -9731,7 +9802,7 @@ const server = createServer(async (request, response) => {
     return sendJson(response, 404, { error: '요청한 경로를 찾을 수 없습니다.' })
   } catch (error) {
     if (error instanceof AiDelegationStatusLookupError) return sendJson(response, error.status, error.responseBody())
-    if (error?.reconstructionError) return sendJson(response, error.status, { error: error.message, code: error.code })
+    if (error?.reconstructionError) return sendJson(response, error.status, { error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) })
     if (error?.groupProjectError) return sendJson(response, error.status, { error: error.message })
     if (error?.message === 'PAYLOAD_TOO_LARGE') return sendJson(response, 413, { error: '요청 데이터가 너무 큽니다.' })
     if (error instanceof SyntaxError) return sendJson(response, 400, { error: 'JSON 형식이 올바르지 않습니다.' })

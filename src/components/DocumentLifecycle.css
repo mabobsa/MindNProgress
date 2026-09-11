@@ -131,6 +131,7 @@
 .lifecycle-dialog p[role=status] { padding: 8px 10px; color: #39795f; border: 1px solid #cfe9df; border-radius: 8px; background: #eff9f5; }
 .lifecycle-dialog .lifecycle-apply-action { margin-top: 4px; }
 .lifecycle-dialog p.lifecycle-apply-error { margin: 6px 0 0; scroll-margin-block: 8px; }
+.lifecycle-dialog .lifecycle-apply-error-block > button { margin-top: 6px; }
 .lifecycle-dialog article.lifecycle-request-detail { background: var(--theme-surface-soft, #f5f3fa); }
 .lifecycle-sources { max-height: 160px; overflow: auto; }
 .lifecycle-dialog .lifecycle-sources label { margin: 5px 0; font-weight: 400; }

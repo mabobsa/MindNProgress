@@ -14,12 +14,13 @@ type Preview = { id: string; previewHash: string; layoutPhase: 'draft' | 'measur
 type Scope = { type: 'map' | 'group'; id: string }
 type Choice = { id: string; title: string; excluded: boolean }
 type ReconstructionRequest = { id: string; mode: 'compact' | 'spec-update'; baseline: string; notes: string; newSource: string; createdAt: string; createdBy: { id: string }; revision: number; mapIds: string[]; documents: { id: string; title: string }[]; hasProposal?: boolean; planId?: string; plan?: Record<string, unknown>; conversation?: { id: string }; launchTarget: { mapId: string; cardId: string; cardTitle: string; documentTitle: string } }
+type AiDelegationBlocker = { id: string; state: string; mapId: string; cardId: string; cardLabel?: string }
 type Api = <T>(path: string, init?: RequestInit) => Promise<T>
 
 export function DocumentLifecycle({ api, editable, documents, initialIds, scope, initialTab = 'archive', userId, members, launchInWebUi, onClose, onChanged, onNavigate }: {
   api: Api; editable: boolean; documents: Document[]; initialIds: string[]
   scope?: Scope; initialTab?: 'archive' | 'reconstruction'; userId: string; members: TeamMember[]; launchInWebUi: boolean
-  onClose: () => void; onChanged: () => Promise<void>; onNavigate: (id: string) => void
+  onClose: () => void; onChanged: () => Promise<void>; onNavigate: (id: string, cardId?: string) => void
 }) {
   const [tab, setTab] = useState<'archive' | 'reconstruction' | 'history'>(initialTab)
   const [archived, setArchived] = useState<Document[]>([])
@@ -52,6 +53,7 @@ export function DocumentLifecycle({ api, editable, documents, initialIds, scope,
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [applyError, setApplyError] = useState('')
+  const [applyBlocker, setApplyBlocker] = useState<AiDelegationBlocker | null>(null)
   const applyErrorId = useId()
   const applyErrorElement = useRef<HTMLParagraphElement>(null)
   const [notice, setNotice] = useState('')
@@ -113,7 +115,7 @@ export function DocumentLifecycle({ api, editable, documents, initialIds, scope,
     }
   }, [applyError, tab, preview])
   const run = async (action: () => Promise<void>) => {
-    setBusy(true); setError(''); setApplyError(''); setNotice('')
+    setBusy(true); setError(''); setApplyError(''); setApplyBlocker(null); setNotice('')
     try { await action() } catch (error) { setError(error instanceof Error ? error.message : '처리하지 못했습니다.') }
     finally { setBusy(false) }
   }
@@ -158,6 +160,8 @@ export function DocumentLifecycle({ api, editable, documents, initialIds, scope,
     try {
       await api('/api/document-reconstructions/apply', { method: 'POST', body: JSON.stringify({ plan, previewHash: preview.previewHash }) })
     } catch (error) {
+      const response = (error as Error & { body?: { code?: string; details?: { delegation?: AiDelegationBlocker } } }).body
+      setApplyBlocker(response?.code === 'RECONSTRUCTION_AI_BUSY' ? response.details?.delegation ?? null : null)
       setApplyError(error instanceof Error ? error.message : '전환안을 적용하지 못했습니다.')
       return
     }
@@ -258,7 +262,10 @@ export function DocumentLifecycle({ api, editable, documents, initialIds, scope,
           {editable && <><label><input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} disabled={busy || layoutBusy || Boolean(layoutError) || preview.layoutPhase !== 'verified'} />카드 대응표와 현재 지식·미완료 조건의 의미 보존을 검토했으며, 이 전환안의 적용을 승인합니다.</label>
             <div className="lifecycle-apply-action">
               <button className="lifecycle-primary" aria-describedby={applyError ? applyErrorId : undefined} onClick={() => void apply()} disabled={busy || !approved || layoutBusy || Boolean(layoutError) || preview.layoutPhase !== 'verified'}>승인한 전환안 적용</button>
-              {applyError && <p ref={applyErrorElement} id={applyErrorId} className="lifecycle-apply-error" role="alert" aria-atomic="true"><strong>전환 적용 오류</strong><br />{applyError}</p>}
+              {applyError && <div className="lifecycle-apply-error-block">
+                <p ref={applyErrorElement} id={applyErrorId} className="lifecycle-apply-error" role="alert" aria-atomic="true"><strong>전환 적용 오류</strong><br />{applyError}</p>
+                {applyBlocker && <button type="button" onClick={() => onNavigate(applyBlocker.mapId, applyBlocker.cardId)}>차단 카드로 이동{applyBlocker.cardLabel ? ` · ${applyBlocker.cardLabel}` : ''}</button>}
+              </div>}
             </div>
           </>}
         </>}

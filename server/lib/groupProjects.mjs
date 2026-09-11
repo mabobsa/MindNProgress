@@ -139,7 +139,7 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
       return context(id)
     })
   }
-  const terminalStates = new Set(['completed', 'failed', 'superseded'])
+  const terminalStates = new Set(['completed', 'failed', 'superseded', 'closed'])
   const active = (item) => !terminalStates.has(item.state)
   const hasActive = (id) => [...delegations.values()].some((item) => item.groupId === id && active(item))
   async function validateLayout(nextLayout) {

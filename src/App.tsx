@@ -8918,7 +8918,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           </button>
         </div>
       )}
-      {lifecycleOpen && <DocumentLifecycle api={apiRequest} editable={accountMode === 'editor'} documents={documents} initialIds={selectedGroup?.mapIds ?? (activeMapId ? [activeMapId] : [])} scope={lifecycleEntry.scope} initialTab={lifecycleEntry.initialTab} userId={user.id} members={teamMembers} launchInWebUi={aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)} onClose={() => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }) }} onChanged={refreshLifecycleLibrary} onNavigate={(id) => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }); setSelectedGroupId(null); setActiveMapId(id); setViewMode('mindmap') }} />}
+      {lifecycleOpen && <DocumentLifecycle api={apiRequest} editable={accountMode === 'editor'} documents={documents} initialIds={selectedGroup?.mapIds ?? (activeMapId ? [activeMapId] : [])} scope={lifecycleEntry.scope} initialTab={lifecycleEntry.initialTab} userId={user.id} members={teamMembers} launchInWebUi={aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)} onClose={() => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }) }} onChanged={refreshLifecycleLibrary} onNavigate={(id, cardId) => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }); setSelectedGroupId(null); pendingSelection.current = cardId ?? null; setSelectedId(cardId ?? null); setActiveMapId(id); setViewMode('mindmap') }} />}
     </div>
   )
 }

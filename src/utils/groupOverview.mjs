@@ -19,7 +19,7 @@ const delegationLabels = {
   starting: '실행 준비', 'running-child': '문서 AI 실행 중', 'waiting-child': '문서 AI 실행 중',
   'waiting-resource': '실행 자원 대기', 'waiting-child-resume': '문서 AI 재개 대기',
   'waiting-parent': '총괄 보고 대기', 'waking-parent': '총괄 AI 검토 중',
-  completed: '실행 완료 · 검증 근거 확인', failed: '실행 실패', superseded: '후속 위임으로 이어짐',
+  completed: '실행 완료 · 검증 근거 확인', failed: '실행 실패', superseded: '후속 위임으로 이어짐', closed: '사용자 종료 · 완료 아님',
   'recovery-required': '복구 필요', 'integration-recovery-required': '통합 복구 필요',
   'waiting-workspace': '작업공간 대기', 'waiting-integration-clean': '통합 준비 대기',
   'waiting-integration': '통합 대기', 'integration-starting': '통합 준비',
@@ -40,7 +40,7 @@ export function groupDelegationPresentation(item) {
     ? '작업 완료 · 총괄 보고 대기'
     : delegationLabels[state] ?? state
   const tone = state === 'failed' ? 'danger' : attention ? 'warning'
-    : state === 'completed' ? 'success' : state === 'superseded' ? 'muted' : 'active'
+    : state === 'completed' ? 'success' : ['superseded', 'closed'].includes(state) ? 'muted' : 'active'
   return { label, tone, attention }
 }
 

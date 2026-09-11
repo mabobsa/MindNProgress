@@ -2,7 +2,14 @@
 .ai-delegation-recovery p { margin: 6px 0; overflow-wrap: anywhere; }
 .ai-delegation-recovery-item { border-top: 1px solid var(--border-color, #cbd5e1); padding-top: 8px; margin-top: 8px; }
 .ai-delegation-recovery-item > b, .ai-delegation-recovery-item > span { display: block; overflow-wrap: anywhere; }
+.ai-delegation-recovery-id { display: block; margin-top: 3px; color: var(--text-muted, #64748b); overflow-wrap: anywhere; }
 .ai-delegation-recovery-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .ai-delegation-recovery-actions button { border: 1px solid var(--border-color, #cbd5e1); border-radius: 5px; padding: 5px 8px; background: transparent; color: inherit; cursor: pointer; }
+.ai-delegation-recovery-actions button.danger { color: #c94954; border-color: rgba(201, 73, 84, .55); }
 .ai-delegation-recovery-actions button:disabled { opacity: .5; cursor: wait; }
+.ai-delegation-replacement, .ai-delegation-close-form label { display: grid; gap: 5px; margin-top: 8px; }
+.ai-delegation-replacement select, .ai-delegation-close-form select, .ai-delegation-close-form textarea { width: 100%; box-sizing: border-box; }
+.ai-delegation-close-form { margin-top: 8px; padding: 8px; border: 1px solid rgba(201, 73, 84, .4); border-radius: 6px; background: rgba(201, 73, 84, .08); }
+.ai-delegation-close-form textarea { resize: vertical; }
+.ai-delegation-recovery p.ai-delegation-recovery-guidance { color: #b7791f; }
 .ai-delegation-recovery [role="alert"] { color: #b91c1c; }

@@ -8653,6 +8653,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           cardId={aiConversationTarget.cardId}
           cardTitle={aiConversationTarget.cardTitle}
           purpose={aiConversationTarget.purpose}
+          groupId={aiConversationTarget.groupId}
           knowledgeSources={aiConversationTarget.knowledgeSources}
           initialRequest={aiConversationTarget.initialRequest}
           fullInitialRequest={aiConversationTarget.fullInitialRequest}
@@ -8673,10 +8674,13 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
             void openAiConversation(conversation.conversationId, target.cardId, target.mapId, conversation.homeMachineRole)
           }}
           onStartNew={() => {
-            const launch = aiConversationPicker.launch
+            const target = aiConversationPicker
             setAiConversationPicker(null)
-            if (launch) setAiConversationLaunch(launch)
-            else setAiDialogOpen(true)
+            setAiConversationLaunch(target.launch ?? {
+              mapId: target.mapId, cardId: target.cardId, cardTitle: target.cardTitle,
+              documentTitle: documents.find((document) => document.id === target.mapId)?.title ?? '',
+              initialRequest: '',
+            })
           }}
           onDeleteUnavailable={(conversationId) => deleteUnavailableAiConversation(
             aiConversationPicker.mapId,

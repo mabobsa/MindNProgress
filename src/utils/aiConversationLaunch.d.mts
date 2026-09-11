@@ -6,6 +6,7 @@ export const AI_CONVERSATION_PURPOSES: readonly AiConversationPurpose[]
 
 export type AiConversationExplicitTarget = {
   purpose?: AiConversationPurpose
+  groupId?: string
   mapId: string
   cardId: string
   cardTitle?: string
@@ -18,6 +19,7 @@ export type AiConversationExplicitTarget = {
 export type AiConversationTarget<TSource = AiConversationKnowledgeSource> = {
   source: 'explicit' | 'selection'
   purpose: AiConversationPurpose
+  groupId?: string
   mapId: string
   cardId: string
   cardTitle: string

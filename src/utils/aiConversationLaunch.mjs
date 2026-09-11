@@ -106,6 +106,7 @@ function explicitTarget(value) {
     knowledgeSources: [],
     ...(initialRequest ? { initialRequest } : {}),
     ...(value.fullInitialRequest === true ? { fullInitialRequest: true } : {}),
+    ...(value.purpose === 'group-coordination' && text(value.groupId) ? { groupId: text(value.groupId) } : {}),
     ...(doorayApproval ? { doorayApproval } : {}),
   }
 }

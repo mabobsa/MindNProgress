@@ -17,11 +17,10 @@ import {
   aiConversationTitle,
   buildAiConversationPrompt,
   combineAiEditorRequest,
-  DEFAULT_AI_EDITOR_REQUEST,
-  normalizeAiAutomaticRequest,
   type AiConversationPurpose,
   type DoorayApprovalLaunch,
 } from '../utils/aiConversationLaunch.mjs'
+import { loadAiConversationRole, type AiConversationRole } from '../utils/aiConversationRole.mjs'
 import './AiConversationDialog.css'
 
 type RuntimeOption = { id: string; label: string; description: string; providerId?: string }
@@ -199,13 +198,14 @@ function encodeBase64Json(value: unknown) {
   return btoa(binary)
 }
 
-export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, knowledgeSources, initialRequest, fullInitialRequest, doorayApproval, reconstructionRequestId, launchInWebUi, onClose }: {
+export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, groupId, knowledgeSources, initialRequest, fullInitialRequest, doorayApproval, reconstructionRequestId, launchInWebUi, onClose }: {
   userId: string
   documentId: string
   documentTitle: string
   cardId: string
   cardTitle: string
   purpose: AiConversationPurpose
+  groupId?: string
   knowledgeSources: { id: string; label: string; policy: KnowledgePolicy }[]
   initialRequest?: string
   fullInitialRequest?: boolean
@@ -220,7 +220,12 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   const [launching, setLaunching] = useState(false)
   const [error, setError] = useState('')
   const [launchError, setLaunchError] = useState('')
-  const automaticRequest = normalizeAiAutomaticRequest(initialRequest, fullInitialRequest) || DEFAULT_AI_EDITOR_REQUEST
+  const roleInput = useMemo(() => ({ mapId: documentId, cardId, purpose, groupId, initialRequest, fullInitialRequest }), [documentId, cardId, purpose, groupId, initialRequest, fullInitialRequest])
+  const [roleResult, setRoleResult] = useState<{ input: typeof roleInput; role?: AiConversationRole; error?: string } | null>(null)
+  const role = roleResult?.input === roleInput ? roleResult.role : undefined
+  const roleError = roleResult?.input === roleInput ? roleResult.error : undefined
+  const roleLoading = !role && !roleError
+  const automaticRequest = role?.automaticRequest ?? ''
   const [userRequest, setUserRequest] = useState('')
   const [agentId, setAgentId] = useState('')
   const [modelId, setModelId] = useState('')
@@ -239,6 +244,16 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   const browserRequestRef = useRef(0)
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set())
   const [selectedMcpIds, setSelectedMcpIds] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void loadAiConversationRole(roleInput, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) })
+      .then((value) => { if (!controller.signal.aborted) setRoleResult({ input: roleInput, role: value }) })
+      .catch((reason) => {
+        if (!controller.signal.aborted) setRoleResult({ input: roleInput, error: reason instanceof Error ? reason.message : '대화 역할을 확인하지 못했습니다.' })
+      })
+    return () => controller.abort()
+  }, [roleInput])
 
   const persistRuntimeSelection = useCallback((nextAgentId: string, selection: { modelId: string; mode: string; thoughtLevel: string }) => {
     const next = rememberAiRuntimeSelection(runtimeSelectionsRef.current, nextAgentId, selection)
@@ -423,8 +438,8 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   }
 
   const launch = async () => {
-    if (!options || !selectedAgent || !modelId) return
-    const request = combineAiEditorRequest(automaticRequest, userRequest, fullInitialRequest)
+    if (!options || !selectedAgent || !modelId || !role || loading || error || launching) return
+    const request = combineAiEditorRequest(automaticRequest, userRequest, role.fullInitialRequest)
     if (!request) return
     const useWebLaunch = launchInWebUi || options.machineRole === 'sub'
     let launchTab: Window | null = null
@@ -446,6 +461,11 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
     setLaunching(true)
     setLaunchError('')
     try {
+      const latestRole = await loadAiConversationRole(roleInput, { signal: AbortSignal.timeout(10_000) })
+      if (latestRole.purpose !== role.purpose || latestRole.groupId !== role.groupId || latestRole.automaticRequest !== role.automaticRequest) {
+        setRoleResult({ input: roleInput, role: latestRole })
+        throw new Error('문서의 그룹 역할이 변경되었습니다. 갱신된 자동 적용 내용을 확인한 뒤 다시 시작해 주세요. AI 대화는 시작하지 않았습니다.')
+      }
       const enabledSkillIds = options.skills.filter((skill) => !skill.autoInject && selectedSkillIds.has(skill.id)).map((skill) => skill.id)
       const disabledBuiltinSkillIds = options.skills.filter((skill) => skill.autoInject && !selectedSkillIds.has(skill.id)).map((skill) => skill.id)
       const mcpIds = options.mcpServers.filter((server) => server.required || selectedMcpIds.has(server.id)).map((server) => server.id)
@@ -460,7 +480,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           mapId: documentId,
           cardId,
           machineId: options.machineId,
-          purpose,
+          purpose: role.purpose,
           doorayApproval,
           reconstructionRequestId,
           mode: mode || undefined,
@@ -478,7 +498,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
       }
       if (doorayApproval && !attribution.approvalRequest) throw new Error('서버에서 승인 전문을 확인하지 못했습니다. 대화를 시작하지 않았습니다.')
       const prompt = buildAiConversationPrompt({
-        purpose, doorayApproval,
+        purpose: role.purpose, doorayApproval,
         mapId: documentId,
         cardId,
         editorId: attribution.editorId,
@@ -488,7 +508,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
       const launchPayload = {
         agentId: selectedAgent.id,
         completionUrl: attribution.completionUrl,
-        title: aiConversationTitle({ purpose, documentTitle, cardTitle }),
+        title: aiConversationTitle({ purpose: role.purpose, documentTitle, cardTitle }),
         prompt,
         modelId,
         providerId: selectedModel?.providerId,
@@ -540,7 +560,9 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           <button type="button" onClick={onClose} aria-label="AI 대화 옵션 닫기">×</button>
         </header>
         {doorayApproval && <p className="ai-dialog-message">승인한 제안을 새 대화에 전달합니다. 사용할 작업공간을 확인하세요. 취소하면 대화를 시작하지 않습니다.</p>}
-        {loading ? <div className="ai-dialog-message">AionUi의 새 채팅 옵션을 불러오는 중…</div> : error ? (
+        {roleLoading ? <div className="ai-dialog-message" role="status">문서의 대화 역할과 자동 적용 내용을 확인하는 중…</div> : roleError ? (
+          <div className="ai-dialog-message error" role="alert"><strong>대화 역할을 확인할 수 없습니다.</strong><span>{roleError}</span><small>일반 카드용 요청으로 대신 시작하지 않았습니다. 팝업을 닫고 다시 열어 주세요.</small></div>
+        ) : loading ? <div className="ai-dialog-message">AionUi의 새 채팅 옵션을 불러오는 중…</div> : error ? (
           <div className="ai-dialog-message error">
             <strong>연결할 수 없습니다.</strong><span>{error}</span><small>AionUi를 실행하거나 다른 실행 머신을 선택해 주세요.</small>
             {options && options.machines.length > 1 && (
@@ -718,7 +740,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
             {launchError && <div className="ai-launch-error" role="alert">{launchError}</div>}
           </div>
         )}
-        <footer><span>응답은 {options?.machineLabel ?? '선택한 머신'}의 AionUi에서만 처리됩니다.</span><div><button type="button" onClick={onClose}>취소</button><button type="button" className="primary" onClick={() => { void launch() }} disabled={loading || launching || Boolean(error) || !selectedAgent || !modelId}>{launching ? '준비 중…' : 'AionUi에서 시작'}</button></div></footer>
+        <footer><span>응답은 {options?.machineLabel ?? '선택한 머신'}의 AionUi에서만 처리됩니다.</span><div><button type="button" onClick={onClose}>취소</button><button type="button" className="primary" onClick={() => { void launch() }} disabled={roleLoading || Boolean(roleError) || loading || launching || Boolean(error) || !selectedAgent || !modelId}>{launching ? '준비 중…' : 'AionUi에서 시작'}</button></div></footer>
       </section>
     </div>
   )

@@ -128,6 +128,7 @@ export function GroupOverview({ groupId, name, membershipKey, editable, clientId
     const coordinator = document.id === context.project.coordinatorMapId
     return {
       purpose: coordinator ? 'group-coordination' : 'card', mapId: document.id, cardId: document.root.id,
+      ...(coordinator ? { groupId, fullInitialRequest: true } : {}),
       documentTitle: document.title, cardTitle: document.root.data.label,
       initialRequest: coordinator
         ? buildGroupCoordinatorRequest({ groupId, instruction })

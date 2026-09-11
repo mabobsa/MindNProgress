@@ -15,6 +15,20 @@ const closeReasonLabels: Record<CloseReason, string> = {
   'no-longer-needed': '재개나 결과 보고가 더 이상 필요하지 않음',
 }
 
+const actionHints = {
+  refresh: '기존 실행 기록의 상태만 조회해 화면과 저장 상태를 동기화합니다. 새 AI 실행은 요청하지 않습니다.',
+  recover: '중단된 작업을 같은 AI 대화와 작업공간에서 이어갑니다. 확인창에서 승인하면 해당 AI가 다시 실행됩니다.',
+  retryReport: '완료된 하위 작업은 다시 실행하지 않고 저장된 결과만 상위 AI에 전달합니다. 상위 AI는 결과 검토를 위해 실행됩니다.',
+  supersede: '이 위임을 완료 처리하지 않고 선택한 후속 성공 위임으로 대체되었다는 이력을 남겨 닫습니다. 카드·코드·작업공간은 변경하지 않으며 UI에서 되돌릴 수 없습니다.',
+  openClose: '결과 전달과 완료 처리를 포기하고 위임 기록만 닫는 절차를 엽니다. 바로 종료되지 않으며 사유·감사 메모 입력과 최종 확인이 필요합니다.',
+  cancelClose: '사용자 종료 입력을 취소합니다. 위임 상태와 저장된 결과는 변경되지 않습니다.',
+  confirmClose: '결과를 상위 AI에 보고하지 않고 위임을 사용자 종료 상태로 닫습니다. 완료로 기록하지 않고 카드·코드·작업공간은 변경하지 않으며 UI에서 되돌릴 수 없습니다.',
+} as const
+
+function actionAccessibility(label: string, hint: string) {
+  return { title: hint, 'aria-label': `${label}. ${hint}` }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { credentials: 'include', ...init, signal: init?.signal ?? AbortSignal.timeout(65_000) })
   const body = await response.json()
@@ -165,15 +179,15 @@ export function AiDelegationRecovery({ mapId, cardId }: { mapId: string; cardId:
           <label><span>종료 사유</span><select disabled={busy} value={closeDraft.reason} onChange={(event) => setCloseDraft({ ...closeDraft, reason: event.target.value as CloseReason })}>{Object.entries(closeReasonLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label><span>감사 메모</span><textarea disabled={busy} maxLength={1000} rows={3} value={closeDraft.note} placeholder="복구하거나 결과를 보고하지 않고 종료하는 이유를 남겨 주세요." onChange={(event) => setCloseDraft({ ...closeDraft, note: event.target.value })} /></label>
           <div className="ai-delegation-recovery-actions">
-            <button disabled={busy} onClick={() => setCloseDraft(null)}>취소</button>
-            <button className="danger" disabled={busy || closeDraft.note.trim().length < 3} onClick={() => void closeDelegation(item)}>보고하지 않고 종료</button>
+            <button type="button" {...actionAccessibility('취소', actionHints.cancelClose)} disabled={busy} onClick={() => setCloseDraft(null)}>취소</button>
+            <button type="button" {...actionAccessibility('보고하지 않고 종료', actionHints.confirmClose)} className="danger" disabled={busy || closeDraft.note.trim().length < 3} onClick={() => void closeDelegation(item)}>보고하지 않고 종료</button>
           </div>
         </div> : <div className="ai-delegation-recovery-actions">
-          <button disabled={busy} onClick={() => void action(item, 'refresh')}>상태 다시 확인</button>
-          {item.recovery?.recoveryAvailable && <button disabled={busy} onClick={() => void action(item, 'recover')}>기존 작업 재개</button>}
-          {item.recovery?.reportRetryAvailable && <button disabled={busy} onClick={() => void action(item, 'retry-report')}>결과 전달 재시도</button>}
-          {candidates.length > 0 && <button disabled={busy} onClick={() => void action(item, 'supersede')}>후속 성공으로 종료</button>}
-          {item.closure?.closeAvailable && <button className="danger" disabled={busy} onClick={() => setCloseDraft({ id: item.id, reason: item.workCompleted ? 'result-invalidated' : 'no-longer-needed', note: '' })}>보고하지 않고 종료</button>}
+          <button type="button" {...actionAccessibility('상태 다시 확인', actionHints.refresh)} disabled={busy} onClick={() => void action(item, 'refresh')}>상태 다시 확인</button>
+          {item.recovery?.recoveryAvailable && <button type="button" {...actionAccessibility('기존 작업 재개', actionHints.recover)} disabled={busy} onClick={() => void action(item, 'recover')}>기존 작업 재개</button>}
+          {item.recovery?.reportRetryAvailable && <button type="button" {...actionAccessibility('결과 전달 재시도', actionHints.retryReport)} disabled={busy} onClick={() => void action(item, 'retry-report')}>결과 전달 재시도</button>}
+          {candidates.length > 0 && <button type="button" {...actionAccessibility('후속 성공으로 종료', actionHints.supersede)} disabled={busy} onClick={() => void action(item, 'supersede')}>후속 성공으로 종료</button>}
+          {item.closure?.closeAvailable && <button type="button" {...actionAccessibility('보고하지 않고 종료', actionHints.openClose)} className="danger" disabled={busy} onClick={() => setCloseDraft({ id: item.id, reason: item.workCompleted ? 'result-invalidated' : 'no-longer-needed', note: '' })}>보고하지 않고 종료</button>}
         </div>}
         {item.closure?.reason === 'workspace-changes-preserved' && <p className="ai-delegation-recovery-guidance">보존할 작업공간 변경이 있어 종료할 수 없습니다. 기존 작업을 재개하거나 작업공간을 먼저 정리하세요.</p>}
       </div>

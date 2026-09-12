@@ -50,6 +50,7 @@ import { parseGroupDeepLink } from './utils/groupDeepLink.mjs'
 import { collectDragDescendantOwners, dragRootIds, hierarchyReparentPairs } from './utils/hierarchyDrag.mjs'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
 import { collapsedDocumentGroupsStorageKey, initialCollapsedDocumentGroupIds, normalizeCollapsedDocumentGroupIds } from './utils/documentGroupCollapse.mjs'
+import { isPhoneViewport, PHONE_VIEWPORT_QUERY, resolveDocumentNodeSelection } from './utils/documentSelection.mjs'
 import { createsKnowledgeCycle, isHierarchyEdge, isKnowledgeEdge, knowledgePolicyOf } from './utils/knowledgeEdges'
 import { isSameDoorayKnowledgeUrl, normalizedDoorayKnowledgeUrl, taskUrlProvider } from './utils/externalLinks'
 import { splitImageFileName, uniqueImageFileName } from './utils/imageFileNames.mjs'
@@ -1377,7 +1378,7 @@ function AionUiSubscriptionUsageIndicator({ onOpen }: { onOpen?: () => void }) {
   }, [mobileOpen])
 
   useEffect(() => {
-    const mobileViewport = window.matchMedia('(max-width: 720px)')
+    const mobileViewport = window.matchMedia(PHONE_VIEWPORT_QUERY)
     const closeWhenDesktop = (event: MediaQueryListEvent) => {
       if (!event.matches) setMobileOpen(false)
     }
@@ -2574,7 +2575,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   edgesRef.current = edges
 
   useEffect(() => {
-    const mobileViewport = window.matchMedia('(max-width: 720px)')
+    const mobileViewport = window.matchMedia(PHONE_VIEWPORT_QUERY)
     const closeMobilePanelsOnDesktop = (event: MediaQueryListEvent) => {
       if (event.matches) return
       setMobileSidebarOpen(false)
@@ -2596,7 +2597,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       setMobileInspectorOpen(false)
       return
     }
-    if (window.matchMedia('(max-width: 720px)').matches) setMobileInspectorOpen(true)
+    if (isPhoneViewport()) setMobileInspectorOpen(true)
   }, [selectedId])
   const reconcileRemoteMap = useCallback((remoteMap: MapDocument) => {
     if (activeMapIdRef.current !== remoteMap.id) return
@@ -2606,9 +2607,11 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     const localContent = createPersistedMapContent(nodesRef.current, edgesRef.current)
     const reconciliation = reconcileRemoteMapContent(baseline, localContent, remoteMap)
     const currentSelectedId = selectedIdRef.current
-    const nextSelectedId = currentSelectedId && reconciliation.nodes.some((node) => node.id === currentSelectedId)
-      ? currentSelectedId
-      : reconciliation.nodes[0]?.id ?? null
+    const nextSelectedId = resolveDocumentNodeSelection(
+      reconciliation.nodes,
+      currentSelectedId,
+      isPhoneViewport(),
+    )
     const nextNodes = synchronizeNodeSelection(reconciliation.nodes, nextSelectedId)
 
     serverBaseline.current = structuredClone(remoteMap)
@@ -3337,7 +3340,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           const targetDocument = requestedDocument ?? restoredDocument ?? maps[0] ?? archive[0]
           if (!deepLink && storedLocation) {
             setViewMode(storedLocation.viewMode)
-            pendingSelection.current = storedLocation.nodeId
+            pendingSelection.current = isPhoneViewport() ? null : storedLocation.nodeId
           }
           if (deepLink) {
             pendingDeepLink.current = {
@@ -3905,9 +3908,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         const requestedNodeId = pendingSelection.current ?? selectedNodeIdBeforeReload
         const nextSelectedId = deepLinkTargetsMap
           ? deepLinkedNodeId
-          : requestedNodeId && map.nodes.some((node) => node.id === requestedNodeId)
-            ? requestedNodeId
-            : map.nodes[0]?.id ?? null
+          : resolveDocumentNodeSelection(map.nodes, requestedNodeId, isPhoneViewport())
         const loadedNodes = synchronizeNodeSelection(map.nodes, nextSelectedId)
         serverBaseline.current = structuredClone(map)
         resetHistory(loadedNodes, map.edges)
@@ -3934,9 +3935,11 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         if (!active) return
         const localMap = readSavedMap(activeMapId)
         if (localMap) {
-          const nextSelectedId = selectedNodeIdBeforeReload && localMap.nodes.some((node) => node.id === selectedNodeIdBeforeReload)
-            ? selectedNodeIdBeforeReload
-            : localMap.nodes[0]?.id ?? null
+          const nextSelectedId = resolveDocumentNodeSelection(
+            localMap.nodes,
+            selectedNodeIdBeforeReload,
+            isPhoneViewport(),
+          )
           const loadedNodes = synchronizeNodeSelection(localMap.nodes, nextSelectedId)
           serverBaseline.current = null
           resetHistory(loadedNodes, localMap.edges)
@@ -4647,7 +4650,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     if (mode !== 'editor') return
     setDocumentContextMenu(null)
     setAiConversationContextMenu(null)
-    if (options.suppressMobileInspector && window.matchMedia('(max-width: 720px)').matches) {
+    if (options.suppressMobileInspector && isPhoneViewport()) {
       setMobileInspectorOpen(false)
       suppressMobileInspectorSelection.current = selectedIdRef.current === nodeId ? null : nodeId
     }
@@ -5396,7 +5399,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       resetHistory(result.map.nodes, result.map.edges)
       setNodes(result.map.nodes)
       setEdges(result.map.edges)
-      setSelectedId(result.map.nodes[0]?.id ?? null)
+      setSelectedId(resolveDocumentNodeSelection(result.map.nodes, null, isPhoneViewport()))
       setDocuments((current) => current.map((document) => document.id === result.summary.id ? result.summary : document))
       setMapRevisions(result.revisions)
       setHistoryHasMore(result.historyHasMore)
@@ -5428,7 +5431,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       resetHistory(result.map.nodes, result.map.edges)
       setNodes(result.map.nodes)
       setEdges(result.map.edges)
-      setSelectedId(result.map.nodes[0]?.id ?? null)
+      setSelectedId(resolveDocumentNodeSelection(result.map.nodes, null, isPhoneViewport()))
       setDocuments((current) => current.map((document) => document.id === result.summary.id ? result.summary : document))
       setDailyBackups(result.dailyBackups)
       setMapRevisions(result.revisions)

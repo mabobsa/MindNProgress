@@ -17,7 +17,7 @@ test('배치 요청은 승인·실측·소유자·버전·표시 검증을 거�
   await assert.rejects(service.create({ mapId: source.id }, actor), /확인/)
   const original = structuredClone(source)
   let request = await service.create({ mapId: source.id, proposalOnly: true }, actor)
-  assert.deepEqual(request.target, { width: 1600, height: 900 })
+  assert.deepEqual(request.target, { ratio: '16:9' })
   await assert.rejects(service.create({ mapId: source.id, proposalOnly: true, target: { width: 390, height: 844 } }, actor), /16:9/)
   const measured = (map) => map.nodes.map((node) => ({ cardId: node.id, ...node.position, width: 218, height: 170, outsets: { left: 8, right: 8, top: 40, bottom: 8 } }))
   const plan = { order: source.nodes.map((node) => node.id), reason: '실측과 계층을 보존한 배치입니다.' }
@@ -38,11 +38,19 @@ test('배치 요청은 승인·실측·소유자·버전·표시 검증을 거�
   display = 'Ref 원본이 바뀜'
   await assert.rejects(service.apply(request.id, { previewHash: preview.previewHash, approved: true, measurements: measured(preview.map) }, actor), /표시 내용/)
   display = '현재 Ref 표시'
-  // v1에서 만든 요청은 target이 없어도 v2 기본 캔버스로 복원한다.
+  // v1 무목표·v2 픽셀 요청은 조회 시 비율로 호환하되 저장 파일을 건드리지 않는다.
   const recordFile = path.join(directory, '_card-layout-requests.json')
   const legacy = JSON.parse(await readFile(recordFile, 'utf8')); delete legacy[request.id].target
   await writeFile(recordFile, JSON.stringify(legacy))
-  service = await createCardLayoutRequests(deps)
+  for (const target of [undefined, { width: 1600, height: 900 }, { width: 2560, height: 1440 }]) {
+    legacy[request.id].target = target
+    await writeFile(recordFile, JSON.stringify(legacy))
+    const originalRecord = await readFile(recordFile, 'utf8')
+    service = await createCardLayoutRequests(deps)
+    assert.deepEqual((await service.get(request.id, actor)).target, { ratio: '16:9' })
+    assert.deepEqual(service.list(source.id, actor)[0].target, { ratio: '16:9' })
+    assert.equal(await readFile(recordFile, 'utf8'), originalRecord)
+  }
   assert.deepEqual((await service.get(request.id, actor)).plan, plan)
   await assert.rejects(service.apply(request.id, { previewHash: preview.previewHash, approved: true }, actor), /만료/)
   const verify = async (options = {}) => {
@@ -64,11 +72,18 @@ test('배치 요청은 승인·실측·소유자·버전·표시 검증을 거�
   preview = await verify({ variant, target: { width: 1920, height: 1080 } })
   await assert.rejects(service.apply(request.id, { previewHash: previousTargetPreview.previewHash, approved: true, measurements: measured(previousTargetPreview.map) }, actor), /만료/)
   assert.equal(preview.variant, variant)
-  assert.deepEqual(preview.target, { width: 1920, height: 1080 })
+  assert.deepEqual(preview.target, { ratio: '16:9' })
+  assert.deepEqual(preview.map, previousTargetPreview.map, '해상도만 다른 기존 요청도 좌표는 동일하다')
+  for (const ratio of ['4:3', '21:9']) {
+    const previous = preview
+    preview = await verify({ variant, target: { ratio } })
+    assert.deepEqual(preview.target, { ratio })
+    await assert.rejects(service.apply(request.id, { previewHash: previous.previewHash, approved: true, measurements: measured(previous.map) }, actor), /만료/)
+  }
   await assert.rejects(service.apply(request.id, { previewHash: oldPreview.previewHash, approved: true, measurements: measured(oldPreview.map) }, actor), /만료/)
   assert.deepEqual(source, original, '후보·목표를 바꿔도 원본 불변')
   await service.apply(request.id, { previewHash: preview.previewHash, approved: true, measurements: measured(preview.map) }, actor)
-  assert.deepEqual((await service.get(request.id, actor)).appliedLayout, { version: 'card-layout-v2', target: preview.target, variant })
+  assert.deepEqual((await service.get(request.id, actor)).appliedLayout, { version: 'card-layout-v3', target: preview.target, variant })
   assert.deepEqual(source.nodes.map(({ position: _p, ...n }) => n), original.nodes.map(({ position: _p, ...n }) => n))
   assert.deepEqual(source.edges, original.edges)
   assert.deepEqual(source.nodes.map((n) => n.position), preview.map.nodes.map((n) => n.position))

@@ -12,10 +12,11 @@ export type ReconstructionPreviewMap = { id: string; title: string; nodes: Node<
 const nodeTypes = { mind: MindNode }
 const edgeTypes = { 'knowledge-parallel': KnowledgeEdge }
 
-function MeasuredMap({ map, members, onMeasured, onError, layoutProposal = false }: {
+function MeasuredMap({ map, members, onMeasured, onError, onZoomChange, layoutProposal = false }: {
   map: ReconstructionPreviewMap; members: TeamMember[]
   onMeasured: (measurements: LayoutMeasurement[]) => void; onError: (message: string) => void
   layoutProposal?: boolean
+  onZoomChange?: (zoom: number) => void
 }) {
   const container = useRef<HTMLDivElement>(null)
   // 미리보기는 모든 노드를 표시하고 렌더러가 측정한 dimensions 변경만 로컬 상태로 수신한다.
@@ -114,7 +115,7 @@ function MeasuredMap({ map, members, onMeasured, onError, layoutProposal = false
     return () => { stopped = true; clearTimeout(timer); observer.disconnect() }
   }, [flow, initialized, map, onError, onMeasured, layoutProposal])
   return <div className="reconstruction-map" ref={container} data-map-id={map.id} aria-label={`${map.title} 배치 미리보기`}>
-    <ReactFlow nodes={nodes} onNodesChange={onNodesChange} edges={preparedEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} deleteKeyCode={null} onlyRenderVisibleElements={false} fitView fitViewOptions={{ padding: 0.15 }} minZoom={layoutProposal ? 0.000001 : 0.02} maxZoom={2} preventScrolling={false}>
+    <ReactFlow nodes={nodes} onNodesChange={onNodesChange} edges={preparedEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} deleteKeyCode={null} onlyRenderVisibleElements={false} fitView fitViewOptions={{ padding: 0.15 }} minZoom={layoutProposal ? 0.000001 : 0.02} maxZoom={2} preventScrolling={false} onInit={(instance) => onZoomChange?.(instance.getZoom())} onMove={(_event, viewport) => onZoomChange?.(viewport.zoom)}>
       <Background /><Controls showInteractive={false} />
     </ReactFlow>
   </div>

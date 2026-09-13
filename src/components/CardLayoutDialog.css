@@ -18,7 +18,7 @@
 .card-layout-candidates button[aria-pressed=true] { border-color: var(--theme-accent, #6657d9); background: var(--theme-surface-soft, #faf9fc); box-shadow: inset 0 0 0 1px var(--theme-accent, #6657d9); }
 .card-layout-fit { margin: 8px 0; }
 .card-layout-fit .card-layout-fit-warning { color: var(--theme-text, #443c4c); border-left: 3px solid var(--theme-accent, #6657d9); padding-left: 8px; }
-.card-layout-screen { position: relative; width: min(100%, 80dvh); aspect-ratio: 16 / 9; margin: 12px auto; }
+.card-layout-screen { position: relative; width: min(100%, calc(45dvh * var(--card-layout-ratio))); aspect-ratio: var(--card-layout-ratio); margin: 12px auto; }
 .card-layout-dialog .card-layout-screen .reconstruction-map { position: absolute; inset: 0; height: 100%; min-height: 0; margin: 0; }
 .card-layout-reason { white-space: pre-wrap; }
 .card-layout-footer { position: sticky; bottom: -16px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; border-top: 1px solid var(--theme-border, #e8e4ec); background: var(--theme-surface, #fff); }

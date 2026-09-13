@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { TeamMember } from '../types/mindMap'
 import type { LayoutMeasurement, MindMapLayout } from '../utils/mindMapLayout.mjs'
-import { CARD_LAYOUT_TARGET, verifyCardLayout, type CardLayoutPlan, type CardLayoutTarget, type CardLayoutVariant, type CardLayoutMetrics } from '../utils/cardLayout.mjs'
+import { CARD_LAYOUT_TARGET, CARD_LAYOUT_RATIOS, CARD_LAYOUT_VERSION, cardLayoutAspectRatio, validateCardLayoutTarget, verifyCardLayout, type CardLayoutPlan, type CardLayoutTarget, type CardLayoutTargetInput, type CardLayoutVariant, type CardLayoutMetrics } from '../utils/cardLayout.mjs'
 import { buildCardLayoutRequestPrompt } from '../utils/cardLayoutRequest.mjs'
 import { ReconstructionMap, type ReconstructionPreviewMap } from './ReconstructionMap'
 import { AiConversationDialog } from './AiConversationDialog'
@@ -11,7 +11,7 @@ import './CardLayoutDialog.css'
 type Request = {
   id: string; mapId: string; documentTitle: string; state: string; createdAt: string; revision: number; stale?: boolean
   snapshot: { renderMap: ReconstructionPreviewMap }; measurements?: LayoutMeasurement[]; plan?: CardLayoutPlan
-  target?: CardLayoutTarget; conversation?: { id: string }; launchTarget: { mapId: string; cardId: string; cardTitle: string }
+  target?: CardLayoutTargetInput; conversation?: { id: string }; launchTarget: { mapId: string; cardId: string; cardTitle: string }
 }
 type Preview = { requestId: string; previewHash: string; phase: 'draft' | 'measured' | 'verified'; map: ReconstructionPreviewMap; layout: MindMapLayout;
   target: CardLayoutTarget; variant: CardLayoutVariant; metrics: CardLayoutMetrics; candidates: { id: CardLayoutVariant; label: string; metrics: CardLayoutMetrics }[] }
@@ -25,6 +25,7 @@ export function CardLayoutDialog({ mapId, title, api, userId, members, launchInW
   const [request, setRequest] = useState<Request | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [targetScreen, setTargetScreen] = useState<CardLayoutTarget>({ ...CARD_LAYOUT_TARGET })
+  const [previewZoom, setPreviewZoom] = useState<number | null>(null)
   const [launch, setLaunch] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -74,7 +75,7 @@ export function CardLayoutDialog({ mapId, title, api, userId, members, launchInW
   }
   const choose = (next: Request) => {
     generation.current++; setRequest(next); setPreview(null); setApproved(false); setRenderReady(false); setShowOriginal(false); setMeasurementError(''); lastMeasured.current = null
-    setTargetScreen(next.target ?? { ...CARD_LAYOUT_TARGET })
+    setTargetScreen(validateCardLayoutTarget(next.target)); setPreviewZoom(null)
   }
   const post = <T,>(id: string, action: string, body: object = {}) => api<T>(`/api/card-layouts/${id}/${action}`, { method: 'POST', body: JSON.stringify(body) })
   const create = () => run(async () => {
@@ -112,12 +113,13 @@ export function CardLayoutDialog({ mapId, title, api, userId, members, launchInW
     setApproved(false); setRenderReady(false); setShowOriginal(false); setMeasurementError(''); lastMeasured.current = null
     // 후보 전환 중 기존 화면의 측정 콜백이 새 승인 상태를 다시 열지 않게 한다.
     active.current = { request, preview: null }; setPreview(null)
+    setPreviewZoom(null)
     const result = await post<Preview>(request.id, 'preview', { variant, target })
-    if (!result.target || !result.metrics || !result.candidates?.length) throw new Error('모니터형 배치를 지원하는 서버 업데이트가 필요합니다. MnP 서버를 재시작한 뒤 미리보기를 다시 열어 주세요.')
+    if (result.layout?.version !== CARD_LAYOUT_VERSION || !result.target?.ratio || !result.metrics || !result.candidates?.length) throw new Error('비율 기반 배치를 지원하는 서버 업데이트가 필요합니다. MnP 서버를 재시작한 뒤 미리보기를 다시 열어 주세요.')
     if (generation.current === inspectionGeneration) { setPreview(result); setTargetScreen(result.target) }
   })
-  const changeTarget = (width: number) => {
-    const target = { width, height: width * 9 / 16 }
+  const changeTarget = (ratio: CardLayoutTarget['ratio']) => {
+    const target = { ratio }
     setTargetScreen(target); setApproved(false)
     if (request?.plan) void inspect('balanced', target)
   }
@@ -141,9 +143,9 @@ export function CardLayoutDialog({ mapId, title, api, userId, members, launchInW
       <section ref={dialog} className="lifecycle-dialog card-layout-dialog" role="dialog" aria-modal="true" aria-label="AI 배치 제안">
         <header><div><h2>AI 배치 제안</h2><p>{title}</p></div><button onClick={onClose} disabled={busy} autoFocus>닫기</button></header>
         {!preview && <p>현재 문서의 카드 배치를 제안합니다. 실제 화면을 확인하고 적용하면 카드 위치만 바뀝니다.</p>}
-        <div className="card-layout-target"><label>목표 캔버스 <select aria-label="목표 캔버스" value={targetScreen.width} disabled={busy || Boolean(request && !request.plan)} onChange={(event) => changeTarget(Number(event.target.value))}>
-          {[1280, 1600, 1920].map((width) => <option key={width} value={width}>모니터형 16:9 · {width} × {width * 9 / 16}</option>)}
-        </select></label><p>휴대폰에서 요청해도 선택한 모니터 비율로 배치합니다. 수치는 화면 전체가 아닌 사용할 캔버스 크기입니다.</p></div>
+        <div className="card-layout-target"><label>목표 캔버스 <select aria-label="목표 캔버스" value={targetScreen.ratio} disabled={busy || Boolean(request && !request.plan)} onChange={(event) => changeTarget(event.target.value as CardLayoutTarget['ratio'])}>
+          {CARD_LAYOUT_RATIOS.map((ratio) => <option key={ratio} value={ratio}>{ratio}</option>)}
+        </select></label><p>해상도 제한 없이 선택한 비율로 배치합니다. 휴대폰에서도 동일한 비율과 배치를 유지합니다.</p></div>
         {!preview && <ol className="card-layout-steps" aria-label="배치 제안 순서">{['현재 배치 확인', 'AI 제안 받기', '미리보기·적용'].map((label, index) => <li key={label} aria-current={step === index + 1 ? 'step' : undefined}><span>{index + 1}</span>{label}</li>)}</ol>}
         <details className="card-layout-request-tools" open={!preview}><summary>배치 요청 관리</summary>
         <div className="card-layout-actions"><button className={!request ? 'lifecycle-primary' : undefined} disabled={busy} onClick={() => void create()}>새 배치 제안 요청</button>
@@ -161,18 +163,18 @@ export function CardLayoutDialog({ mapId, title, api, userId, members, launchInW
           </div>
           {preview?.candidates && <div className="card-layout-candidates" role="group" aria-label="배치 후보 비교">
             {preview.candidates.map((candidate) => <button key={candidate.id} aria-pressed={!showOriginal && preview.variant === candidate.id} disabled={busy} onClick={() => { if (showOriginal || preview.variant !== candidate.id) void inspect(candidate.id) }}>
-              <strong>{candidate.label}</strong><span>{Math.round(candidate.metrics.width)} × {Math.round(candidate.metrics.height)} · 예상 {Math.round(candidate.metrics.fitScale * 100)}%</span>
+              <strong>{candidate.label}</strong><span>배치 비율 {candidate.metrics.aspectRatio.toFixed(2)}:1</span>
             </button>)}
           </div>}
           {preview?.metrics && <div className="card-layout-fit" aria-live="polite">
-            <p>모니터형 16:9 · {preview.target.width} × {preview.target.height} 기준 예상 배율 <strong>{Math.round(preview.metrics.fitScale * 100)}%</strong> · 카드 {preview.map.nodes.length}개 전체 표시</p>
-            <p>이 미리보기는 전체 구조를 보여 줍니다. 위 배율은 목표 캔버스 기준이며 휴대폰 미리보기의 실제 배율과 다릅니다.</p>
-            {preview.metrics.needsZoom && <p className="card-layout-fit-warning">한 화면에 모두 담으면 글자가 작아질 수 있습니다. 내용을 읽으려면 확대하세요. 카드·내용·표시 크기는 줄이거나 숨기지 않았습니다.</p>}
+            <p>목표 {preview.target.ratio} · 카드 {preview.map.nodes.length}개 표시 · 현재 미리보기 <strong data-preview-zoom={previewZoom ?? undefined}>{previewZoom === null ? '확인 중' : `${(previewZoom * 100).toFixed(1)}%`}</strong></p>
+            <p>확대·축소는 현재 화면에만 적용되며 카드 크기와 배치 좌표는 바뀌지 않습니다.</p>
+            {previewZoom !== null && previewZoom < 0.65 && <p className="card-layout-fit-warning">글자가 작으면 확대해 읽으세요. 카드·내용·표시 크기는 줄이거나 숨기지 않았습니다.</p>}
             {preview.candidates.length === 1 && <p>현재 구조에서 구별되는 배치 후보는 하나입니다.</p>}
           </div>}
           {measurementError && <p role="alert">{measurementError}</p>}
           <p role="status">{preview ? preview.phase === 'verified' ? '카드 크기와 겹침 검증을 통과했습니다. 배치를 확인한 뒤 적용하세요.' : '실제 크기를 반영해 배치와 겹침을 검사하고 있습니다.' : request.measurements ? '실제 크기를 확인했습니다.' : '모든 카드와 이미지의 실제 크기를 확인하고 있습니다.'}</p>
-          {(preview?.map ?? inputMap) && <div className="card-layout-screen" aria-label="모니터형 16:9 배치 미리보기"><ReconstructionMap key={`${preview?.previewHash ?? request.id}:${showOriginal}`} map={(showOriginal ? inputMap : preview?.map ?? inputMap)!} members={members} layoutProposal onMeasured={showOriginal ? () => {} : measured} onError={measurementFailed} /></div>}
+          {(preview?.map ?? inputMap) && <div className="card-layout-screen" style={{ '--card-layout-ratio': cardLayoutAspectRatio(targetScreen) } as CSSProperties} aria-label={`${targetScreen.ratio} 배치 미리보기`}><ReconstructionMap key={`${preview?.previewHash ?? request.id}:${showOriginal}`} map={(showOriginal ? inputMap : preview?.map ?? inputMap)!} members={members} layoutProposal onMeasured={showOriginal ? () => {} : measured} onError={measurementFailed} onZoomChange={setPreviewZoom} /></div>}
           {!request.plan && <p>{request.conversation ? 'AI가 배치안을 작성하고 있습니다. 제안이 도착하면 여기에서 미리볼 수 있습니다.' : '크기 확인 후 AI를 선택해 배치안을 요청하세요.'}</p>}
           <div className="card-layout-actions">
             {!request.plan && !request.conversation && <button className="lifecycle-primary" disabled={busy || !request.measurements || Boolean(measurementError)} onClick={() => setLaunch(true)}>AI 선택·시작</button>}

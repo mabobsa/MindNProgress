@@ -19,7 +19,8 @@ export async function createCardLayoutRequests({ dataDirectory, writeJson, readS
     if (record.createdBy.id !== user.id) fail('요청을 시작한 편집자만 이 배치 요청을 사용할 수 있습니다.', 403)
     return record
   }
-  const persist = async (record) => { const next = { ...records, [record.id]: record }; await writeJson(file, next); records = next; return structuredClone(record) }
+  const serialize = (record) => ({ ...structuredClone(record), target: validateCardLayoutTarget(record.target) })
+  const persist = async (record) => { const normalized = serialize(record); const next = { ...records, [record.id]: normalized }; await writeJson(file, next); records = next; return structuredClone(normalized) }
   const signature = (snapshot) => hash({ map: snapshot.map, renderMap: snapshot.renderMap })
   const current = async (record) => {
     if (record.state !== 'open') fail('종료된 배치 요청입니다. 새 요청을 시작하세요.')
@@ -53,12 +54,12 @@ export async function createCardLayoutRequests({ dataDirectory, writeJson, readS
       candidates: candidates.map(({ id, label, metrics }) => ({ id, label, metrics })) }
   }
   return {
-    list: (mapId, user) => Object.values(records).filter((r) => r.mapId === mapId && r.createdBy.id === user.id).map(({ snapshot: _s, measurements: _m, plan: _p, ...r }) => ({ ...r, hasProposal: Boolean(_p) })).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    list: (mapId, user) => Object.values(records).filter((r) => r.mapId === mapId && r.createdBy.id === user.id).map(({ snapshot: _s, measurements: _m, plan: _p, ...r }) => ({ ...serialize(r), hasProposal: Boolean(_p) })).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     get: async (id, user) => {
       const record = recordFor(id, user)
       let stale = false
       if (record.state === 'open') { try { await current(record) } catch { stale = true } }
-      return { ...structuredClone(record), stale }
+      return { ...serialize(record), stale }
     },
     create: (body, user) => exclusive(async () => {
       if (body?.proposalOnly !== true) fail('배치 제안만 요청한다는 확인이 필요합니다.', 400)

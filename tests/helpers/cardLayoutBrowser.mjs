@@ -110,30 +110,61 @@ export async function cardLayoutBrowser({ base, directory, mapId, api, submit })
       assert.notDeepEqual(await nodePositions(), previous, '순서만 바꾸지 않고 실제 형태 변경')
       assert.equal(await evaluate('document.querySelector(".card-layout-approval input").checked'), false)
     }
-    const selectTarget = async (width) => {
+    const selectTarget = async (ratio) => {
+      if (await evaluate('document.querySelector("select[aria-label=\\"목표 캔버스\\"]").value') === ratio) return
       await evaluate('document.querySelector(".card-layout-approval input").click()')
-      await evaluate(`(()=>{const s=document.querySelector('select[aria-label="목표 캔버스"]');s.value='${width}';s.dispatchEvent(new Event('change',{bubbles:true}));})()`)
+      await evaluate(`(()=>{const s=document.querySelector('select[aria-label="목표 캔버스"]');s.value='${ratio}';s.dispatchEvent(new Event('change',{bubbles:true}));})()`)
       assert.equal(await evaluate('document.querySelector(".card-layout-approval input")?.checked===true'), false, '목표 변경 시 이전 확인 해제')
       await verified()
       assert.equal(await evaluate('document.querySelector(".card-layout-approval input").checked'), false)
-      assert.ok((await evaluate('document.querySelector(".card-layout-fit").innerText')).includes(`${width} × ${width * 9 / 16}`))
+      assert.ok((await evaluate('document.querySelector(".card-layout-fit").innerText')).includes(`목표 ${ratio}`))
     }
     const frameRatio = async () => {
       const ratio = await evaluate('(()=>{const r=document.querySelector(".card-layout-screen").getBoundingClientRect();return r.width/r.height})()')
-      assert.ok(Math.abs(ratio - 16 / 9) < 0.02, '휴대폰·데스크톱 모두 16:9 미리보기')
+      const selected = await evaluate('document.querySelector("select[aria-label=\\"목표 캔버스\\"]").value')
+      const [width, height] = selected.split(':').map(Number)
+      assert.ok(Math.abs(ratio - width / height) < 0.02, `휴대폰·데스크톱 모두 선택한 ${selected} 미리보기`)
       assert.equal(await evaluate('(()=>{const r=document.querySelector(".card-layout-screen").getBoundingClientRect();const f=document.querySelector(".card-layout-footer").getBoundingClientRect();return r.top>=0 && r.bottom<=f.top+1 && r.bottom<=innerHeight})()'), true, '미리보기 전체가 화면에 들어오고 적용 영역에 가리지 않는다')
       assert.equal(await evaluate('(()=>{const r=document.querySelector(".card-layout-screen").getBoundingClientRect();return [...document.querySelectorAll(".card-layout-screen .react-flow__node")].every(e=>{const b=e.getBoundingClientRect();return b.left>=r.left-1 && b.right<=r.right+1 && b.top>=r.top-1 && b.bottom<=r.bottom+1})})()'), true, '전체 카드가 미리보기 안에 표시된다')
     }
+    const actualZoom = async () => {
+      const read = () => evaluate('(()=>{const e=document.querySelector("[data-preview-zoom]");const m=new DOMMatrix(getComputedStyle(document.querySelector(".card-layout-screen .react-flow__viewport")).transform);return {actual:m.a,reported:Number(e?.dataset.previewZoom),text:e?.textContent}})()')
+      await until(async () => { const z = await read(); return z.actual > 0 && Math.abs(z.actual - z.reported) < 0.00001 && z.text === `${(z.reported * 100).toFixed(1)}%` }, '표시 확대율과 실제 카메라 확대율 불일치')
+      return (await read()).reported
+    }
     await preview(requestId)
-    assert.equal(await evaluate('document.querySelector("select[aria-label=\\"목표 캔버스\\"]").value'), '1600')
+    assert.equal(await evaluate('document.querySelector("select[aria-label=\\"목표 캔버스\\"]").value'), '16:9')
+    assert.deepEqual(await evaluate('[...document.querySelector("select[aria-label=\\"목표 캔버스\\"]").options].map(o=>o.value)'), ['4:3', '16:9', '21:9'])
     assert.ok(await evaluate('document.querySelectorAll(".card-layout-candidates button").length>=2'))
     await frameRatio()
     await selectCandidate(1)
-    await selectTarget(1280)
+    await selectTarget('4:3')
     assert.deepEqual((await api(`/api/maps/${mapId}`)).body.map, before, '제안·미리보기는 원본 불변')
     assert.equal(await evaluate('[...document.querySelectorAll(".card-layout-dialog button")].find(b=>b.textContent==="확인한 배치 적용").disabled'), true)
     const artifacts = await mkdtemp(path.join(tmpdir(), 'mnp-layout-screenshots-'))
     const screenshot = async (name) => { const result = await command('Page.captureScreenshot', { format: 'png' }); await writeFile(path.join(artifacts, name), Buffer.from(result.data, 'base64')) }
+    const ratioChecks = []
+    for (const ratio of ['4:3', '16:9', '21:9']) {
+      await selectTarget(ratio)
+      const expected = await nodePositions(); const zooms = []
+      for (const device of [{ name: 'fhd', width: 1920, height: 1080, mobile: false }, { name: 'qhd', width: 2560, height: 1440, mobile: false }, { name: 'mobile', width: 390, height: 844, mobile: true }]) {
+        await command('Emulation.setDeviceMetricsOverride', { width: device.width, height: device.height, deviceScaleFactor: 1, mobile: device.mobile })
+        await new Promise((resolve) => setTimeout(resolve, 400))
+        await frameRatio(); zooms.push(await actualZoom())
+        assert.deepEqual(await nodePositions(), expected, `${ratio}: ${device.name}에서도 좌표 불변`)
+        await screenshot(`preview-${ratio.replace(':', '-')}-${device.name}.png`)
+      }
+      assert.notEqual(zooms[0], zooms[2], '동일 배치라도 화면에 맞춘 실제 확대율은 다르다')
+      ratioChecks.push({ ratio, zooms })
+      await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    const beforeZoom = await actualZoom(); const positionsBeforeZoom = await nodePositions()
+    await evaluate('document.querySelector(".card-layout-screen .react-flow__controls-zoomin").click()')
+    await until(async () => (await actualZoom()) > beforeZoom, '확대 조작이 현재 확대율에 반영되지 않음')
+    assert.deepEqual(await nodePositions(), positionsBeforeZoom, '확대는 카드 배치를 바꾸지 않는다')
+    await evaluate('document.querySelector(".card-layout-screen .react-flow__controls-fitview").click()')
+    await new Promise((resolve) => setTimeout(resolve, 400))
     await screenshot('preview-light.png')
     const light = await evaluate('getComputedStyle(document.querySelector(".card-layout-dialog")).backgroundColor')
     await evaluate('document.querySelector("button[aria-label^=\\"화면 테마:\\"]").click()')
@@ -155,7 +186,7 @@ export async function cardLayoutBrowser({ base, directory, mapId, api, submit })
     await click('제안 취소')
     assert.deepEqual((await api(`/api/maps/${mapId}`)).body.map, before, '취소는 원본 불변')
     requestId = await create(); await preview(requestId)
-    await selectTarget(1920)
+    await selectTarget('4:3')
     await selectCandidate(1)
     // 실제 브라우저가 검증받은 좌표와 최종 저장 좌표를 비교한다.
     const expected = await nodePositions()
@@ -163,12 +194,12 @@ export async function cardLayoutBrowser({ base, directory, mapId, api, submit })
     await until(() => evaluate('document.querySelector(".card-layout-dialog") === null'), '승인한 배치 저장 실패')
     const saved = (await api(`/api/maps/${mapId}`)).body.map
     const applied = (await api(`/api/card-layouts/${requestId}`)).body
-    assert.deepEqual(applied.appliedLayout.target, { width: 1920, height: 1080 })
+    assert.deepEqual(applied.appliedLayout.target, { ratio: '4:3' })
     assert.notEqual(applied.appliedLayout.variant, 'balanced', '사용자가 마지막 확인한 후보 저장')
     for (const node of saved.nodes) { assert.ok(Math.abs(node.position.x - expected[node.id].x) < 0.01); assert.ok(Math.abs(node.position.y - expected[node.id].y) < 0.01) }
     const touchMenus = await touchMenuBrowser({ base, command, evaluate, until, api })
     assert.deepEqual(errors, [], '브라우저 예외 없음')
-    return { artifacts, cardCount: saved.nodes.length, typography: mainTypography, actualPreviewPositionsSaved: true, touchMenus }
+    return { artifacts, ratioChecks, cardCount: saved.nodes.length, typography: mainTypography, actualPreviewPositionsSaved: true, touchMenus }
   } finally {
     if (command && socket?.readyState === WebSocket.OPEN) { try { await command('Browser.close') } catch { /* 종료 중 연결 종료 */ } }
     socket?.close(); for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('브라우저 종료')) }

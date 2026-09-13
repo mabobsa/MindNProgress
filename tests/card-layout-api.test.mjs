@@ -55,6 +55,8 @@ test('배치 HTTP·MCP·실제 브라우저는 원본을 보존하고 승인한 
   const updated = await api(`/api/maps/${map.id}`, 'PUT', { baseVersion: map.version, map }); assert.equal(updated.status, 200, JSON.stringify(updated.body)); map = updated.body.map
   const file = path.join(directory, map.id + '.json'); const before = await readFile(file)
   let request = (await api('/api/card-layouts', 'POST', { mapId: map.id, proposalOnly: true })).body
+  assert.deepEqual(request.target, { ratio: '16:9' })
+  assert.equal((await api('/api/card-layouts', 'POST', { mapId: map.id, proposalOnly: true, target: { ratio: '3:4' } })).status, 400)
   const sizes = (m) => m.nodes.map((n) => ({ cardId: n.id, ...n.position, width: n.data.image?.displayWidth ?? 218, height: n.data.image?.displayHeight ?? 170, outsets: { left: 8, right: 8, top: 40, bottom: 8 } }))
   assert.equal((await api(`/api/card-layouts/${request.id}/capture`, 'POST', { measurements: sizes(map) })).status, 200)
   const attribution = await api('/api/integrations/aionui/attributions', 'POST', { agentId: 'claude', modelId: 'opus', mapId: map.id, cardId: 'root', purpose: 'card-layout', cardLayoutRequestId: request.id, workspace: directory, workspaceConfirmed: true })
@@ -79,6 +81,14 @@ test('배치 HTTP·MCP·실제 브라우저는 원본을 보존하고 승인한 
   await submit(request.id)
   assert.deepEqual(await readFile(file), before, 'MCP 배치 제안 제출도 원본을 바꾸지 않는다')
   let preview = (await api(`/api/card-layouts/${request.id}/preview`, 'POST', {})).body
+  for (const target of [{ width: 1920, height: 1080 }, { width: 2560, height: 1440 }]) {
+    const compatible = await api(`/api/card-layouts/${request.id}/preview`, 'POST', { target })
+    assert.equal(compatible.status, 200)
+    assert.deepEqual(compatible.body.target, { ratio: '16:9' })
+    assert.deepEqual(compatible.body.map, preview.map)
+    assert.deepEqual(compatible.body.candidates, preview.candidates)
+    preview = compatible.body
+  }
   assert.equal((await api(`/api/card-layouts/${request.id}/apply`, 'POST', { approved: true, previewHash: preview.previewHash, measurements: sizes(preview.map) })).status, 409)
   for (const action of ['measure', 'verify']) { const r = await api(`/api/card-layouts/${request.id}/${action}`, 'POST', { previewHash: preview.previewHash, measurements: sizes(preview.map) }); assert.equal(r.status, 200, JSON.stringify(r.body)); preview = r.body }
   const login = await fetch(base + '/api/auth/viewer-access', { method: 'POST' }); const viewer = { Cookie: login.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' }

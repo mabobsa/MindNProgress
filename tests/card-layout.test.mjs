@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { layoutCards, createCardLayoutCandidates, validateCardLayoutTarget, CARD_LAYOUT_TARGET, validateCardLayoutPlan, verifyCardLayout, cardLayoutKind } from '../src/utils/cardLayout.mjs'
+import { layoutCards, createCardLayoutCandidates, validateCardLayoutTarget, cardLayoutAspectRatio, CARD_LAYOUT_RATIOS, CARD_LAYOUT_TARGET, validateCardLayoutPlan, verifyCardLayout, cardLayoutKind } from '../src/utils/cardLayout.mjs'
 import { assertLayoutClear } from '../src/utils/mindMapLayout.mjs'
 import { buildCardLayoutRequestPrompt } from '../src/utils/cardLayoutRequest.mjs'
 
@@ -8,6 +8,7 @@ const node = (id, data = {}) => ({ id, type: 'mind', position: { x: 500, y: -220
 const edge = (source, target, relation) => ({ id: `${source}-${target}`, source, target, ...(relation ? { data: { relation } } : {}) })
 const measure = (map) => map.nodes.map((card, index) => ({ cardId: card.id, ...card.position, width: index % 4 === 0 ? 700 : 218, height: 100 + index % 7 * 30, outsets: { left: 8, top: 48, right: 24, bottom: 8 } }))
 const positions = (map, sizes) => sizes.map((size) => ({ ...size, ...map.nodes.find((node) => node.id === size.cardId).position }))
+const cost = (c, ratio = 16 / 9) => Math.max(c.metrics.width / Math.sqrt(ratio), c.metrics.height * Math.sqrt(ratio)) * (1 + 0.08 * Math.abs(Math.log(c.metrics.aspectRatio / ratio)))
 
 test('혼합 역할·이미지·독립 및 공유 자료·복수 트리를 보존하며 실제 점유 영역으로 배치한다', () => {
   const map = { nodes: [node('root', { kind: 'root', isWork: false }), node('a'), node('group', { isWork: false }), node('b'), node('child'), node('r2', { kind: 'branch' }), node('r2child'), node('image', { kind: 'image', image: { displayWidth: 700, displayHeight: 200 } }), node('ref', { reference: { mapId: 'elsewhere', nodeId: 'n' } }), node('plain', { isWork: false }), node('dooray', { externalLink: { provider: 'dooray-wiki' } })],
@@ -42,12 +43,14 @@ test('계층 오류·누락·중복·직접 좌표 입력과 잘못된 측정은
   for (const plan of [{ order: ['a', 'a'], reason: '중복' }, { order: ['a'], reason: '누락' }, { order: ['a', 'b'], reason: '위치 변조', positions: [] }]) assert.throws(() => validateCardLayoutPlan(map, plan))
 })
 
-test('1500개 깊은 계층·넓은 계층·독립 카드를 겹침·누락 없이 배치한다', () => {
+test('세 비율 모두 1500개 깊은 계층·넓은 계층·독립 카드를 겹침·누락 없이 배치한다', () => {
   for (const shape of ['deep', 'wide', 'detached']) {
     const map = { nodes: Array.from({ length: 1500 }, (_, i) => node(String(i))), edges: shape === 'detached' ? [] : Array.from({ length: 1499 }, (_, i) => edge(shape === 'deep' ? String(i) : '0', String(i + 1))) }
-    const result = layoutCards(map, measure(map))
-    assert.equal(result.map.nodes.length, 1500)
-    assert.doesNotThrow(() => assertLayoutClear(result.layout.boxes))
+    for (const ratio of CARD_LAYOUT_RATIOS) {
+      const result = layoutCards(map, measure(map), undefined, { target: { ratio } })
+      assert.equal(result.map.nodes.length, 1500)
+      assert.doesNotThrow(() => assertLayoutClear(result.layout.boxes))
+    }
   }
 })
 
@@ -57,9 +60,11 @@ test('AI 요청은 서버 승인·실측 조회와 제안 제출만 지시한다
   assert.match(prompt, /mindnprogress_submit_card_layout_proposal/)
   assert.match(prompt, /좌표와 크기는 넣지 않습니다/)
   assert.match(prompt, /추가 AI 위임, 자동 적용은 허용되지 않습니다/)
-  assert.match(prompt, /1600×900/)
+  assert.match(prompt, /해상도 크기 제한은 없으며/)
+  assert.doesNotMatch(prompt, /1600|900px/)
   assert.match(prompt, /16:9/)
-  assert.match(buildCardLayoutRequestPrompt({ id: 'layout-request-custom', target: { width: 1920, height: 1080 } }), /1920×1080/)
+  assert.match(buildCardLayoutRequestPrompt({ id: 'layout-request-custom', target: { width: 1920, height: 1080 } }), /16:9/)
+  for (const ratio of CARD_LAYOUT_RATIOS) assert.ok(buildCardLayoutRequestPrompt({ id: 'layout-request-ratio', target: { ratio } }).includes(`비율은 ${ratio}`))
 })
 
 test('넓은 형제 카드는 여러 행·열로 나눠 모니터에 들어오는 서로 다른 후보를 제공한다', () => {
@@ -69,10 +74,8 @@ test('넓은 형제 카드는 여러 행·열로 나눠 모니터에 들어오�
   const candidates = createCardLayoutCandidates(map, sizes)
   assert.deepEqual(candidates.map((c) => c.id), ['balanced', 'spread', 'hierarchy'])
   const [balanced, spread, hierarchy] = candidates
-  assert.ok(balanced.layout.width <= 1536 && balanced.layout.height <= 836, '21개 카드가 1600×900 캔버스 여백 안에 원래 크기로 들어간다')
-  assert.equal(balanced.metrics.fitScale, 1)
-  assert.ok(balanced.metrics.fitScale > hierarchy.metrics.fitScale * 3)
-  assert.equal(hierarchy.metrics.needsZoom, true)
+  assert.ok(cost(balanced) < cost(hierarchy) / 3, '같은 크기의 카드를 보존하면서 긴 세로 배치보다 비율 적합도를 높인다')
+  assert.equal(Object.hasOwn(balanced.metrics, 'fitScale'), false, '실제 화면 확대율은 배치 엔진에서 추측하지 않는다')
   assert.ok(spread.metrics.aspectRatio > balanced.metrics.aspectRatio)
   assert.ok(new Set(balanced.map.nodes.slice(1).map((n) => n.position.x)).size > 1)
   assert.ok(new Set(balanced.map.nodes.slice(1).map((n) => n.position.y)).size > 1)
@@ -88,27 +91,32 @@ test('넓은 형제 카드는 여러 행·열로 나눠 모니터에 들어오�
   assert.deepEqual(map, before)
 })
 
-test('목표는 기기와 무관한 16:9이며 임의 비율·좌표 입력을 허용하지 않는다', () => {
-  assert.deepEqual(validateCardLayoutTarget(), { width: 1600, height: 900 })
+test('세 비율을 선택하며 기본 16:9와 크기 제한 없는 기존 요청 호환을 유지한다', () => {
+  assert.deepEqual(validateCardLayoutTarget(), { ratio: '16:9' })
   assert.ok(Object.isFrozen(CARD_LAYOUT_TARGET))
-  for (const width of [1280, 1600, 1920]) assert.deepEqual(validateCardLayoutTarget({ width, height: width * 9 / 16 }), { width, height: width * 9 / 16 })
-  for (const target of [null, {}, [], { width: 390, height: 844 }, { width: 1600, height: 900, positions: [] }, { width: '1600', height: 900 }]) assert.throws(() => validateCardLayoutTarget(target), /16:9/)
+  for (const ratio of CARD_LAYOUT_RATIOS) {
+    const [width, height] = ratio.split(':').map(Number)
+    assert.deepEqual(validateCardLayoutTarget({ ratio }), { ratio })
+    assert.equal(cardLayoutAspectRatio({ ratio }), width / height)
+    for (const scale of [0.01, 80, 100, 120, 160, 1000000]) assert.deepEqual(validateCardLayoutTarget({ width: width * scale, height: height * scale }), { ratio })
+  }
+  for (const target of [null, {}, [], '16:9', { ratio: '3:4' }, { ratio: '16:9', width: 16, height: 9 }, { width: 390, height: 844 }, { width: 1600, height: 900, positions: [] }, { width: '1600', height: 900 }, { width: 0, height: 0 }, { width: -16, height: -9 }, { width: Infinity, height: 9 }, { width: NaN, height: 9 }]) assert.throws(() => validateCardLayoutTarget(target), /16:9/)
   const map = { nodes: [node('single')], edges: [] }
   assert.equal(createCardLayoutCandidates(map, measure(map)).length, 1, '한 카드에 의미 없는 동일 후보를 생성하지 않는다')
   assert.throws(() => layoutCards(map, measure(map), undefined, { variant: 'missing' }), /후보/)
 })
 
-test('복수 트리·독립 자료는 가로 공간을 사용하고 깊은 계층은 누락 없이 축소 안내한다', () => {
+test('복수 트리·독립 자료는 가로 공간을 사용하고 깊은 계층은 누락 없이 보존한다', () => {
   for (const shape of ['forest', 'detached', 'deep']) {
     const map = { nodes: Array.from({ length: 60 }, (_, i) => node(String(i), { kind: i ? 'task' : 'root' })),
       edges: shape === 'detached' ? [] : Array.from({ length: 59 }, (_, i) => edge(shape === 'deep' ? String(i) : String(Math.floor((i + 1) / 3) * 3), String(i + 1))).filter((e) => e.source !== e.target) }
     const sizes = measure(map)
     const candidates = createCardLayoutCandidates(map, sizes)
     const balanced = candidates[0]
-    if (shape === 'deep') assert.equal(balanced.metrics.needsZoom, true)
+    if (shape === 'deep') assert.ok(balanced.metrics.aspectRatio > 10, '비율을 강제하려고 계층을 바꾸지 않는다')
     else {
       const hierarchy = candidates.find((c) => c.id === 'hierarchy')
-      assert.ok(balanced.metrics.fitScale > hierarchy.metrics.fitScale * 2, shape)
+      assert.ok(cost(balanced) < cost(hierarchy) / 2, shape)
       assert.ok(balanced.metrics.aspectRatio > 0.8 && balanced.metrics.aspectRatio < 4, shape)
     }
     for (const c of candidates) {
@@ -127,10 +135,11 @@ test('크기가 다른 가지와 지식선을 섞은 30개 결정적 사례에�
     for (let i = 1; i < 25; i++) map.edges.push(edge(String(Math.floor(random() * i)), String(i)))
     for (let i = 25; i < 32; i++) { map.edges.push(edge(String(i), String(Math.floor(random() * 25)), 'knowledge')); if (i % 2) map.edges.push(edge(String(i), String(Math.floor(random() * 25)), 'knowledge')) }
     const sizes = measure(map).map((m) => ({ ...m, width: 200 + Math.floor(random() * 600), height: 100 + Math.floor(random() * 400) }))
-    const candidates = createCardLayoutCandidates(map, sizes)
-    const cost = (c) => Math.max(c.metrics.width / 1536, c.metrics.height / 836) * (1 + 0.08 * Math.abs(Math.log(c.metrics.aspectRatio / (16 / 9))))
+    const target = { ratio: CARD_LAYOUT_RATIOS[sample % 3] }
+    const candidates = createCardLayoutCandidates(map, sizes, undefined, target)
+    const targetCost = (candidate) => cost(candidate, cardLayoutAspectRatio(target))
     for (const candidate of candidates) {
-      assert.ok(cost(candidates[0]) <= cost(candidate) + 0.000001, '기존 계층형을 포함한 후보 중 목표 화면 비용이 가장 낮은 안을 기본 제공')
+      assert.ok(targetCost(candidates[0]) <= targetCost(candidate) + 0.000001, '기존 계층형을 포함한 후보 중 목표 비율 비용이 가장 낮은 안을 기본 제공')
       assert.equal(verifyCardLayout(candidate.map, candidate.layout, positions(candidate.map, sizes)), true)
       const boxes = new Map(candidate.layout.boxes.map((b) => [b.cardId, b]))
       const descendants = (id) => [id, ...map.edges.filter((e) => !e.data && e.source === id).flatMap((e) => descendants(e.target))]
@@ -145,4 +154,21 @@ test('크기가 다른 가지와 지식선을 섞은 30개 결정적 사례에�
       }
     }
   }
+})
+
+test('같은 비율은 FHD·QHD·임의 크기에서도 모든 후보와 좌표가 완전히 같다', () => {
+  const map = { nodes: Array.from({ length: 40 }, (_, i) => node(String(i), { kind: i ? 'task' : 'root' })), edges: Array.from({ length: 29 }, (_, i) => edge('0', String(i + 1))) }
+  for (let i = 30; i < 38; i++) map.edges.push(edge(String(i), String(i - 25), 'knowledge'))
+  const sizes = measure(map); const plan = { order: map.nodes.map((n) => n.id), reason: '동일한 내용과 순서 검증' }
+  const shapes = []
+  for (const ratio of CARD_LAYOUT_RATIOS) {
+    const canonical = createCardLayoutCandidates(map, sizes, plan, { ratio })
+    const aspect = cardLayoutAspectRatio({ ratio })
+    for (const height of [9, 720, 1080, 1440, 2160, 9000000]) {
+      assert.deepEqual(createCardLayoutCandidates(map, sizes, plan, { width: height * aspect, height }), canonical)
+    }
+    shapes.push(canonical[0].map.nodes.map((n) => n.position))
+    for (const candidate of canonical) assert.equal(verifyCardLayout(candidate.map, candidate.layout, positions(candidate.map, sizes)), true)
+  }
+  assert.ok(new Set(shapes.map((p) => JSON.stringify(p))).size > 1, '목표 비율 변경은 실제 후보 형상에 반영된다')
 })

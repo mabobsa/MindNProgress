@@ -1,8 +1,9 @@
 import { assertLayoutClear, validateLayoutMeasurements, verifyRenderedLayout } from './mindMapLayout.mjs'
 
-export const CARD_LAYOUT_VERSION = 'card-layout-v2'
+export const CARD_LAYOUT_VERSION = 'card-layout-v3'
 export const CARD_LAYOUT_GAP = 32
-export const CARD_LAYOUT_TARGET = Object.freeze({ width: 1600, height: 900 })
+export const CARD_LAYOUT_RATIOS = Object.freeze(['4:3', '16:9', '21:9'])
+export const CARD_LAYOUT_TARGET = Object.freeze({ ratio: '16:9' })
 const fail = (message) => { throw Object.assign(new Error(message), { status: 400, code: 'CARD_LAYOUT_INVALID', reconstructionError: true }) }
 const knowledge = (edge) => edge.data?.relation === 'knowledge'
 const finite = (value) => Number.isFinite(value)
@@ -161,14 +162,24 @@ function layoutHierarchyCards(map, measurements, plan) {
 }
 
 export function validateCardLayoutTarget(target = CARD_LAYOUT_TARGET) {
-  if (!target || Object.keys(target).some((key) => !['width', 'height'].includes(key)) || ![1280, 1600, 1920].includes(target.width) || target.height !== target.width * 9 / 16) fail('목표 화면은 지원하는 모니터형 16:9 크기를 선택하세요.')
-  return { width: target.width, height: target.height }
+  if (target && typeof target === 'object' && !Array.isArray(target)) {
+    const keys = Object.keys(target)
+    if (keys.length === 1 && keys[0] === 'ratio' && CARD_LAYOUT_RATIOS.includes(target.ratio)) return { ratio: target.ratio }
+    // 기존 픽셀 기반 요청도 크기 제한 없이 비율만 재사용한다.
+    if (keys.length === 2 && keys.every((key) => ['width', 'height'].includes(key)) && finite(target.width) && finite(target.height) && target.width > 0 && target.height > 0) {
+      const ratio = CARD_LAYOUT_RATIOS.find((value) => Math.abs(target.width / target.height / aspectRatio(value) - 1) < 1e-9)
+      if (ratio) return { ratio }
+    }
+  }
+  fail('목표 캔버스 비율은 4:3, 16:9, 21:9 중에서 선택하세요.')
 }
+
+const aspectRatio = (ratio) => { const [width, height] = ratio.split(':').map(Number); return width / height }
+export const cardLayoutAspectRatio = (target = CARD_LAYOUT_TARGET) => aspectRatio(validateCardLayoutTarget(target).ratio)
 
 export function cardLayoutMetrics(layout, target = CARD_LAYOUT_TARGET) {
   const screen = validateCardLayoutTarget(target)
-  const fitScale = Math.min(1, (screen.width - 64) / layout.width, (screen.height - 64) / layout.height)
-  return { target: screen, width: layout.width, height: layout.height, aspectRatio: layout.width / layout.height, fitScale, needsZoom: fitScale < 0.65 }
+  return { target: screen, width: layout.width, height: layout.height, aspectRatio: layout.width / layout.height }
 }
 
 const extent = (boxes) => {
@@ -176,7 +187,8 @@ const extent = (boxes) => {
   const right = Math.max(...boxes.map((b) => b.x + b.width)); const bottom = Math.max(...boxes.map((b) => b.y + b.height))
   return { x: left, y: top, width: right - left, height: bottom - top }
 }
-const screenCost = (bounds, target) => Math.max(bounds.width / (target.width - 64), bounds.height / (target.height - 64)) * (1 + 0.08 * Math.abs(Math.log(bounds.width / bounds.height / (target.width / target.height))))
+// 단위 면적의 목표 비율로 비교한다. 실제 화면 해상도는 배치 계산에 관여하지 않는다.
+const screenCost = (bounds, ratio) => Math.max(bounds.width / Math.sqrt(ratio), bounds.height * Math.sqrt(ratio)) * (1 + 0.08 * Math.abs(Math.log(bounds.width / bounds.height / ratio)))
 
 // 하위 트리 전체를 예약한 사각형 단위로 열을 나눈다.
 // 자식은 부모보다 오른쪽에 두고 다른 가지의 하위 트리와 섞지 않는다.
@@ -255,7 +267,7 @@ function compactBoxes(map, measurements, plan, heightLimit, target) {
       for (const other of [...boxes].sort((a, b) => a[axis] - b[axis])) if (overlaps(box, other)) box[axis] = other[axis] + other[axis === 'x' ? 'width' : 'height'] + 48
       const p = center(box)
       const linkCost = links.reduce((sum, link) => { const q = center(placed.get(link.id)); return sum + link.weight * (Math.abs(p.x - q.x) + Math.abs(p.y - q.y) + lines.filter(([a, b]) => crosses(p, q, a, b)).length * 160) }, 0)
-      return { box, cost: screenCost(extent([...boxes, box]), target) + linkCost / (target.width + target.height) * 0.15 }
+      return { box, cost: screenCost(extent([...boxes, box]), target) + linkCost / (Math.sqrt(target) + 1 / Math.sqrt(target)) * 0.15 }
     })).sort((a, b) => a.cost - b.cost)
     const box = options[0].box; boxes.push(box); placed.set(id, box)
   }
@@ -276,14 +288,15 @@ function compactBoxes(map, measurements, plan, heightLimit, target) {
 
 export function createCardLayoutCandidates(map, measurements, plan, target = CARD_LAYOUT_TARGET) {
   const screen = validateCardLayoutTarget(target)
+  const ratio = cardLayoutAspectRatio(screen)
   cardLayoutGraph(map)
   const supplied = validateLayoutMeasurements(map.nodes, measurements)
   if (plan) validateCardLayoutPlan(map, plan)
   const area = supplied.reduce((sum, m) => sum + (m.width + m.outsets.left + m.outsets.right + 64) * (m.height + m.outsets.top + m.outsets.bottom + 48), 0)
-  const idealHeight = Math.sqrt(area / (screen.width / screen.height))
+  const idealHeight = Math.sqrt(area / ratio)
   const seen = new Set()
   const positionKey = (boxes) => { const byId = new Map(boxes.map((b) => [b.cardId, b])); return JSON.stringify(map.nodes.map((n) => { const b = byId.get(n.id); return [b.x, b.y] })) }
-  const options = [0.45, 0.65, 0.85, 1, 1.2, 1.5, 1.9, 2.5, 3.5, 5].map((factor) => compactBoxes(map, supplied, plan, idealHeight * factor, screen)).filter((item) => {
+  const options = [0.45, 0.65, 0.85, 1, 1.2, 1.5, 1.9, 2.5, 3.5, 5].map((factor) => compactBoxes(map, supplied, plan, idealHeight * factor, ratio)).filter((item) => {
     const key = positionKey(item.boxes)
     if (seen.has(key)) return false
     seen.add(key); return true
@@ -291,9 +304,9 @@ export function createCardLayoutCandidates(map, measurements, plan, target = CAR
   // 기존 계층형이 이미 화면에 더 잘 맞는 문서도 동일한 기준으로 비교한다.
   const hierarchy = layoutHierarchyCards(map, supplied, plan)
   if (!seen.has(positionKey(hierarchy.layout.boxes))) options.push(hierarchy.layout)
-  options.sort((a, b) => screenCost(a, screen) - screenCost(b, screen))
+  options.sort((a, b) => screenCost(a, ratio) - screenCost(b, ratio))
   const first = options[0]
-  const wider = options.find((option) => option.width / option.height > first.width / first.height * 1.15 && screenCost(option, screen) < screenCost(first, screen) * 1.5)
+  const wider = options.find((option) => option.width / option.height > first.width / first.height * 1.15 && screenCost(option, ratio) < screenCost(first, ratio) * 1.5)
   const second = wider ?? options[1]
   const make = (option, id, label) => {
     assertLayoutClear(option.boxes)

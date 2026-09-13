@@ -28,6 +28,8 @@ import './App.css'
 import { MindNode } from './components/MindNode'
 import { GroupOverview, type GroupAiTarget } from './components/GroupOverview'
 import { DocumentLifecycle } from './components/DocumentLifecycle'
+import { CardLayoutDialog } from './components/CardLayoutDialog'
+import { useLibraryTouchMenu } from './components/useLibraryTouchMenu'
 import { KnowledgeEdge } from './components/KnowledgeEdge'
 import { LinkifiedText } from './components/LinkifiedText'
 import { DoorayTaskLinkLabel } from './components/DoorayTaskLinkLabel'
@@ -2427,6 +2429,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const [knowledgeConnectionTargetId, setKnowledgeConnectionTargetId] = useState<string | null>(null)
   const [knowledgeConnectionMessage, setKnowledgeConnectionMessage] = useState('')
   const [documentContextMenu, setDocumentContextMenu] = useState<{ x: number; y: number; mapId: string; groupId?: string } | null>(null)
+  const [cardLayoutTarget, setCardLayoutTarget] = useState<{ id: string; title: string } | null>(null)
   const [aiConversationContextMenu, setAiConversationContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [canvasPasteMenu, setCanvasPasteMenu] = useState<{ x: number; y: number } | null>(null)
   const paneRightPressRef = useRef({ x: 0, y: 0 })
@@ -4665,7 +4668,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
 
   const openNodeContextMenu = useCallback((event: ReactMouseEvent, nodeId: string) => {
     const touchSuppression = suppressTouchContextMenu.current
-    if (touchSuppression?.nodeId === nodeId && Date.now() < touchSuppression.until) {
+    if (touchCardGesture.current?.nodeId === nodeId || (touchSuppression?.nodeId === nodeId && Date.now() < touchSuppression.until)) {
       event.preventDefault()
       event.stopPropagation()
       return
@@ -4888,6 +4891,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
 
   const startTouchCanvasPan = useCallback((event: ReactTouchEvent<HTMLElement>) => {
     if (viewMode !== 'mindmap' || knowledgeConnection || touchPanOwned.current || event.touches.length !== 1) return
+    if (touchCardGesture.current?.phase === 'armed' || touchCardGesture.current?.phase === 'dragging') return
     const target = event.target
     if (!(target instanceof Element)) return
     const panTarget = target.closest('.react-flow__node, .react-flow__edge, .react-flow__edge-textwrapper')
@@ -5188,7 +5192,11 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   useEffect(() => {
     const closeContextMenu = (event: PointerEvent) => {
       const target = event.target as Element | null
-      if (!target?.closest('.node-context-menu')) {
+      const resumeCardDrag = event.pointerType === 'touch'
+        && target?.closest<HTMLElement>('.react-flow__node[data-id]')?.dataset.id === nodeContextMenu?.nodeId
+        && Boolean(nodeContextMenu)
+        && !target?.closest('button, a, input, textarea, select, [contenteditable="true"], .nodrag, .react-flow__handle, .react-flow__resize-control')
+      if (!target?.closest('.node-context-menu') && !resumeCardDrag) {
         setNodeContextMenu(null)
         setDocumentContextMenu(null)
         setAiConversationContextMenu(null)
@@ -5217,7 +5225,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       window.removeEventListener('pointerdown', closeContextMenu)
       window.removeEventListener('keydown', closeOnEscape)
     }
-  }, [cancelKnowledgeConnection, dailyBackupPreview])
+  }, [cancelKnowledgeConnection, dailyBackupPreview, nodeContextMenu])
 
   useEffect(() => {
     cancelKnowledgeConnection()
@@ -5694,8 +5702,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     setNodeContextMenu(null)
     setAiConversationContextMenu(null)
     setDocumentContextMenu({
-      x: Math.min(event.clientX, window.innerWidth - 230),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 410)),
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 465)),
       mapId,
     })
   }
@@ -5706,6 +5714,10 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     setNodeContextMenu(null); setAiConversationContextMenu(null)
     setDocumentContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 140)), mapId: '', groupId })
   }
+  const libraryTouchMenu = useLibraryTouchMenu(accountMode === 'editor' && !trashOpen, ({ kind, id, x, y }) => {
+    setNodeContextMenu(null); setAiConversationContextMenu(null); setCanvasPasteMenu(null)
+    setDocumentContextMenu({ x: Math.max(8, Math.min(x, window.innerWidth - 230)), y: Math.max(8, Math.min(y, window.innerHeight - (kind === 'map' ? 465 : 140))), mapId: kind === 'map' ? id : '', ...(kind === 'group' ? { groupId: id } : {}) })
+  })
   const openDocumentCleanup = (scope: { type: 'map' | 'group'; id: string }) => {
     setDocumentContextMenu(null)
     if (accountMode !== 'editor') return
@@ -6427,6 +6439,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     event.preventDefault()
     event.stopPropagation()
     cancelTouchCardGesture(true)
+    const resumeMenuDrag = mode === 'editor' && nodeContextMenu?.nodeId === nodeId
     suppressTouchClickUntil.current = Date.now() + TOUCH_CARD_LONG_PRESS_MS + 800
     const gesture: TouchCardGesture = {
       identifier: touch.identifier,
@@ -6435,7 +6448,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       startFlow: screenToFlowPosition({ x: touch.clientX, y: touch.clientY }),
       startPosition: { ...node.position },
       currentPosition: { ...node.position },
-      phase: 'pressing',
+      phase: resumeMenuDrag ? 'armed' : 'pressing',
       timer: null,
     }
     touchCardGesture.current = gesture
@@ -6444,6 +6457,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         nodeId,
         until: Date.now() + TOUCH_CARD_LONG_PRESS_MS + 2_000,
       }
+      if (resumeMenuDrag) { touchCanvasPanGesture.current = null; lastTouchCardTap.current = null; return }
       gesture.timer = window.setTimeout(() => {
         if (touchCardGesture.current !== gesture || gesture.phase !== 'pressing') return
         gesture.timer = null
@@ -6456,7 +6470,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         })
       }, TOUCH_CARD_LONG_PRESS_MS)
     }
-  }, [cancelTouchCardGesture, knowledgeConnection, mode, screenToFlowPosition, setNodes, showNodeContextMenu, viewMode])
+  }, [cancelTouchCardGesture, knowledgeConnection, mode, nodeContextMenu, screenToFlowPosition, setNodes, showNodeContextMenu, viewMode])
 
   const moveTouchCardGesture = useCallback((event: ReactTouchEvent<HTMLElement>) => {
     const gesture = touchCardGesture.current
@@ -6514,6 +6528,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       cancelTouchCardGesture(true)
       return
     }
+    suppressTouchContextMenu.current = { nodeId: gesture.nodeId, until: Date.now() + 800 }
     if (gesture.timer !== null) window.clearTimeout(gesture.timer)
     gesture.timer = null
     touchCardGesture.current = null
@@ -6608,6 +6623,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     return (
       <button
         key={document.id}
+        data-library-menu-kind="map"
+        data-library-menu-id={document.id}
         draggable={mode === 'editor' && !normalizedDocumentSearch}
         className={`map-item ${location.type === 'group' ? 'group-document' : ''} ${!selectedGroup && document.id === activeMapId ? 'active' : ''} ${rootStatus === 'planned' ? 'root-planned' : ''} ${draggingLibraryItem?.type === 'map' && draggingLibraryItem.id === document.id ? 'dragging' : ''} ${documentDropTargetId === dropKey ? 'document-drop-target' : ''}`}
         onClick={() => { setSelectedGroupId(null); setRenamingMap(false); setActiveMapId(document.id); setMobileSidebarOpen(false) }}
@@ -6873,7 +6890,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
             aria-label="모바일 패널 닫기"
           />
         )}
-        <aside id="document-library-panel" className={`sidebar ${mobileSidebarOpen ? 'mobile-open' : ''}`}>
+        <aside id="document-library-panel" className={`sidebar ${mobileSidebarOpen ? 'mobile-open' : ''}`} {...libraryTouchMenu}>
           <div className="sidebar-header">
             <span>{trashOpen ? '휴지통' : '마인드맵'} <small>{trashOpen ? trashedDocuments.length : documents.length}</small></span>
             <div className="sidebar-header-actions">
@@ -7046,6 +7063,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                       )}
                       <div
                         className={`document-group-header ${selectedGroup?.id === group.id ? 'group-selected' : ''} ${draggingLibraryItem?.type === 'group' && draggingLibraryItem.id === group.id ? 'dragging' : ''} ${documentDropTargetId === groupDropKey ? 'document-drop-target' : ''}`}
+                        data-library-menu-kind="group"
+                        data-library-menu-id={group.id}
                         onContextMenu={(event) => openGroupContextMenu(event, group.id)}
                         draggable={mode === 'editor' && !normalizedDocumentSearch}
                         onDragStart={(event) => {
@@ -8855,6 +8874,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           </button>
         </div>
       )}
+      {cardLayoutTarget && accountMode === 'editor' && <CardLayoutDialog mapId={cardLayoutTarget.id} title={cardLayoutTarget.title} api={apiRequest} userId={user.id} members={teamMembers} launchInWebUi={aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)} ensureClean={() => !serverBaseline.current || mapContentsEqual(createPersistedMapContent(nodesRef.current, edgesRef.current), serverBaseline.current)} onClose={() => setCardLayoutTarget(null)} onChanged={async () => { await refreshLifecycleLibrary(); setSavedAt('확인한 카드 배치 적용됨') }} />}
       {documentContextMenu?.groupId && accountMode === 'editor' && (
         <div className="node-context-menu document-context-menu" style={{ left: documentContextMenu.x, top: documentContextMenu.y }} role="menu" onContextMenu={(event) => event.preventDefault()}>
           <div className="context-menu-title"><span>그룹 메뉴</span><strong>{effectiveDocumentLayout.groups.find((group) => group.id === documentContextMenu.groupId)?.name}</strong></div>
@@ -8899,6 +8919,12 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           <button role="menuitem" onClick={() => openDocumentCleanup({ type: 'map', id: documentContextMenu.mapId })}>
             <span className="context-icon"><Icon name="sparkles" size={15} /></span><span><strong>문서 정리</strong><small>규모 정리 또는 새 기획 반영 · AI 정리안 요청</small></span>
           </button>
+          <button role="menuitem" onClick={() => {
+            const target = documents.find((item) => item.id === documentContextMenu.mapId)
+            setDocumentContextMenu(null)
+            if (serverBaseline.current && !mapContentsEqual(createPersistedMapContent(nodesRef.current, edgesRef.current), serverBaseline.current)) { setSaveError('현재 문서의 변경을 저장한 뒤 배치 제안을 요청하세요.'); return }
+            if (target) setCardLayoutTarget({ id: target.id, title: target.title })
+          }}><span className="context-icon"><Icon name="sparkles" size={15} /></span><span><strong>AI 배치 제안</strong><small>실제 배치를 확인하고 카드 위치 정리</small></span></button>
           <button role="menuitem" onClick={() => { void archiveDocument(documentContextMenu.mapId) }}>
             <span className="context-icon"><Icon name="folder" size={15} /></span><span><strong>보관함으로 이동</strong><small>원문과 참조를 유지하는 읽기 전용 보관</small></span>
           </button>

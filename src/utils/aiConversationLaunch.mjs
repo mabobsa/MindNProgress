@@ -8,6 +8,7 @@ export const AI_CONVERSATION_PURPOSES = Object.freeze([
   'shared-knowledge-review',
   'group-coordination',
   'document-reconstruction',
+  'card-layout',
   'dooray-response',
 ])
 
@@ -63,7 +64,7 @@ export function normalizeAiConversationPurpose(value) {
 }
 
 export function aiConversationTitle({ purpose, documentTitle, cardTitle } = {}) {
-  const prefix = purpose === 'dooray-response' ? '[Dooray 승인] ' : purpose === 'document-reconstruction' ? '[문서 정리] ' : purpose === 'group-coordination' ? '[그룹 총괄] ' : normalizeAiConversationPurpose(purpose) === 'shared-knowledge-review' ? '[지식정리] ' : ''
+  const prefix = purpose === 'card-layout' ? '[배치 제안] ' : purpose === 'dooray-response' ? '[Dooray 승인] ' : purpose === 'document-reconstruction' ? '[문서 정리] ' : purpose === 'group-coordination' ? '[그룹 총괄] ' : normalizeAiConversationPurpose(purpose) === 'shared-knowledge-review' ? '[지식정리] ' : ''
   return `${prefix}${text(documentTitle)}: ${text(cardTitle)}`.replace(/\s+/g, ' ').trim().slice(0, 120)
 }
 

@@ -2,6 +2,7 @@ import { createServer } from 'node:http'
 import { createAiWorkspaceSettings } from './lib/aiWorkspaceSettings.mjs'
 import { createDocumentMutationGate, createDocumentReconstruction, reconstructionError } from './lib/documentReconstruction.mjs'
 import { createReconstructionRequests } from './lib/documentReconstructionRequests.mjs'
+import { createCardLayoutRequests } from './lib/cardLayoutRequests.mjs'
 import { createGroupProjects, documentRoot, DOCUMENT_COORDINATOR_INSTRUCTION } from './lib/groupProjects.mjs'
 import { createDoorayResponseIntegration } from './lib/doorayResponseIntegration.mjs'
 import { AI_EXECUTION_APPROVAL_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_REPORT_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
@@ -5801,6 +5802,33 @@ documentReconstruction = await createDocumentReconstruction({
   },
 })
 const reconstructionRequests = await createReconstructionRequests({ dataDirectory, writeJson: writeStoredArray, lifecycle: documentReconstruction, readMap })
+const cardLayoutRequests = await createCardLayoutRequests({
+  dataDirectory, writeJson: writeStoredArray, assertWritable: (id) => documentReconstruction.assertWritable(id),
+  readSnapshot: async (id) => {
+    if (!isValidMapId(id)) throw reconstructionError('문서 ID를 확인하세요.', 400)
+    const map = await readMap(id)
+    if (!map || map.trashedAt) throw reconstructionError('문서를 찾을 수 없습니다.', 404)
+    const resolved = await resolveReferencesForMap(map)
+    const stats = buildNodeCommentStats(await listComments(id))
+    const renderMap = { ...resolved.map, nodes: resolved.map.nodes.map((node) => ({ ...node, data: { ...node.data,
+      assignee: node.data.assigneeId ? users.filter((member) => member.id === node.data.assigneeId).map(publicUser)[0] : undefined,
+      commentCount: (node.data.reference ? resolved.referenceCommentStats[node.id] : stats[node.id])?.total ?? 0,
+      unresolvedCommentCount: (node.data.reference ? resolved.referenceCommentStats[node.id] : stats[node.id])?.unresolved ?? 0,
+      referenceUnresolved: node.data.reference ? resolved.unresolvedReferenceNodeIds.includes(node.id) : undefined,
+      imageAssetUrl: node.data.image ? `/api/maps/${encodeURIComponent(id)}/images/${encodeURIComponent(node.data.image.assetId)}` : undefined,
+    } })) }
+    return { map, renderMap }
+  },
+  savePositions: async (map, positions, actor) => {
+    const updated = { ...map, nodes: map.nodes.map((node) => ({ ...node, position: positions.get(node.id) })) }
+    return saveMap(map.id, updated, actor, undefined, undefined, 'card-layout', {
+      expectedVersion: map.version,
+      validatePayload: (payload) => {
+        if (JSON.stringify(payload.nodes) !== JSON.stringify(updated.nodes) || JSON.stringify(payload.edges) !== JSON.stringify(map.edges)) throw reconstructionError('위치 이외의 데이터가 달라졌습니다. 배치 적용을 중단했습니다.', 409)
+      },
+    })
+  },
+})
 try {
   const unconfirmedLeaseIds = [...aiDelegations.values()].filter((delegation) => delegation.state === 'recovery-required'
     && !delegation.targetConversationId && delegation.childOperationId && delegation.workspaceLease?.leaseId)
@@ -5881,9 +5909,10 @@ const server = createServer(async (request, response) => {
   let releaseDocumentMutation = null
 
   try {
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && /^\/api\/(maps|groups|document-reconstructions)(\/|$)/.test(url.pathname)) {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && /^\/api\/(maps|groups|document-reconstructions|card-layouts)(\/|$)/.test(url.pathname)) {
       const isTransition = /^\/api\/maps\/[^/]+\/archive$/.test(url.pathname)
         || /^\/api\/document-reconstructions\/(apply|[^/]+\/rollback)$/.test(url.pathname)
+        || /^\/api\/card-layouts\/[^/]+\/apply$/.test(url.pathname)
       releaseDocumentMutation = await acquireDocumentMutation(isTransition)
     }
     const writableMapRoute = url.pathname.match(/^\/api\/maps\/([^/]+)(\/.*)?$/)
@@ -5907,6 +5936,32 @@ const server = createServer(async (request, response) => {
       broadcastMapChange(request, map.id, map.archivedAt ? 'archived' : 'archive-restored', user)
       const maps = await listMaps()
       return sendJson(response, 200, { map, maps, documentLayout: await readDocumentLayout(maps.map((m) => m.id)) })
+    }
+    if (url.pathname === '/api/card-layouts' || url.pathname.startsWith('/api/card-layouts/')) {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 AI 배치 제안을 사용할 수 있습니다.' })
+      const actor = publicUser(user)
+      const parts = url.pathname.slice('/api/card-layouts'.length).split('/').filter(Boolean).map(decodeURIComponent)
+      if (request.method === 'GET' && !parts.length) return sendJson(response, 200, { requests: cardLayoutRequests.list(url.searchParams.get('mapId'), actor) })
+      if (request.method === 'GET' && parts.length === 1) return sendJson(response, 200, await cardLayoutRequests.get(parts[0], actor))
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request)
+        if (!parts.length) return sendJson(response, 201, await cardLayoutRequests.create(body, actor))
+        const [id, action] = parts
+        if (parts.length !== 2) return sendJson(response, 404, { error: '배치 요청 경로를 확인하세요.' })
+        if (action === 'capture') return sendJson(response, 200, await cardLayoutRequests.capture(id, body, actor))
+        if (action === 'proposal') return sendJson(response, 200, await cardLayoutRequests.submit(id, body, actor))
+        if (action === 'preview') return sendJson(response, 200, await cardLayoutRequests.preview(id, actor, body))
+        if (['measure', 'verify'].includes(action)) return sendJson(response, 200, await cardLayoutRequests.inspect(id, body, action === 'verify', actor))
+        if (action === 'cancel') return sendJson(response, 200, await cardLayoutRequests.cancel(id, actor))
+        if (action === 'apply') {
+          const result = await cardLayoutRequests.apply(id, body, actor)
+          broadcastMapChange(request, result.mapId, 'card-layout', user)
+          return sendJson(response, 200, result)
+        }
+      }
+      return sendJson(response, 404, { error: '지원하지 않는 배치 요청입니다.' })
     }
     if (url.pathname === '/api/document-reconstructions' || url.pathname.startsWith('/api/document-reconstructions/')) {
       const user = requireUser(request, response)
@@ -6616,6 +6671,11 @@ const server = createServer(async (request, response) => {
         documentReconstruction.assertWritable(mapId)
       }
 
+      if (purpose === 'card-layout') {
+        const draftRequest = await cardLayoutRequests.get(String(body.cardLayoutRequestId ?? ''), publicUser(user))
+        if (draftRequest.stale || draftRequest.state !== 'open' || !draftRequest.measurements || draftRequest.conversation || draftRequest.launchTarget.mapId !== mapId || draftRequest.launchTarget.cardId !== cardId) return sendJson(response, 409, { error: '배치 요청의 측정·대상·최신 상태를 확인하세요.' })
+        documentReconstruction.assertWritable(mapId)
+      }
       try {
         const { machineId: homeMachineId } = resolveTargetMachineForUser(user, body.machineId)
         try { body.workspace = await aiWorkspaceSettings.validateLaunch({ ...body, mapId, machineId: homeMachineId }) }
@@ -6670,6 +6730,7 @@ const server = createServer(async (request, response) => {
           homeMachineId,
           purpose,
           reconstructionRequestId: purpose === 'document-reconstruction' ? body.reconstructionRequestId : undefined,
+          cardLayoutRequestId: purpose === 'card-layout' ? body.cardLayoutRequestId : undefined,
           doorayApproval: doorayApprovalContext ? body.doorayApproval : undefined,
           startedBy: user.id,
           expiresAt,
@@ -6823,7 +6884,10 @@ const server = createServer(async (request, response) => {
         if (launch.purpose === 'document-reconstruction') {
           await reconstructionRequests.linkConversation(launch.reconstructionRequestId, { id: conversationId, homeMachineId: launch.homeMachineId, linkedAt: new Date().toISOString() })
         }
-        if (launch.purpose === 'shared-knowledge-review' || launch.purpose === 'document-reconstruction') {
+        if (launch.purpose === 'card-layout') {
+          await cardLayoutRequests.linkConversation(launch.cardLayoutRequestId, { id: conversationId, homeMachineId: launch.homeMachineId, linkedAt: new Date().toISOString() }, { id: launch.startedBy })
+        }
+        if (launch.purpose === 'shared-knowledge-review' || launch.purpose === 'document-reconstruction' || launch.purpose === 'card-layout') {
           aiConversationLaunches.delete(tokenKey)
           return sendJson(response, 200, {
             conversationId,

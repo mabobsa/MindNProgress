@@ -1,0 +1,32 @@
+/* MnP 문서 관리 팝업의 공통 타이포그래피·색·버튼을 사용한다.
+   실제 카드와 ReactFlow 컨트롤에는 관리 화면 스타일이 침투하지 않는다. */
+.card-layout-dialog { width: min(1100px, 100%); }
+.card-layout-dialog .card-layout-steps { display: flex; gap: 8px; list-style: none; margin: 12px 0; padding: 8px 10px; border: 1px solid var(--theme-border, #e2dee7); border-radius: 9px; background: var(--theme-surface-soft, #faf9fc); }
+.card-layout-steps li { display: flex; align-items: center; gap: 6px; flex: 1; color: var(--theme-text-muted, #918a98); }
+.card-layout-steps li span { display: grid; place-items: center; width: 18px; height: 18px; flex-shrink: 0; border-radius: 50%; border: 1px solid var(--theme-border, #ded9e5); }
+.card-layout-steps li[aria-current=step] { color: var(--theme-accent, #6657d9); font-weight: 700; }
+.card-layout-steps li[aria-current=step] span { color: #fff; border-color: var(--theme-accent, #6657d9); background: var(--theme-accent, #6657d9); }
+.card-layout-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.card-layout-actions > label { margin-left: auto; min-width: 180px; }
+.card-layout-empty { margin: 16px 0 4px; padding: 24px 16px; text-align: center; border: 1px dashed var(--theme-border, #ddd8e5); border-radius: 10px; background: var(--theme-surface-soft, #faf9fc); }
+.card-layout-preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.card-layout-target { margin: 10px 0; }
+.card-layout-target label { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.card-layout-target p, .card-layout-fit p { margin: 4px 0; color: var(--theme-text-muted, #918a98); }
+.card-layout-candidates { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.card-layout-candidates button { flex: 1 1 140px; display: flex; flex-direction: column; gap: 4px; text-align: left; }
+.card-layout-candidates button[aria-pressed=true] { border-color: var(--theme-accent, #6657d9); background: var(--theme-surface-soft, #faf9fc); box-shadow: inset 0 0 0 1px var(--theme-accent, #6657d9); }
+.card-layout-fit { margin: 8px 0; }
+.card-layout-fit .card-layout-fit-warning { color: var(--theme-text, #443c4c); border-left: 3px solid var(--theme-accent, #6657d9); padding-left: 8px; }
+.card-layout-screen { position: relative; width: min(100%, 80dvh); aspect-ratio: 16 / 9; margin: 12px auto; }
+.card-layout-dialog .card-layout-screen .reconstruction-map { position: absolute; inset: 0; height: 100%; min-height: 0; margin: 0; }
+.card-layout-reason { white-space: pre-wrap; }
+.card-layout-footer { position: sticky; bottom: -16px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; border-top: 1px solid var(--theme-border, #e8e4ec); background: var(--theme-surface, #fff); }
+.card-layout-dialog :is(button, select, input):not(.reconstruction-map *):focus-visible { outline: 2px solid var(--theme-accent, #6657d9); outline-offset: 2px; }
+@media (max-width: 600px) {
+  .card-layout-dialog .card-layout-steps { gap: 4px; padding: 6px; }
+  .card-layout-steps li { gap: 4px; }
+  .card-layout-actions > label { flex: 1 1 100%; margin: 0; }
+  .card-layout-preview-heading { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .card-layout-footer { bottom: -12px; }
+}

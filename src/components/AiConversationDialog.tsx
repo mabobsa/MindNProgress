@@ -175,7 +175,7 @@ function encodeBase64Json(value: unknown) {
   return btoa(binary)
 }
 
-export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, groupId, knowledgeSources, initialRequest, fullInitialRequest, doorayApproval, reconstructionRequestId, launchInWebUi, onClose }: {
+export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, groupId, knowledgeSources, initialRequest, fullInitialRequest, doorayApproval, reconstructionRequestId, cardLayoutRequestId, launchInWebUi, onClose }: {
   userId: string
   documentId: string
   documentTitle: string
@@ -188,6 +188,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   fullInitialRequest?: boolean
   doorayApproval?: DoorayApprovalLaunch
   reconstructionRequestId?: string
+  cardLayoutRequestId?: string
   launchInWebUi: boolean
   onClose: () => void
 }) {
@@ -480,6 +481,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           purpose: role.purpose,
           doorayApproval,
           reconstructionRequestId,
+          cardLayoutRequestId,
           mode: mode || undefined,
           thoughtLevel: thoughtLevel || undefined,
           enabledSkillIds,

@@ -212,6 +212,8 @@
 .library-top-item { min-width: 0; }
 .map-item { width: 100%; min-height: 48px; display: grid; grid-template-columns: 8px 1fr auto; align-items: center; gap: 10px; padding: 10px; border: 0; border-radius: 9px; background: transparent; text-align: left; cursor: pointer; }
 .map-item[draggable="true"] { cursor: grab; }
+.sidebar [data-library-menu-id] { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: pan-y; }
+.sidebar [data-library-menu-id] :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 .map-item.dragging { opacity: .42; }
 .map-item.document-drop-target { background: #f2f0fb; box-shadow: inset 0 2px #6657d9; }
 .map-item:hover { background: #f8f7fa; }

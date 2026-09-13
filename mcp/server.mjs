@@ -1074,6 +1074,14 @@ async function main() {
     requestId: z.string().min(1),
   }, async ({ requestId }) => apiRequest(`/api/document-reconstructions/requests/${encodeURIComponent(requestId)}`))
 
+  registerTool(server, 'mindnprogress_get_card_layout_request', '사용자가 요청한 현재 문서의 AI 배치 제안 범위·승인·원본 및 Ref 표시 스냅샷·실측 크기·revision·stale을 조회합니다. stale이면 새 요청이 필요하며 원본을 수정하지 마세요.', {
+    requestId: z.string().min(1),
+  }, async ({ requestId }) => apiRequest(`/api/card-layouts/${encodeURIComponent(requestId)}`))
+  registerTool(server, 'mindnprogress_submit_card_layout_proposal', '사용자가 요청한 배치안만 제안함에 제출합니다. plan.order에는 모든 카드 ID를 정확히 한 번, reason에는 배치 이유를 적습니다. 계층·종류·카드·좌표를 직접 바꾸지 않습니다. 제품이 실측 배치를 만들고 사용자가 실제 화면을 확인해 적용합니다.', {
+    requestId: z.string().min(1), baseRevision: z.number().int().nonnegative(),
+    plan: z.object({ order: z.array(z.string().min(1)).min(1).max(2000), reason: z.string().min(1).max(8000) }).strict(),
+  }, async ({ requestId, ...body }) => apiRequest(`/api/card-layouts/${encodeURIComponent(requestId)}/proposal`, { method: 'POST', body: JSON.stringify(body), timeoutMs: 60_000 }))
+
   const reconstructionPlanSchema = z.object({
     id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), mode: z.enum(['compact', 'spec-update']), baseline: z.string().min(1), reason: z.string().min(1),
     newSource: z.string().optional(), changeSummary: z.string().optional(),

@@ -140,7 +140,7 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     const viewerWrite = await fetch(`${baseUrl}/api/groups/${groupId}`, { method: 'PATCH', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ baseVersion: 2, objective: '뷰어 변경' }) })
     assert.equal(viewerWrite.status, 403)
 
-    const attribution = await api('/api/integrations/aionui/attributions', 'POST', { agentId: 'claude', modelId: 'opus', mapId: coordinatorId, cardId: coordinatorRoot, purpose: 'group-coordination', workspace: projectDirectory })
+    const attribution = await api('/api/integrations/aionui/attributions', 'POST', { agentId: 'claude', modelId: 'opus', mapId: coordinatorId, cardId: coordinatorRoot, purpose: 'group-coordination', workspace: projectDirectory, workspaceConfirmed: true })
     assert.equal(attribution.status, 201, JSON.stringify(attribution.body))
     conversations.set('group-parent', { id: 'group-parent', name: '그룹 총괄', extra: { agent_id: 'claude', current_model_id: 'opus', backend: 'claude' } })
     const completeLink = await fetch(attribution.body.completionUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId: 'group-parent' }) })
@@ -306,7 +306,7 @@ test('그룹 기획 관리와 문서 루트 위임은 범위·동시 실행·복
     assert.ok([401, 403].includes((await humanAction('recover', await actionBody(), cookie)).status))
     assert.equal((await humanAction('refresh', await actionBody())).body.executionRequested, false)
     // 원래 상위 AI가 한도에 막혀도 같은 카드에 연결된 새 대화가 복구할 수 있다.
-    const recoveryAttribution = await api('/api/integrations/aionui/attributions', 'POST', { agentId: 'claude', modelId: 'opus', mapId: coordinatorId, cardId: coordinatorRoot, purpose: 'group-coordination', workspace: projectDirectory })
+    const recoveryAttribution = await api('/api/integrations/aionui/attributions', 'POST', { agentId: 'claude', modelId: 'opus', mapId: coordinatorId, cardId: coordinatorRoot, purpose: 'group-coordination', workspace: projectDirectory, workspaceConfirmed: true })
     conversations.set('new-parent', { id: 'new-parent', name: '복구 담당', extra: { agent_id: 'claude', current_model_id: 'opus', backend: 'claude' } })
     const recoveryLink = await fetch(recoveryAttribution.body.completionUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId: 'new-parent' }) })
     assert.equal(recoveryLink.status, 200)

@@ -151,7 +151,7 @@ test('지식·문서 정리 대화는 임시 귀속만 유지하고 원본 카�
     const requestAttribution = (body) => fetch(`${baseUrl}/api/integrations/aionui/attributions`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ agentId: 'claude', modelId: 'opus', mapId, ...body }),
+      body: JSON.stringify({ agentId: 'claude', modelId: 'opus', mapId, workspace: dataDirectory, workspaceConfirmed: true, ...body }),
     })
 
     const invalidPurposeResponse = await requestAttribution({ cardId: 'review-card', purpose: 'hidden' })

@@ -201,6 +201,7 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
     const mapId = created.body.map.id
 
     const attributionRequest = request(baseUrl, cookie, '/api/integrations/aionui/attributions', 'POST', {
+      workspace: '/Users/editor/project', workspaceConfirmed: true,
       machineId: 'macbook',
       agentId: 'claude',
       modelId: 'opus',
@@ -214,6 +215,7 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
 
     let relayedLaunchPayload = null
     const launchRequest = request(baseUrl, cookie, '/api/integrations/aionui/external-conversation-launches', 'POST', {
+      workspace: '/Users/editor/project',
       agentId: 'claude',
       modelId: 'opus',
       prompt: '작업을 시작해 주세요.',

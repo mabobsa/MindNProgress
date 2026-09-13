@@ -34,6 +34,7 @@ import { DoorayTaskLinkLabel } from './components/DoorayTaskLinkLabel'
 import { MentionText } from './components/MentionText'
 import { AdminEditorPanel } from './components/AdminEditorPanel'
 import { AiConversationDialog } from './components/AiConversationDialog'
+import { WorkspaceSettingsDialog } from './components/WorkspaceSettingsDialog'
 import { AiDelegationRecovery } from './components/AiDelegationRecovery'
 import { AiConversationPickerDialog } from './components/AiConversationPickerDialog'
 import { AiConversationActivityIndicator } from './components/AiConversationRuntimeBadge'
@@ -2410,7 +2411,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const [newMapTitle, setNewMapTitle] = useState('')
   const [newGroupName, setNewGroupName] = useState('')
   const [renamingMap, setRenamingMap] = useState(false)
-  const [renameTitle, setRenameTitle] = useState('')
+  const [editingGroupSettings, setEditingGroupSettings] = useState<DocumentGroup | null>(null)
   const [newChecklistText, setNewChecklistText] = useState('')
   const [newWaitingLabel, setNewWaitingLabel] = useState('')
   const [waitingLabelDrafts, setWaitingLabelDrafts] = useState<Record<string, string>>({})
@@ -3926,7 +3927,6 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         setDocuments((current) => current.map((document) => document.id === map.id
           ? { ...document, title: map.title, color: map.color, nodeCount: map.nodes.length }
           : document))
-        setRenameTitle(map.title)
         setLoadedMapId(activeMapId)
         setExternalChange(null)
         setSavedAt(mode === 'editor' ? '서버와 동기화됨' : '읽기 전용')
@@ -5299,8 +5299,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     }
   }
 
-  const renameActiveMap = async () => {
-    const title = renameTitle.trim()
+  const renameActiveMap = async (value: string) => {
+    const title = value.trim()
     if (!activeMapId || !title || mode !== 'editor') return
     setSaveError('')
     try {
@@ -5313,6 +5313,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       setSavedAt('이름 변경됨')
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : '문서 이름을 변경하지 못했습니다.')
+      throw error
     }
   }
 
@@ -5546,12 +5547,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
 
   const renameDocumentGroup = (group: DocumentGroup) => {
     if (mode !== 'editor') return
-    const name = window.prompt('그룹 이름을 입력하세요.', group.name)?.trim()
-    if (!name || name === group.name) return
-    void saveDocumentLayout({
-      ...documentLayout,
-      groups: documentLayout.groups.map((candidate) => candidate.id === group.id ? { ...candidate, name } : candidate),
-    }, '문서 그룹 이름 변경됨')
+    setEditingGroupSettings(group)
   }
 
   const deleteDocumentGroup = (group: DocumentGroup) => {
@@ -6685,22 +6681,15 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         </div>
         <div className="topbar-divider" />
         <div className="document-title">
-          {renamingMap ? (
-            <form className="rename-form" onSubmit={(event) => { event.preventDefault(); void renameActiveMap() }}>
-              <input value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} maxLength={80} autoFocus />
-              <button type="submit" aria-label="이름 변경 완료"><Icon name="check" size={14} /></button>
-              <button type="button" onClick={() => setRenamingMap(false)} aria-label="이름 변경 취소"><Icon name="close" size={13} /></button>
-            </form>
-          ) : (
             <div className="document-title-row">
               <span>{selectedGroupId ? selectedGroup?.name ?? '총괄 AI 그룹' : activeDocument?.title ?? '마인드맵 선택'}{!selectedGroupId && documentArchived ? ' · 보관 문서 (읽기 전용)' : ''}</span>
               {mode === 'editor' && activeDocument && !selectedGroupId && (
-                <button onClick={() => { setRenameTitle(activeDocument.title); setRenamingMap(true) }} aria-label="문서 이름 변경">
+                <button onClick={() => setRenamingMap(true)} aria-label="문서 이름 변경">
                   <Icon name="edit" size={13} />
                 </button>
               )}
+              {mode === 'editor' && selectedGroup && <button onClick={() => renameDocumentGroup(selectedGroup)} aria-label="그룹 이름 변경"><Icon name="edit" size={13} /></button>}
             </div>
-          )}
           <small className={saveError ? 'save-error' : ''}>{saveError || (selectedGroupId ? '그룹 개요' : savedAt)}</small>
         </div>
         {!selectedGroupId && <nav className="view-switcher" aria-label="업무 보기 전환">
@@ -8652,6 +8641,14 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           onClose={() => setDailyBackupPreview(null)}
         />
       )}
+      {renamingMap && activeDocument && <WorkspaceSettingsDialog mapId={activeDocument.id} name={activeDocument.title} editScope="document" onRename={renameActiveMap} onClose={() => setRenamingMap(false)} />}
+      {editingGroupSettings && <WorkspaceSettingsDialog groupId={editingGroupSettings.id} name={editingGroupSettings.name} editScope="group" onClose={() => setEditingGroupSettings(null)} onRename={async (name) => {
+        const latest = await apiRequest<DocumentLibraryResponse>('/api/maps')
+        const group = latest.documentLayout.groups.find((item) => item.id === editingGroupSettings.id)
+        if (!group || group.name !== editingGroupSettings.name) throw new Error('그룹 이름이 변경되었습니다. 다시 열어 확인해 주세요.')
+        const result = await apiRequest<DocumentLibraryResponse>('/api/maps/layout', { method: 'PATCH', body: JSON.stringify({ documentLayout: { ...latest.documentLayout, groups: latest.documentLayout.groups.map((item) => item.id === group.id ? { ...item, name } : item) } }) })
+        setDocuments(result.maps); setDocumentLayout(result.documentLayout); setSavedAt('그룹 이름 변경됨')
+      }} />}
       {aiConversationTarget && (
         <AiConversationDialog
           key={`${aiConversationTarget.mapId}:${aiConversationTarget.cardId}:${aiConversationTarget.purpose}`}

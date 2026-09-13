@@ -734,6 +734,7 @@ async function main() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: editorSessionCookie },
       body: JSON.stringify({
+        workspace: testDataDirectory, workspaceConfirmed: true,
         agentId: 'agent-claude-test',
         modelId: 'claude-test-model',
         mapId,
@@ -1036,6 +1037,7 @@ async function main() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: editorSessionCookie },
       body: JSON.stringify({
+        workspace: testDataDirectory, workspaceConfirmed: true,
         agentId: 'agent-claude-test',
         modelId: 'claude-test-model',
         mapId,
@@ -1323,6 +1325,7 @@ async function main() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: editorSessionCookie },
       body: JSON.stringify({
+        workspace: testDataDirectory, workspaceConfirmed: true,
         agentId: 'agent-claude-test',
         modelId: 'claude-test-model',
         mapId: secondaryMapId,
@@ -1517,7 +1520,7 @@ async function main() {
     assert.equal(restartedOptionsResponse.status, 200)
     const restartedOptions = await restartedOptionsResponse.json()
     assert.equal(restartedOptions.aionUiUrl, mockAionUi.baseUrl)
-    assert.equal(restartedOptions.defaultWorkspace, projectDirectory)
+    assert.equal(restartedOptions.defaultWorkspace, '', '재시작 후에도 미설정 작업공간을 MnP로 대체하지 않는다')
     assert.equal(restartedOptions.agents[0].id, 'agent-codex-restarted')
 
     const users = await invoke('mindnprogress_list_users')
@@ -2360,6 +2363,7 @@ async function main() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: editorSessionCookie },
       body: JSON.stringify({
+        workspace: testDataDirectory, workspaceConfirmed: true,
         agentId: 'agent-codex-restarted',
         modelId: 'gpt-restarted',
         conversationId: 'conversation-test',

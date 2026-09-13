@@ -1,4 +1,5 @@
 import { createServer } from 'node:http'
+import { createAiWorkspaceSettings } from './lib/aiWorkspaceSettings.mjs'
 import { createDocumentMutationGate, createDocumentReconstruction, reconstructionError } from './lib/documentReconstruction.mjs'
 import { createReconstructionRequests } from './lib/documentReconstructionRequests.mjs'
 import { createGroupProjects, documentRoot, DOCUMENT_COORDINATOR_INSTRUCTION } from './lib/groupProjects.mjs'
@@ -115,7 +116,7 @@ import {
 } from './lib/aionUiExternalLaunch.mjs'
 import { isLocalLoopbackRequest, localLoopbackRedirectLocation } from './lib/localLoopbackRedirect.mjs'
 import { listWorkspaceDirectory, listWorkspaceRoots } from './lib/workspaceBrowse.mjs'
-import { assertDoorayExecutionWorkspace, doorayExecutionWorkspace, sameExecutionWorkspace } from './lib/doorayExecutionWorkspace.mjs'
+import { assertDoorayExecutionWorkspace, sameExecutionWorkspace } from './lib/doorayExecutionWorkspace.mjs'
 import { aiDelegationNewWorkspace } from './lib/aiDelegations.mjs'
 import { verifyAiDelegationOriginalMessage } from './lib/aiDelegationDispatchRecovery.mjs'
 import { buildSharedKnowledgeAudit } from './lib/sharedKnowledgeAudit.mjs'
@@ -2832,22 +2833,24 @@ async function captureAiDelegationChildResult(delegation) {
     : { childResultCaptureAttemptedAt: attemptedAt })
 }
 
-async function doorayApprovalWorkspaceOptions(mapId, cardId, machineId) {
-  const map = isValidMapId(mapId) ? await readMap(mapId) : null
-  const target = map?.nodes.find((node) => node.id === cardId)
-  let links = aiConversationLinksFromData(target?.data)
-  if (!links.length && map) links = aiConversationLinksFromData(documentRoot(map)?.data)
-  if (!links.length && map) links = map.nodes.flatMap((node) => aiConversationLinksFromData(node.data))
-  const sameMachineLinks = links.filter((link) => conversationHomeMachineId(link.conversationId, link) === machineId)
-  const candidates = sameMachineLinks.map((link) => link.workspace).filter(Boolean)
-  const unresolved = [...new Map(sameMachineLinks.filter((link) => !link.workspace).map((link) => [link.conversationId, link])).values()].slice(-3)
-  candidates.push(...await Promise.all(unresolved.map(async (link) => {
-    try {
-      const conversation = await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(link.conversationId)}`)
-      return aiConversationLinkFromAionUiConversation(conversation)?.workspace
-    } catch { return null }
-  })))
-  return doorayExecutionWorkspace(workspacePoolManager.registry, machineId === machineRegistry.mainMachineId, candidates, projectDirectory)
+async function aiWorkspaceCandidates({ map, group, machineId }) {
+  const collect = (document) => (document?.nodes ?? []).filter((node) => !node.data.reference)
+    .flatMap((node) => aiConversationLinksFromData(node.data).map((link) => ({ ...link, reason: `${document.title} · ${node.data.label}` })))
+    .filter((link) => conversationHomeMachineId(link.conversationId, link) === machineId)
+  let links = collect(map)
+  if (!links.length && group) {
+    const documents = await Promise.all(group.mapIds.filter((id) => id !== map?.id).map(readMap))
+    links = documents.filter((item) => item && !item.trashedAt && !item.archivedAt).flatMap(collect)
+  }
+  const unique = [...new Map(links.map((link) => [link.conversationId, link])).values()]
+  let lookups = 0
+  return (await Promise.all(unique.map(async (link) => {
+    let workspace = link.workspace || aiConversationOrigins.get(link.conversationId)?.workspace
+    if (!workspace && lookups++ < 5) {
+      try { workspace = aiConversationLinkFromAionUiConversation(await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(link.conversationId)}`))?.workspace } catch { /* 추천 조회 실패는 기본값으로 대체하지 않는다. */ }
+    }
+    return workspace ? { workspace, reason: link.reason } : null
+  }))).filter(Boolean)
 }
 
 function aiDelegationResultSection(reportResult) {
@@ -5842,6 +5845,14 @@ const groupProjects = createGroupProjects({
   delegations: aiDelegations, publicDelegation: delegationPublicView, runtimeSnapshot: aiConversationRuntimeSnapshot,
 })
 
+const aiWorkspaceSettings = await createAiWorkspaceSettings({
+  dataDirectory, readMap,
+  readGroups: async () => (await readDocumentLayout((await listMaps()).map((map) => map.id))).groups,
+  registry: () => workspacePoolManager.registry,
+  isMainMachine: (id) => id === machineRegistry.mainMachineId,
+  candidates: aiWorkspaceCandidates, replaceFile: replaceFileWithRetry,
+})
+
 const doorayResponses = createDoorayResponseIntegration({
   dataDirectory, readStoredRecord, writeStoredRecord, getDoorayApiConfig, listMaps, readMap, readDocumentLayout, groupProjects,
   aionUiCandidateBaseUrls, fetchAionUiOn, resolveTargetMachineForUser, normalizeAionUiAgent, normalizeAiConversationRuntime,
@@ -6607,6 +6618,8 @@ const server = createServer(async (request, response) => {
 
       try {
         const { machineId: homeMachineId } = resolveTargetMachineForUser(user, body.machineId)
+        try { body.workspace = await aiWorkspaceSettings.validateLaunch({ ...body, mapId, machineId: homeMachineId }) }
+        catch (error) { return sendJson(response, error.status ?? 400, { error: error.message, code: 'AI_WORKSPACE_SELECTION_REQUIRED' }) }
         const [agents, providers, skills, mcpServers] = await Promise.all([
           fetchAionUiOn(homeMachineId, '/api/agents/management'),
           fetchAionUiOn(homeMachineId, '/api/providers'),
@@ -6678,6 +6691,7 @@ const server = createServer(async (request, response) => {
           editorId: user.id,
           homeMachineId,
           homeMachineLabel: machineLabel(homeMachineId),
+          workspace: body.workspace,
           ...(doorayApprovalContext ? { approvalRequest: doorayApprovalContext.launch.initialRequest } : {}),
           expiresAt,
         })
@@ -6730,6 +6744,7 @@ const server = createServer(async (request, response) => {
           if (!sameExecutionWorkspace(attribution.selection?.workspace, payload.workspace)) return sendJson(response, 409, { error: '확인한 작업공간과 실행할 작업공간이 다릅니다. 다시 시작해 주세요.' })
           if (!payload.prompt.includes(context.launch.initialRequest)) return sendJson(response, 409, { error: '승인 전문이 변경되거나 누락되었습니다. 다시 확인해 주세요.' })
         }
+        if (!sameExecutionWorkspace(attribution.selection?.workspace, payload.workspace)) return sendJson(response, 409, { error: '확인한 작업공간과 실행 경로가 다릅니다. 다시 시작해 주세요.' })
         const ticket = await fetchAionUiOn(launch.homeMachineId, '/api/internal/external-conversation-launches', {
           method: 'POST',
           body: payload,
@@ -8869,6 +8884,23 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    if (['/api/integrations/aionui/workspace-context', '/api/integrations/aionui/workspace-settings'].includes(url.pathname)) {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 작업공간을 설정할 수 있습니다.' })
+      try {
+        const body = request.method === 'POST' ? await readJsonBody(request) : Object.fromEntries(url.searchParams)
+        const { machineId, machine, targets } = resolveTargetMachineForUser(user, body.machineId)
+        if (request.method === 'POST' && url.pathname.endsWith('/workspace-settings')) {
+          const setting = await aiWorkspaceSettings.save({ ...body, machineId }, publicUser(user))
+          return sendJson(response, 200, { setting })
+        }
+        if (request.method !== 'GET' || !url.pathname.endsWith('/workspace-context')) return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
+        return sendJson(response, 200, { ...await aiWorkspaceSettings.context({ mapId: body.mapId, groupId: body.groupId, machineId }),
+          machines: targets.machines, machineRole: machine.role, workspaceBrowseAvailable: machine.role === 'main' && isLocalLoopbackRequest(request) })
+      } catch (error) { return sendJson(response, error.status ?? 500, { error: error.message }) }
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/integrations/aionui/options') {
       const user = requireUser(request, response)
       if (!user) return
@@ -8878,9 +8910,8 @@ const server = createServer(async (request, response) => {
       try {
         resolvedTarget = resolveTargetMachineForUser(user, url.searchParams.get('machineId'))
         const { machineId, machine, targets } = resolvedTarget
-        const workspaceOptions = url.searchParams.get('purpose') === 'dooray-response'
-          ? await doorayApprovalWorkspaceOptions(url.searchParams.get('mapId'), url.searchParams.get('cardId'), machineId)
-          : { defaultWorkspace: machine.role === 'main' ? projectDirectory : '' }
+        const workspaceContext = await aiWorkspaceSettings.context({ mapId: url.searchParams.get('mapId') || '', machineId })
+        const workspaceOptions = { defaultWorkspace: workspaceContext.workspace, workspaceContext }
         const [agents, providers, skills, mcpServers] = await Promise.all([
           fetchAionUiOn(machineId, '/api/agents/management'),
           fetchAionUiOn(machineId, '/api/providers'),
@@ -8919,7 +8950,7 @@ const server = createServer(async (request, response) => {
             machineRole: resolvedTarget.machine.role,
             machines: resolvedTarget.targets.machines,
             protocol: 'aionui://conversation/new',
-            defaultWorkspace: resolvedTarget.machine.role === 'main' ? projectDirectory : '',
+            defaultWorkspace: '',
             workspaceBrowseAvailable: false,
             agents: [],
             skills: [],

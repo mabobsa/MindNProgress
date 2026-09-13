@@ -27,6 +27,7 @@ async function waitFor(check, timeout = 20_000) {
 test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기화·새 제안을 연결한다', { timeout: 90_000 }, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), 'mnp-dooray-response-api-'))
   const executionWorkspace = path.join(directory, 'integration')
+  await mkdir(executionWorkspace)
   const registryFile = path.join(directory, '_test-workspaces.json')
   await writeFile(registryFile, JSON.stringify({ schemaVersion: 1, poolId: 'test-project', workspaces: [
     { id: 'main', root: executionWorkspace, role: 'integration', enabled: true },
@@ -166,16 +167,18 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   const headers = { Cookie: login.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' }
   const executionOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options?purpose=dooray-response`, { headers })).json()
   assert.equal(executionOptions.defaultWorkspace, '', '담당 미지정 시 MnP나 Holdem으로 임의 귀속하지 않는다')
-  assert.deepEqual(executionOptions.workspaceChoices, [executionWorkspace, projectDirectory])
+  assert.deepEqual(executionOptions.workspaceContext.choices, [])
   const cardWorkspaceOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options?purpose=dooray-response&mapId=map-test&cardId=task1`, { headers })).json()
-  assert.equal(cardWorkspaceOptions.defaultWorkspace, executionWorkspace)
+  assert.equal(cardWorkspaceOptions.defaultWorkspace, '')
+  assert.ok(cardWorkspaceOptions.workspaceContext.choices.some((item) => item.workspace === executionWorkspace))
   const originalExtra = extraByConversation.get('existing-chat')
   extraByConversation.set('existing-chat', { ...originalExtra, workspace: projectDirectory })
   const maintenanceOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options?purpose=dooray-response&mapId=map-test&cardId=task1`, { headers })).json()
-  assert.equal(maintenanceOptions.defaultWorkspace, projectDirectory, 'MnP 대화가 연결된 유지보수 카드는 MnP 경로를 기본값으로 제안한다')
+  assert.equal(maintenanceOptions.defaultWorkspace, '', '대화 이력은 추천 후보이며 명시적 기준이 아니다')
+  assert.ok(maintenanceOptions.workspaceContext.choices.some((item) => item.workspace === projectDirectory))
   extraByConversation.set('existing-chat', originalExtra)
   const normalOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options`, { headers })).json()
-  assert.equal(normalOptions.defaultWorkspace, projectDirectory, '일반 카드의 기존 기본값은 변경하지 않는다')
+  assert.equal(normalOptions.defaultWorkspace, '', '일반 카드도 MnP 기본 경로로 대체하지 않는다')
   assert.deepEqual((await (await fetch(endpoint, { headers })).json()).jobs, [])
   assert.equal((await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: 'foreign' }) })).status, 404)
   const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: item.key, settings: { agentId: 'test-agent', modelId: 'test-model' }, url: 'http://untrusted.invalid' }) })
@@ -340,7 +343,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     const { launch } = await (await fetch(contextUrl, { headers })).json()
     const attributionResponse = await fetch(`${baseUrl}/api/integrations/aionui/attributions`, { method: 'POST', headers, body: JSON.stringify({
       agentId: 'test-agent', modelId: 'test-model', purpose: launch.purpose, mapId: launch.mapId, cardId: launch.cardId,
-      doorayApproval: launch.doorayApproval, workspace: executionWorkspace,
+      doorayApproval: launch.doorayApproval, workspace: executionWorkspace, workspaceConfirmed: true,
     }) })
     const attribution = await attributionResponse.json()
     assert.equal(attributionResponse.status, 201, JSON.stringify(attribution))
@@ -415,11 +418,11 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     assert.equal(rejected.status, 409, '빈 경로·상대 경로·제안 보관 폴더에서 승인 인계를 시작하지 않는다')
   }
   const mnpChoice = await fetch(`${baseUrl}/api/integrations/aionui/attributions`, { method: 'POST', headers, body: JSON.stringify({
-    agentId: 'test-agent', modelId: 'test-model', ...launch, workspace: projectDirectory,
+    agentId: 'test-agent', modelId: 'test-model', ...launch, workspace: projectDirectory, workspaceConfirmed: true,
   }) })
   assert.equal(mnpChoice.status, 201, '사용자가 선택한 MnP 작업공간을 차단하지 않는다')
   const attributionResponse = await fetch(`${baseUrl}/api/integrations/aionui/attributions`, { method: 'POST', headers, body: JSON.stringify({
-    agentId: 'test-agent', modelId: 'test-model', ...launch, workspace: executionWorkspace,
+    agentId: 'test-agent', modelId: 'test-model', ...launch, workspace: executionWorkspace, workspaceConfirmed: true,
   }) })
   const attribution = await attributionResponse.json()
   assert.equal(attributionResponse.status, 201, JSON.stringify(attribution))

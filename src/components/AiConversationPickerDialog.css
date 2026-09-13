@@ -48,11 +48,34 @@
 [data-theme="dark"] .ai-conversation-picker { color: var(--theme-text-secondary); border-color: var(--theme-border-strong); background: var(--theme-surface); box-shadow: 0 28px 90px rgba(0,0,0,.52); }
 [data-theme="dark"] .ai-conversation-picker > header, [data-theme="dark"] .ai-conversation-picker-actions { border-color: var(--theme-border); background: var(--theme-surface); }
 [data-theme="dark"] .ai-conversation-picker > header strong, [data-theme="dark"] .ai-conversation-choice-open > strong { color: var(--theme-text); }
+[data-theme="dark"] .ai-conversation-picker > header span,
+[data-theme="dark"] .ai-conversation-picker > header small,
+[data-theme="dark"] .ai-conversation-picker > header > button,
+[data-theme="dark"] .ai-conversation-picker-message { color: var(--theme-text-muted); }
+[data-theme="dark"] .ai-conversation-picker > header > button:hover { color: var(--theme-text); background: var(--theme-accent-soft); }
+[data-theme="dark"] .ai-conversation-picker-message.error strong { color: var(--theme-danger); }
 [data-theme="dark"] .ai-conversation-choice { color: var(--theme-text-secondary); border-color: var(--theme-border); background: var(--theme-surface-raised); }
 [data-theme="dark"] .ai-conversation-choice:hover { border-color: #675cad; background: var(--theme-accent-soft); }
+/* 비활성 대화도 연결 정보는 읽을 수 있도록 전체 투명도로 흐리게 만들지 않는다. */
+[data-theme="dark"] .ai-conversation-choice-open:disabled { opacity: 1; }
+[data-theme="dark"] .ai-conversation-choice-model,
+[data-theme="dark"] .ai-conversation-choice-model > span,
+[data-theme="dark"] .ai-conversation-choice-options > span,
+[data-theme="dark"] .ai-conversation-choice-capabilities > span,
+[data-theme="dark"] .ai-conversation-choice-request { color: var(--theme-text-secondary); }
+[data-theme="dark"] .ai-conversation-choice .workspace,
+[data-theme="dark"] .ai-conversation-choice-meta,
+[data-theme="dark"] .ai-conversation-choice-status { color: var(--theme-text-muted); }
+[data-theme="dark"] .ai-conversation-choice-capabilities b,
+[data-theme="dark"] .ai-conversation-choice-heading em { color: #c3bcff; }
+[data-theme="dark"] .ai-conversation-choice-status.running { color: var(--theme-success); }
+[data-theme="dark"] .ai-conversation-choice-status.waiting { color: var(--theme-warning); }
+[data-theme="dark"] .ai-conversation-choice-status.unavailable { color: var(--theme-danger); }
+[data-theme="dark"] .ai-conversation-choice-status i { background: currentColor; }
 [data-theme="dark"] .ai-conversation-picker-delete-error { color: #f0a1a8; border-color: rgba(211,93,103,.38); background: rgba(132,43,52,.22); }
 [data-theme="dark"] .ai-conversation-choice-delete { color: #f0a1a8; border-color: rgba(211,93,103,.45); background: rgba(132,43,52,.28); }
 [data-theme="dark"] .ai-conversation-choice-delete:hover { color: #fff; border-color: #c95f68; background: #a84750; }
 [data-theme="dark"] .ai-conversation-choice-options > span, [data-theme="dark"] .ai-conversation-choice-capabilities > span, [data-theme="dark"] .ai-conversation-choice-heading em { background: var(--theme-accent-soft); }
 [data-theme="dark"] .ai-conversation-choice-meta { border-color: var(--theme-border); }
+[data-theme="dark"] .ai-conversation-picker-actions button:not(.primary) { color: var(--theme-text-secondary); border-color: var(--theme-border-strong); background: var(--theme-surface-raised); }
 @media (max-width: 620px) { .ai-conversation-picker-backdrop { padding: 12px; } .ai-conversation-picker { width: calc(100vw - 24px); max-height: calc(100vh - 24px); } .ai-conversation-choice-capabilities { grid-template-columns: 1fr; } }

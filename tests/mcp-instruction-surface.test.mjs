@@ -50,7 +50,7 @@ function countSchemaDescriptions(value) {
     + Object.values(value).reduce((sum, child) => sum + countSchemaDescriptions(child), 0)
 }
 
-test('58개 MCP 도구의 고유 설명은 보완 기준과 같고 이름·input schema는 이전 기준선과 같다', async () => {
+test('59개 MCP 도구의 고유 설명은 보완 기준과 같고 이름·input schema는 이전 기준선과 같다', async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(projectDirectory, 'mcp/server.mjs')],
@@ -63,12 +63,12 @@ test('58개 MCP 도구의 고유 설명은 보완 기준과 같고 이름·input
     const listed = await client.listTools()
     const tools = [...listed.tools].sort((a, b) => a.name.localeCompare(b.name))
     assert.deepEqual(tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), surfaceFixture)
-    assert.equal(tools.length, 58)
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'c8af6b229a82bf9ac363b9af7ffb8d633b39557386419de3de1fd0ffa7072def')
+    assert.equal(tools.length, 59)
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '5beb90c211a2bdcf2966215ec45788750e8bd8ff5101cc20d13670f2ad38313e')
     assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), budgetFixture.schemaDescriptionCount)
 
     const descriptions = tools.map((tool) => tool.description)
-    assert.equal(new Set(descriptions).size, 58)
+    assert.equal(new Set(descriptions).size, 59)
     assert.ok(descriptions.every((description) => description.length >= 15 && description.length <= 1_100))
     assert.equal(descriptions.filter((description) => description.includes('첫 조회는 진입 상태에 따라 하나만 선택하세요.')).length, 0)
     assert.equal(descriptions.filter((description) => description.includes('# 사용자 승인과 실행 범위')).length, 0)

@@ -87,6 +87,7 @@ Mind & Progress는 아이디어의 구조와 실제 업무 진행 상태를 하�
 - 마인드맵 노드 우클릭 메뉴에서 AI 대화 시작 또는 연결된 대화 열기
 - AI 종류, 모델, 권한, 사고 수준, 스킬, MCP, 작업 공간 선택
 - 문서별 작업 공간과 마지막 AI 옵션 기억
+- 사람용 전체 검색 화면과 AI용 `mindnprogress_search_content`가 같은 검색 서비스·권한·필터·커서를 사용
 - `mindnprogress_get_context`의 선행 지식·외부 업무 조사·대화 기록 조회 지침을 첫 요청에 전달
 - 선택 카드와 최상위 카드의 업무 링크를 독립적으로 AI 문맥에 제공
 - 카드에 연결된 AionUi 대화 전문을 MCP에서 필요할 때 조회
@@ -401,12 +402,15 @@ node runner/index.mjs
 
 문서·카드 조회와 편집 결과는 총괄 없는 일반 그룹도 `group`으로 표시하고, 관련 문서의 소속을 `documentGroups`에 제공합니다. 현재 소속과 위임·보관 당시 기록은 구분하며 기획 지침 전문을 매번 복제하지 않습니다. 필드 의미·적용 범위·서버/MCP 재연결 절차는 [MCP 문서 소속 정보](docs/mcp-document-groups.md)를 참고하세요.
 
+전체 검색의 사람·AI 공통 범위와 관련도 검색의 한계, 전수 카탈로그 보완 절차는 [문서 전체 검색](docs/global-search.md)을 참고하세요.
+
 ### 시작과 조회
 
 | 명령어 | 설명 |
 | --- | --- |
 | `mindnprogress_read_me_first` | 문서 선택 없이 제품 개념, 작성 규칙과 권장 작업 순서를 조회합니다. |
 | `mindnprogress_list_documents` | 활성 문서 목록, 버전, 완료 현황과 문서 그룹·혼합 순서를 조회합니다. |
+| `mindnprogress_search_content` | 열람 가능한 활성 문서 전체의 사용자 콘텐츠를 관련도순으로 검색하거나, 정확성 보완이 필요할 때 모든 카드를 커서 기반 카탈로그로 순회합니다. 결과는 후보이므로 최종 판단 전에 `mindnprogress_get_card`로 최신 원문을 확인합니다. |
 | `mindnprogress_get_context` | 선택 카드와 문서 구조, 관계, 댓글, 담당자, 업무 링크 및 선행 지식을 작업 문맥으로 조회합니다. `detailLevel`은 `focused` 또는 `full`을 사용합니다. |
 | `mindnprogress_get_document` | 문서의 모든 카드와 연결 관계 및 외부 접근 URL을 조회합니다. |
 | `mindnprogress_get_card` | 특정 카드의 설명, 공유 지식, 업무 필드와 댓글을 페이지 단위로 조회합니다. |

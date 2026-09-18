@@ -163,6 +163,11 @@ import {
 import { verifyAiDelegationOriginalMessage } from './lib/aiDelegationDispatchRecovery.mjs'
 import { buildSharedKnowledgeAudit } from './lib/sharedKnowledgeAudit.mjs'
 import {
+  GlobalSearchInputError,
+  normalizeGlobalSearchRequest,
+  searchGlobalContent,
+} from './lib/globalSearch.mjs'
+import {
   SubMachinePayloadError,
   distributedWorkTargets,
   ensureMainMachine,
@@ -1360,6 +1365,60 @@ async function listMaps({ trashedOnly = false, archivedOnly = false, includeArch
       }
       return String(second.updatedAt ?? '').localeCompare(String(first.updatedAt ?? ''))
     })
+}
+
+function globalSearchRequestFromUrl(url) {
+  return normalizeGlobalSearchRequest({
+    query: url.searchParams.get('q') ?? '',
+    mode: url.searchParams.get('mode') ?? 'ranked',
+    cursor: url.searchParams.get('cursor') ?? '',
+    limit: url.searchParams.get('limit') ?? undefined,
+    mapIds: url.searchParams.getAll('mapId'),
+    groupIds: url.searchParams.getAll('groupId'),
+    fields: url.searchParams.getAll('field'),
+    kinds: url.searchParams.getAll('kind'),
+    statuses: url.searchParams.getAll('status'),
+    assigneeIds: url.searchParams.getAll('assigneeId'),
+    isWork: url.searchParams.get('isWork') ?? undefined,
+    hasWaitingItems: url.searchParams.get('hasWaitingItems') ?? undefined,
+  })
+}
+
+async function globalSearchResponse(url) {
+  const request = globalSearchRequestFromUrl(url)
+  const summaries = await listMaps()
+  const maps = (await Promise.all(summaries.map((summary) => readMap(summary.id)))).filter(Boolean)
+  const sourceMapIds = [...new Set(maps.flatMap((map) => (map.nodes ?? [])
+    .map((node) => node.data?.reference?.mapId)
+    .filter((mapId) => typeof mapId === 'string' && isValidMapId(mapId))))]
+  const missingSourceMapIds = sourceMapIds.filter((mapId) => !maps.some((map) => map.id === mapId))
+  const referencedMaps = (await Promise.all(missingSourceMapIds.map(async (mapId) => {
+    try {
+      return await readMap(mapId)
+    } catch {
+      return null
+    }
+  }))).filter(Boolean)
+  const sourceMaps = [...maps, ...referencedMaps]
+  const needsComments = request.mode === 'ranked'
+    && request.normalizedQuery
+    && (request.filters.fields.length === 0 || request.filters.fields.includes('comments'))
+  const commentsByMap = new Map()
+  if (needsComments) {
+    await Promise.all(sourceMaps.filter((map) => !map.trashedAt).map(async (map) => {
+      commentsByMap.set(map.id, await listComments(map.id))
+    }))
+  }
+  const documentLayout = await readDocumentLayout(summaries.map((summary) => summary.id))
+  return searchGlobalContent({
+    maps,
+    sourceMaps,
+    commentsByMap,
+    documentLayout,
+    users,
+    publicBaseUrl,
+    request,
+  })
 }
 
 function defaultDocumentLayout(mapIds) {
@@ -11191,6 +11250,19 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         return sendJson(response, 400, { error: '그룹을 확인할 문서 ID를 1~60개 지정하세요.' })
       }
       return sendJson(response, 200, { documentGroups: await readDocumentGroups(mapIds) })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/search') {
+      const user = requireUser(request, response)
+      if (!user) return
+      try {
+        return sendJson(response, 200, await globalSearchResponse(url))
+      } catch (error) {
+        if (error instanceof GlobalSearchInputError) {
+          return sendJson(response, error.status, { error: error.message, code: error.code })
+        }
+        throw error
+      }
     }
 
     if (request.method === 'GET' && url.pathname === '/api/maps') {

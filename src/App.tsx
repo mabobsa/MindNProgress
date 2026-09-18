@@ -44,6 +44,7 @@ import { DailyBackupPreviewDialog, type DailyBackupPreview } from './components/
 import { DoorayMentionsPanel } from './components/DoorayMentionsPanel'
 import { ImagePreviewDialog } from './components/ImagePreviewDialog'
 import { SharedKnowledgeReviewDialog, type SharedKnowledgeReviewApplied } from './components/SharedKnowledgeReviewDialog'
+import { GlobalSearchDialog } from './components/GlobalSearchDialog'
 import { DashboardView, KanbanView, TimelineView } from './components/WorkViews'
 import type { AiConversationLink, AiConversationRuntime, AiDelegationCardStatus, ChecklistItem, KnowledgePolicy, MindDoorayLinkData, MindDoorayTaskData, MindDoorayWikiData, MindImageData, MindMapEdgeData, MindNodeData, MindWebLinkData, TeamMember, WaitingItem } from './types/mindMap'
 import { aiDelegationStatusByCard } from './utils/aiDelegationStatus.mjs'
@@ -2371,6 +2372,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const [loadedMapId, setLoadedMapId] = useState<string | null>(null)
   const [mapReloadToken, setMapReloadToken] = useState(0)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false)
   const [sharedKnowledgeReviewOpen, setSharedKnowledgeReviewOpen] = useState(false)
   const [doorayMentionsOpen, setDoorayMentionsOpen] = useState(false)
   const [historyTab, setHistoryTab] = useState<'changes' | 'daily'>('changes')
@@ -7010,6 +7012,16 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           <Icon name="edit" size={18} />
         </button>
         <div className="topbar-actions">
+          <button
+            type="button"
+            className={`global-search-trigger ${globalSearchOpen ? 'active' : ''}`}
+            onClick={() => setGlobalSearchOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={globalSearchOpen}
+            title="전체 문서 검색"
+          >
+            <Icon name="search" size={15} /><span>전체 검색</span>
+          </button>
           {!user.publicAccess && <AionUiSubscriptionUsageIndicator onOpen={() => {
             setNotificationsOpen(false)
             setAccountMenuOpen(false)
@@ -8890,6 +8902,24 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
             setDoorayMentionsOpen(false)
             selectCardAndReveal(mapId, cardId)
           }} />
+      )}
+      {globalSearchOpen && (
+        <GlobalSearchDialog
+          api={apiRequest}
+          documents={documents}
+          groups={documentLayout.groups}
+          assignees={assigneeUsers}
+          onClose={() => setGlobalSearchOpen(false)}
+          onNavigate={(mapId, cardId) => {
+            setGlobalSearchOpen(false)
+            setSelectedGroupId(null)
+            pendingSelection.current = cardId
+            setViewMode('mindmap')
+            setTrashOpen(false)
+            if (mapId === activeMapId) setSelectedId(cardId)
+            else setActiveMapId(mapId)
+          }}
+        />
       )}
       {sharedKnowledgeReviewOpen && mode === 'editor' && (
         <SharedKnowledgeReviewDialog

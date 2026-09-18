@@ -35,6 +35,7 @@ const verificationDescriptions = [
   'mindnprogress_retry_ai_delegation_report',
   'mindnprogress_rollback_reconstruction',
   'mindnprogress_save_document_layout',
+  'mindnprogress_search_content',
   'mindnprogress_send_group_document_instruction',
   'mindnprogress_set_document_archive',
   'mindnprogress_set_document_trash_state',

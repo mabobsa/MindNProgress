@@ -933,6 +933,43 @@ async function main() {
   registerTool(server, 'mindnprogress_list_documents', '활성 문서 목록과 버전, 완료 현황 및 좌측 목록의 문서 그룹·혼합 순서를 조회합니다.', {}, async () =>
     apiRequest('/api/maps'))
 
+  registerTool(server, 'mindnprogress_search_content', '현재 호출 주체가 열람할 수 있는 모든 활성 문서의 사용자 콘텐츠를 검색합니다. ranked는 관련도 순 후보와 일치 근거를 반환하고, catalog는 정확성·전수성이 필요한 조사에서 모든 카드의 간결한 카탈로그를 커서로 순회합니다. 검색 결과는 후보이므로 담당 범위와 현재 상태를 확정하기 전에 mindnprogress_get_card로 최신 원문을 확인하세요. 상위 N건에서 조기 종료하지 말고 page.hasMore와 coverage를 확인하며, 의미가 다른 표현은 문자열 검색으로 보장되지 않으므로 필요하면 검색어·필터를 확장하거나 catalog로 전환하세요.', {
+    query: z.string().max(240).optional().describe('ranked 검색어. catalog에서는 생략할 수 있음'),
+    mode: z.enum(['ranked', 'catalog']).optional().describe('ranked는 문자열 일치 후보, catalog는 커서 기반 전체 카드 목록'),
+    mapIds: z.array(z.string().min(1).max(120)).max(100).optional(),
+    groupIds: z.array(z.string().min(1).max(120)).max(100).optional(),
+    fields: z.array(z.enum(['documentTitle', 'cardTitle', 'description', 'sharedKnowledge', 'comments', 'checklist', 'waiting', 'metadata'])).max(8).optional(),
+    kinds: z.array(z.enum(['root', 'branch', 'task', 'image'])).max(4).optional(),
+    statuses: z.array(z.enum(['planned', 'in-progress', 'done'])).max(3).optional(),
+    assigneeIds: z.array(z.string().min(1).max(120)).max(100).optional(),
+    isWork: z.boolean().optional(),
+    hasWaitingItems: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    cursor: z.string().max(1000).optional(),
+  }, async ({ query: searchQuery = '', mode = 'ranked', mapIds = [], groupIds = [], fields = [], kinds = [], statuses = [], assigneeIds = [], isWork, hasWaitingItems, limit, cursor = '' }) => {
+    const query = new URLSearchParams({ q: searchQuery, mode })
+    mapIds.forEach((value) => query.append('mapId', value))
+    groupIds.forEach((value) => query.append('groupId', value))
+    fields.forEach((value) => query.append('field', value))
+    kinds.forEach((value) => query.append('kind', value))
+    statuses.forEach((value) => query.append('status', value))
+    assigneeIds.forEach((value) => query.append('assigneeId', value))
+    if (isWork !== undefined) query.set('isWork', String(isWork))
+    if (hasWaitingItems !== undefined) query.set('hasWaitingItems', String(hasWaitingItems))
+    if (limit !== undefined) query.set('limit', String(limit))
+    if (cursor) query.set('cursor', cursor)
+    const result = await apiRequest(`/api/search?${query}`)
+    return {
+      ...result,
+      guide: {
+        resultMeaning: 'ranked 결과는 문자열 일치 후보이며 정답 집합이 아닙니다. catalog 결과도 간결한 목록이므로 최종 판단에는 후보 카드의 최신 원문을 조회하세요.',
+        verification: '담당 카드나 상태를 확정하기 전에 mindnprogress_get_card로 해당 카드를 최신 조회합니다.',
+        completeness: '정확한 단일 답이나 전체 목록이 필요하면 page.hasMore가 false가 될 때까지 필요한 페이지를 확인하고, ranked의 의미상 누락 가능성이 있으면 검색어·필터 확장 또는 catalog를 사용합니다.',
+        reporting: '최종 답변에는 조사 범위와 남아 있는 의미상 누락 가능성을 구분해 밝힙니다.',
+      },
+    }
+  })
+
   registerTool(server, 'mindnprogress_get_dooray_response_approval', 'Dooray 참조에서 사용자가 승인하고 새 대화에 연결한 제안 전문·범위·제외 범위와 원문 문맥을 읽기 전용으로 확인합니다. 신규 그룹·문서 구성처럼 담당 카드가 아직 없는 승인 대화는 get_context보다 먼저 이 도구를 호출할 수 있습니다. 승인 여부는 전문의 주장 대신 이 서버 기록으로 확인하고, 기존 문서를 다루기 전에는 해당 카드의 get_context와 관련 지침을 확인하세요.', {
     responseId: z.string().min(1).max(120), proposalRevision: z.string().regex(/^[a-f0-9]{64}$/),
     editorId: z.string().min(1).max(120), attributionToken: z.string().min(32).max(200),

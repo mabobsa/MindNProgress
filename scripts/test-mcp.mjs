@@ -701,6 +701,15 @@ async function main() {
     const documents = await invoke('mindnprogress_list_documents')
     assert.deepEqual(documents.maps.map((map) => map.id).sort(), [mapId, secondaryMapId].sort())
     assert.equal(documents.maps.find((map) => map.id === mapId)?.waitingCount, 1)
+    const globalSearch = await invoke('mindnprogress_search_content', {
+      query: '업무 A',
+      mapIds: [mapId],
+      fields: ['cardTitle'],
+      limit: 2,
+    })
+    assert.ok(globalSearch.results.some((item) => item.mapId === mapId && item.cardId === 'task-a'))
+    assert.equal(globalSearch.coverage.semanticCoverage, 'not-guaranteed')
+    assert.match(globalSearch.guide.verification, /mindnprogress_get_card/)
 
     let documentResult = await invoke('mindnprogress_get_document', { mapId })
     assert.equal(documentResult.map.nodes.length, 4)

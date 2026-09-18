@@ -2672,6 +2672,114 @@
     }
   },
   {
+    "name": "mindnprogress_search_content",
+    "description": "현재 호출 주체가 열람할 수 있는 모든 활성 문서의 사용자 콘텐츠를 검색합니다. ranked는 관련도 순 후보와 일치 근거를 반환하고, catalog는 정확성·전수성이 필요한 조사에서 모든 카드의 간결한 카탈로그를 커서로 순회합니다. 검색 결과는 후보이므로 담당 범위와 현재 상태를 확정하기 전에 mindnprogress_get_card로 최신 원문을 확인하세요. 상위 N건에서 조기 종료하지 말고 page.hasMore와 coverage를 확인하며, 의미가 다른 표현은 문자열 검색으로 보장되지 않으므로 필요하면 검색어·필터를 확장하거나 catalog로 전환하세요.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "maxLength": 240,
+          "description": "ranked 검색어. catalog에서는 생략할 수 있음"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ranked",
+            "catalog"
+          ],
+          "description": "ranked는 문자열 일치 후보, catalog는 커서 기반 전체 카드 목록"
+        },
+        "mapIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "maxItems": 100
+        },
+        "groupIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "maxItems": 100
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "documentTitle",
+              "cardTitle",
+              "description",
+              "sharedKnowledge",
+              "comments",
+              "checklist",
+              "waiting",
+              "metadata"
+            ]
+          },
+          "maxItems": 8
+        },
+        "kinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "root",
+              "branch",
+              "task",
+              "image"
+            ]
+          },
+          "maxItems": 4
+        },
+        "statuses": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "in-progress",
+              "done"
+            ]
+          },
+          "maxItems": 3
+        },
+        "assigneeIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "maxItems": 100
+        },
+        "isWork": {
+          "type": "boolean"
+        },
+        "hasWaitingItems": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
     "name": "mindnprogress_send_group_document_instruction",
     "description": "그룹 총괄 루트 AI가 같은 그룹의 문서 루트 AI에 사용자 승인 범위의 지시를 전달하며 worker를 배정하는 하위 업무 위임은 아닙니다. 먼저 get_group_context에서 그룹·대상 버전과 두 단계 승인 범위를 확인하세요. resume은 최신 contextHealth.assessmentId가 필요하며 서버가 전달 직전에 재평가합니다. 대상이 응답 중이면 대기열에 보존됩니다. reasonCode와 message를 함께 처리하고 queued·delivered·replied를 완료로 해석하지 마세요. 저장 후 list_group_document_instructions로 상태와 결과를 확인하세요.",
     "inputSchema": {

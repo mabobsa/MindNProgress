@@ -249,10 +249,18 @@
 }
 
 [data-theme="dark"] .role-badge.admin,
-[data-theme="dark"] .admin-panel-trigger {
+[data-theme="dark"] .admin-panel-trigger,
+[data-theme="dark"] .global-search-trigger {
   color: #b7adff;
   border-color: #454064;
   background: #2a2741;
+}
+
+[data-theme="dark"] .global-search-trigger:hover,
+[data-theme="dark"] .global-search-trigger.active {
+  color: #fff;
+  border-color: var(--theme-accent-strong);
+  background: var(--theme-accent-strong);
 }
 
 [data-theme="dark"] .external-change-banner,

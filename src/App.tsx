@@ -6778,6 +6778,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     if (gesture.phase === 'pressing') {
       setNodes((current) => synchronizeNodeSelection(current, gesture.nodeId))
       setSelectedId(gesture.nodeId)
+      if (isPhoneViewport()) setMobileInspectorOpen(true)
       const now = Date.now()
       const previousTap = lastTouchCardTap.current
       const isDoubleTap = Boolean(previousTap

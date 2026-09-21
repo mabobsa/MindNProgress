@@ -445,6 +445,7 @@ async function main() {
     )
     assert.ok(toolSchema('mindnprogress_add_card')?.properties?.parentCardId)
     assert.ok(toolSchema('mindnprogress_move_card')?.properties?.newParentCardId)
+    assert.ok(toolSchema('mindnprogress_move_card')?.properties?.targetMapId)
     assert.deepEqual(
       toolSchemaVariants('mindnprogress_manage_comment', 'operation').map((variant) => variant.properties?.action?.const),
       ['add', 'update', 'delete', 'set-resolved', 'toggle-reaction'],
@@ -546,7 +547,7 @@ async function main() {
 
     const guide = await invoke('mindnprogress_read_me_first')
     assert.equal(guide.guide.product.name, 'MindNProgress')
-    assert.equal(guide.guide.version, '4.23')
+    assert.equal(guide.guide.version, '4.24')
     assert.equal(guide.guide.documentReconstruction.contextTool, 'mindnprogress_get_reconstruction_context')
     assert.match(guide.guide.operationRules.join('\n'), /AionUi에서 시작한 대화.*임시 귀속.*AI_ATTRIBUTION_UNRESOLVED/)
     assert.equal(guide.guide.contextLifecycle.bootstrap.successRequired, true)
@@ -874,7 +875,7 @@ async function main() {
       editorId: attribution.editorId,
       attributionToken: attribution.attributionToken,
     })
-    assert.equal(context.contextSchemaVersion, '3.2')
+    assert.equal(context.contextSchemaVersion, '3.3')
     assert.deepEqual(context.currentConversation, {
       displayLabel: 'MCP 전체 대화 조회 검증 (conversation-test)',
     })

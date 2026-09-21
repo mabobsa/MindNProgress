@@ -5,6 +5,11 @@ import { createAiDialogPreferences } from './lib/aiDialogPreferences.mjs'
 import { createDocumentMutationGate, createDocumentReconstruction, reconstructionError } from './lib/documentReconstruction.mjs'
 import { createReconstructionRequests } from './lib/documentReconstructionRequests.mjs'
 import { createCardLayoutRequests } from './lib/cardLayoutRequests.mjs'
+import {
+  CrossDocumentCardMoveError,
+  planCrossDocumentCardMove,
+  rewriteMovedCardReferences,
+} from './lib/crossDocumentCardMove.mjs'
 import { createGroupProjects, documentRoot, DOCUMENT_COORDINATOR_INSTRUCTION } from './lib/groupProjects.mjs'
 import { createDocumentGroupMetadata, documentGroupFields } from './lib/documentGroupMetadata.mjs'
 import {
@@ -225,6 +230,7 @@ const aiAttributionsFile = path.join(dataDirectory, '_ai-attributions.json')
 const aiConversationAttributionsFile = path.join(dataDirectory, '_ai-conversation-attributions.json')
 const aiConversationOriginsFile = path.join(dataDirectory, '_ai-conversation-origins.json')
 const aiDelegationsFile = path.join(dataDirectory, '_ai-delegations.json')
+const cardMoveOperationsFile = path.join(dataDirectory, '_card-move-operations.json')
 const groupDocumentInstructionsFile = path.join(dataDirectory, '_group-document-instructions.json')
 const workspacePoolStateFile = path.join(dataDirectory, '_workspace-pool.json')
 const aiWorkspaceHistoriesFile = path.join(dataDirectory, '_ai-workspace-histories.json')
@@ -6355,6 +6361,399 @@ async function saveMap(mapId, map, user, title, color, revisionReason = 'edit', 
   return payload
 }
 
+async function readOptionalFile(filePath) {
+  try {
+    return await readFile(filePath)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+async function restoreOptionalFile(filePath, content) {
+  if (content === null) {
+    await rm(filePath, { force: true })
+    return
+  }
+  await mkdir(path.dirname(filePath), { recursive: true })
+  const temporaryFile = `${filePath}.${randomBytes(5).toString('hex')}.tmp`
+  await writeFile(temporaryFile, content)
+  await replaceFileWithRetry(temporaryFile, filePath)
+}
+
+async function snapshotMapMoveFiles(mapIds, additionalFiles = []) {
+  const paths = new Set(additionalFiles)
+  const revisionFiles = new Map()
+  for (const mapId of mapIds) {
+    paths.add(mapFileForId(mapId))
+    paths.add(commentFileForMap(mapId))
+    paths.add(dailyBackupFileForMap(mapId, seoulDateString()))
+    const directory = revisionDirectoryForMap(mapId)
+    const entries = await readdir(directory, { withFileTypes: true }).catch((error) => {
+      if (error?.code === 'ENOENT') return []
+      throw error
+    })
+    revisionFiles.set(mapId, new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name)))
+  }
+  const files = new Map()
+  for (const filePath of paths) files.set(filePath, await readOptionalFile(filePath))
+  return { files, revisionFiles }
+}
+
+async function restoreMapMoveFiles(snapshot) {
+  for (const [filePath, content] of snapshot.files) await restoreOptionalFile(filePath, content)
+  for (const [mapId, previousNames] of snapshot.revisionFiles) {
+    const directory = revisionDirectoryForMap(mapId)
+    const entries = await readdir(directory, { withFileTypes: true }).catch((error) => {
+      if (error?.code === 'ENOENT') return []
+      throw error
+    })
+    await Promise.all(entries
+      .filter((entry) => entry.isFile() && !previousNames.has(entry.name))
+      .map((entry) => rm(path.join(directory, entry.name), { force: true })))
+  }
+}
+
+function cardMoveTouchesDelegation(delegation, sourceMapId, movedCardIds) {
+  const targetSide = delegation.mapId === sourceMapId && movedCardIds.has(delegation.targetCardId)
+  const parentSide = (delegation.parentMapId ?? delegation.mapId) === sourceMapId
+    && movedCardIds.has(delegation.parentCardId)
+  return { targetSide, parentSide, touched: targetSide || parentSide }
+}
+
+function cardMoveTouchesGroupInstruction(instruction, sourceMapId, movedCardIds) {
+  const targetSide = instruction.targetMapId === sourceMapId && movedCardIds.has(instruction.targetCardId)
+  const parentSide = instruction.parentMapId === sourceMapId && movedCardIds.has(instruction.parentCardId)
+  return { targetSide, parentSide, touched: targetSide || parentSide }
+}
+
+async function prepareMovedImageAssets(sourceMapId, targetMapId, targetMap, movedCardIds) {
+  const assetIdChanges = new Map()
+  const assetCopies = []
+  for (const node of targetMap.nodes) {
+    const sourceAssetId = movedCardIds.has(node.id) && node.data?.kind === 'image'
+      ? node.data?.image?.assetId
+      : null
+    if (!sourceAssetId || assetIdChanges.has(sourceAssetId)) continue
+    let content
+    try {
+      content = await readFile(imageAssetFile(sourceMapId, sourceAssetId))
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+      throw new CrossDocumentCardMoveError('이동할 이미지 카드의 원본 자산을 찾을 수 없습니다.', 409, 'CARD_MOVE_IMAGE_ASSET_MISSING', {
+        cardId: node.id,
+        assetId: sourceAssetId,
+      })
+    }
+    let targetAssetId = sourceAssetId
+    const existing = await readOptionalFile(imageAssetFile(targetMapId, targetAssetId))
+    if (existing && !existing.equals(content)) {
+      const extension = sourceAssetId.slice(sourceAssetId.lastIndexOf('.'))
+      targetAssetId = `${randomBytes(16).toString('hex')}${extension}`
+    }
+    assetIdChanges.set(sourceAssetId, targetAssetId)
+    if (!existing || targetAssetId !== sourceAssetId) {
+      assetCopies.push({ targetAssetId, content, filePath: imageAssetFile(targetMapId, targetAssetId) })
+    }
+  }
+  if (assetIdChanges.size === 0) return { targetMap, assetCopies }
+  return {
+    targetMap: {
+      ...targetMap,
+      nodes: targetMap.nodes.map((node) => {
+        const sourceAssetId = movedCardIds.has(node.id) && node.data?.kind === 'image'
+          ? node.data?.image?.assetId
+          : null
+        const targetAssetId = sourceAssetId ? assetIdChanges.get(sourceAssetId) : null
+        return targetAssetId && targetAssetId !== sourceAssetId
+          ? { ...node, data: { ...node.data, image: { ...node.data.image, assetId: targetAssetId } } }
+          : node
+      }),
+    },
+    assetCopies,
+  }
+}
+
+async function moveCardAcrossDocuments({
+  sourceMapId,
+  cardId,
+  targetMapId,
+  targetParentCardId,
+  sourceVersion,
+  targetVersion,
+  user,
+}) {
+  const [sourceMap, targetMap] = await Promise.all([readMap(sourceMapId), readMap(targetMapId)])
+  if (!sourceMap || sourceMap.trashedAt || sourceMap.archivedAt) {
+    throw new CrossDocumentCardMoveError('활성 원본 문서를 찾을 수 없습니다.', 404, 'CARD_MOVE_SOURCE_NOT_FOUND')
+  }
+  if (!targetMap || targetMap.trashedAt || targetMap.archivedAt) {
+    throw new CrossDocumentCardMoveError('활성 대상 문서를 찾을 수 없습니다.', 404, 'CARD_MOVE_TARGET_NOT_FOUND')
+  }
+  documentReconstruction.assertWritable(sourceMapId)
+  documentReconstruction.assertWritable(targetMapId)
+  if (!Number.isInteger(sourceVersion) || !Number.isInteger(targetVersion)) {
+    throw new CrossDocumentCardMoveError('원본과 대상 문서의 최신 버전이 필요합니다.', 400, 'CARD_MOVE_VERSION_REQUIRED')
+  }
+  if (sourceMap.version !== sourceVersion || targetMap.version !== targetVersion) {
+    throw new CrossDocumentCardMoveError('원본 또는 대상 문서가 변경되었습니다. 두 문서를 다시 조회하세요.', 409, 'VERSION_CONFLICT', {
+      sourceVersion: sourceMap.version,
+      targetVersion: targetMap.version,
+    })
+  }
+
+  const plan = planCrossDocumentCardMove({ sourceMap, targetMap, cardId, targetParentCardId })
+  const movedCardIds = plan.movedCardIds
+  const orderedMovedCardIds = sourceMap.nodes.filter((node) => movedCardIds.has(node.id)).map((node) => node.id)
+  const activeDelegations = [...aiDelegations.values()].filter((delegation) => {
+    const relation = cardMoveTouchesDelegation(delegation, sourceMapId, movedCardIds)
+    return relation.touched && !aiDelegationIsTerminal(delegation)
+  })
+  if (activeDelegations.length > 0) {
+    throw new CrossDocumentCardMoveError('이동 대상 카드에 완료되지 않은 AI 위임이 있습니다.', 409, 'CARD_MOVE_ACTIVE_DELEGATION', {
+      delegationIds: activeDelegations.map((delegation) => delegation.id),
+    })
+  }
+  const activeInstructions = [...groupDocumentInstructions.values()].filter((instruction) => {
+    const relation = cardMoveTouchesGroupInstruction(instruction, sourceMapId, movedCardIds)
+    return relation.touched && ['queued', 'delivered'].includes(instruction.state)
+  })
+  if (activeInstructions.length > 0) {
+    throw new CrossDocumentCardMoveError('이동 대상 카드에 전달 중인 그룹 문서 지시가 있습니다.', 409, 'CARD_MOVE_ACTIVE_GROUP_INSTRUCTION', {
+      instructionIds: activeInstructions.map((instruction) => instruction.id),
+    })
+  }
+  const workStates = await aiConversationWorkStates(sourceMapId, [...movedCardIds])
+  if (workStates?.activeCardIds?.length > 0) {
+    throw new CrossDocumentCardMoveError('이동 대상 카드의 AI 대화가 현재 작업 중입니다.', 409, 'CARD_MOVE_ACTIVE_AI_CONVERSATION', {
+      cardIds: workStates.activeCardIds,
+    })
+  }
+
+  const preparedImages = await prepareMovedImageAssets(
+    sourceMapId,
+    targetMapId,
+    plan.targetMap,
+    movedCardIds,
+  )
+  const mapCandidates = new Map([
+    [sourceMapId, plan.sourceMap],
+    [targetMapId, preparedImages.targetMap],
+  ])
+  const summaries = await listMaps()
+  for (const summary of summaries) {
+    if (mapCandidates.has(summary.id)) continue
+    const map = await readMap(summary.id)
+    if (map) mapCandidates.set(summary.id, map)
+  }
+  let updatedReferenceCount = 0
+  const referenceMapIds = new Set()
+  const changedMaps = new Map()
+  for (const [mapId, map] of mapCandidates) {
+    const rewritten = rewriteMovedCardReferences(map, sourceMapId, targetMapId, movedCardIds)
+    updatedReferenceCount += rewritten.updatedReferenceCount
+    if (rewritten.updatedReferenceCount > 0) referenceMapIds.add(mapId)
+    if (mapId === sourceMapId || mapId === targetMapId || rewritten.updatedReferenceCount > 0) {
+      documentReconstruction.assertWritable(mapId)
+      if (!isValidMap(rewritten.map)) {
+        throw new CrossDocumentCardMoveError('이동 결과 문서 형식이 올바르지 않습니다.', 409, 'CARD_MOVE_INVALID_RESULT', { mapId })
+      }
+      changedMaps.set(mapId, rewritten.map)
+    }
+  }
+
+  const [sourceComments, targetComments] = await Promise.all([
+    readStoredArray(commentFileForMap(sourceMapId)),
+    readStoredArray(commentFileForMap(targetMapId)),
+  ])
+  const movedComments = sourceComments.filter((comment) => movedCardIds.has(comment.nodeId))
+  const targetCommentIds = new Set(targetComments.map((comment) => comment.id))
+  const collidingCommentIds = movedComments.filter((comment) => targetCommentIds.has(comment.id)).map((comment) => comment.id)
+  if (collidingCommentIds.length > 0) {
+    throw new CrossDocumentCardMoveError('대상 문서에 같은 ID의 댓글이 있어 이동할 수 없습니다.', 409, 'CARD_MOVE_COMMENT_ID_COLLISION', {
+      commentIds: collidingCommentIds,
+    })
+  }
+  const nextSourceComments = sourceComments.filter((comment) => !movedCardIds.has(comment.nodeId))
+  const nextTargetComments = [...targetComments, ...movedComments.map((comment) => ({ ...comment, mapId: targetMapId }))]
+
+  const notificationUpdates = []
+  const notificationEntries = await readdir(notificationsDirectory, { withFileTypes: true }).catch((error) => {
+    if (error?.code === 'ENOENT') return []
+    throw error
+  })
+  let updatedNotificationCount = 0
+  for (const entry of notificationEntries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+    const filePath = path.join(notificationsDirectory, entry.name)
+    const notifications = await readStoredArray(filePath)
+    let count = 0
+    const next = notifications.map((notification) => {
+      if (notification.mapId !== sourceMapId || !movedCardIds.has(notification.nodeId)) return notification
+      count += 1
+      return { ...notification, mapId: targetMapId, mapTitle: targetMap.title }
+    })
+    if (count > 0) {
+      updatedNotificationCount += count
+      notificationUpdates.push({ filePath, next })
+    }
+  }
+
+  const affectedAttributions = [...aiAttributions.entries()]
+    .filter(([, attribution]) => attribution.mapId === sourceMapId && movedCardIds.has(attribution.cardId))
+  const affectedConversationAttributions = [...aiConversationAttributions.entries()]
+    .filter(([, attribution]) => attribution.mapId === sourceMapId && movedCardIds.has(attribution.cardId))
+  for (const [, attribution] of affectedConversationAttributions) {
+    const targetKey = conversationAttributionKey(targetMapId, attribution.cardId)
+    const existing = aiConversationAttributions.get(targetKey)
+    if (existing) {
+      throw new CrossDocumentCardMoveError('대상 문서에 충돌하는 AI 대화 귀속 정보가 있습니다.', 409, 'CARD_MOVE_AI_ATTRIBUTION_COLLISION', {
+        cardId: attribution.cardId,
+      })
+    }
+  }
+  const affectedOrigins = [...aiConversationOrigins.entries()]
+    .filter(([, origin]) => origin.mapId === sourceMapId && movedCardIds.has(origin.cardId))
+  const affectedDelegations = [...aiDelegations.entries()]
+    .filter(([, delegation]) => cardMoveTouchesDelegation(delegation, sourceMapId, movedCardIds).touched)
+  const affectedInstructions = [...groupDocumentInstructions.entries()]
+    .filter(([, instruction]) => cardMoveTouchesGroupInstruction(instruction, sourceMapId, movedCardIds).touched)
+
+  const changedMapIds = [...changedMaps.keys()]
+  const stateFiles = [
+    ...notificationUpdates.map((item) => item.filePath),
+    aiAttributionsFile,
+    aiConversationAttributionsFile,
+    aiConversationOriginsFile,
+    aiDelegationsFile,
+    groupDocumentInstructionsFile,
+    cardMoveOperationsFile,
+  ]
+  const fileSnapshot = await snapshotMapMoveFiles(changedMapIds, stateFiles)
+  const createdAssetFiles = []
+  const operationId = `card-move-${Date.now().toString(36)}-${randomBytes(5).toString('hex')}`
+  const savedMaps = new Map()
+  try {
+    for (const asset of preparedImages.assetCopies) {
+      await mkdir(path.dirname(asset.filePath), { recursive: true })
+      await writeFile(asset.filePath, asset.content, { flag: 'wx', mode: 0o600 })
+      createdAssetFiles.push(asset.filePath)
+    }
+    const saveOrder = [targetMapId, sourceMapId, ...changedMapIds.filter((mapId) => ![sourceMapId, targetMapId].includes(mapId))]
+    for (const mapId of saveOrder) {
+      const current = mapId === sourceMapId ? sourceMap : mapId === targetMapId ? targetMap : mapCandidates.get(mapId)
+      const candidate = changedMaps.get(mapId)
+      const saved = await saveMap(mapId, candidate, user, current.title, current.color, 'cross-document-card-move', {
+        expectedVersion: current.version,
+      })
+      savedMaps.set(mapId, saved)
+    }
+    if (movedComments.length > 0) {
+      await writeStoredArray(commentFileForMap(sourceMapId), nextSourceComments)
+      await writeStoredArray(commentFileForMap(targetMapId), nextTargetComments)
+    }
+    for (const update of notificationUpdates) await writeStoredArray(update.filePath, update.next)
+
+    for (const [key, attribution] of affectedAttributions) {
+      aiAttributions.set(key, { ...attribution, mapId: targetMapId })
+    }
+    for (const [sourceKey, attribution] of affectedConversationAttributions) {
+      aiConversationAttributions.delete(sourceKey)
+      aiConversationAttributions.set(conversationAttributionKey(targetMapId, attribution.cardId), {
+        ...attribution,
+        mapId: targetMapId,
+      })
+    }
+    for (const [conversationId, origin] of affectedOrigins) {
+      aiConversationOrigins.set(conversationId, { ...origin, mapId: targetMapId })
+    }
+    for (const [delegationId, delegation] of affectedDelegations) {
+      const relation = cardMoveTouchesDelegation(delegation, sourceMapId, movedCardIds)
+      const previousParentMapId = delegation.parentMapId ?? delegation.mapId
+      aiDelegations.set(delegationId, {
+        ...delegation,
+        ...(relation.targetSide ? { mapId: targetMapId } : {}),
+        parentMapId: relation.parentSide ? targetMapId : previousParentMapId,
+      })
+    }
+    for (const [instructionId, instruction] of affectedInstructions) {
+      const relation = cardMoveTouchesGroupInstruction(instruction, sourceMapId, movedCardIds)
+      groupDocumentInstructions.set(instructionId, {
+        ...instruction,
+        ...(relation.targetSide ? { targetMapId } : {}),
+        ...(relation.parentSide ? { parentMapId: targetMapId } : {}),
+      })
+    }
+    const persistenceResults = await Promise.allSettled([
+      persistAiAttributions(),
+      persistAiConversationAttributions(),
+      persistAiConversationOrigins(),
+      persistAiDelegations(),
+      persistGroupDocumentInstructions(),
+    ])
+    const persistenceFailure = persistenceResults.find((result) => result.status === 'rejected')
+    if (persistenceFailure) throw persistenceFailure.reason
+
+    const sourceSaved = savedMaps.get(sourceMapId)
+    const targetSaved = savedMaps.get(targetMapId)
+    const operation = {
+      id: operationId,
+      state: 'applied',
+      sourceMapId,
+      targetMapId,
+      movedRootCardId: cardId,
+      movedCardIds: orderedMovedCardIds,
+      previousParentCardId: plan.previousParentCardId,
+      targetParentCardId,
+      sourceVersionBefore: sourceMap.version,
+      sourceVersionAfter: sourceSaved.version,
+      targetVersionBefore: targetMap.version,
+      targetVersionAfter: targetSaved.version,
+      movedCommentCount: movedComments.length,
+      updatedReferenceCount,
+      updatedReferenceMapIds: [...referenceMapIds],
+      updatedConversationCount: new Set([
+        ...affectedOrigins.map(([conversationId]) => conversationId),
+        ...affectedConversationAttributions.map(([, attribution]) => attribution.conversationId),
+      ]).size,
+      updatedAttributionCount: affectedAttributions.length + affectedConversationAttributions.length,
+      updatedDelegationCount: affectedDelegations.length,
+      updatedGroupInstructionCount: affectedInstructions.length,
+      updatedNotificationCount,
+      movedAt: new Date().toISOString(),
+      movedBy: publicUser(user),
+    }
+    const operations = await readStoredArray(cardMoveOperationsFile)
+    await writeStoredArray(cardMoveOperationsFile, [operation, ...operations].slice(0, 500))
+    clearAiConversationRuntimeMap(sourceMapId)
+    clearAiConversationRuntimeMap(targetMapId)
+    return { operation, sourceMap: sourceSaved, targetMap: targetSaved }
+  } catch (error) {
+    for (const [key, attribution] of affectedAttributions) aiAttributions.set(key, attribution)
+    for (const [sourceKey, attribution] of affectedConversationAttributions) {
+      aiConversationAttributions.delete(conversationAttributionKey(targetMapId, attribution.cardId))
+      aiConversationAttributions.set(sourceKey, attribution)
+    }
+    for (const [conversationId, origin] of affectedOrigins) aiConversationOrigins.set(conversationId, origin)
+    for (const [delegationId, delegation] of affectedDelegations) aiDelegations.set(delegationId, delegation)
+    for (const [instructionId, instruction] of affectedInstructions) groupDocumentInstructions.set(instructionId, instruction)
+    let rollbackError = null
+    try {
+      await restoreMapMoveFiles(fileSnapshot)
+    } catch (restoreError) {
+      rollbackError = restoreError
+    } finally {
+      await Promise.allSettled(createdAssetFiles.map((filePath) => rm(filePath, { force: true })))
+    }
+    if (rollbackError) throw new AggregateError([error, rollbackError], '문서 간 카드 이동 실패 후 원본 복구에도 실패했습니다.')
+    throw error
+  }
+}
+
+function sendCardMoveResponse(response, status, body) {
+  return sendJson(response, status, body)
+}
+
 async function trashMap(mapId, user) {
   const map = await readMap(mapId)
   if (!map || map.trashedAt) return null
@@ -6646,6 +7045,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
   try {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && /^\/api\/(maps|groups|document-reconstructions|card-layouts)(\/|$)/.test(url.pathname)) {
       const isTransition = /^\/api\/maps\/[^/]+\/archive$/.test(url.pathname)
+        || /^\/api\/maps\/[^/]+\/cards\/[^/]+\/move$/.test(url.pathname)
         || /^\/api\/document-reconstructions\/(apply|[^/]+\/rollback)$/.test(url.pathname)
         || /^\/api\/card-layouts\/[^/]+\/apply$/.test(url.pathname)
       releaseDocumentMutation = await acquireDocumentMutation(isTransition)
@@ -11321,6 +11721,60 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       return sendJson(response, 200, result)
     }
 
+    const crossDocumentCardMoveRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/cards\/([^/]+)\/move$/)
+    if (crossDocumentCardMoveRoute && request.method === 'POST') {
+      const sourceMapId = decodeURIComponent(crossDocumentCardMoveRoute[1])
+      const cardId = decodeURIComponent(crossDocumentCardMoveRoute[2])
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendCardMoveResponse(response, 403, { error: '뷰어는 카드를 다른 문서로 이동할 수 없습니다.' })
+      const body = await readJsonBody(request)
+      const targetMapId = String(body.targetMapId ?? '').trim()
+      const targetParentCardId = String(body.targetParentCardId ?? body.newParentCardId ?? '').trim()
+      if (!isValidMapId(sourceMapId) || !isValidMapId(targetMapId)
+        || !cardId || cardId.length > 120 || !targetParentCardId || targetParentCardId.length > 120) {
+        return sendCardMoveResponse(response, 400, {
+          error: '원본·대상 문서 ID와 이동할 카드·새 상위 카드 ID를 확인하세요.',
+          code: 'CARD_MOVE_INVALID_REQUEST',
+        })
+      }
+      const result = await moveCardAcrossDocuments({
+        sourceMapId,
+        cardId,
+        targetMapId,
+        targetParentCardId,
+        sourceVersion: Number(body.sourceVersion),
+        targetVersion: Number(body.targetVersion),
+        user,
+      })
+      const changedMapIds = [...new Set([
+        sourceMapId,
+        targetMapId,
+        ...result.operation.updatedReferenceMapIds,
+      ])]
+      for (const mapId of changedMapIds) broadcastMapChange(request, mapId, 'cross-document-card-move', user)
+      const movedCard = result.targetMap.nodes.find((node) => node.id === cardId)
+      const responseMode = body.responseMode === 'full' ? 'full' : 'affected'
+      return sendCardMoveResponse(response, 200, {
+        responseMode,
+        atomic: true,
+        operation: result.operation,
+        sourceDocument: mapSummary(result.sourceMap),
+        targetDocument: mapSummary(result.targetMap),
+        sourceMapId,
+        targetMapId,
+        movedCardId: cardId,
+        movedCardIds: result.operation.movedCardIds,
+        card: movedCard,
+        accessUrl: `${publicBaseUrl}/mindmap/${encodeURIComponent(targetMapId)}/${encodeURIComponent(cardId)}`,
+        hierarchy: {
+          previousParentCardId: result.operation.previousParentCardId,
+          newParentCardId: targetParentCardId,
+        },
+        ...(responseMode === 'full' ? { sourceMap: result.sourceMap, targetMap: result.targetMap } : {}),
+      })
+    }
+
     const mapRoute = url.pathname.match(/^\/api\/maps\/([^/]+)$/)
     if (mapRoute) {
       const mapId = decodeURIComponent(mapRoute[1])
@@ -11442,6 +11896,11 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
     return sendJson(response, 404, { error: '요청한 경로를 찾을 수 없습니다.' })
   } catch (error) {
     if (error instanceof AiDelegationStatusLookupError) return sendJson(response, error.status, error.responseBody())
+    if (error instanceof CrossDocumentCardMoveError) return sendJson(response, error.status, {
+      error: error.message,
+      code: error.code,
+      ...(error.details ? { details: error.details } : {}),
+    })
     if (error?.reconstructionError) return sendJson(response, error.status, { error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) })
     if (error?.groupProjectError) return sendJson(response, error.status, { error: error.message })
     if (error?.message === 'PAYLOAD_TOO_LARGE') return sendJson(response, 413, { error: '요청 데이터가 너무 큽니다.' })

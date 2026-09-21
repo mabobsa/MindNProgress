@@ -38,7 +38,7 @@ const toolUsageDirectory = path.resolve(String(process.env.MNP_MCP_USAGE_DIR ?? 
   || path.join(dataDirectory, MCP_TOOL_USAGE_DIRECTORY_NAME))
 const toolUsageDisabled = String(process.env.MNP_MCP_USAGE_DISABLED ?? '').trim() === '1'
 const toolUsageFlushIntervalMs = Number(String(process.env.MNP_MCP_USAGE_FLUSH_MS ?? '').trim())
-const contextSchemaVersion = '3.2'
+const contextSchemaVersion = '3.3'
 const commentSummaryMaxLength = 240
 const commentSummaryTooLongMessage = 'summary는 240자 이하의 1~2문장만 입력하세요. 상세 내용은 summary 문자열에 이어 붙이지 말고 detail 인자로 분리하세요. 예: {"summary":"[결과] 구현과 검증을 완료했습니다.","detail":"## 수행 내용\\n..."}. 호환용 text로 우회하거나 상세를 여러 댓글로 나누지 마세요.'
 const contextCommentLimit = 20
@@ -149,7 +149,7 @@ const knowledgeLinePolicy = Object.freeze({
 
 const serverInstructions = MNP_MCP_SERVER_INSTRUCTIONS
 const productGuide = {
-  version: '4.23',
+  version: '4.24',
   contextLifecycle: MNP_CONTEXT_LIFECYCLE,
   documentReconstruction: {
     contextTool: 'mindnprogress_get_reconstruction_context',
@@ -2153,14 +2153,15 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_move_card', '카드와 모든 하위 카드를 유지한 채 다른 카드의 하위로 이동합니다. 기본 affected 응답은 이동한 카드와 상위 관계 변화만 반환하며, full은 변경 전과 같은 API 원본 전체 문서를 반환합니다.', {
+  registerTool(server, 'mindnprogress_move_card', '카드와 모든 하위 카드를 유지한 채 다른 카드의 하위로 이동합니다. targetMapId를 생략하면 같은 문서 안에서 이동하고, 다른 문서를 지정하면 카드 ID·댓글·AI 대화·완료된 위임 이력·이미지와 Ref 연결을 보존해 실제로 이동합니다. 문서 경계를 가로지르는 지식선·선행 관계나 실행 중인 AI 작업이 있으면 손상 없이 거부합니다. 기본 affected 응답은 이동 결과와 관계 변화만 반환하며, full은 관련 원본 문서 전체를 반환합니다.', {
     mapId: z.string().min(1),
+    targetMapId: z.string().min(1).optional().describe('다른 문서로 실제 이동할 때 지정하는 대상 문서 ID. 생략하거나 mapId와 같으면 기존 문서 내부 이동'),
     cardId: z.string().min(1).optional().describe('이동할 카드 ID. 새 호출에서는 이 필드를 사용'),
     nodeId: z.string().min(1).optional().describe('기존 대화 호환용 카드 ID. 새 호출에서는 cardId 사용'),
     newParentCardId: z.string().min(1).optional().describe('새 상위 카드 ID. 새 호출에서는 이 필드를 사용'),
     newParentId: z.string().min(1).optional().describe('기존 대화 호환용 새 상위 카드 ID. 새 호출에서는 newParentCardId 사용'),
     responseMode: z.enum(['full', 'affected']).default('affected').describe(affectedFirstResponseModeDescription),
-  }, async ({ mapId, cardId, nodeId, newParentCardId, newParentId, responseMode }) => {
+  }, async ({ mapId, targetMapId, cardId, nodeId, newParentCardId, newParentId, responseMode }) => {
     const resolvedCardId = resolveAliasedId(cardId, nodeId, {
       preferredName: 'cardId',
       legacyName: 'nodeId',
@@ -2169,6 +2170,30 @@ async function main() {
       preferredName: 'newParentCardId',
       legacyName: 'newParentId',
     })
+    if (targetMapId && targetMapId !== mapId) {
+      const [sourceMap, targetMap] = await Promise.all([
+        getDocument(mapId),
+        getDocument(targetMapId),
+      ])
+      if (!sourceMap.nodes.some((node) => node.id === resolvedCardId)) {
+        throw new Error('원본 문서에서 이동할 카드를 찾을 수 없습니다.')
+      }
+      if (!targetMap.nodes.some((node) => node.id === resolvedParentCardId)) {
+        throw new Error('대상 문서에서 새 상위 카드를 찾을 수 없습니다.')
+      }
+      return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/cards/${encodeURIComponent(resolvedCardId)}/move`, {
+        method: 'POST',
+        aiMapId: mapId,
+        aiCardId: resolvedCardId,
+        body: JSON.stringify({
+          targetMapId,
+          targetParentCardId: resolvedParentCardId,
+          sourceVersion: sourceMap.version,
+          targetVersion: targetMap.version,
+          responseMode,
+        }),
+      })
+    }
     const map = await getDocument(mapId)
     if (!map.nodes.some((node) => node.id === resolvedCardId) || !map.nodes.some((node) => node.id === resolvedParentCardId)) {
       throw new Error('이동할 카드 또는 새 상위 카드를 찾을 수 없습니다.')

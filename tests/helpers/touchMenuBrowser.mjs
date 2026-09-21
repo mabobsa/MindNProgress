@@ -27,6 +27,13 @@ export async function touchMenuBrowser({ base, command, evaluate, until, api }) 
   await until(() => evaluate(`document.querySelector(${JSON.stringify(parent)})!==null`), '터치 시험 카드 없음')
   await pause(400)
   await evaluate(`document.querySelector('button[aria-label="모바일 패널 닫기"]')?.click()`)
+  await tap(parent)
+  await until(() => evaluate(`document.querySelector('#node-inspector-panel.mobile-open')!==null`), '카드 탭으로 세부정보 열기 실패')
+  await evaluate(`document.querySelector('button[aria-label="모바일 패널 닫기"]')?.click()`)
+  await until(() => evaluate(`document.querySelector('#node-inspector-panel.mobile-open')===null`), '세부정보 닫기 실패')
+  await tap(parent)
+  await until(() => evaluate(`document.querySelector('#node-inspector-panel.mobile-open')!==null`), '같은 카드 재탭으로 세부정보 다시 열기 실패')
+  await evaluate(`document.querySelector('button[aria-label="모바일 패널 닫기"]')?.click()`)
   await tap('button[aria-label="문서 목록 열기"]')
   const row = `[data-library-menu-id="${mapId}"]`
   await until(() => evaluate(`document.querySelector('.sidebar.mobile-open')!==null`), '모바일 문서 목록 열기 실패')
@@ -83,5 +90,5 @@ export async function touchMenuBrowser({ base, command, evaluate, until, api }) 
   p = await point(parent)
   await touch('touchStart', [p, second]); await touch('touchMove', [{x:p.x+10,y:p.y+10},{x:second.x+10,y:second.y+10}]); await touch('touchEnd', [])
   assert.deepEqual(await positions(), original, '두 손가락 전환 시 카드 이동 취소')
-  return { documentLongPress: true, groupLongPress: true, dragAfterMenu: true, resumeDragAfterRelease: true, descendantsAndUndo: true, cancelAndPan: true }
+  return { inspectorReopen: true, documentLongPress: true, groupLongPress: true, dragAfterMenu: true, resumeDragAfterRelease: true, descendantsAndUndo: true, cancelAndPan: true }
 }

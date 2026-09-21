@@ -6378,6 +6378,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       return
     }
     setSelectedId(node.id)
+    if (isPhoneViewport()) setMobileInspectorOpen(true)
   }, [cancelKnowledgeConnection, connectKnowledgeCards, knowledgeConnection])
 
   const onKnowledgeTargetEnter = useCallback((_event: ReactMouseEvent, node: MindMapNode) => {

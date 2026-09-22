@@ -48,8 +48,10 @@ async function startMockAionUi({
   let conversationRuntimeState = 'running'
   const dispatchRequests = []
   const conversationTitleUpdates = []
+  const conversationMessageRequests = []
   const dispatches = new Map()
   const server = createHttpServer((request, response) => {
+    const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1')
     const send = (data, status = 200) => {
       response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
       response.end(JSON.stringify({ success: true, data }))
@@ -166,7 +168,43 @@ async function startMockAionUi({
         },
       })
     }
-    if (request.url === `/api/conversations/${conversationId}/messages?limit=10000&content_mode=full`) {
+    if (request.method === 'GET'
+      && requestUrl.pathname === `/api/conversations/${conversationId}/messages`
+      && requestUrl.searchParams.get('content_mode') === 'full') {
+      const messageRequest = {
+        pathname: requestUrl.pathname,
+        limit: requestUrl.searchParams.get('limit'),
+        contentMode: requestUrl.searchParams.get('content_mode'),
+        before: requestUrl.searchParams.get('before'),
+      }
+      conversationMessageRequests.push(messageRequest)
+      if (messageRequest.limit === '2' && messageRequest.before === null) {
+        return send({
+          items: [
+            { id: 'message-tip', type: 'tips', position: 'center', content: '중간 시스템 안내' },
+            { id: 'message-assistant', type: 'text', position: 'left', content: '최종 어시스턴트 응답' },
+          ],
+          oldest_cursor: 'message-tip',
+          newest_cursor: 'message-assistant',
+          has_more_before: true,
+          has_more_after: false,
+        })
+      }
+      if (messageRequest.limit === '2' && messageRequest.before === 'message-tip') {
+        return send({
+          items: [
+            { id: 'message-user', type: 'text', position: 'right', content: { content: '첫 사용자 요청' } },
+            { id: 'message-tool', type: 'acp_tool_call', position: 'left', content: { name: 'internal_tool' } },
+          ],
+          oldest_cursor: 'message-user',
+          newest_cursor: 'message-tool',
+          has_more_before: false,
+          has_more_after: false,
+        })
+      }
+      if (messageRequest.limit !== '50' || messageRequest.before !== null) {
+        return send({ error: 'unexpected conversation message query' }, 400)
+      }
       return send({
         items: [
           { id: 'message-user', type: 'text', position: 'right', content: { content: '첫 사용자 요청' } },
@@ -289,6 +327,7 @@ async function startMockAionUi({
     baseUrl: `http://127.0.0.1:${address.port}`,
     dispatchRequests,
     conversationTitleUpdates,
+    conversationMessageRequests,
     setConversationName: (name) => { conversationName = name },
     setConversationRuntimeState: (state) => { conversationRuntimeState = state },
     completeDispatch: (operationId) => {
@@ -1149,11 +1188,57 @@ async function main() {
     assert.equal(conversationTranscript.messageCount, 4)
     assert.equal(conversationTranscript.exportedMessageCount, 3)
     assert.equal(conversationTranscript.truncated, false)
+    assert.equal(conversationTranscript.page.limit, 50)
+    assert.equal(conversationTranscript.coverage.complete, true)
+    assert.deepEqual(mockAionUi.conversationMessageRequests[0], {
+      pathname: '/api/conversations/conversation-test/messages',
+      limit: '50',
+      contentMode: 'full',
+      before: null,
+    })
     assert.match(conversationTranscript.transcript, /^대화: MCP 전체 대화 조회 검증\n대화 ID: conversation-test\n내보낸 시각: .+\n유형: acp/)
     assert.match(conversationTranscript.transcript, /사용자:\n첫 사용자 요청/)
     assert.match(conversationTranscript.transcript, /시스템:\n중간 시스템 안내/)
     assert.match(conversationTranscript.transcript, /어시스턴트:\n최종 어시스턴트 응답/)
     assert.doesNotMatch(conversationTranscript.transcript, /internal_tool|acp_tool_call/)
+    const recentConversationTranscript = await invoke('mindnprogress_get_ai_conversation_transcript', {
+      mapId,
+      cardId: 'task-a',
+      limit: 2,
+    })
+    assert.equal(recentConversationTranscript.page.limit, 2)
+    assert.equal(recentConversationTranscript.page.before, null)
+    assert.equal(recentConversationTranscript.page.nextBefore, 'message-tip')
+    assert.equal(recentConversationTranscript.coverage.complete, false)
+    assert.equal(recentConversationTranscript.messageCount, 2)
+    assert.match(recentConversationTranscript.transcript, /최종 어시스턴트 응답/)
+    const olderConversationTranscript = await invoke('mindnprogress_get_ai_conversation_transcript', {
+      mapId,
+      cardId: 'task-a',
+      limit: 2,
+      before: recentConversationTranscript.page.nextBefore,
+    })
+    assert.equal(olderConversationTranscript.page.limit, 2)
+    assert.equal(olderConversationTranscript.page.before, 'message-tip')
+    assert.equal(olderConversationTranscript.page.nextBefore, null)
+    assert.equal(olderConversationTranscript.coverage.complete, true)
+    assert.equal(olderConversationTranscript.messageCount, 2)
+    assert.match(olderConversationTranscript.transcript, /사용자:\n첫 사용자 요청/)
+    assert.doesNotMatch(olderConversationTranscript.transcript, /internal_tool|acp_tool_call/)
+    assert.deepEqual(mockAionUi.conversationMessageRequests.slice(1, 3), [
+      {
+        pathname: '/api/conversations/conversation-test/messages',
+        limit: '2',
+        contentMode: 'full',
+        before: null,
+      },
+      {
+        pathname: '/api/conversations/conversation-test/messages',
+        limit: '2',
+        contentMode: 'full',
+        before: 'message-tip',
+      },
+    ])
     await invokeExpectError('mindnprogress_get_ai_conversation_transcript', {
       mapId, cardId: 'branch-a',
     }, /카드에 연결된 AI 대화가 없습니다/)

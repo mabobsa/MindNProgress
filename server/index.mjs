@@ -15,6 +15,7 @@ import { createDocumentGroupMetadata, documentGroupFields } from './lib/document
 import {
   buildGroupDocumentInstruction,
   containsApprovalEvidenceDuplicate,
+  createGroupDocumentInstructionDispatchCoordinator,
   createGroupDocumentInstructionSignature,
   groupDocumentInstructionOperationId,
   groupDocumentInstructionPublicView,
@@ -304,7 +305,7 @@ const aiDelegationActions = new Set()
 let aiDelegationWriteQueue = Promise.resolve()
 let aiDelegationPollRunning = false
 const groupDocumentInstructions = new Map()
-const groupDocumentInstructionActions = new Set()
+const groupDocumentInstructionActions = createGroupDocumentInstructionDispatchCoordinator()
 let groupDocumentInstructionWriteQueue = Promise.resolve()
 let groupDocumentInstructionPollRunning = false
 const aiDelegationWaitPolls = new Map()
@@ -2440,10 +2441,7 @@ async function linkGroupDocumentInstructionConversation({ instruction, targetMap
   }
 }
 
-async function dispatchGroupDocumentInstruction(instruction, user) {
-  if (groupDocumentInstructionActions.has(instruction.id)) return groupDocumentInstructions.get(instruction.id)
-  groupDocumentInstructionActions.add(instruction.id)
-  try {
+async function runGroupDocumentInstructionDispatch(instruction, user) {
     const validation = await validateQueuedGroupDocumentInstruction(instruction)
     if (!validation.valid) return updateGroupDocumentInstruction(instruction.id, {
       state: 'expired', reasonCode: validation.reasonCode, message: validation.message,
@@ -2606,9 +2604,10 @@ async function dispatchGroupDocumentInstruction(instruction, user) {
       pendingApprovalEvidence: null,
       pendingSelection: null,
     })
-  } finally {
-    groupDocumentInstructionActions.delete(instruction.id)
-  }
+}
+
+function dispatchGroupDocumentInstruction(instruction, user) {
+  return groupDocumentInstructionActions.run(instruction.id, () => runGroupDocumentInstructionDispatch(instruction, user))
 }
 
 async function pollGroupDocumentInstructions() {

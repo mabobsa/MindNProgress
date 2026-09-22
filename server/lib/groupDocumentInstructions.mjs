@@ -53,6 +53,25 @@ export function groupDocumentInstructionOperationId(id) {
   return `gdi:${id}`
 }
 
+export function createGroupDocumentInstructionDispatchCoordinator() {
+  const actions = new Map()
+  return {
+    has(id) {
+      return actions.has(id)
+    },
+    run(id, action) {
+      const active = actions.get(id)
+      if (active) return active
+      const current = Promise.resolve().then(action)
+      actions.set(id, current)
+      void current.finally(() => {
+        if (actions.get(id) === current) actions.delete(id)
+      }).catch(() => {})
+      return current
+    },
+  }
+}
+
 export function createGroupDocumentInstructionSignature({
   parentMapId,
   parentCardId,

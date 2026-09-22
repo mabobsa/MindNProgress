@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   buildGroupDocumentInstruction,
   containsApprovalEvidenceDuplicate,
+  createGroupDocumentInstructionDispatchCoordinator,
   createGroupDocumentInstructionSignature,
   groupDocumentInstructionOperationId,
   groupDocumentInstructionPublicView,
@@ -58,6 +59,70 @@ test('그룹 문서 지시 키와 요청 서명은 안정적이며 다른 지시
       replyTarget: { mode: 'explicit', conversationId: 'conversation-review', evidence: '사용자가 현재 지시에서 지정했습니다.' },
     }),
   )
+})
+
+test('폴러가 먼저 점유한 동일 지시는 최초 요청도 같은 전달 결과를 기다린다', async () => {
+  const id = 'instruction-race'
+  const queued = { id, state: 'queued', reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_QUEUED' }
+  const delivered = { id, state: 'delivered', reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_DELIVERED' }
+  const instructions = new Map([[id, queued]])
+  const coordinator = createGroupDocumentInstructionDispatchCoordinator()
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  let dispatches = 0
+
+  const polling = coordinator.run(id, async () => {
+    dispatches++
+    await gate
+    instructions.set(id, delivered)
+    return delivered
+  })
+  const request = coordinator.run(id, async () => {
+    dispatches++
+    return queued
+  })
+  assert.strictEqual(request, polling)
+  release()
+
+  assert.strictEqual(await polling, delivered)
+  assert.strictEqual(await request, delivered, '경쟁 요청이 진행 중 전달 대신 stale queued 상태를 반환했습니다.')
+  assert.equal(dispatches, 1)
+  assert.equal(coordinator.has(id), false)
+})
+
+test('그룹 문서 지시 단일 실행은 예외와 busy 결과 뒤 상태를 정리해 같은 ID를 다시 실행한다', async () => {
+  const id = 'instruction-retry'
+  const coordinator = createGroupDocumentInstructionDispatchCoordinator()
+  const failure = new Error('전달 실패')
+  let dispatches = 0
+  const failed = coordinator.run(id, async () => {
+    dispatches++
+    throw failure
+  })
+  const sharedFailure = coordinator.run(id, async () => {
+    dispatches++
+    return { id, state: 'queued' }
+  })
+  assert.strictEqual(sharedFailure, failed)
+  const failures = await Promise.allSettled([failed, sharedFailure])
+  assert.deepEqual(failures.map((result) => result.status), ['rejected', 'rejected'])
+  assert.ok(failures.every((result) => result.reason === failure))
+  assert.equal(coordinator.has(id), false)
+
+  const queued = { id, state: 'queued', reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_TARGET_BUSY' }
+  assert.strictEqual(await coordinator.run(id, async () => {
+    dispatches++
+    return queued
+  }), queued)
+  assert.equal(coordinator.has(id), false)
+
+  const delivered = { id, state: 'delivered', reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_DELIVERED' }
+  assert.strictEqual(await coordinator.run(id, async () => {
+    dispatches++
+    return delivered
+  }), delivered)
+  assert.equal(dispatches, 3)
+  assert.equal(coordinator.has(id), false)
 })
 
 test('완료 보고 대상은 기본 발신 대화와 현재 지시의 명시적 예외만 허용한다', () => {

@@ -92,6 +92,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       }
       return send({ ...saved, runtime: { state: 'idle', is_processing: false, can_send_message: true, pending_confirmations: 0 } })
     }
+    if (/^\/api\/conversations\/[^/]+\/usage$/.test(url.pathname)) return send({ used: 8_000, size: 200_000 })
     if (url.pathname.endsWith('/messages')) return send({ items: [{ type: 'text', position: 'left', content: assistantResult }] })
     return send({}, 404)
   })
@@ -230,6 +231,14 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.doesNotMatch(recoveryCall.instruction, /먼저 `\.ai-session\.json`/)
     assert.ok(recoveryCall.instruction.includes(`- 대상 대화: ${documentConversationNameBeforeRecovery} (${documentConversationId})`))
     const childHeaders = { 'X-MNP-AI-Map-Id': target.id, 'X-MNP-AI-Card-Id': targetRoot, 'X-MNP-AI-Conversation-Id': documentConversationId, 'X-MNP-AI-Editor-Id': attribution.body.editorId }
+    const assessmentIdFor = async (mapId, cardId, conversationId) => {
+      const listed = await api(`/api/maps/${mapId}/cards/${cardId}/ai-conversations`)
+      assert.equal(listed.status, 200, JSON.stringify(listed.body))
+      const linked = listed.body.conversations.find((item) => item.conversationId === conversationId)
+      assert.ok(linked, `대화 문맥 평가 대상을 찾지 못했습니다: ${conversationId}`)
+      assert.equal(linked.contextHealth.resumeAllowed, true, JSON.stringify(linked.contextHealth))
+      return linked.contextHealth.assessmentId
+    }
     const beforeLeaf = (await api(`/api/maps/${target.id}`, 'GET', undefined, childHeaders)).body.map
     const leafId = 'implementation-leaf'
     const withLeaf = await api(`/api/maps/${target.id}`, 'PUT', {
@@ -285,7 +294,15 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
 
     // 사용량 제한은 완료 보고를 만들지 않고 보존한다. UI는 실행 재개와 보고 재시도를 구분한다.
     const currentVersion = (await api(`/api/maps/${target.id}`)).body.map.version
-    const limited = await api(delegateUrl, 'POST', { ...args, targetRevision: currentVersion, strategy: 'resume', conversationId: documentConversationId, idempotencyKey: 'usage-run' }, sourceHeaders)
+    const latestConversationAssessmentId = await assessmentIdFor(target.id, targetRoot, documentConversationId)
+    const missingAssessment = await api(delegateUrl, 'POST', { ...args, targetRevision: currentVersion, strategy: 'resume', conversationId: documentConversationId, idempotencyKey: 'missing-assessment' }, sourceHeaders)
+    assert.equal(missingAssessment.status, 409)
+    assert.equal(missingAssessment.body.reasonCode, 'AI_DELEGATION_CONVERSATION_ASSESSMENT_REQUIRED')
+    const staleAssessment = await api(delegateUrl, 'POST', { ...args, targetRevision: currentVersion, strategy: 'resume', conversationId: documentConversationId, conversationAssessmentId: '0'.repeat(64), idempotencyKey: 'stale-assessment' }, sourceHeaders)
+    assert.equal(staleAssessment.status, 409)
+    assert.equal(staleAssessment.body.reasonCode, 'AI_DELEGATION_CONVERSATION_ASSESSMENT_STALE')
+    assert.equal(calls.some((call) => ['missing-assessment', 'stale-assessment'].includes(call.operationId)), false)
+    const limited = await api(delegateUrl, 'POST', { ...args, targetRevision: currentVersion, strategy: 'resume', conversationId: documentConversationId, conversationAssessmentId: latestConversationAssessmentId, idempotencyKey: 'usage-run' }, sourceHeaders)
     assert.equal(limited.status, 202, JSON.stringify(limited.body))
     Object.assign(dispatches.get('usage-run'), { state: 'failed', errorMessage: "You've hit your usage limit" })
     const latestUsage = async () => (await api(`/api/groups/${groupId}`)).body.delegations.find((item) => item.id === 'usage-run')
@@ -439,7 +456,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.match(retriedReport.reportPayloadHash, /^[a-f0-9]{64}$/)
 
     // 같은 실행이 실제로 완료된 경우만 조회로 갱신하고, 상위 재개는 별도 요청을 기다린다.
-    const passive = await api(delegateUrl, 'POST', { ...args, targetRevision: (await api(`/api/maps/${target.id}`)).body.map.version, strategy: 'resume', conversationId: documentConversationId, idempotencyKey: 'passive-run' }, sourceHeaders)
+    const passive = await api(delegateUrl, 'POST', { ...args, targetRevision: (await api(`/api/maps/${target.id}`)).body.map.version, strategy: 'resume', conversationId: documentConversationId, conversationAssessmentId: await assessmentIdFor(target.id, targetRoot, documentConversationId), idempotencyKey: 'passive-run' }, sourceHeaders)
     assert.equal(passive.status, 202)
     const latestPassive = async () => (await api(delegateUrl)).body.delegations.find((item) => item.id === 'passive-run')
     Object.assign(dispatches.get('passive-run'), { state: 'failed', errorMessage: 'usage limit' })
@@ -555,6 +572,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       targetRevision: latestInstructionTarget.version,
       strategy: 'resume',
       conversationId: instructed.body.instruction.targetConversationId,
+      conversationAssessmentId: await assessmentIdFor(instructionDocument.id, instructionDocument.nodes[0].id, instructed.body.instruction.targetConversationId),
       decisionReason: '같은 문서 담당 대화의 후속 지시입니다.',
       instruction: '같은 승인 범위에서 문서 내부 진행 상태를 다시 확인하세요.',
       idempotencyKey: 'group-instruction-queued',
@@ -581,7 +599,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.equal((await api('/api/maps/layout', 'PATCH', { documentLayout: movedLayout })).status, 200)
     assert.equal((await api(`/api/maps/${target.id}`)).body.groupProject, null)
     assert.equal((await api('/api/maps/layout', 'PATCH', { documentLayout: library.documentLayout })).status, 200)
-    const newLimited = await api(delegateUrl, 'POST', { ...args, targetRevision: (await api(`/api/maps/${target.id}`)).body.map.version, strategy: 'resume', conversationId: documentConversationId, idempotencyKey: 'changed-plan' }, sourceHeaders)
+    const newLimited = await api(delegateUrl, 'POST', { ...args, targetRevision: (await api(`/api/maps/${target.id}`)).body.map.version, strategy: 'resume', conversationId: documentConversationId, conversationAssessmentId: await assessmentIdFor(target.id, targetRoot, documentConversationId), idempotencyKey: 'changed-plan' }, sourceHeaders)
     assert.equal(newLimited.status, 202)
     Object.assign(dispatches.get('changed-plan'), { state: 'failed', errorMessage: "You've hit your usage limit" })
     await until(async () => (await api(delegateUrl)).body.delegations.find((item) => item.id === 'changed-plan').state === 'waiting-usage-limit', '기준 변경 검사 전 대기에 들어가지 못했습니다.')

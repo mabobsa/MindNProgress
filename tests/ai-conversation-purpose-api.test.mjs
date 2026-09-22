@@ -80,7 +80,7 @@ async function stopProcess(process) {
   })
 }
 
-test('지식·문서 정리 대화는 임시 귀속만 유지하고 원본 카드 대화와 버전을 변경하지 않는다', { timeout: 30_000 }, async () => {
+test('지식·문서 정리 대화는 카드 대화로 연결하지 않고 계정 검증용 원본과 임시 귀속만 유지한다', { timeout: 30_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mindnprogress-ai-conversation-purpose-'))
   const conversations = new Map()
   const fakeAionUi = await startFakeAionUi(conversations)
@@ -274,7 +274,8 @@ test('지식·문서 정리 대화는 임시 귀속만 유지하고 원본 카�
 
     const origins = JSON.parse(await readFile(path.join(dataDirectory, '_ai-conversation-origins.json'), 'utf8'))
     assert.equal(origins.some((item) => item.conversationId === cardConversationId), true)
-    assert.equal(origins.some((item) => item.conversationId === reviewConversationId), false)
+    assert.equal(origins.some((item) => item.conversationId === reviewConversationId), true)
+    assert.equal(origins.some((item) => item.conversationId === 'conversation-reconstruction'), true)
 
     const conversationAttributions = JSON.parse(await readFile(path.join(dataDirectory, '_ai-conversation-attributions.json'), 'utf8'))
     assert.equal(conversationAttributions.length, 1)

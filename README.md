@@ -299,7 +299,7 @@ MindNProgress는 AionUi가 OS 임시 디렉터리에 게시하는 `aionui-backen
 
 `AI 대화 시작`의 작업공간은 새 PC·문서에서 현재 실행 중인 MindNProgress 저장소 경로를 동적으로 기본값으로 사용하며, 하드코딩된 PC 경로를 사용하지 않습니다. 이후에는 로그인 계정과 문서별 마지막 입력값을 유지합니다. 실제 대화를 시작한 작업공간은 로그인 계정의 서버 이력에 최대 10개까지 저장되어 PC와 4175 웹에서 같은 계정으로 접속하면 함께 표시되며, 각 항목의 `×` 버튼으로 양쪽 이력에서 제거할 수 있습니다. 기존 브라우저 이력은 처음 열 때 현재 로그인 계정의 서버 이력과 한 번 병합됩니다.
 
-상위 카드의 AI는 하위 카드에 연결된 대화 후보의 AI·모델·사고 강도·MCP·스킬·작업공간·최근 활동과 실행 상태를 비교하고, 필요한 후보의 전문만 확인해 기존 대화를 이어가거나 새 대화를 선택할 수 있습니다. 위임할 때는 수행할 작업·허용 범위·제외 범위와 완료 조건을 전달합니다. 하위 AI는 받은 지시를 수행하고, 분석·제안만 요청받았다면 구현으로 확대하지 않습니다. 일반 상위 AI는 결과 검증 뒤 맡긴 범위의 다음 작업을 이어가며, 그룹 총괄만 문서별 위임 전과 결과 회수 뒤 두 단계 사용자 승인 절차를 따릅니다. `MNP_WORKSPACE_POOL_REGISTRY`에 등록된 Unity 프로젝트는 MindNProgress가 `main`의 현재 HEAD를 기준으로 유휴 worker와 작업 브랜치를 lease하고, 기존 대화도 AionCore를 통해 새 CWD로 재바인딩하므로 독립 하위 작업을 병렬로 실행할 수 있습니다. 가용 worker가 없으면 위임은 `_ai-delegations.json`에 `waiting-workspace`로 보존되고, worker가 회수된 후 FIFO로 자동 시작됩니다. 등록된 pool 작업은 lease 없이 임시 폴더 대화로 우회하지 않습니다. 완료된 worker 변경은 AI가 제출한 실제 변경의 제목·배경·원인·수정 내용을 `[김용민]` 커밋 형식으로 고정한 뒤 worker의 최신 `main` 기반 통합 브랜치에서 먼저 적용하고, 충돌이 없을 때만 실제 `main`을 fast-forward합니다. 충돌이 발생하면 `main`을 건드리지 않고 해당 작업을 수행한 같은 AI 대화를 같은 worker에서 재개해 충돌 해결과 검증을 수행하며, 통합이 성공한 뒤에만 상위 AI를 재개합니다. 다른 완료 작업은 통합 잠금이 풀릴 때까지 대기하지만 구현 작업은 계속 병렬로 진행할 수 있습니다. 중단·불명확한 변경·반복해서 해결하지 못한 충돌은 자동 삭제하지 않고 격리하지만, 변경·체크포인트·통합 진행이 전혀 없는 시작 실패는 worker를 안전하게 자동 회수합니다. pool 미등록 프로젝트에만 기존 작업공간 방식을 사용합니다. 서버는 하위 대화의 해당 `turnId`가 완료되거나 실패할 때까지 문서 JSON 밖의 `_ai-delegations.json`에서 상태를 추적하고, 상위 대화가 유휴 상태가 되면 하위 AI의 마지막 응답과 카드 재확인 지침을 보내 상위 AI를 자동 재개합니다. 여러 하위 결과가 동시에 끝나면 같은 상위 대화에 한 번에 하나씩 전달해 턴 충돌을 막습니다. 새 대화를 만들 때만 대상 카드의 AI 대화 목록 연결로 문서 버전이 증가하며, 위임 상태와 작업공간 lease 자체는 문서 버전과 변경 이력을 변경하지 않습니다.
+상위 카드의 AI는 하위 카드에 연결된 대화 후보의 AI·모델·사고 강도·MCP·스킬·작업공간·최근 활동과 실행 상태를 비교하고, 필요한 후보의 전문만 확인해 기존 대화를 이어가거나 새 대화를 선택할 수 있습니다. 후보의 `contextHealth`는 확인 가능한 문맥 사용량, 메시지 이력과 연속 재사용 횟수를 종합해 `healthy`, `caution`, `saturated`, `unknown`으로 분류합니다. 일반적인 `resume`은 후보 조회에서 받은 최신 `assessmentId`를 함께 보내야 하며, 서버는 접수 시점과 작업공간·대화 대기 후 실제 전달 시점에 이를 다시 검증합니다. `saturated`와 `unknown`은 새 대화를 사용하고, `caution`은 새 대화를 권장하되 정확히 이어지는 작은 후속 작업만 명시적으로 재사용합니다. 사용자가 중지한 동일 위임의 복구는 새 위임이 아니므로 기존 복구 절차로 같은 대화를 이어갑니다. 위임할 때는 수행할 작업·허용 범위·제외 범위와 완료 조건을 전달합니다. 하위 AI는 받은 지시를 수행하고, 분석·제안만 요청받았다면 구현으로 확대하지 않습니다. 일반 상위 AI는 결과 검증 뒤 맡긴 범위의 다음 작업을 이어가며, 그룹 총괄만 문서별 위임 전과 결과 회수 뒤 두 단계 사용자 승인 절차를 따릅니다. `MNP_WORKSPACE_POOL_REGISTRY`에 등록된 Unity 프로젝트는 MindNProgress가 `main`의 현재 HEAD를 기준으로 유휴 worker와 작업 브랜치를 lease하고, 기존 대화도 AionCore를 통해 새 CWD로 재바인딩하므로 독립 하위 작업을 병렬로 실행할 수 있습니다. 가용 worker가 없으면 위임은 `_ai-delegations.json`에 `waiting-workspace`로 보존되고, worker가 회수된 후 FIFO로 자동 시작됩니다. 등록된 pool 작업은 lease 없이 임시 폴더 대화로 우회하지 않습니다. 완료된 worker 변경은 AI가 제출한 실제 변경의 제목·배경·원인·수정 내용을 `[김용민]` 커밋 형식으로 고정한 뒤 worker의 최신 `main` 기반 통합 브랜치에서 먼저 적용하고, 충돌이 없을 때만 실제 `main`을 fast-forward합니다. 충돌이 발생하면 `main`을 건드리지 않고 해당 작업을 수행한 같은 AI 대화를 같은 worker에서 재개해 충돌 해결과 검증을 수행하며, 통합이 성공한 뒤에만 상위 AI를 재개합니다. 다른 완료 작업은 통합 잠금이 풀릴 때까지 대기하지만 구현 작업은 계속 병렬로 진행할 수 있습니다. 중단·불명확한 변경·반복해서 해결하지 못한 충돌은 자동 삭제하지 않고 격리하지만, 변경·체크포인트·통합 진행이 전혀 없는 시작 실패는 worker를 안전하게 자동 회수합니다. pool 미등록 프로젝트에만 기존 작업공간 방식을 사용합니다. 서버는 하위 대화의 해당 `turnId`가 완료되거나 실패할 때까지 문서 JSON 밖의 `_ai-delegations.json`에서 상태를 추적하고, 상위 대화가 유휴 상태가 되면 하위 AI의 마지막 응답과 카드 재확인 지침을 보내 상위 AI를 자동 재개합니다. 여러 하위 결과가 동시에 끝나면 같은 상위 대화에 한 번에 하나씩 전달해 턴 충돌을 막습니다. 새 대화를 만들 때만 대상 카드의 AI 대화 목록 연결로 문서 버전이 증가하며, 위임 상태와 작업공간 lease 자체는 문서 버전과 변경 이력을 변경하지 않습니다.
 
 유휴 worker의 Git 추적 기준을 현재 `main` HEAD와 수동으로 맞출 때는 MindNProgress를 실행한 상태에서 `pwsh -File scripts/sync-ai-workspaces-to-main.ps1`을 실행합니다. 서버가 작업공간 관리자 큐 안에서 처리하므로 위임 중인 worker나 추적 변경이 있는 작업공간은 건드리지 않고 실패하며, 미추적 파일은 삭제하거나 복사하지 않습니다. 일부 worker만 지정하려면 `-WorkspaceId fork1,fork3`을 사용합니다.
 
@@ -415,14 +415,14 @@ node runner/index.mjs
 | `mindnprogress_get_ai_work_states` | 지정한 카드 또는 문서 전체에서 연결된 AI 대화의 현재 작업·승인 대기·유휴·확인 불가 상태를 조회합니다. 문서 버전은 변경하지 않습니다. |
 | `mindnprogress_get_ai_workspace_pool` | MindNProgress가 관리하는 AI 작업공간의 역할·경로·Unity 인스턴스 해시와 현재 상태를 조회합니다. 다른 대화의 lease·job 식별자는 노출하지 않습니다. |
 | `mindnprogress_checkpoint_ai_workspace` | `operation.action=commit-changes`이면 worker의 실제 변경 경로와 구조화 커밋 메시지를 체크포인트로 고정하고, `confirm-no-changes`이면 git status와 diff로 의도한 파일 변경이 없음을 확인합니다. 두 action의 입력은 서로 섞을 수 없습니다. |
-| `mindnprogress_list_ai_conversations` | 카드에 연결된 모든 AI 대화 후보의 실행 환경, 시작 정보, 최근 활동과 실시간 상태를 조회해 기존 대화 이어가기와 새 대화 시작 판단에 사용합니다. |
-| `mindnprogress_delegate_ai_work` | 대화 시작 카드의 모든 깊이 하위 카드에 실행 가능한 지시를 전달해 기존 대화를 이어가거나 새 대화를 만들고, 해당 턴 완료 후 결과와 함께 상위 대화를 자동 재개합니다. 다른 카드 조회는 위임 기준을 바꾸지 않습니다. |
+| `mindnprogress_list_ai_conversations` | 카드에 연결된 모든 AI 대화 후보의 실행 환경, 최근 활동, 실시간 상태와 `contextHealth`를 조회해 기존 대화 이어가기와 새 대화 시작 판단에 사용합니다. |
+| `mindnprogress_delegate_ai_work` | 대화 시작 카드의 모든 깊이 하위 카드에 실행 가능한 지시를 전달해 기존 대화를 이어가거나 새 대화를 만들고, 해당 턴 완료 후 결과와 함께 상위 대화를 자동 재개합니다. 일반 `resume`에는 후보의 최신 `contextHealth.assessmentId`가 필요합니다. 다른 카드 조회는 위임 기준을 바꾸지 않습니다. |
 | `mindnprogress_complete_ai_delegation` | 사용자가 중지한 하위 위임을 같은 대화에서 직접 이어 실제 작업을 완료했을 때, 카드 기록과 작업공간 체크포인트 이후 마지막 턴에 명시적 완료 신호를 보냅니다. 단순 질의 응답과 중간 보고에는 사용하지 않습니다. |
 | `mindnprogress_list_ai_delegations` | 하위 실행부터 상위 대화 재개까지 AI 작업 위임의 현재 상태, 대상 대화와 turnId를 조회합니다. 구버전 실행 기록의 자원 대기(`waiting-resource`) 상태도 호환 조회합니다. |
 | `mindnprogress_recover_ai_delegation` | AionCore 재시작으로 복구가 필요해진 위임을 원 지시 자동 재생 없이 기존 대화·작업공간에서 명시적으로 이어갑니다. |
 | `mindnprogress_finalize_ai_coordination` | 완료된 문서 조정 실행이 하위 업무·문서 검수 대기에 남았을 때, 카드 상태·진행률·외부 대기와 실제 미완료 하위 위임을 보존하고 후속 성공으로 해소된 과거 한도 시도만 정리한 채 조정 위임을 종료해 현재 결과를 상위 AI에 전달합니다. |
 | `mindnprogress_supersede_ai_delegation` | 한도에 막혀 변경 없이 끝난 과거 위임을 같은 카드에서 나중에 성공한 위임과 연결하여 `superseded`로 종료합니다. 카드나 작업공간을 수정하지 않습니다. |
-| `mindnprogress_get_ai_conversation_transcript` | 카드에 연결된 최근 AionUi 대화 또는 `conversationId`로 지정한 이전 대화 전문을 `전체 복사`와 같은 텍스트 형식으로 조회합니다. |
+| `mindnprogress_get_ai_conversation_transcript` | 카드에 연결된 최근 AionUi 대화 또는 `conversationId`로 지정한 이전 대화 전문을 페이지 단위 텍스트로 조회합니다. `coverage.complete=false`이면 `page.nextBefore`로 오래된 메시지를 이어서 조회합니다. |
 | `mindnprogress_list_users` | 담당자로 지정할 수 있는 편집자 계정 목록을 조회합니다. |
 
 변경 체크포인트의 `commitMessage.summary`에는 `[김용민]`이나 `[MnP]` 출처를 넣지 않습니다. 서버가 제목 prefix와 `[MnP]`·`[배경]`·`[원인]`·`[수정]`·선택적 `[적용 범위]` 섹션을 생성하며 `Co-Authored-By`는 거부합니다. `[MnP]`에는 체크포인트 시점의 문서·카드 제목, 안정적인 `mapId`·`cardId`와 호스트에 의존하지 않는 상대 경로가 기록됩니다. 파일 변경이 없으면 빈 `paths`를 보내지 않고 `operation.action=confirm-no-changes`를 사용합니다.
@@ -485,7 +485,7 @@ AI 정리는 `mindnprogress_list_shared_knowledge_candidates`로 원문 없는 �
 | `mindnprogress_get_group_context` | 그룹의 기획 기준, 총괄 문서, 소속 문서 루트, 문서 지시와 과거 그룹 위임 결과를 조회합니다. |
 | `mindnprogress_update_group_project` | 그룹의 기획 기준과 총괄 문서 연결을 버전 조건부로 수정합니다. |
 | `mindnprogress_create_group_document` | 그룹에 기능 문서와 담당 범위·완료 조건을 담은 집계 루트를 만듭니다. |
-| `mindnprogress_send_group_document_instruction` | 총괄 루트 AI가 같은 그룹의 문서 루트 AI에 승인된 지시 전문을 전달합니다. |
+| `mindnprogress_send_group_document_instruction` | 총괄 루트 AI가 같은 그룹의 문서 루트 AI에 승인된 지시 전문을 전달합니다. 기존 루트 대화를 이어갈 때는 최신 `contextHealth.assessmentId`가 필요합니다. |
 | `mindnprogress_list_group_document_instructions` | 문서 지시의 대기·전달·응답 상태와 선택적으로 전문을 조회합니다. |
 
 그룹이나 혼합 순서를 변경할 때는 먼저 `mindnprogress_list_documents`의 `documentLayout`을 확인하고 모든 활성 문서를 정확히 한 번 포함해야 합니다.

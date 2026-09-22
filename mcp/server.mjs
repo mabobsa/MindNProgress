@@ -1186,7 +1186,7 @@ async function main() {
       '기존 description 또는 sharedKnowledge 내부만 고칠 때는 조회 결과의 textIntegrity SHA-256과 mindnprogress_patch_card_text를 사용',
       '과도한 sharedKnowledge 정리는 후보 목록과 전용 문맥을 조회한 뒤 해시 조건부 검토 도구로 저장',
     '선택 카드 이외의 관련 카드를 수정하기 전에는 mindnprogress_get_ai_work_states로 다른 AI 작업과의 충돌 여부를 확인',
-    '하위 카드의 기존 AI 대화를 이어갈지 새로 시작할지 판단할 때는 mindnprogress_list_ai_conversations로 후보를 먼저 비교하고, 같은 업무 흐름이며 idle이고 실행 환경이 호환되는 대화를 우선 이어감. 목적·모델·작업공간이 다르거나 문맥이 독립되어야 할 때만 새 대화를 선택',
+    '하위 카드의 기존 AI 대화를 이어갈지 새로 시작할지 판단할 때는 mindnprogress_list_ai_conversations의 contextHealth를 먼저 확인. healthy이고 같은 업무 흐름이며 idle이고 실행 환경이 호환되는 대화만 이어가며, caution·saturated·unknown 또는 독립 검수·새 범위는 새 대화를 선택',
       '지식선만 변경할 때는 전체 문서를 다시 보내지 않고 mindnprogress_manage_knowledge_line을 사용',
       '조회 도구는 문서 version을 올리지 않지만 편집 도구와 AI 대화 ID 연결은 version을 올릴 수 있음',
       '업무 링크, 담당자와 마감일은 실제 값이 있을 때만 지정',
@@ -1660,7 +1660,7 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_list_ai_conversations', '카드에서 시작한 모든 AionUi 대화 후보를 최신순으로 조회합니다. 각 대화의 AI·모델·모드·사고 강도·스킬·MCP·작업공간·시작자·최근 활동 시각과 현재 실행 상태를 반환합니다. 기존 대화를 이어갈지 새 대화를 만들지 판단할 때 전문 조회보다 먼저 사용하세요. 이 조회는 문서 버전을 변경하지 않습니다.', {
+  registerTool(server, 'mindnprogress_list_ai_conversations', '카드에서 시작한 모든 AionUi 대화 후보를 최신순으로 조회합니다. 각 대화의 AI·모델·모드·사고 강도·스킬·MCP·작업공간·시작자·최근 활동 시각, 현재 실행 상태와 문맥 건강도(contextHealth)를 반환합니다. 기존 대화를 이어갈지 새 대화를 만들지 판단할 때 전문 조회보다 먼저 사용하세요. 이 조회는 문서 버전을 변경하지 않습니다.', {
     mapId: z.string().min(1).describe('조회할 문서 ID'),
     cardId: z.string().min(1).max(120).describe('AI 대화 후보를 조회할 카드 ID'),
   }, async ({ mapId, cardId }) => {
@@ -1671,9 +1671,10 @@ async function main() {
     return {
       ...result,
       selectionRule: {
-        exclude: 'runtime.state가 running 또는 waiting-confirmation이거나 available=false인 대화는 자동 이어가기 후보에서 제외하세요.',
-        preferResume: '현재 지시가 같은 업무 흐름의 후속 작업이고 실행 환경(agent, model, mode, workspace, MCP)이 호환되는 idle 대화가 있으면 가장 관련성 높은 기존 대화를 우선 이어가세요.',
-        chooseNew: '업무 목적이나 필요한 실행 환경이 다르거나, 독립 검토가 필요하거나, 기존 문맥이 현재 지시를 방해할 가능성이 구체적으로 있을 때만 새 대화를 선택하세요.',
+        exclude: 'runtime.state가 running 또는 waiting-confirmation이거나 available=false이거나 contextHealth.resumeAllowed=false인 대화는 일반 위임의 이어가기 후보에서 제외하세요.',
+        preferResume: 'contextHealth.state=healthy이고 현재 지시가 같은 업무 흐름의 후속 작업이며 실행 환경(agent, model, mode, workspace, MCP)이 호환되는 idle 대화만 이어가세요. resume에는 contextHealth.assessmentId를 전달하세요.',
+        chooseNew: 'contextHealth가 caution·saturated·unknown이거나 업무 목적·실행 환경이 다르거나 독립 검토·새 범위이면 새 대화를 선택하세요. caution은 정확히 이어지는 작은 후속 작업일 때만 평가를 확인하고 예외적으로 이어갈 수 있습니다.',
+        recovery: '중단된 동일 위임은 문맥 포화와 관계없이 새 위임을 만들지 말고 기존 위임 복구·재개 절차를 사용하세요.',
         inspect: '목록 메타데이터만으로 관련성을 판단하기 어려운 후보에 한해서 mindnprogress_get_ai_conversation_transcript에 conversationId를 지정해 확인하세요.',
       },
     }
@@ -1722,6 +1723,7 @@ async function main() {
     approvalEvidence: z.string().min(1).max(10000).describe('사용자의 실제 승인 발언, 승인 범위와 확인 가능한 대화·메시지 출처. 분석 전용이면 해당 분석 요청 근거를 전달하며 확인하지 못한 근거를 만들지 않습니다. 이 전문을 instruction에 반복하지 않습니다.'),
     strategy: z.enum(['resume', 'new']).describe('resume은 대상 문서 루트에 연결된 기존 대화 이어가기, new는 새 문서 담당 대화 생성'),
     conversationId: z.string().min(1).max(120).optional().describe('resume일 때 이어갈 대상 문서 루트의 conversationId'),
+    conversationAssessmentId: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('resume일 때 mindnprogress_list_ai_conversations가 대상 루트 대화의 contextHealth.assessmentId로 반환한 최신 평가 ID'),
     machineId: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/).optional().describe('new일 때 실행할 머신. resume은 기존 대화의 머신으로 고정됩니다.'),
     instruction: z.string().min(1).max(100000).describe('대상 문서 AI가 수행할 작업·제외 범위·완료 및 회신 조건. 승인 범위를 넘는 변경은 포함하지 않습니다. 사용자 승인 발언과 승인 출처는 approvalEvidence에만 전달하며 동일 전문을 반복하지 않습니다.'),
     replyTarget: z.union([
@@ -1777,6 +1779,7 @@ async function main() {
     targetCardId: z.string().min(1).max(120).describe('작업을 맡길 대화 시작 카드의 계층상 하위 카드 ID. 모든 깊이의 하위 카드를 지원'),
     strategy: z.enum(['resume', 'new']).describe('resume은 연결된 기존 대화 이어가기, new는 새 대화 생성'),
     conversationId: z.string().min(1).max(120).optional().describe('resume일 때 이어갈 대상 카드의 conversationId'),
+    conversationAssessmentId: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('일반 resume일 때 mindnprogress_list_ai_conversations가 해당 대화의 contextHealth.assessmentId로 반환한 최신 평가 ID. 중단된 동일 위임의 직접 재개에는 생략 가능'),
     machineId: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/).optional().describe('new일 때 풀 lease 없는 일반 작업을 실행할 머신 ID. 생략하면 편집자의 기본 머신을 사용합니다. resume은 기존 대화의 homeMachineId로 고정되며, 등록된 Unity 작업공간 pool 위임은 현재 메인 머신만 지원합니다.'),
     instruction: z.string().min(1).max(100000).describe('같은 문서의 하위 AI가 제안에 그치지 않고 실제로 수행할 작업 범위·허용 작업·제외 범위·완료 조건. 분석·제안만 맡기는 경우 구현·추가 위임 금지를 명시합니다.'),
     decisionReason: z.string().min(1).max(1000).describe('이 기존 대화를 선택했거나 새 대화가 필요하다고 판단한 근거'),
@@ -2556,17 +2559,21 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_get_ai_conversation_transcript', '카드에 연결된 AionUi 대화의 전체 내용을 AionUi 세션 목록의 "전체 복사"와 같은 텍스트 형식으로 조회합니다. conversationId를 생략하면 최근 연결 대화를 사용하고, 여러 대화 중 하나를 지정할 수 있습니다. 사용자·어시스턴트·시스템 메시지를 시간순으로 반환하며 도구 호출 메시지는 제외합니다.', {
+  registerTool(server, 'mindnprogress_get_ai_conversation_transcript', '카드에 연결된 AionUi 대화 내용을 페이지 단위 텍스트 형식으로 조회합니다. conversationId를 생략하면 최근 연결 대화를 사용합니다. 사용자·어시스턴트·시스템 메시지를 시간순으로 반환하며 도구 호출 메시지는 제외합니다. coverage.complete=false이면 page.nextBefore를 before로 전달해 오래된 메시지를 이어서 조회하세요.', {
     mapId: z.string().min(1),
     cardId: z.string().min(1),
     conversationId: z.string().min(1).max(120).optional().describe('여러 연결 대화 중 조회할 대화 ID. 생략하면 최근 연결 대화'),
-  }, async ({ mapId, cardId, conversationId: requestedConversationId }) => {
+    limit: z.number().int().min(1).max(200).default(50).describe('한 페이지에서 조회할 메시지 수'),
+    before: z.string().min(1).max(1000).optional().describe('더 오래된 메시지를 조회할 때 직전 응답의 page.nextBefore'),
+  }, async ({ mapId, cardId, conversationId: requestedConversationId, limit, before }) => {
     const map = await getDocument(mapId)
     const card = map.nodes.find((node) => node.id === cardId)
     if (!card) throw new Error('카드를 찾을 수 없습니다.')
     const conversationId = String(requestedConversationId ?? card.data?.aiConversationId ?? '').trim()
     if (!conversationId) throw new Error('카드에 연결된 AI 대화가 없습니다.')
-    return apiRequest(`/api/integrations/aionui/conversations/${encodeURIComponent(conversationId)}/transcript`, {
+    const query = new URLSearchParams({ limit: String(limit) })
+    if (before) query.set('before', before)
+    return apiRequest(`/api/integrations/aionui/conversations/${encodeURIComponent(conversationId)}/transcript?${query}`, {
       aiMapId: mapId,
       aiCardId: cardId,
     })

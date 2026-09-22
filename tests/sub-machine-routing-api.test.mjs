@@ -129,6 +129,9 @@ function subMachineResponse(request, conversationId = 'conversation-on-mac') {
       runtime: { state: 'idle' },
     }
   }
+  if (request.pathname === `/api/conversations/${conversationId}/usage`) {
+    return { used: 8_000, size: 200_000 }
+  }
   if (request.pathname.startsWith(`/api/conversations/${conversationId}/messages`)) {
     return { items: [{ id: 'message-1', type: 'text', position: 'right', content: '서브 머신에서 시작' }] }
   }
@@ -276,6 +279,9 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
     assert.equal(listed.body.conversations[0].homeMachineId, 'macbook')
     assert.equal(listed.body.conversations[0].homeMachineLabel, '개발 맥북')
     assert.equal(listed.body.conversations[0].accessible, true)
+    assert.equal(listed.body.conversations[0].contextHealth.state, 'healthy')
+    assert.equal(listed.body.conversations[0].contextHealth.recommendation, 'resume')
+    assert.match(listed.body.conversations[0].contextHealth.assessmentId, /^[a-f0-9]{64}$/)
 
     const openUrlResult = await request(
       baseUrl,
@@ -307,6 +313,8 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
     assert.equal(transcript.response.status, 200)
     assert.equal(transcript.body.homeMachineId, 'macbook')
     assert.match(transcript.body.transcript, /서브 머신에서 시작/)
+    assert.equal(transcript.body.page.limit, 50)
+    assert.equal(transcript.body.coverage.complete, true)
 
     const workStatesRequest = request(baseUrl, cookie, `/api/maps/${mapId}/ai-conversation-work-states?cardId=root-card`)
     const workStates = await requestWithRunner(

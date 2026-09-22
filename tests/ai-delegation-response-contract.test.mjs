@@ -74,7 +74,7 @@ test('작업공간 배정 전 단계와 실제 용량 부족을 서로 다른 �
 test('위임 생성 라우트는 모든 명시적 응답을 공통 응답 생성기로 만든다', async () => {
   const source = await readFile(new URL('../server/index.mjs', import.meta.url), 'utf8')
   const start = source.indexOf("if (aiDelegationsRoute && request.method === 'POST')")
-  const end = source.indexOf('const cardAiConversationItemRoute', start)
+  const end = source.indexOf('const cardAiConversationOpenRoute', start)
   assert.ok(start >= 0 && end > start)
   const route = source.slice(start, end)
   assert.doesNotMatch(route, /sendJson\(response/)

@@ -38,6 +38,7 @@ import { detectReleasedWaitingItems } from './lib/waitingItems.mjs'
 import { resolveAttributionWithoutToken, resolveScopedAttribution } from './lib/attributionScope.mjs'
 import { readAionUiSubscriptionUsage } from './lib/aionUiSubscriptionUsage.mjs'
 import { resolveConversationDisplay } from './lib/aiConversationDisplay.mjs'
+import { assessAiConversationContextHealth } from './lib/aiConversationContextHealth.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
 import { aiDelegationReportArchived, aiDelegationReportArchivePending, createAiDelegationReportArchiver } from './lib/aiDelegationReportArchive.mjs'
 import {
@@ -2481,6 +2482,39 @@ async function dispatchGroupDocumentInstruction(instruction, user) {
         message: '대상 문서 루트 AI가 현재 응답 중이거나 상태를 확인할 수 없어 지시 전문을 대기열에 보관했습니다. 유휴 상태가 되면 자동 전달합니다.',
       })
     }
+    if (instruction.strategy === 'resume') {
+      try {
+        const conversation = await fetchAiConversationRuntime(instruction.requestedConversationId)
+        const contextHealth = await inspectAiConversationContextHealth(
+          instruction.requestedConversationId,
+          conversation,
+          instruction.targetHomeMachineId,
+          { excludeInstructionId: instruction.id },
+        )
+        if (contextHealth.assessmentId !== instruction.conversationAssessmentId) {
+          return updateGroupDocumentInstruction(instruction.id, {
+            state: 'expired',
+            reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_ASSESSMENT_STALE',
+            message: '대기 중 대상 문서 AI 대화가 변경되어 지시를 전달하지 않았습니다. 최신 대화 후보와 문맥 상태를 다시 확인하세요.',
+            conversationContextHealth: contextHealth,
+          })
+        }
+        if (!contextHealth.resumeAllowed) {
+          return updateGroupDocumentInstruction(instruction.id, {
+            state: 'expired',
+            reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE',
+            message: contextHealth.message,
+            conversationContextHealth: contextHealth,
+          })
+        }
+      } catch {
+        return updateGroupDocumentInstruction(instruction.id, {
+          state: 'queued',
+          reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_ASSESSMENT_UNAVAILABLE',
+          message: '대상 문서 AI 대화의 최신 문맥 상태를 확인하지 못해 지시 전달을 대기합니다.',
+        })
+      }
+    }
 
     const selection = aiDelegationSelectionFromSource(instruction.pendingSelection)
     if (!selection) return updateGroupDocumentInstruction(instruction.id, {
@@ -3154,6 +3188,7 @@ async function dispatchPreparedAiDelegation({
     targetHomeMachineId,
     childOperationId: id,
     strategy,
+    conversationAssessmentId: strategy === 'resume' ? queuedDelegation?.conversationAssessmentId ?? null : null,
     decisionReason,
     sourceRevision,
     instructionPreview: instruction.replace(/\s+/g, ' ').slice(0, 240),
@@ -4442,6 +4477,27 @@ async function drainWaitingWorkspaceDelegations() {
           scheduleAiDelegationWaitPoll(blocked)
           continue
         }
+        if (!queued.resumesDelegationId) {
+          const contextHealth = await inspectAiConversationContextHealth(
+            queued.targetConversationId,
+            conversation,
+            delegationTargetMachineId(queued),
+            { excludeDelegationId: queued.id },
+          )
+          if (contextHealth.assessmentId !== queued.conversationAssessmentId || !contextHealth.resumeAllowed) {
+            await updateAiDelegation(queued.id, {
+              state: 'failed',
+              childStatus: 'rejected',
+              childError: contextHealth.assessmentId !== queued.conversationAssessmentId
+                ? '작업공간 대기 중 대상 대화의 문맥 상태가 변경되었습니다. 최신 후보를 확인해 새 위임을 검토하세요.'
+                : contextHealth.message,
+              conversationContextHealth: contextHealth,
+              resource: null,
+            })
+            clearAiDelegationWaitPoll(queued.id)
+            continue
+          }
+        }
       } catch (error) {
         const workspaceWaitMessage = `대상 AionUi 대화 상태를 확인하지 못했습니다: ${error?.message ?? String(error)}`
         const blocked = await updateAiDelegation(queued.id, {
@@ -5135,6 +5191,61 @@ function fetchAiConversationRuntime(conversationId) {
     .finally(() => aiConversationRuntimeRequests.delete(requestKey))
   aiConversationRuntimeRequests.set(requestKey, request)
   return request
+}
+
+function aiConversationDelegationContextStats(conversationId, { excludeDelegationId = null, excludeInstructionId = null } = {}) {
+  const records = [
+    ...[...aiDelegations.values()]
+      .filter((delegation) => delegation.id !== excludeDelegationId && delegation.targetConversationId === conversationId)
+      .map((delegation) => ({ strategy: delegation.strategy, createdAt: delegation.createdAt })),
+    ...[...groupDocumentInstructions.values()]
+      .filter((instruction) => instruction.id !== excludeInstructionId
+        && (instruction.targetConversationId ?? instruction.requestedConversationId) === conversationId)
+      .map((instruction) => ({ strategy: instruction.strategy, createdAt: instruction.createdAt })),
+  ].sort((first, second) => String(first.createdAt ?? '').localeCompare(String(second.createdAt ?? '')))
+  let consecutiveResumeCount = 0
+  for (let index = records.length - 1; index >= 0 && records[index].strategy === 'resume'; index -= 1) {
+    consecutiveResumeCount += 1
+  }
+  return { delegationCount: records.length, consecutiveResumeCount }
+}
+
+async function fetchAiConversationMessageStatistics(conversationId, machineId) {
+  try {
+    const page = await fetchAionUiOn(machineId,
+      `/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=200&content_mode=compact`,
+      { timeoutMs: 5_000 })
+    if (!Array.isArray(page?.items)) return { messageCount: null, messageCountExact: false }
+    return {
+      messageCount: page.items.length,
+      messageCountExact: page.has_more_before !== true && page.has_more_after !== true,
+    }
+  } catch {
+    return { messageCount: null, messageCountExact: false }
+  }
+}
+
+async function inspectAiConversationContextHealth(
+  conversationId,
+  conversation = null,
+  machineId = conversationHomeMachineId(conversationId),
+  exclusions = {},
+) {
+  const resolvedConversation = conversation ?? await fetchAiConversationRuntime(conversationId)
+  const runtime = normalizeAiConversationRuntime(conversationId, resolvedConversation)
+  const [usage, messages] = await Promise.all([
+    fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(conversationId)}/usage`, { timeoutMs: 2_500 })
+      .catch(() => null),
+    fetchAiConversationMessageStatistics(conversationId, machineId),
+  ])
+  return assessAiConversationContextHealth({
+    conversationId,
+    modifiedAt: normalizedIsoDate(resolvedConversation?.modified_at, null),
+    runtimeState: runtime.state,
+    usage,
+    ...messages,
+    ...aiConversationDelegationContextStats(conversationId, exclusions),
+  })
 }
 
 function resolveAiConversationDisplay(conversationId, machineId = conversationHomeMachineId(conversationId)) {
@@ -8907,6 +9018,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       const targetMapId = String(body.targetMapId ?? '').trim()
       const strategy = String(body.strategy ?? '').trim()
       const requestedConversationId = String(body.conversationId ?? '').trim()
+      const conversationAssessmentId = String(body.conversationAssessmentId ?? '').trim()
       const instructionType = String(body.instructionType ?? '').trim()
       const approvalScope = String(body.approvalScope ?? '').trim()
       const approvalEvidence = String(body.approvalEvidence ?? '').trim()
@@ -8920,6 +9032,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         || !isValidMapId(targetMapId) || targetMapId === parentMapId
         || !['resume', 'new'].includes(strategy)
         || (strategy === 'resume' && !validAiConversationId(requestedConversationId))
+        || (conversationAssessmentId && !/^[a-f0-9]{64}$/.test(conversationAssessmentId))
         || !GROUP_DOCUMENT_INSTRUCTION_TYPES.includes(instructionType)
         || !GROUP_DOCUMENT_INSTRUCTION_SCOPES.includes(approvalScope)
         || !approvalEvidence || approvalEvidence.length > 10_000
@@ -9035,6 +9148,22 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           )
           try {
             const conversation = await fetchAiConversationRuntime(requestedConversationId)
+            const contextHealth = await inspectAiConversationContextHealth(requestedConversationId, conversation, targetHomeMachineId)
+            if (!conversationAssessmentId) return sendGroupDocumentInstructionResponse(
+              response, 409, 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_ASSESSMENT_REQUIRED',
+              '기존 문서 AI 대화 이어가기는 최신 문맥 상태 평가가 필요합니다. 대상 루트 카드의 대화 후보를 다시 조회하세요.',
+              { contextHealth },
+            )
+            if (conversationAssessmentId !== contextHealth.assessmentId) return sendGroupDocumentInstructionResponse(
+              response, 409, 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_ASSESSMENT_STALE',
+              '대상 문서 AI 대화가 후보 조회 이후 변경되었습니다. 최신 문맥 상태를 다시 확인하세요.',
+              { contextHealth },
+            )
+            if (!contextHealth.resumeAllowed) return sendGroupDocumentInstructionResponse(
+              response, 409, 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE',
+              contextHealth.message,
+              { contextHealth },
+            )
             const recovered = aiConversationLinkFromAionUiConversation(conversation)
             selection = aiDelegationSelectionFromSource({
               ...recovered,
@@ -9092,6 +9221,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           sourceRevision,
           targetHomeMachineId,
           requestedConversationId: strategy === 'resume' ? requestedConversationId : null,
+          conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
           strategy,
           instructionType,
           approvalScope,
@@ -9184,12 +9314,14 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       const targetCardId = String(body.targetCardId ?? '').trim()
       const strategy = String(body.strategy ?? '').trim()
       const conversationId = String(body.conversationId ?? '').trim()
+      const conversationAssessmentId = String(body.conversationAssessmentId ?? '').trim()
       const instruction = String(body.instruction ?? '').trim()
       const decisionReason = String(body.decisionReason ?? '').trim()
       const sourceRevision = Number(body.sourceRevision)
       if (!isValidAiDelegationId(id)
         || !targetCardId || targetCardId.length > 120
         || !['resume', 'new'].includes(strategy)
+        || (conversationAssessmentId && !/^[a-f0-9]{64}$/.test(conversationAssessmentId))
         || !instruction || instruction.length > 100_000
         || !decisionReason || decisionReason.length > 1_000
         || !Number.isInteger(sourceRevision) || sourceRevision < 1) {
@@ -9386,6 +9518,12 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           return sendAiDelegationResponse(response, 400, 'AI_DELEGATION_RESUME_CONVERSATION_INVALID',
             '이어갈 대화는 대상 카드에 연결된 conversationId여야 합니다.')
         }
+        const resumesInterruptedDelegation = activeAiDelegationsForConversation(aiDelegations.values(), {
+          mapId,
+          targetCardId: targetCard.id,
+          targetConversationId,
+          excludeId: id,
+        }).some((delegation) => delegation.state === 'waiting-child-resume')
         const linked = aiConversationLinksFromData(targetCard.data)
           .find((candidate) => candidate.conversationId === targetConversationId)
         try {
@@ -9394,6 +9532,27 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           if (runtime.state !== 'idle') {
             return sendAiDelegationResponse(response, 409, 'AI_DELEGATION_CONVERSATION_BUSY',
               `대화가 ${runtime.state} 상태이므로 지금 이어갈 수 없습니다.`, { runtime })
+          }
+          if (!resumesInterruptedDelegation) {
+            const contextHealth = await inspectAiConversationContextHealth(targetConversationId, conversation, targetHomeMachineId)
+            if (!conversationAssessmentId) {
+              return sendAiDelegationResponse(response, 409, 'AI_DELEGATION_CONVERSATION_ASSESSMENT_REQUIRED',
+                '일반적인 기존 대화 이어가기는 최신 문맥 상태 평가가 필요합니다. 대화 후보를 다시 조회해 assessmentId를 전달하세요.', {
+                contextHealth,
+              })
+            }
+            if (conversationAssessmentId !== contextHealth.assessmentId) {
+              return sendAiDelegationResponse(response, 409, 'AI_DELEGATION_CONVERSATION_ASSESSMENT_STALE',
+                '대화 내용이나 문맥 상태가 후보 조회 이후 변경되었습니다. 최신 후보 평가를 다시 확인하세요.', {
+                contextHealth,
+              })
+            }
+            if (!contextHealth.resumeAllowed) {
+              const reasonCode = contextHealth.state === 'saturated'
+                ? 'AI_DELEGATION_CONVERSATION_CONTEXT_SATURATED'
+                : 'AI_DELEGATION_CONVERSATION_CONTEXT_UNKNOWN'
+              return sendAiDelegationResponse(response, 409, reasonCode, contextHealth.message, { contextHealth })
+            }
           }
           const recovered = aiConversationLinkFromAionUiConversation(conversation)
           selection = aiDelegationSelectionFromSource({
@@ -9536,6 +9695,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           targetHomeMachineId,
           childOperationId: id,
           strategy,
+          conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
           decisionReason,
           sourceRevision,
           instructionPreview: instruction.replace(/\s+/g, ' ').slice(0, 240),
@@ -9626,6 +9786,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
               targetHomeMachineId,
               childOperationId: id,
               strategy,
+              conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
               decisionReason,
               sourceRevision,
               instructionPreview: instruction.replace(/\s+/g, ' ').slice(0, 240),
@@ -9880,6 +10041,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         targetHomeMachineId,
         childOperationId: id,
         strategy,
+        conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
         decisionReason,
         sourceRevision,
         instructionPreview: instruction.replace(/\s+/g, ' ').slice(0, 240),
@@ -10067,6 +10229,13 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
             name: '',
             modifiedAt: null,
             runtime: normalizeAiConversationRuntime(link.conversationId, null, observedAt),
+            contextHealth: assessAiConversationContextHealth({
+              conversationId: link.conversationId,
+              runtimeState: 'unknown',
+              messageCount: null,
+              messageCountExact: false,
+              ...aiConversationDelegationContextStats(link.conversationId),
+            }, observedAt),
           }
         }
         try {
@@ -10085,6 +10254,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
             workspace: link.workspace ?? recoveredLink?.workspace,
             startedAt: link.startedAt ?? recoveredLink?.startedAt,
           }) ?? link
+          const contextHealth = await inspectAiConversationContextHealth(link.conversationId, conversation, enrichedLink.homeMachineId)
           return {
             ...enrichedLink,
             homeMachineLabel: machineLabel(enrichedLink.homeMachineId),
@@ -10095,6 +10265,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
             startedAt: enrichedLink.startedAt ?? normalizedIsoDate(conversation.created_at),
             modifiedAt: normalizedIsoDate(conversation.modified_at, enrichedLink.linkedAt ?? null),
             runtime: normalizeAiConversationRuntime(link.conversationId, conversation, observedAt),
+            contextHealth,
           }
         } catch {
           return {
@@ -10106,6 +10277,13 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
             name: '',
             modifiedAt: null,
             runtime: normalizeAiConversationRuntime(link.conversationId, null, observedAt),
+            contextHealth: assessAiConversationContextHealth({
+              conversationId: link.conversationId,
+              runtimeState: 'unknown',
+              messageCount: null,
+              messageCountExact: false,
+              ...aiConversationDelegationContextStats(link.conversationId),
+            }, observedAt),
           }
         }
       }))
@@ -10142,10 +10320,17 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       if (!machineAccessibleByUser(user, homeMachineId)) {
         return sendJson(response, 403, { error: '이 대화가 저장된 서브 머신을 사용할 권한이 없습니다.' })
       }
+      const requestedLimit = Number(url.searchParams.get('limit') ?? 50)
+      const before = String(url.searchParams.get('before') ?? '').trim()
+      if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 200 || before.length > 1_000) {
+        return sendJson(response, 400, { error: '대화 전문 페이지의 limit 또는 before 값이 올바르지 않습니다.' })
+      }
       try {
+        const messageQuery = new URLSearchParams({ limit: String(requestedLimit), content_mode: 'full' })
+        if (before) messageQuery.set('before', before)
         const [conversation, messagePage] = await Promise.all([
           fetchAionUiOn(homeMachineId, `/api/conversations/${encodeURIComponent(conversationId)}`),
-          fetchAionUiOn(homeMachineId, `/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=10000&content_mode=full`, { timeoutMs: 30_000 }),
+          fetchAionUiOn(homeMachineId, `/api/conversations/${encodeURIComponent(conversationId)}/messages?${messageQuery}`, { timeoutMs: 30_000 }),
         ])
         if (!conversation || conversation.id !== conversationId) {
           return sendJson(response, 404, { error: 'AionUi 대화를 찾을 수 없습니다.' })
@@ -10168,6 +10353,23 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           messageCount: messages.length,
           exportedMessageCount: exported.exportedMessageCount,
           truncated: messagePage?.has_more_before === true || messagePage?.has_more_after === true,
+          page: {
+            limit: requestedLimit,
+            before: before || null,
+            oldestCursor: messagePage?.oldest_cursor ?? null,
+            newestCursor: messagePage?.newest_cursor ?? null,
+            hasMoreBefore: messagePage?.has_more_before === true,
+            hasMoreAfter: messagePage?.has_more_after === true,
+            nextBefore: messagePage?.has_more_before === true ? messagePage?.oldest_cursor ?? null : null,
+          },
+          coverage: {
+            complete: messagePage?.has_more_before !== true && messagePage?.has_more_after !== true,
+            message: messagePage?.has_more_before === true
+              ? '더 오래된 메시지가 있습니다. page.nextBefore를 before로 전달해 이어서 조회하세요.'
+              : messagePage?.has_more_after === true
+                ? '이 페이지보다 최신 메시지가 있어 현재 응답은 전체 전문이 아닙니다.'
+                : '이 페이지에 대화의 전체 메시지 범위가 포함되었습니다.',
+          },
           transcript: exported.transcript,
         })
       } catch (error) {

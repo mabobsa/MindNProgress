@@ -76,7 +76,17 @@ test('unit runner는 명시적 동시성 override와 자식 종료 코드를 보
 })
 
 test('unit runner는 잘못된 동시성 값을 테스트 실행 전에 거부한다', async () => {
-  for (const value of ['', '0', '-1', '1.5', 'four', ' 4 ']) {
+  const invalidOverrides = [
+    { value: '', message: /1 이상의 정수/ },
+    { value: '0', message: /1 이상의 정수/ },
+    { value: '-1', message: /1 이상의 정수/ },
+    { value: '1.5', message: /1 이상의 정수/ },
+    { value: 'four', message: /1 이상의 정수/ },
+    { value: ' 4 ', message: /1 이상의 정수/ },
+    { value: '9007199254740992', message: /안전한 정수 범위/ },
+  ]
+
+  for (const { value, message } of invalidOverrides) {
     let readAttempted = false
     let spawnAttempted = false
     await assert.rejects(
@@ -92,7 +102,7 @@ test('unit runner는 잘못된 동시성 값을 테스트 실행 전에 거부�
           return exitingChild(0)
         },
       }),
-      new RegExp(`${UNIT_TEST_CONCURRENCY_ENV}는 1 이상의 정수`),
+      message,
     )
     assert.equal(readAttempted, false)
     assert.equal(spawnAttempted, false)
@@ -100,16 +110,24 @@ test('unit runner는 잘못된 동시성 값을 테스트 실행 전에 거부�
 })
 
 test('unit runner CLI는 잘못된 override를 명확한 오류와 실패 코드로 반환한다', async () => {
-  await assert.rejects(
-    execFileAsync(process.execPath, [runnerPath], {
-      cwd: projectDirectory,
-      env: { ...process.env, [UNIT_TEST_CONCURRENCY_ENV]: 'invalid' },
-      windowsHide: true,
-    }),
-    (error) => {
-      assert.equal(error.code, 1)
-      assert.match(error.stderr, /\[unit runner\] MNP_UNIT_TEST_CONCURRENCY는 1 이상의 정수여야 합니다/)
-      return true
-    },
-  )
+  const invalidOverrides = [
+    { value: 'invalid', message: /1 이상의 정수/ },
+    { value: '9007199254740992', message: /안전한 정수 범위/ },
+  ]
+
+  for (const { value, message } of invalidOverrides) {
+    await assert.rejects(
+      execFileAsync(process.execPath, [runnerPath], {
+        cwd: projectDirectory,
+        env: { ...process.env, [UNIT_TEST_CONCURRENCY_ENV]: value },
+        windowsHide: true,
+      }),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, message)
+        assert.match(error.stderr, new RegExp(value))
+        return true
+      },
+    )
+  }
 })

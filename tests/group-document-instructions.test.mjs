@@ -9,6 +9,7 @@ import {
   groupDocumentInstructionResponseBody,
   isValidGroupDocumentInstructionId,
   legacyGroupDelegationCreationAllowed,
+  normalizeGroupDocumentReplyTarget,
 } from '../server/lib/groupDocumentInstructions.mjs'
 
 const request = {
@@ -46,6 +47,29 @@ test('그룹 문서 지시 키와 요청 서명은 안정적이며 다른 지시
     createGroupDocumentInstructionSignature(request),
     createGroupDocumentInstructionSignature({ ...request, approvalScope: 'analysis-only' }),
   )
+  assert.equal(
+    createGroupDocumentInstructionSignature(request),
+    createGroupDocumentInstructionSignature({ ...request, replyTarget: { mode: 'origin' } }),
+  )
+  assert.notEqual(
+    createGroupDocumentInstructionSignature(request),
+    createGroupDocumentInstructionSignature({
+      ...request,
+      replyTarget: { mode: 'explicit', conversationId: 'conversation-review', evidence: '사용자가 현재 지시에서 지정했습니다.' },
+    }),
+  )
+})
+
+test('완료 보고 대상은 기본 발신 대화와 현재 지시의 명시적 예외만 허용한다', () => {
+  assert.deepEqual(normalizeGroupDocumentReplyTarget(undefined), { mode: 'origin', conversationId: null, evidence: null })
+  assert.deepEqual(normalizeGroupDocumentReplyTarget({ mode: 'origin' }), { mode: 'origin', conversationId: null, evidence: null })
+  assert.deepEqual(normalizeGroupDocumentReplyTarget({
+    mode: 'explicit', conversationId: 'conversation-review', evidence: '사용자가 이번 지시에서 별도 회신을 요청했습니다.',
+  }), {
+    mode: 'explicit', conversationId: 'conversation-review', evidence: '사용자가 이번 지시에서 별도 회신을 요청했습니다.',
+  })
+  assert.equal(normalizeGroupDocumentReplyTarget({ mode: 'explicit', conversationId: 'conversation-review' }), null)
+  assert.equal(normalizeGroupDocumentReplyTarget({ mode: 'origin', conversationId: 'stale-conversation' }), null)
 })
 
 test('과거 교차 문서 위임 생성은 명시적인 마이그레이션 테스트 설정에서만 허용한다', () => {
@@ -74,6 +98,7 @@ test('그룹 문서 지시 전문은 위임·worker 완료와 분리하고 승�
     targetRevision: request.targetRevision,
     groupProjectVersion: request.groupProjectVersion,
     instructionId: 'group:3-map-lobby-v7',
+    parentConversationId: 'conversation-coordinator',
     instructionType: request.instructionType,
     approvalScope: request.approvalScope,
     approvalEvidence: request.approvalEvidence,
@@ -86,9 +111,31 @@ test('그룹 문서 지시 전문은 위임·worker 완료와 분리하고 승�
   assert.match(instruction, /AI 작업 위임이나 worker 작업공간 배정이 아닙니다/)
   assert.match(instruction, /실제 하위 업무 카드에 AI 위임/)
   assert.match(instruction, /같은 승인을 사용자에게 반복해서 요구하지 마세요/)
+  assert.match(instruction, /기본 회신 대상: `conversation-coordinator`/)
+  assert.match(instruction, /현재 지시의 명시적 대체 대상: 없음/)
+  assert.match(instruction, /과거 `AION_SESSION_MESSAGE`/)
+  assert.match(instruction, /자동 재개된 턴에서도 이 확인을 다시 수행하세요/)
   assert.match(instruction, /사용자가 문서별 실행 전문을 승인했습니다/)
   assert.equal(instruction.split(request.approvalEvidence).length - 1, 1)
   assert.doesNotMatch(instruction, /# MindNProgress 하위 카드 위임 작업 요청/)
+})
+
+test('그룹 문서 지시 전문은 사용자가 현재 지시에서 지정한 대체 회신 대상을 우선 표시한다', () => {
+  const instruction = buildGroupDocumentInstruction({
+    groupId: 'group-project', parentMapId: request.parentMapId, targetMapId: request.targetMapId,
+    targetCardId: 'root-lobby', targetRevision: request.targetRevision, groupProjectVersion: request.groupProjectVersion,
+    instructionId: 'group:3-map-lobby-v8', parentConversationId: 'conversation-coordinator',
+    instructionType: request.instructionType, approvalScope: request.approvalScope,
+    approvalEvidence: request.approvalEvidence, instruction: request.instruction,
+    editorId: 'editor-1', attributionToken: 'token-1', documentCoordinatorInstruction: '문서 루트 AI 운영 지침',
+    replyTarget: {
+      mode: 'explicit', explicitConversationId: 'conversation-review',
+      evidence: '사용자가 이번 지시의 완료 보고를 검수 대화로 요청했습니다.',
+    },
+  })
+  assert.match(instruction, /현재 지시의 명시적 대체 대상: `conversation-review`/)
+  assert.match(instruction, /전달 시점의 유효 회신 대상: `conversation-review`/)
+  assert.match(instruction, /대체 근거: 사용자가 이번 지시의 완료 보고를 검수 대화로 요청했습니다/)
 })
 
 test('그룹 문서 지시 공개 응답은 기본적으로 전문을 숨기고 reasonCode와 message를 보장한다', () => {

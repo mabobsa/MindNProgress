@@ -482,6 +482,11 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       approvalEvidence: '사용자가 이 문서의 실행 전문을 승인했습니다. 테스트 대화 turn-1.',
       strategy: 'new',
       instruction: '담당 범위를 정비하고 승인된 구현을 문서 내부 하위 카드에 위임하세요.',
+      replyTarget: {
+        mode: 'explicit',
+        conversationId: 'group-review-target',
+        evidence: '사용자가 이번 지시의 완료 보고를 검수 대화로 보내 달라고 요청했습니다.',
+      },
       decisionReason: '문서 담당 대화가 아직 없습니다.',
       sourceRevision: currentCoordinator.version,
       idempotencyKey: 'group-instruction-first',
@@ -497,11 +502,26 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.equal(duplicateApprovalEvidence.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_DUPLICATE_APPROVAL_EVIDENCE')
     assert.match(duplicateApprovalEvidence.body.message, /approvalEvidence에는 승인 발언·출처·승인 범위만/)
     assert.equal(calls.some((call) => call.operationId === 'gdi:group-instruction-duplicate-evidence'), false)
+    const invalidReplyTarget = await api(instructionUrl, 'POST', {
+      ...instructionArgs,
+      idempotencyKey: 'group-instruction-invalid-reply-target',
+      replyTarget: { mode: 'explicit', conversationId: 'group-review-target' },
+    }, sourceHeaders)
+    assert.equal(invalidReplyTarget.status, 400)
+    assert.equal(invalidReplyTarget.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_REQUEST_INVALID')
+    assert.equal(calls.some((call) => call.operationId === 'gdi:group-instruction-invalid-reply-target'), false)
     const instructed = await api(instructionUrl, 'POST', instructionArgs, sourceHeaders)
     assert.equal(instructed.status, 202, JSON.stringify(instructed.body))
     assert.equal(instructed.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_DELIVERED', JSON.stringify(instructed.body))
     assert.match(instructed.body.message, /업무 완료를 의미하지 않습니다/)
     assert.equal(instructed.body.instruction.targetCardId, instructionDocument.nodes[0].id)
+    assert.deepEqual(instructed.body.instruction.replyTarget, {
+      mode: 'explicit',
+      defaultConversationId: 'group-parent',
+      explicitConversationId: 'group-review-target',
+      effectiveConversationId: 'group-review-target',
+      evidence: '사용자가 이번 지시의 완료 보고를 검수 대화로 보내 달라고 요청했습니다.',
+    })
     assert.equal(instructed.body.instruction.workspaceLease, undefined)
     assert.equal(instructed.body.instruction.coordinationOnly, undefined)
     const instructionCall = calls.find((call) => call.operationId === 'gdi:group-instruction-first')
@@ -509,6 +529,10 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.match(instructionCall.instruction, /^# MindNProgress 그룹 문서 지시/m)
     assert.match(instructionCall.instruction, /AI 작업 위임이나 worker 작업공간 배정이 아닙니다/)
     assert.match(instructionCall.instruction, /문서 내부의 실제 하위 업무 카드에 AI 위임/)
+    assert.match(instructionCall.instruction, /기본 회신 대상: `group-parent`/)
+    assert.match(instructionCall.instruction, /현재 지시의 명시적 대체 대상: `group-review-target`/)
+    assert.match(instructionCall.instruction, /전달 시점의 유효 회신 대상: `group-review-target`/)
+    assert.match(instructionCall.instruction, /과거 `AION_SESSION_MESSAGE`/)
     assert.doesNotMatch(instructionCall.instruction, /# MindNProgress 하위 카드 위임 작업 요청/)
     const repeatedInstruction = await api(instructionUrl, 'POST', instructionArgs, sourceHeaders)
     assert.equal(repeatedInstruction.status, 200)

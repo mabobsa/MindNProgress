@@ -1712,7 +1712,7 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_send_group_document_instruction', '그룹 총괄 문서의 루트 AI가 같은 그룹에 속한 다른 문서의 원본 루트 AI에 승인된 문서별 지시 전문을 전달합니다. 이 도구는 AI 작업 위임이나 worker 배정이 아닙니다. 대상 문서 AI가 담당 분석·카드 정비를 수행하고, 승인된 실제 구현은 자기 문서의 하위 업무 카드에 별도로 위임합니다. 전달 전 mindnprogress_get_group_context에서 그룹 설정 버전과 대상 문서 버전, 두 단계 사용자 승인 범위를 확인하세요. 대상 AI가 응답 중이면 지시를 내구 대기열에 보존하고 유휴 상태에서 자동 전달합니다. 모든 응답의 reasonCode와 message를 함께 읽고, queued·delivered·replied 상태를 업무 완료로 해석하지 마세요.', {
+  registerTool(server, 'mindnprogress_send_group_document_instruction', '그룹 총괄 문서의 루트 AI가 같은 그룹에 속한 다른 문서의 원본 루트 AI에 승인된 문서별 지시 전문을 전달합니다. 이 도구는 AI 작업 위임이나 worker 배정이 아닙니다. 대상 문서 AI가 담당 분석·카드 정비를 수행하고, 승인된 실제 구현은 자기 문서의 하위 업무 카드에 별도로 위임합니다. 전달 전 mindnprogress_get_group_context에서 그룹 설정 버전과 대상 문서 버전, 두 단계 사용자 승인 범위를 확인하세요. 완료 보고는 기본적으로 현재 총괄 대화로 돌아오며, 사용자가 이번 지시에서 다른 대화를 명시한 경우에만 replyTarget을 explicit으로 지정하세요. 과거 지시·AION_SESSION_MESSAGE·reply_to를 근거로 대상을 추정하지 마세요. 대상 AI가 응답 중이면 지시를 내구 대기열에 보존하고 유휴 상태에서 자동 전달합니다. 모든 응답의 reasonCode와 message를 함께 읽고, queued·delivered·replied 상태를 업무 완료로 해석하지 마세요.', {
     mapId: z.string().min(1).describe('현재 그룹 총괄 루트 카드가 속한 문서 ID'),
     targetMapId: z.string().min(1).describe('지시를 받을 같은 그룹 소속 문서 ID. 대상 카드는 서버가 원본 루트로 확정합니다.'),
     targetRevision: z.number().int().positive().describe('get_group_context에서 확인한 대상 문서의 최신 version'),
@@ -1724,6 +1724,14 @@ async function main() {
     conversationId: z.string().min(1).max(120).optional().describe('resume일 때 이어갈 대상 문서 루트의 conversationId'),
     machineId: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/).optional().describe('new일 때 실행할 머신. resume은 기존 대화의 머신으로 고정됩니다.'),
     instruction: z.string().min(1).max(100000).describe('대상 문서 AI가 수행할 작업·제외 범위·완료 및 회신 조건. 승인 범위를 넘는 변경은 포함하지 않습니다. 사용자 승인 발언과 승인 출처는 approvalEvidence에만 전달하며 동일 전문을 반복하지 않습니다.'),
+    replyTarget: z.union([
+      z.object({ mode: z.literal('origin') }),
+      z.object({
+        mode: z.literal('explicit'),
+        conversationId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/),
+        evidence: z.string().min(1).max(1000),
+      }),
+    ]).optional().describe('완료 보고 대상. 생략하거나 origin이면 이번 지시를 보낸 총괄 대화가 기본 대상입니다. 사용자가 이번 지시에 대해 다른 대화를 정확히 지정한 경우에만 explicit과 conversationId, 요청 근거 evidence를 사용합니다. 과거 대화 이력에서 추정하지 않습니다.'),
     decisionReason: z.string().min(1).max(1000).describe('기존 대화를 이어가거나 새 대화가 필요하다고 판단한 근거'),
     sourceRevision: z.number().int().positive().describe('get_context 또는 get_document에서 확인한 총괄 문서의 최신 version'),
     idempotencyKey: z.string().regex(GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN).describe('같은 지시의 중복 전달을 막는 안정적인 키. sourceRevision과 targetMapId를 포함하는 형식을 권장'),

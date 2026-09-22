@@ -23,6 +23,7 @@ import {
   GROUP_DOCUMENT_INSTRUCTION_TYPES,
   isValidGroupDocumentInstructionId,
   legacyGroupDelegationCreationAllowed,
+  normalizeGroupDocumentReplyTarget,
 } from './lib/groupDocumentInstructions.mjs'
 import { createDoorayResponseIntegration } from './lib/doorayResponseIntegration.mjs'
 import { AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_REPORT_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
@@ -2509,6 +2510,8 @@ async function dispatchGroupDocumentInstruction(instruction, user) {
       instruction: instruction.pendingInstruction,
       editorId: attribution.startedBy,
       attributionToken,
+      parentConversationId: instruction.parentConversationId,
+      replyTarget: instruction.replyTarget,
       documentCoordinatorInstruction: DOCUMENT_COORDINATOR_INSTRUCTION,
     })
     const operationId = groupDocumentInstructionOperationId(instruction.id)
@@ -8912,6 +8915,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       const sourceRevision = Number(body.sourceRevision)
       const targetRevision = Number(body.targetRevision)
       const groupProjectVersion = Number(body.groupProjectVersion)
+      const requestedReplyTarget = normalizeGroupDocumentReplyTarget(body.replyTarget)
       if (!isValidGroupDocumentInstructionId(id)
         || !isValidMapId(targetMapId) || targetMapId === parentMapId
         || !['resume', 'new'].includes(strategy)
@@ -8923,7 +8927,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         || !decisionReason || decisionReason.length > 1_000
         || !Number.isInteger(sourceRevision) || sourceRevision < 1
         || !Number.isInteger(targetRevision) || targetRevision < 1
-        || !Number.isInteger(groupProjectVersion) || groupProjectVersion < 1) {
+        || !Number.isInteger(groupProjectVersion) || groupProjectVersion < 1
+        || !requestedReplyTarget) {
         return sendGroupDocumentInstructionResponse(
           response, 400, 'GROUP_DOCUMENT_INSTRUCTION_REQUEST_INVALID', '그룹 문서 지시 값이 올바르지 않습니다.',
         )
@@ -8965,6 +8970,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           approvalEvidence,
           instruction: instructionText,
           decisionReason,
+          replyTarget: requestedReplyTarget,
           newConversation: body.newConversation,
         })
         const existing = groupDocumentInstructions.get(id)
@@ -9062,6 +9068,13 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         )
 
         const now = new Date().toISOString()
+        const replyTarget = {
+          mode: requestedReplyTarget.mode,
+          defaultConversationId: parentAttribution.conversationId,
+          explicitConversationId: requestedReplyTarget.conversationId,
+          effectiveConversationId: requestedReplyTarget.conversationId ?? parentAttribution.conversationId,
+          evidence: requestedReplyTarget.evidence,
+        }
         const storedInstruction = {
           id,
           requestSignature,
@@ -9087,6 +9100,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           approvalEvidencePreview: approvalEvidence.replace(/\s+/g, ' ').slice(0, 240),
           approvalEvidenceHash: createHash('sha256').update(approvalEvidence).digest('hex'),
           decisionReason,
+          replyTarget,
           state: 'queued',
           reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_QUEUED',
           message: '그룹 문서 지시 전문을 내구 대기열에 저장했으며 대상 문서 루트 AI에 전달을 시도합니다.',

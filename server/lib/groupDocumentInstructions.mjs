@@ -15,6 +15,7 @@ export const GROUP_DOCUMENT_INSTRUCTION_SCOPES = Object.freeze([
   'implementation',
   'validation',
 ])
+const GROUP_DOCUMENT_REPLY_CONVERSATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/
 
 export function isValidGroupDocumentInstructionId(value) {
   return GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN.test(String(value ?? ''))
@@ -22,6 +23,21 @@ export function isValidGroupDocumentInstructionId(value) {
 
 export function legacyGroupDelegationCreationAllowed(value) {
   return String(value ?? '').trim() === '1'
+}
+
+export function normalizeGroupDocumentReplyTarget(value) {
+  if (value === undefined || value === null) return { mode: 'origin', conversationId: null, evidence: null }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const mode = String(value.mode ?? '').trim()
+  const conversationId = String(value.conversationId ?? '').trim()
+  const evidence = String(value.evidence ?? '').trim()
+  if (mode === 'origin') {
+    if (conversationId || evidence) return null
+    return { mode, conversationId: null, evidence: null }
+  }
+  if (mode !== 'explicit' || !GROUP_DOCUMENT_REPLY_CONVERSATION_ID_PATTERN.test(conversationId)
+    || !evidence || evidence.length > 1_000) return null
+  return { mode, conversationId, evidence }
 }
 
 function normalizeInstructionBlock(value) {
@@ -53,6 +69,7 @@ export function createGroupDocumentInstructionSignature({
   approvalEvidence,
   instruction,
   decisionReason,
+  replyTarget,
   newConversation,
 }) {
   const requestedConversation = newConversation && typeof newConversation === 'object'
@@ -67,6 +84,7 @@ export function createGroupDocumentInstructionSignature({
         workspace: String(newConversation.workspace ?? '').trim() || null,
       }
     : null
+  const normalizedReplyTarget = normalizeGroupDocumentReplyTarget(replyTarget)
   return createHash('sha256').update(JSON.stringify({
     parentMapId,
     parentCardId,
@@ -82,6 +100,7 @@ export function createGroupDocumentInstructionSignature({
     approvalEvidence,
     instruction,
     decisionReason,
+    ...(normalizedReplyTarget?.mode === 'explicit' ? { replyTarget: normalizedReplyTarget } : {}),
     newConversation: strategy === 'new' ? requestedConversation : null,
   })).digest('hex')
 }
@@ -94,6 +113,8 @@ export function buildGroupDocumentInstruction({
   targetRevision,
   groupProjectVersion,
   instructionId,
+  parentConversationId,
+  replyTarget,
   instructionType,
   approvalScope,
   approvalEvidence,
@@ -102,6 +123,14 @@ export function buildGroupDocumentInstruction({
   attributionToken,
   documentCoordinatorInstruction,
 }) {
+  const defaultReplyConversationId = String(parentConversationId ?? '').trim()
+  const explicitReplyConversationId = replyTarget?.mode === 'explicit'
+    ? String(replyTarget.explicitConversationId ?? replyTarget.conversationId ?? '').trim()
+    : ''
+  const effectiveReplyConversationId = explicitReplyConversationId || defaultReplyConversationId
+  const explicitReplyEvidence = replyTarget?.mode === 'explicit'
+    ? String(replyTarget.evidence ?? '').trim()
+    : ''
   const scopeInstruction = approvalScope === 'analysis-only'
     ? '이 지시는 읽기 전용 분석·제안 범위입니다. 카드·관계·코드·Prefab을 변경하거나 하위 AI에 구현을 위임하지 마세요.'
     : approvalScope === 'card-maintenance'
@@ -128,6 +157,16 @@ ${MNP_CONTEXT_BOOTSTRAP_INSTRUCTION}
 - 대상 문서 버전: \`${targetRevision}\`
 - 지시 유형: \`${instructionType}\`
 - 승인 범위: \`${approvalScope}\`
+
+## 완료 보고 라우팅
+
+- 기본 회신 대상: \`${defaultReplyConversationId}\`
+- 현재 지시의 명시적 대체 대상: ${explicitReplyConversationId ? `\`${explicitReplyConversationId}\`` : '없음'}
+${explicitReplyEvidence ? `- 대체 근거: ${explicitReplyEvidence}\n` : ''}- 전달 시점의 유효 회신 대상: \`${effectiveReplyConversationId}\`
+
+회신 대상을 대화 이력에서 추정하지 마세요. 과거 그룹 지시, 과거 \`AION_SESSION_MESSAGE\`, 이전 \`reply_to\`와 AI의 기억은 이번 \`instructionId\`의 회신 근거가 아닙니다.
+완료 보고 대상은 ① 이 지시 이후 사용자가 이 \`instructionId\`에 대해 명시한 대상, ② 위 명시적 대체 대상, ③ 기본 회신 대상 순서로 결정하세요. 사용자가 다른 세션을 말했지만 정확한 대상을 확인할 수 없으면 임의로 선택하지 말고 확인을 요청하세요.
+최종 보고 직전에 현재 \`instructionId\`, 결정 근거와 유효 회신 대상을 다시 확인하고, 완료 보고에 \`instructionId\`를 포함하세요. \`waiting-workspace\` 같은 접수·대기 응답은 최종 완료 보고가 아닙니다. 하위 위임 완료 후 자동 재개된 턴에서도 이 확인을 다시 수행하세요.
 
 ${documentCoordinatorInstruction}
 

@@ -65,6 +65,11 @@ export function normalizeAiAutomaticRequest(value: unknown, preserveFull?: boole
 export function combineAiEditorRequest(automaticRequest: unknown, userInput: unknown, preserveFull?: boolean): string
 export function isAiConversationPurpose(value: unknown): value is AiConversationPurpose
 export function normalizeAiConversationPurpose(value: unknown): AiConversationPurpose
+export function aiConversationWorkflowPolicy(purpose?: AiConversationPurpose): {
+  workflow: string
+  writePolicy: 'allowed' | 'approval-required' | 'forbidden'
+  instruction: string
+}
 export function aiConversationTitle(input?: {
   purpose?: AiConversationPurpose
   documentTitle?: unknown

@@ -29,7 +29,10 @@ test('총괄 뷰·루트 선택·우클릭·대화 목록의 신규 시작은 �
   assert.equal(combined, `${request}\n\n추가 확인 사항`)
   const prompt = buildAiConversationPrompt({ ...input, purpose: expected.purpose, editorId: 'fixture-editor', attributionToken: 'fixture-token', request: combined })
   assert.ok(prompt.includes(request))
-  assert.match(prompt, /# 그룹의 두 단계 사용자 승인/)
+  assert.match(prompt, /workflow: `group-coordination`/)
+  assert.match(prompt, /writePolicy: `approval-required`/)
+  assert.match(prompt, /get_group_context의 현재 역할 guide/)
+  assert.doesNotMatch(prompt, /# 그룹의 두 단계 사용자 승인/)
   assert.match(aiConversationTitle({ purpose: expected.purpose, documentTitle: '총괄', cardTitle: '루트' }), /^\[그룹 총괄\]/)
 })
 

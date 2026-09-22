@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "toolCount": 58,
+  "schemaDescriptionCount": 141,
+  "execDeclarationChars": 24602,
+  "execDeclarationSource": "구현 직전 활성 MCP 등록 표면에서 캡처했으며 input schema deep-equal로 불변을 검증합니다.",
+  "perToolWrapperChars": 35,
+  "serverInstructionsChars": 468,
+  "toolDescriptionChars": 9892,
+  "fixedSurfaceChars": 36992,
+  "dynamicTotalChars": 20706,
+  "maxDynamicChars": 2833,
+  "maxStartChars": 39825,
+  "repetitionCounts": {
+    "contextBootstrap": 9,
+    "writePolicy": 10,
+    "workspace": 2,
+    "completion": 1,
+    "doorayProposal": 1,
+    "doorayApproval": 1
+  },
+  "verificationDescriptions": [
+    "mindnprogress_add_card",
+    "mindnprogress_apply_reconstruction",
+    "mindnprogress_apply_shared_knowledge_review",
+    "mindnprogress_checkpoint_ai_workspace",
+    "mindnprogress_complete_ai_delegation",
+    "mindnprogress_create_group_document",
+    "mindnprogress_create_mindmap",
+    "mindnprogress_delegate_ai_work",
+    "mindnprogress_delete_card",
+    "mindnprogress_delete_trashed_documents",
+    "mindnprogress_finalize_ai_coordination",
+    "mindnprogress_manage_comment",
+    "mindnprogress_manage_knowledge_line",
+    "mindnprogress_mark_notifications_read",
+    "mindnprogress_move_card",
+    "mindnprogress_patch_card_text",
+    "mindnprogress_reorder_documents",
+    "mindnprogress_restore_history",
+    "mindnprogress_retry_ai_delegation_report",
+    "mindnprogress_rollback_reconstruction",
+    "mindnprogress_save_document_layout",
+    "mindnprogress_send_group_document_instruction",
+    "mindnprogress_set_document_archive",
+    "mindnprogress_set_document_trash_state",
+    "mindnprogress_submit_card_layout_proposal",
+    "mindnprogress_submit_reconstruction_proposal",
+    "mindnprogress_supersede_ai_delegation",
+    "mindnprogress_update_card",
+    "mindnprogress_update_document_info",
+    "mindnprogress_update_group_project"
+  ],
+  "snapshots": [
+    {
+      "name": "unselected",
+      "chars": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "leaf-new",
+      "chars": 741,
+      "sha256": "c5eb49967e595b9bd7d6b91e1dc8012f04273f5f01bb761e30616f0efa7f0b8e"
+    },
+    {
+      "name": "group-coordinator-new",
+      "chars": 1229,
+      "sha256": "5721b2e43f6435cea4ac9896fc92d41b7a4dc46f77cb6c0befcd6e13944e9cc9"
+    },
+    {
+      "name": "group-proposal-only",
+      "chars": 1425,
+      "sha256": "06afa582801bf9ec692f930eb04d2b264274800e7c97f0ae8f6830aa37602d7f"
+    },
+    {
+      "name": "document-coordinator-new",
+      "chars": 929,
+      "sha256": "04e4c69952b10de9cbe9c8a4b6a0ce2030e8c94c0075929331cf75c5eeff26b7"
+    },
+    {
+      "name": "document-delivery",
+      "chars": 1080,
+      "sha256": "4827bcad86d793ea73e297ddb92ff117529ec132434de374e5ec06e42bea88b3"
+    },
+    {
+      "name": "worker-new-no-lease",
+      "chars": 727,
+      "sha256": "9fa9ee37bffbae88f8d6680b59a48868c9ce6f810a8de8dee2a9693f95ff9997"
+    },
+    {
+      "name": "worker-new-lease",
+      "chars": 2388,
+      "sha256": "bccce8ca52da4b01bcca94e1efcad660f2fa5e94ab36b4d1d60d75300e9b0462"
+    },
+    {
+      "name": "worker-resume",
+      "chars": 575,
+      "sha256": "9fadeeb1bbf3d689fa9fb95075fffb22793f376cc669dd973f03848f903e1ead"
+    },
+    {
+      "name": "shared-knowledge-proposal",
+      "chars": 1566,
+      "sha256": "85b76ddc6485734b3e9d78c1b4ef5a5e83e5fa2aa0957ecd4d4cd356d02ad69e"
+    },
+    {
+      "name": "parent-wake",
+      "chars": 1184,
+      "sha256": "3ea1b13f599546f42574d3b2bb09ff1c2907e4e34beaffd9ccb384a403fd5b33"
+    },
+    {
+      "name": "group-parent-wake",
+      "chars": 1605,
+      "sha256": "834dae27b2d787362b0976feb6c36bff79b9bc9b16d172e05ecbbc74d18fb218"
+    },
+    {
+      "name": "user-stop-recovery",
+      "chars": 2833,
+      "sha256": "d836e6a8fe3ad186ddf53f626d739eac629cfc073f2fb197b6c8745c343c8495"
+    },
+    {
+      "name": "reconstruction",
+      "chars": 762,
+      "sha256": "8c4b21246adbd7e29c9ed38dce14a1dfedfecd52ca77cc428ab51aeaab843efc"
+    },
+    {
+      "name": "layout",
+      "chars": 757,
+      "sha256": "1f45cf0b4299aeb409543c655e5e703c2cc5be08b452f57372203e445749eb63"
+    },
+    {
+      "name": "dooray-proposal",
+      "chars": 2442,
+      "sha256": "b2b7dd81248b5da16c9b86f83bd30b0434d0485b7fa9f7afabcfe7c9d6c59bf7"
+    },
+    {
+      "name": "dooray-approval",
+      "chars": 463,
+      "sha256": "c5cffb4e96d8a2c65a7959fabfecd7e67126027b085c8d6dbba8c61973947525"
+    }
+  ]
+}

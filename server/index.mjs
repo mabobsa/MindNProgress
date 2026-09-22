@@ -10,7 +10,7 @@ import {
   planCrossDocumentCardMove,
   rewriteMovedCardReferences,
 } from './lib/crossDocumentCardMove.mjs'
-import { createGroupProjects, documentRoot, DOCUMENT_COORDINATOR_INSTRUCTION } from './lib/groupProjects.mjs'
+import { createGroupProjects, documentRoot } from './lib/groupProjects.mjs'
 import { createDocumentGroupMetadata, documentGroupFields } from './lib/documentGroupMetadata.mjs'
 import {
   buildGroupDocumentInstruction,
@@ -26,8 +26,8 @@ import {
   normalizeGroupDocumentReplyTarget,
 } from './lib/groupDocumentInstructions.mjs'
 import { createDoorayResponseIntegration } from './lib/doorayResponseIntegration.mjs'
-import { AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_REPORT_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
-import { MNP_CONTEXT_BOOTSTRAP_INSTRUCTION } from '../src/utils/aiContextInstructions.mjs'
+import { MNP_ROLE_POINTERS } from '../src/utils/aiContextInstructions.mjs'
+import { buildDelegatedInstruction, buildParentWakeInstruction, delegationRecoveryInstruction } from './lib/aiDelegationInstructions.mjs'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { hostname, networkInterfaces, tmpdir } from 'node:os'
@@ -199,7 +199,6 @@ import {
   WorkspacePoolIntegrationError,
   WorkspacePoolManager,
   WorkspacePoolUnavailableError,
-  buildWorkspaceInstruction,
   checkpointCommitMessageExample,
   integrationStatusRetryReasonCode,
   integrationWorktreeDirtyMessage,
@@ -2292,32 +2291,6 @@ function issueDelegatedAttribution({ mapId, cardId, conversationId, selection, s
   return { token, attribution }
 }
 
-function buildDelegatedInstruction({ mapId, cardId, editorId, attributionToken, instruction, workspaceLease }) {
-  const workspaceInstruction = buildWorkspaceInstruction(workspaceLease)
-  return `# MindNProgress 하위 카드 위임 작업 요청
-
-${MNP_CONTEXT_BOOTSTRAP_INSTRUCTION}
-
-이 요청은 상위 카드의 AI가 현재 하위 카드에 실행을 위임한 것이므로, 일반적인 다음 작업 제안에 그치지 말고 아래 "상위 AI 지시"를 실제로 수행하세요. \`editorId\`와 \`attributionToken\`은 이후 MindNProgress MCP 작업이 끝날 때까지 유지하세요.
-
-- mapId: \`${mapId}\`
-- cardId: \`${cardId}\`
-- editorId: \`${editorId}\`
-- attributionToken: \`${attributionToken}\`
-
-MCP 조회 결과의 \`guide\`, \`selection.taskLinks.startupInspection\`, \`selection.aiWorkCoordination\`과 \`nextStep\`을 확인하고 따르세요. 관련 카드를 수정하기 전에는 AI 작업 상태를 확인하고, 실행 결과를 카드 댓글과 공유 지식에 알맞게 기록하세요. 상위 AI가 맡긴 범위에서 수행하고, 분석·제안만 요청받았다면 구현으로 확대하지 마세요.
-
-이 위임 실행이 사용자의 중지로 끊긴 뒤 같은 대화에서 직접 이어진 경우, 단순 질의 응답이나 중간 보고는 위임 완료가 아닙니다. 실제 위임 작업과 카드 기록, 필요한 작업공간 체크포인트까지 모두 끝낸 마지막 턴에서만 최종 답변 직전에 \`mindnprogress_complete_ai_delegation\`을 호출하세요. 중단 없이 진행된 최초 실행에는 이 완료 신호가 필요하지 않습니다.
-
-MCP 도구를 사용할 수 없거나 문서 또는 카드를 찾지 못하면 임의로 추측하지 말고 확인 가능한 범위만 수행한 뒤 제약을 명확히 남기세요.
-
-${workspaceInstruction ? `${workspaceInstruction}\n` : ''}
-
-# 상위 AI 지시
-
-${instruction.trim()}`
-}
-
 function sendGroupDocumentInstructionResponse(response, statusCode, reasonCode, message, payload = {}) {
   return sendJson(response, statusCode, groupDocumentInstructionResponseBody(statusCode, reasonCode, message, payload))
 }
@@ -2546,7 +2519,7 @@ async function dispatchGroupDocumentInstruction(instruction, user) {
       attributionToken,
       parentConversationId: instruction.parentConversationId,
       replyTarget: instruction.replyTarget,
-      documentCoordinatorInstruction: DOCUMENT_COORDINATOR_INSTRUCTION,
+      strategy: instruction.strategy,
     })
     const operationId = groupDocumentInstructionOperationId(instruction.id)
     let dispatch
@@ -2698,52 +2671,6 @@ async function pollGroupDocumentInstructions() {
   } finally {
     groupDocumentInstructionPollRunning = false
   }
-}
-
-function delegationRecoveryInstruction(delegation, instruction, recovery = null, conversationDisplayLabel = delegation.targetConversationId) {
-  const inspection = delegation.coordinationOnly
-    ? `${DOCUMENT_COORDINATOR_INSTRUCTION}\n\n먼저 그룹 기준, 현재 문서의 실행 계약, 하위 위임 상태와 최근 대화·카드 결과를 대조하세요. 이 조정 업무에는 worker가 배정되지 않으므로 작업공간을 임의로 점유하거나 새 lease를 만들지 마세요.`
-    : '먼저 `.ai-session.json`, 현재 브랜치, Git 변경과 최근 대화·카드 결과를 서로 대조하세요. 다른 작업공간으로 이동하거나 새 lease를 만들지 마세요.'
-  const externalLimitRecovery = ['usage-limit', 'rate-limit', 'model-capacity'].includes(recovery?.failureCategory)
-  const userStopRecovery = recovery?.failureCategory === 'user-stop'
-  const title = recovery?.failureCategory === 'model-capacity'
-    ? '모델 실행 용량 확보 후 위임 복구'
-    : externalLimitRecovery ? '외부 사용량 제한 해제 후 위임 복구'
-      : userStopRecovery ? '사용자 중지 후 위임 재개' : '재시작 후 위임 복구'
-  const reason = externalLimitRecovery
-    ? `이전 실행은 ${recovery.failureCategory === 'rate-limit' ? '요청 한도' : recovery.failureCategory === 'model-capacity' ? '선택 모델의 실행 용량 부족' : '사용량 한도'}로 중단됐고, 사용자가 원인 해소를 확인한 뒤 같은 대화와 작업공간의 재개를 요청했습니다.`
-    : userStopRecovery ? '사용자가 중지했던 기존 위임을 같은 대화에서 다시 이어가도록 요청했습니다.'
-      : 'AionCore 또는 MindNProgress 재시작으로 이전 실행의 메모리 상태가 끊겼습니다.'
-  const workspaceLease = delegation.workspaceLease
-  const workspaceSummary = delegation.coordinationOnly
-    ? '- 현재 작업공간 배정: 문서 조정 전용 · worker 배정 없음'
-    : workspaceLease
-      ? `- 현재 workspaceId: \`${workspaceLease.workspaceId ?? '미확인'}\`
-- 현재 jobId: \`${workspaceLease.jobId ?? '미확인'}\`
-- 현재 leaseId: \`${workspaceLease.leaseId ?? '미확인'}\`
-- 현재 projectRoot: \`${workspaceLease.projectRoot ?? '미확인'}\`
-- 현재 branch: \`${workspaceLease.branch ?? '미확인'}\`
-- 현재 baseCommit: \`${workspaceLease.baseCommit ?? '미확인'}\``
-      : '- 현재 작업공간 배정: 기존 대화 작업공간 · 등록된 worker lease 없음'
-  const workspaceRecoveryRule = delegation.coordinationOnly
-    ? ''
-    : '\n복구 작업에서도 이번 전문의 `# 할당된 작업공간`에 기재된 현재 배정만 사용하세요. 대화 기록에 남은 이전 경로·브랜치·lease를 복구 후보로 사용하지 마세요.'
-  return `# ${title}
-
-${reason} 원래 지시를 처음부터 반복하지 말고, 아래 복구 확인 절차에 따라 미완료 부분만 이어서 수행하세요.
-
-- 위임 ID: ${delegation.id}
-- 대상 카드: ${delegation.targetCardLabel} (${delegation.targetCardId})
-- 대상 대화: ${conversationDisplayLabel}
-${workspaceSummary}
-
-${inspection}${workspaceRecoveryRule}
-현재 상태와 아래 복구 지시를 대조하고 원래 맡긴 범위의 미완료 작업만 이어가세요. 범위를 벗어난 변경이 필요하면 상위 AI에 보고하세요. 분석·제안 위임의 복구는 계속 분석·제안만 허용됩니다.
-이미 완료된 변경이나 외부 처리는 중복 실행하지 말고 검증과 결과 보고만 하세요.
-
-# 복구 후 수행 지시
-
-${instruction.trim()}`
 }
 
 function delegationPublicView(delegation, includeResult = false) {
@@ -3511,23 +3438,11 @@ async function aiWorkspaceCandidates({ map, group, machineId }) {
   }))).filter(Boolean)
 }
 
-function aiDelegationResultSection(reportResult) {
-  if (reportResult.availability === 'captured') {
-    return `## 하위 AI의 마지막 응답\n\n${reportResult.text}\n\n`
-  }
-  if (reportResult.availability === 'integrity-failed') {
-    return `## 하위 AI 원문 무결성 오류\n\n저장된 결과의 해시 또는 실행 턴이 위임 기록과 일치하지 않아 원문을 전달하지 않았습니다. 대화의 최신 응답으로 대체하지 말고 위임 기록과 원본 대화를 별도로 검토하세요.\n\n`
-  }
-  return `## 하위 AI 원문 미캡처\n\n이 위임의 하위 AI 원문은 MindNProgress 위임 기록에 캡처되지 않아 재전달할 수 없습니다. 다른 작업이 이어졌을 수 있는 대화의 최신 응답으로 대체하지 않았으며, 아래 작업공간·체크포인트·통합 정보만 확인된 결과입니다.\n\n`
-}
-
 async function parentWakeInstruction(delegation, reportResult = aiDelegationReportResult(delegation)) {
   const parentMapId = delegation.parentMapId ?? delegation.mapId
   const parentProject = delegation.groupId ? null : await groupProjects.forDocument(parentMapId)
   const groupCoordinator = Boolean(delegation.groupId) || (parentProject?.role === 'coordinator'
     && documentRoot(await readMap(parentMapId))?.id === delegation.parentCardId)
-  const approvalInstruction = groupCoordinator ? `${AI_EXECUTION_APPROVAL_INSTRUCTION}\n\n${GROUP_APPROVAL_INSTRUCTION}\n\n` : ''
-  const followupInstruction = groupCoordinator ? GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION : AI_DELEGATION_FOLLOWUP_INSTRUCTION
   const integrationFailure = delegation.integrationStatus && delegation.integrationStatus !== 'completed'
     ? delegation.integrationError ?? delegation.workspaceError ?? delegation.integrationStatus
     : null
@@ -3538,30 +3453,17 @@ async function parentWakeInstruction(delegation, reportResult = aiDelegationRepo
       : aiDelegationSucceeded(delegation)
         ? '완료'
         : `실패 또는 중단 (${delegation.childError ?? '상세 원인 없음'})`
-  const workspaceResult = delegation.workspaceResult
-    ? `- 작업공간: ${delegation.workspaceResult.workspaceId ?? delegation.workspaceLease?.workspaceId ?? '미확인'}\n- 체크포인트: ${delegation.workspaceResult.headCommit ?? '변경 없음'}\n- 통합 커밋: ${delegation.workspaceResult.integratedCommit ?? '통합되지 않음'}\n- 작업공간 결과: ${delegation.workspaceResult.status ?? '미확인'}\n`
-    : ''
   const conversationDisplay = await resolveAiConversationDisplay(
     delegation.targetConversationId,
     delegationTargetMachineId(delegation),
   )
-  return `# MindNProgress 하위 AI 작업 결과
-
-상위 카드에서 위임한 하위 카드 작업이 ${outcome} 상태가 되었습니다.
-대상 문서: ${delegation.mapId}. 상위 문서: ${delegation.parentMapId ?? delegation.mapId}.
-
-- 위임 ID: ${delegation.id}
-- 하위 카드: ${delegation.targetCardLabel} (${delegation.targetCardId})
-- 실행 대화: ${conversationDisplay.displayLabel}
-- 하위 실행 턴: ${delegation.childTurnId ?? '미확인'}
-- 결과 원문: ${reportResult.availability === 'captured' ? '캡처됨' : reportResult.availability === 'integrity-failed' ? '무결성 오류로 제외됨' : '캡처되지 않음'}
-- 선택 방식: ${delegation.strategy === 'resume' ? '기존 대화 이어가기' : '새 대화 시작'}
-- 선택 이유: ${delegation.decisionReason}
-${workspaceResult}
-
-${approvalInstruction}${aiDelegationResultSection(reportResult)}${AI_DELEGATION_REPORT_INSTRUCTION}
-
-${followupInstruction}`
+  return buildParentWakeInstruction({
+    delegation,
+    reportResult,
+    groupCoordinator,
+    outcome,
+    conversationDisplayLabel: conversationDisplay.displayLabel,
+  })
 }
 
 function aiDelegationRecoveryKey(delegation) {
@@ -7412,7 +7314,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       const user = requireUser(request, response)
       if (!user) return
       const groupId = decodeURIComponent(groupRoute[1])
-      if (request.method === 'GET' && !groupRoute[2]) return sendJson(response, 200, await groupProjects.context(groupId))
+      if (request.method === 'GET' && !groupRoute[2]) return sendJson(response, 200, await groupProjects.context(groupId, url.searchParams.get('mapId') ?? ''))
       if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 그룹 개발 정보를 변경할 수 있습니다.' })
       if ((request.method === 'PATCH' && !groupRoute[2]) || (request.method === 'POST' && groupRoute[2])) {
         const body = await readJsonBody(request)
@@ -8857,6 +8759,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         attributionToken,
         instruction: requestedInstruction,
         workspaceLease,
+        event: 'recovery',
+        includeCompletion: recoveryAvailability?.failureCategory === 'user-stop',
       })
 
       let dispatch
@@ -9847,8 +9751,9 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         cardId: targetCard.id,
         editorId: parentAttribution.startedBy ?? user.id,
         attributionToken,
-        instruction: crossDocument ? `${DOCUMENT_COORDINATOR_INSTRUCTION}\n\n${instruction}` : instruction,
+        instruction: crossDocument ? `${MNP_ROLE_POINTERS.document}\n\n${instruction}` : instruction,
         workspaceLease,
+        event: strategy,
       })
 
       const delegatedConversationTitle = strategy === 'new'

@@ -108,15 +108,17 @@ test('그룹 문서 지시 전문은 위임·worker 완료와 분리하고 승�
     documentCoordinatorInstruction: '문서 루트 AI 운영 지침',
   })
   assert.match(instruction, /^# MindNProgress 그룹 문서 지시/m)
-  assert.match(instruction, /AI 작업 위임이나 worker 작업공간 배정이 아닙니다/)
+  assert.match(instruction, /worker 위임이나 작업공간 배정이 아닙니다/)
   assert.match(instruction, /실제 하위 업무 카드에 AI 위임/)
-  assert.match(instruction, /같은 승인을 사용자에게 반복해서 요구하지 마세요/)
-  assert.match(instruction, /기본 회신 대상: `conversation-coordinator`/)
-  assert.match(instruction, /현재 지시의 명시적 대체 대상: 없음/)
-  assert.match(instruction, /과거 `AION_SESSION_MESSAGE`/)
-  assert.match(instruction, /자동 재개된 턴에서도 이 확인을 다시 수행하세요/)
+  assert.match(instruction, /승인 근거를 다시 요구하지 마세요/)
+  assert.match(instruction, /기본 대상: `conversation-coordinator`/)
+  assert.match(instruction, /명시적 대체: 없음/)
+  assert.match(instruction, /과거 지시·AION_SESSION_MESSAGE·reply_to·기억/)
+  assert.match(instruction, /최종 보고 직전에 instructionId와 대상을 다시 확인/)
+  assert.match(instruction, /역할 원문은 get_group_context의 guide\.documentCoordinator 한 곳/)
   assert.match(instruction, /사용자가 문서별 실행 전문을 승인했습니다/)
   assert.equal(instruction.split(request.approvalEvidence).length - 1, 1)
+  assert.ok(instruction.length <= 1_800)
   assert.doesNotMatch(instruction, /# MindNProgress 하위 카드 위임 작업 요청/)
 })
 
@@ -133,8 +135,8 @@ test('그룹 문서 지시 전문은 사용자가 현재 지시에서 지정한 
       evidence: '사용자가 이번 지시의 완료 보고를 검수 대화로 요청했습니다.',
     },
   })
-  assert.match(instruction, /현재 지시의 명시적 대체 대상: `conversation-review`/)
-  assert.match(instruction, /전달 시점의 유효 회신 대상: `conversation-review`/)
+  assert.match(instruction, /명시적 대체: `conversation-review`/)
+  assert.match(instruction, /현재 유효 대상: `conversation-review`/)
   assert.match(instruction, /대체 근거: 사용자가 이번 지시의 완료 보고를 검수 대화로 요청했습니다/)
 })
 

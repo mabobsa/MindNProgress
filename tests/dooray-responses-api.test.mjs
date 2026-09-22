@@ -335,7 +335,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     const payload = approvalTickets[0]
     assert.ok(payload.prompt.includes(request))
     assert.ok(payload.prompt.includes(reviewProposal))
-    assert.match(payload.prompt, /서버에 저장된 사용자 승인을 검증/)
+    assert.match(payload.prompt, /서버 승인과 허용·제외 범위를 확인/)
     assert.match(payload.title, /^\[Dooray 승인\]/)
     assert.equal(payload.workspace, executionWorkspace)
     assert.equal(payload.agentId, 'test-agent')

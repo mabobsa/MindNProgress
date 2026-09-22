@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto'
-import { MNP_CONTEXT_BOOTSTRAP_INSTRUCTION } from '../../src/utils/aiContextInstructions.mjs'
 
 export const GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,95}$/
 export const GROUP_DOCUMENT_INSTRUCTION_TYPES = Object.freeze([
@@ -121,7 +120,7 @@ export function buildGroupDocumentInstruction({
   instruction,
   editorId,
   attributionToken,
-  documentCoordinatorInstruction,
+  strategy = 'resume',
 }) {
   const defaultReplyConversationId = String(parentConversationId ?? '').trim()
   const explicitReplyConversationId = replyTarget?.mode === 'explicit'
@@ -140,42 +139,37 @@ export function buildGroupDocumentInstruction({
         : '승인된 검증 범위만 수행하고 새로운 구현이나 범위 확대가 필요하면 총괄 AI에 수정안을 반환하세요.'
   return `# MindNProgress 그룹 문서 지시
 
-이 전문은 그룹 총괄 문서 AI가 소속 문서의 루트 카드 AI에 전달한 지시입니다. AI 작업 위임이나 worker 작업공간 배정이 아닙니다. 지시 수신 자체를 업무 완료로 처리하지 말고, 실제 카드와 문서 내부 위임 결과를 기준으로 진행·완료를 판단하세요.
+실행 상태: ${strategy === 'new' ? 'new' : 'resume'}
+역할: document coordinator
+이 지시는 그룹 문서 루트 조정이며 worker 위임이나 작업공간 배정이 아닙니다. 수신·대기 응답을 완료로 보지 말고 실제 카드와 하위 위임 결과를 확인하세요.
 
-${MNP_CONTEXT_BOOTSTRAP_INSTRUCTION}
-
-그런 다음 \`mindnprogress_get_group_context\`로 최신 그룹 기준과 담당 범위를 확인하세요. 이후 그룹 기준이나 승인 범위의 최신성을 다시 확인할 때는 \`mindnprogress_get_context\`가 아니라 \`mindnprogress_get_group_context\`를 사용하세요. \`editorId\`와 \`attributionToken\`은 이후 MindNProgress MCP 작업이 끝날 때까지 유지하세요.
+${strategy === 'new'
+    ? '아직 바인딩되지 않았다면 아래 대상으로 get_context를 한 번 성공한 뒤 get_group_context를 조회하세요.'
+    : '이미 바인딩된 대화이므로 get_context를 반복하지 말고 get_group_context와 대상별 조회로 최신 상태를 확인하세요.'}
+역할 원문은 get_group_context의 guide.documentCoordinator 한 곳에서 사용합니다. editorId와 attributionToken은 끝까지 유지하세요.
 
 - groupId: \`${groupId}\`
-- mapId: \`${targetMapId}\`
-- cardId: \`${targetCardId}\`
-- editorId: \`${editorId}\`
-- attributionToken: \`${attributionToken}\`
+- mapId/cardId: \`${targetMapId}\` / \`${targetCardId}\`
+- editorId/attributionToken: \`${editorId}\` / \`${attributionToken}\`
 - instructionId: \`${instructionId}\`
-- 발신 총괄 문서: \`${parentMapId}\`
-- 그룹 기준 버전: \`${groupProjectVersion}\`
-- 대상 문서 버전: \`${targetRevision}\`
-- 지시 유형: \`${instructionType}\`
-- 승인 범위: \`${approvalScope}\`
+- 발신 문서: \`${parentMapId}\`
+- 그룹/대상 버전: \`${groupProjectVersion}\` / \`${targetRevision}\`
+- 유형/승인 범위: \`${instructionType}\` / \`${approvalScope}\`
 
-## 완료 보고 라우팅
-
-- 기본 회신 대상: \`${defaultReplyConversationId}\`
-- 현재 지시의 명시적 대체 대상: ${explicitReplyConversationId ? `\`${explicitReplyConversationId}\`` : '없음'}
-${explicitReplyEvidence ? `- 대체 근거: ${explicitReplyEvidence}\n` : ''}- 전달 시점의 유효 회신 대상: \`${effectiveReplyConversationId}\`
-
-회신 대상을 대화 이력에서 추정하지 마세요. 과거 그룹 지시, 과거 \`AION_SESSION_MESSAGE\`, 이전 \`reply_to\`와 AI의 기억은 이번 \`instructionId\`의 회신 근거가 아닙니다.
-완료 보고 대상은 ① 이 지시 이후 사용자가 이 \`instructionId\`에 대해 명시한 대상, ② 위 명시적 대체 대상, ③ 기본 회신 대상 순서로 결정하세요. 사용자가 다른 세션을 말했지만 정확한 대상을 확인할 수 없으면 임의로 선택하지 말고 확인을 요청하세요.
-최종 보고 직전에 현재 \`instructionId\`, 결정 근거와 유효 회신 대상을 다시 확인하고, 완료 보고에 \`instructionId\`를 포함하세요. \`waiting-workspace\` 같은 접수·대기 응답은 최종 완료 보고가 아닙니다. 하위 위임 완료 후 자동 재개된 턴에서도 이 확인을 다시 수행하세요.
-
-${documentCoordinatorInstruction}
-
-## 실행 권한 경계
+## 권한
 
 ${scopeInstruction}
-총괄 AI가 전달한 확인 가능한 승인 근거는 아래와 같습니다. 같은 승인을 사용자에게 반복해서 요구하지 마세요. 근거와 지시가 서로 맞지 않거나 최신 그룹 기준·담당 범위가 달라졌다면 실행을 확대하지 말고 총괄 AI에 수정안을 보고하세요.
+아래 승인 근거를 다시 요구하지 마세요. 근거·지시와 최신 그룹 기준이 다르면 범위를 늘리지 말고 총괄에 수정안을 보고하세요.
 
 ${approvalEvidence.trim()}
+
+## 완료 보고
+
+- 기본 대상: \`${defaultReplyConversationId}\`
+- 명시적 대체: ${explicitReplyConversationId ? `\`${explicitReplyConversationId}\`` : '없음'}
+${explicitReplyEvidence ? `- 대체 근거: ${explicitReplyEvidence}\n` : ''}- 현재 유효 대상: \`${effectiveReplyConversationId}\`
+
+이 instructionId 이후 사용자의 명시적 지정, 위 대체 대상, 기본 대상 순으로 결정하세요. 과거 지시·AION_SESSION_MESSAGE·reply_to·기억으로 추정하지 마세요. 최종 보고 직전에 instructionId와 대상을 다시 확인하고 보고에 instructionId를 포함하세요.
 
 ## 총괄 AI 지시
 

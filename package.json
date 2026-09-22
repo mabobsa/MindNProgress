@@ -12,6 +12,7 @@
     "lint": "oxlint",
     "test:mcp": "node scripts/test-mcp.mjs",
     "test:unit": "node scripts/run-unit-tests.mjs",
+    "measure:ai-instructions": "node scripts/measure-ai-instructions.mjs",
     "mcp": "node mcp/server.mjs",
     "runner": "node runner/index.mjs",
     "usage:mcp": "node scripts/mcp-tool-usage.mjs",

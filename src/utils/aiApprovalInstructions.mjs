@@ -59,13 +59,13 @@ export const GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION = `하위 결과 알림과
 mindnprogress_delegate_ai_work로 같은 문서의 하위 카드에 위임한 경우에도 이번에 계획한 위임의 접수 결과와 현재 상태를 확인한 뒤, 접수·대기·실패를 구분해 사용자에게 보고하고 현재 턴을 종료하세요. 하위 완료를 기다리며 반복 조회하거나 턴을 유지하지 말고, 완료 후 처리는 MindNProgress가 자동 재개하는 다음 턴에서 수행하세요.`
 
 export function buildGroupCoordinatorRequest({ groupId, instruction } = {}) {
-  return `그룹 총괄 업무입니다. mindnprogress_get_group_context를 groupId="${groupId}"로 먼저 조회하세요.\n\n${GROUP_COORDINATOR_APPROVAL_BOOTSTRAP_INSTRUCTION}\n\n${instruction ?? '기획 원본과 기존 문서를 읽기 전용으로 분석하고 전체 진행 방향을 먼저 제안하세요. 사용자의 명시적인 승인 전에는 문서·카드를 변경하거나 AI를 위임하지 말고 승인 대기로 응답을 마치세요.'}\n\n${GROUP_COORDINATOR_INSTRUCTION}`
+  return `실행 상태: new\n역할: group coordinator\n\nmindnprogress_get_context 뒤 mindnprogress_get_group_context를 groupId="${groupId}"로 조회하세요. 승인·역할 원문은 get_group_context의 현재 역할 guide만 사용합니다.\n\n${GROUP_COORDINATOR_APPROVAL_BOOTSTRAP_INSTRUCTION}\n\n${instruction ?? '최신 그룹 기준을 읽기 전용으로 분석하고 전체 진행 방향을 제안한 뒤 사용자 승인 대기로 응답을 마치세요.'}`
 }
 
 export function buildGroupDocumentRequest({ groupId, groupName } = {}) {
-  return `그룹 "${groupName}"의 문서 담당 업무입니다. mindnprogress_get_group_context를 groupId="${groupId}"로 조회하고 이 루트의 최신 실행 계약을 확인하세요.\n\n${DOCUMENT_COORDINATOR_INSTRUCTION}`
+  return `실행 상태: new\n역할: document coordinator\n\n그룹 "${groupName}"의 문서 담당 업무입니다. mindnprogress_get_context 뒤 mindnprogress_get_group_context를 groupId="${groupId}"로 조회하고 guide.documentCoordinator의 역할 원문과 이 루트의 최신 실행 계약을 사용하세요.`
 }
 
 export function buildGroupDocumentProposalRequest({ mapId, cardId, title } = {}) {
-  return `문서 "${title}"(targetMapId: ${mapId}, targetCardId: ${cardId})의 최신 루트와 AI 작업 상태를 읽기 전용으로 확인하세요. 전체 방향 승인을 확인한 뒤 이 문서 루트 AI에게 전달할 실제 지시 전문을 사용자에게 제안하세요. 대상·계획 버전·작업 방향·변경 범위·허용 작업·제외 범위·완료 조건을 명시하고 문서별 사용자 승인 전에는 루트 수정, 지시 전달이나 AI 위임을 하지 마세요. 전체 방향 승인도 없으면 해당 제안부터 먼저 확인받으세요. 이미 전달됐거나 진행 중인 지시가 있으면 상태를 보고하고 중복 전달하지 마세요. 이 버튼 요청은 실행 승인이나 지시 전달이 아니라 제안 요청입니다.`
+  return `workflow: proposal-only\nwritePolicy: forbidden\n\n문서 "${title}"(targetMapId: ${mapId}, targetCardId: ${cardId})의 최신 루트·AI 작업 상태와 그룹 승인을 읽기 전용으로 확인하고, 문서 루트 AI에게 전달할 지시 전문만 사용자에게 제안하세요. 대상·계획 버전·범위·허용 작업·제외 범위·완료 조건을 명시합니다. 카드·댓글·상태를 변경하거나 지시·AI 위임을 실행하지 마세요.`
 }

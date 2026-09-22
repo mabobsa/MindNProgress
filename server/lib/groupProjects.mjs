@@ -72,7 +72,7 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
     if (!group) throw groupProjectError('그룹을 찾을 수 없습니다.', 404)
     return { group, layout }
   }
-  async function context(id) {
+  async function context(id, roleMapId = '') {
     const { group } = await find(id)
     const project = await read(id)
     const documents = (await Promise.all(group.mapIds.map(readMap))).filter((map) => map && !map.trashedAt).map((map) => {
@@ -87,6 +87,36 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
       }
     })
     const coordinator = documents.find((map) => map.id === project.coordinatorMapId) ?? null
+    const commonGuide = {
+      sources: 'project.sources의 모든 기획서 주소·개별 버전을 확인하고, 변경된 담당 범위는 총괄에 보고합니다.',
+      documentInstruction: '그룹 총괄은 승인된 문서별 범위를 문서 루트 AI에 전달하고, 문서 담당은 자기 문서의 실제 하위 업무에 구현을 위임합니다. 전달 상태는 업무 완료가 아닙니다.',
+      membership: '문서 편입은 실행 승인이 아니며 진행 중 지시·위임의 문서는 이동 전에 해당 처리를 마쳐야 합니다.',
+      evidence: '카드 완료 수만으로 요구사항 구현률을 판정하지 말고 소유권과 실제 검증 근거를 확인합니다.',
+      waiting: 'waitingDetails는 탐색 정보이며 승인·대기 해제·완료 근거가 아닙니다.',
+    }
+    const role = roleMapId
+      ? roleMapId === project.coordinatorMapId ? 'group-coordinator'
+        : documents.some((document) => document.id === roleMapId) ? 'document-coordinator' : 'unbound'
+      : 'all'
+    const guide = role === 'group-coordinator' ? {
+      role,
+      executionApproval: AI_EXECUTION_APPROVAL_INSTRUCTION,
+      coordinator: GROUP_COORDINATOR_INSTRUCTION,
+      approval: GROUP_APPROVAL_INSTRUCTION,
+      ...commonGuide,
+    } : role === 'document-coordinator' ? {
+      role,
+      documentCoordinator: DOCUMENT_COORDINATOR_INSTRUCTION,
+      ...commonGuide,
+    } : role === 'unbound' ? { role, ...commonGuide } : {
+      role,
+      instructionScope: 'executionApproval·approval·coordinator는 그룹 총괄 전용, documentCoordinator는 문서 담당 전용입니다.',
+      executionApproval: AI_EXECUTION_APPROVAL_INSTRUCTION,
+      coordinator: GROUP_COORDINATOR_INSTRUCTION,
+      documentCoordinator: DOCUMENT_COORDINATOR_INSTRUCTION,
+      approval: GROUP_APPROVAL_INSTRUCTION,
+      ...commonGuide,
+    }
     return {
       group, project, coordinator, documents, waitingReviewSupported: true, sourcesSupported: true,
       delegations: [...delegations.values()].filter((item) => item.groupId === id).map((item) => ({ ...publicDelegation(item), result: item.childResultSnapshot ?? '' }))
@@ -94,20 +124,7 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
       documentInstructions: [...documentInstructions.values()].filter((item) => item.groupId === id)
         .map((item) => publicDocumentInstruction(item, { includeContent: true }))
         .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
-      guide: {
-        approvalScope: 'group-coordinator',
-        instructionScope: 'executionApproval·approval·coordinator는 그룹 총괄 전용 지침이며 documentCoordinator는 문서 담당 지침입니다. 문서 담당·하위 AI에게 같은 사용자 승인을 반복해서 요구하지 않습니다.',
-        executionApproval: AI_EXECUTION_APPROVAL_INSTRUCTION,
-        coordinator: GROUP_COORDINATOR_INSTRUCTION,
-        documentCoordinator: DOCUMENT_COORDINATOR_INSTRUCTION,
-        approval: GROUP_APPROVAL_INSTRUCTION,
-        sources: 'project.sources에 등록된 모든 기획서의 주소·개별 버전을 확인하세요. source와 sourceVersion은 첫 항목의 구버전 호환 별칭이며 전체 기준이 아닙니다. 추가 기획서를 기존 원본의 대체본으로 간주하거나 버전 숫자만으로 서로 다른 기획서의 우선순위를 정하지 마세요. 원본별 요구사항·변경 범위·충돌을 분석하세요. 문서 담당은 범위 변경을 총괄에 보고하고, 그룹 총괄은 변경된 실행 범위의 사용자 재승인을 받으세요.',
-        documentInstruction: '그룹 총괄 루트 AI는 문서별 사용자 승인 후 mindnprogress_send_group_document_instruction으로 같은 그룹의 문서 루트 AI에 지시 전문을 전달합니다. 이 전달은 AI 작업 위임이나 worker 배정이 아니며, 실제 구현 위임과 검수는 대상 문서 AI가 자기 문서의 하위 카드에서 수행합니다. 지시의 delivered·replied 상태를 업무 완료로 해석하지 마세요.',
-        documentDelegation: 'mindnprogress_delegate_ai_work는 같은 문서의 계층상 하위 업무 카드에만 사용합니다. 과거 coordination-only 문서 간 위임은 호환 이력으로만 조회·복구하며 새 문서 간 위임은 만들지 않습니다.',
-        membership: '문서 편입은 실행을 시작하지 않습니다. 전달 대기 중인 그룹 문서 지시 또는 실행 중인 그룹 위임의 대상이나 총괄 문서는 그룹 이동·휴지통 이동 전에 해당 처리를 마쳐야 합니다.',
-        evidence: '업무 카드 완료 수는 요구사항 구현률이 아닙니다. 소유권 원장과 검증 근거는 총괄 문서 및 추적 카드에서 관리하세요.',
-        waiting: 'waitingDetails는 최상위 카드와 하위 업무의 대기 원문·재개 조건입니다. 분류 기록의 valid=false는 기준이나 대기 내용 변경으로 재확인이 필요하다는 뜻입니다. 분류·현재 범위 차단·예정된 외부 대기는 탐색용 표시이며 사용자 실행 승인, 대기 해제 또는 업무 완료가 아닙니다. 분류 기록만으로 실행하거나 기존 대기를 삭제하지 마세요.',
-      },
+      guide,
     }
   }
   function assertVersion(current, version) {

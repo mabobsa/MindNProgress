@@ -29,6 +29,7 @@ const verificationDescriptions = [
   'mindnprogress_mark_notifications_read',
   'mindnprogress_move_card',
   'mindnprogress_patch_card_text',
+  'mindnprogress_recover_ai_delegation',
   'mindnprogress_reorder_documents',
   'mindnprogress_restore_history',
   'mindnprogress_retry_ai_delegation_report',

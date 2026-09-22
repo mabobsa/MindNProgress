@@ -97,14 +97,18 @@ async function fixture(t, overrides = {}) {
   }
   return { directory, deps, counts, operations, service: createDoorayResponseService(deps) }
 }
-async function until(service, userId, expected, max = 50) {
-  for (let i = 0; i < max; i++) {
+async function until(service, userId, expected, timeoutMs = 3_000) {
+  const startedAt = Date.now()
+  let polls = 0
+  let jobs = []
+  while (Date.now() - startedAt < timeoutMs) {
     await service.poll()
-    const jobs = await service.list(userId)
+    jobs = await service.list(userId)
+    polls++
     if (jobs.length && jobs.every((job) => job.status === expected)) return jobs
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
-  assert.fail(`상태가 ${expected}에 도달하지 않음: ${JSON.stringify(await service.list(userId))}`)
+  assert.fail(`${Date.now() - startedAt}ms 동안 ${polls}회 확인했지만 상태가 ${expected}에 도달하지 않음: ${JSON.stringify(jobs)}`)
 }
 
 test('중복 클릭은 한 요청으로 접수하고 전용 대화에서 제안을 회수하며 계정별로 격리한다', async (t) => {

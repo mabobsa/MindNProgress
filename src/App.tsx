@@ -55,7 +55,7 @@ import { parseGroupDeepLink } from './utils/groupDeepLink.mjs'
 import { collectDragDescendantOwners, dragRootIds, hierarchyReparentPairs } from './utils/hierarchyDrag.mjs'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
 import { collapsedDocumentGroupsStorageKey, initialCollapsedDocumentGroupIds, normalizeCollapsedDocumentGroupIds } from './utils/documentGroupCollapse.mjs'
-import { isPhoneViewport, PHONE_VIEWPORT_QUERY, resolveDocumentNodeSelection, synchronizeNodeSelection } from './utils/documentSelection.mjs'
+import { hierarchyAncestorNodeIds, isPhoneViewport, PHONE_VIEWPORT_QUERY, resolveDocumentNodeSelection, synchronizeNodeSelection } from './utils/documentSelection.mjs'
 import { createsKnowledgeCycle, isHierarchyEdge, isKnowledgeEdge, knowledgePolicyOf } from './utils/knowledgeEdges'
 import { isSameDoorayKnowledgeUrl, normalizedDoorayKnowledgeUrl, taskUrlProvider } from './utils/externalLinks'
 import { splitImageFileName, uniqueImageFileName } from './utils/imageFileNames.mjs'
@@ -2570,12 +2570,13 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const nodeLinkCopyTimer = useRef<number | null>(null)
   const doorayUrlCommitTimer = useRef<number | null>(null)
   const pendingSelection = useRef<string | null>(null)
-  const pendingAiConversationSelectionReveal = useRef<{ mapId: string; cardId: string } | null>(null)
+  const pendingCardSelectionReveal = useRef<{ mapId: string; cardId: string } | null>(null)
   const pendingDeepLink = useRef(initialDeepLink)
   const lastLoadedMapId = useRef<string | null>(null)
   const selectedIdRef = useRef<string | null>(selectedId)
   const focusedNodeIdRef = useRef<string | null>(null)
   const activeMapIdRef = useRef(activeMapId)
+  const loadedMapIdRef = useRef(loadedMapId)
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
   const canvasPointerRef = useRef({ inside: false, x: 0, y: 0 })
@@ -2586,6 +2587,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const referenceCommentTargetsRef = useRef<ReferenceCommentTarget[]>([])
   selectedIdRef.current = selectedId
   activeMapIdRef.current = activeMapId
+  loadedMapIdRef.current = loadedMapId
   nodesRef.current = nodes
   edgesRef.current = edges
 
@@ -2830,33 +2832,42 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     : []
   const unreadNotificationCount = notifications.filter((notification) => !notification.readAt).length
 
-  const openWaitingItems = useCallback((nodeId: string) => {
+  const selectCardLocally = useCallback((nodeId: string) => {
+    setNodes((current) => synchronizeNodeSelection(current, nodeId))
     setSelectedId(nodeId)
+  }, [setNodes])
+
+  const clearCardSelection = useCallback(() => {
+    setNodes((current) => synchronizeNodeSelection(current, null))
+    setSelectedId(null)
+  }, [setNodes])
+
+  const openWaitingItems = useCallback((nodeId: string) => {
+    selectCardLocally(nodeId)
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         waitingBlockRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       })
     })
-  }, [])
+  }, [selectCardLocally])
 
   const openDependencies = useCallback((nodeId: string) => {
-    setSelectedId(nodeId)
+    selectCardLocally(nodeId)
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         dependencyBlockRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       })
     })
-  }, [])
+  }, [selectCardLocally])
 
   const openAiDelegationRecovery = useCallback((nodeId: string) => {
-    setNodes((current) => synchronizeNodeSelection(current, nodeId))
-    setSelectedId(nodeId)
+    selectCardLocally(nodeId)
     if (isPhoneViewport()) setMobileInspectorOpen(true)
     setAiDelegationRecoveryFocus((current) => ({
       cardId: nodeId,
       requestId: (current?.requestId ?? 0) + 1,
     }))
-  }, [setNodes])
+  }, [selectCardLocally])
 
   const activeDocument = [...documents, ...archivedDocuments].find((document) => document.id === activeMapId) ?? null
   const activeRootState = useMemo(() => rootStateOf(nodes, edges), [edges, nodes])
@@ -2924,20 +2935,16 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     hierarchyEdges.forEach((edge) => result.set(edge.target, [...(result.get(edge.target) ?? []), edge.source]))
     return result
   }, [hierarchyEdges])
-  const selectAiDelegationCard = useCallback((mapId: string, cardId: string) => {
+  const selectCardAndReveal = useCallback((mapId: string, cardId: string | null) => {
     setSelectedGroupId(null)
     setViewMode('mindmap')
     setTrashOpen(false)
-    if (mapId === activeMapId) {
-      const ancestorIds = new Set<string>()
-      const remaining = [...(parentsById.get(cardId) ?? [])]
-      while (remaining.length > 0) {
-        const ancestorId = remaining.pop() as string
-        if (ancestorIds.has(ancestorId)) continue
-        ancestorIds.add(ancestorId)
-        remaining.push(...(parentsById.get(ancestorId) ?? []))
-      }
+    pendingCardSelectionReveal.current = cardId ? { mapId, cardId } : null
+
+    if (mapId === activeMapIdRef.current && loadedMapIdRef.current === mapId) {
+      const ancestorIds = cardId ? hierarchyAncestorNodeIds(edgesRef.current, cardId) : new Set<string>()
       setNodeSearchTerm('')
+      setNodeSearchIndex(-1)
       setNodeFilter('all')
       setAssigneeFilter('all')
       setCollapsedNodeIds((current) => {
@@ -2952,9 +2959,14 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     }
     pendingSelection.current = cardId
     setActiveMapId(mapId)
-  }, [activeMapId, parentsById, setNodes])
+  }, [setNodes])
+
+  const selectAiDelegationCard = useCallback((mapId: string, cardId: string) => {
+    selectCardAndReveal(mapId, cardId)
+  }, [selectCardAndReveal])
+
   useEffect(() => {
-    const request = pendingAiConversationSelectionReveal.current
+    const request = pendingCardSelectionReveal.current
     if (!request
       || request.mapId !== activeMapId
       || loadedMapId !== activeMapId
@@ -2962,19 +2974,13 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       || !nodesInitialized) return
     const target = nodes.find((node) => node.id === request.cardId)
     if (!target) {
-      pendingAiConversationSelectionReveal.current = null
+      pendingCardSelectionReveal.current = null
       return
     }
 
-    const ancestorIds = new Set<string>()
-    const remaining = [...(parentsById.get(request.cardId) ?? [])]
-    while (remaining.length > 0) {
-      const ancestorId = remaining.pop() as string
-      if (ancestorIds.has(ancestorId)) continue
-      ancestorIds.add(ancestorId)
-      remaining.push(...(parentsById.get(ancestorId) ?? []))
-    }
+    const ancestorIds = hierarchyAncestorNodeIds(edges, request.cardId)
     setNodeSearchTerm('')
+    setNodeSearchIndex(-1)
     setNodeFilter('all')
     setAssigneeFilter('all')
     setCollapsedNodeIds((current) => {
@@ -2984,8 +2990,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     })
 
     const frame = window.requestAnimationFrame(() => {
-      if (pendingAiConversationSelectionReveal.current !== request) return
-      pendingAiConversationSelectionReveal.current = null
+      if (pendingCardSelectionReveal.current !== request) return
+      pendingCardSelectionReveal.current = null
       focusedNodeIdRef.current = null
       const bounds = canvasWrapRef.current?.getBoundingClientRect()
       if (!bounds) return
@@ -2999,7 +3005,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       if (nextViewport) void setViewport(nextViewport, { duration: 420 })
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [activeMapId, loadedMapId, nodes, nodesInitialized, parentsById, reactFlowStore, setViewport, viewMode])
+  }, [activeMapId, edges, loadedMapId, nodes, nodesInitialized, reactFlowStore, setViewport, viewMode])
   const collapsibleNodeIds = useMemo(() => new Set(nodes.filter((node) => (childrenById.get(node.id)?.length ?? 0) > 0).map((node) => node.id)), [childrenById, nodes])
   const descendantCounts = useMemo(() => {
     const result = new Map<string, number>()
@@ -3413,8 +3419,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   }, [documentLayout.groups])
 
   useEffect(() => {
-    if (selectedId && !visibleFlowNodeIds.has(selectedId)) setSelectedId(null)
-  }, [selectedId, visibleFlowNodeIds])
+    if (selectedId && !visibleFlowNodeIds.has(selectedId)) clearCardSelection()
+  }, [clearCardSelection, selectedId, visibleFlowNodeIds])
 
   useEffect(() => {
     let active = true
@@ -3717,18 +3723,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         const event = JSON.parse(message.data) as MapChangeEvent | PresenceEvent | CursorEvent | CommentChangeEvent | AiConversationLinkedEvent | AiConversationRuntimeEvent | AiConversationRuntimeSnapshotEvent | AiConversationRuntimeSummaryEvent | AiConversationRuntimeSummarySnapshotEvent | AiConversationSelectionRequestedEvent | NotificationEvent | NotificationsReadEvent | NotificationsRemovedEvent | HeartbeatEvent | { type: 'connected' }
         if (event.type === 'heartbeat') return
         if (event.type === 'ai-conversation-selection-requested') {
-          pendingAiConversationSelectionReveal.current = { mapId: event.mapId, cardId: event.cardId }
-          setSelectedGroupId(null)
-          setViewMode('mindmap')
-          setTrashOpen(false)
-          if (event.mapId === activeMapId) {
-            pendingSelection.current = null
-            setNodes((current) => synchronizeNodeSelection(current, event.cardId))
-            setSelectedId(event.cardId)
-          } else {
-            pendingSelection.current = event.cardId
-            setActiveMapId(event.mapId)
-          }
+          selectCardAndReveal(event.mapId, event.cardId)
           return
         }
         if (event.type === 'presence') {
@@ -3903,7 +3898,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       window.removeEventListener('focus', handleFocus)
       eventSource?.close()
     }
-  }, [activeMapId, mode, reconcileRemoteMap, refreshResolvedReferences, setNodes, user.id, user.publicAccess])
+  }, [activeMapId, mode, reconcileRemoteMap, refreshResolvedReferences, selectCardAndReveal, setNodes, user.id, user.publicAccess])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -4365,7 +4360,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const startOrOpenContextNodeAiConversation = () => {
     if (!contextMenuNode) return
     setNodeContextMenu(null)
-    setSelectedId(contextMenuNode.id)
+    selectCardLocally(contextMenuNode.id)
     if (contextMenuNode.data.aiConversationId) {
       openAiConversationForNode(
         contextMenuNode,
@@ -4498,13 +4493,13 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
 
   const startKnowledgeConnectionFromMenu = useCallback((policy: KnowledgePolicy) => {
     if (!nodeContextMenu || mode !== 'editor' || viewMode !== 'mindmap') return
-    setSelectedId(nodeContextMenu.nodeId)
+    selectCardLocally(nodeContextMenu.nodeId)
     setKnowledgeConnection({ sourceId: nodeContextMenu.nodeId, policy })
     setKnowledgeConnectionTargetId(null)
     setKnowledgeConnectionMessage('')
     setKnowledgeError('')
     setNodeContextMenu(null)
-  }, [mode, nodeContextMenu, viewMode])
+  }, [mode, nodeContextMenu, selectCardLocally, viewMode])
 
   const addKnowledgeSource = () => {
     if (!selectedNode || !knowledgeCandidate || mode !== 'editor') return
@@ -4645,6 +4640,19 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       },
     }
     setNodes((current) => synchronizeNodeSelection([...current, node], id))
+    if (activeMapId) pendingCardSelectionReveal.current = { mapId: activeMapId, cardId: id }
+    setNodeSearchTerm('')
+    setNodeSearchIndex(-1)
+    setNodeFilter('all')
+    setAssigneeFilter('all')
+    if (parent) {
+      setCollapsedNodeIds((current) => {
+        if (!current.has(parent.id)) return current
+        const next = new Set(current)
+        next.delete(parent.id)
+        return next
+      })
+    }
     if (parent) {
       setEdges((current) => [...current, {
         id: `edge-${parent.id}-${id}`,
@@ -4657,7 +4665,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       }])
     }
     setSelectedId(id)
-  }, [hierarchyEdges, mode, nodes, selectedNode, setEdges, setNodes])
+  }, [activeMapId, hierarchyEdges, mode, nodes, selectedNode, setEdges, setNodes])
 
   useEffect(() => {
     const handleInsert = (event: KeyboardEvent) => {
@@ -4843,14 +4851,14 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       setMobileInspectorOpen(false)
       suppressMobileInspectorSelection.current = selectedIdRef.current === nodeId ? null : nodeId
     }
-    setSelectedId(nodeId)
+    selectCardLocally(nodeId)
     const menuHeight = nodes.find((node) => node.id === nodeId)?.data.kind === 'image' ? 310 : 440
     setNodeContextMenu({
       x: Math.max(8, Math.min(clientX, window.innerWidth - 230)),
       y: Math.max(8, Math.min(clientY, window.innerHeight - menuHeight)),
       nodeId,
     })
-  }, [mode, nodes])
+  }, [mode, nodes, selectCardLocally])
 
   const openNodeContextMenu = useCallback((event: ReactMouseEvent, nodeId: string) => {
     const touchSuppression = suppressTouchContextMenu.current
@@ -5597,17 +5605,19 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         { method: 'POST' },
       )
       serverBaseline.current = structuredClone(result.map)
-      resetHistory(result.map.nodes, result.map.edges)
-      setNodes(result.map.nodes)
+      const nextSelectedId = resolveDocumentNodeSelection(result.map.nodes, null, isPhoneViewport())
+      const restoredNodes = synchronizeNodeSelection(result.map.nodes, nextSelectedId)
+      resetHistory(restoredNodes, result.map.edges)
+      setNodes(restoredNodes)
       setEdges(result.map.edges)
-      setSelectedId(resolveDocumentNodeSelection(result.map.nodes, null, isPhoneViewport()))
+      setSelectedId(nextSelectedId)
       setDocuments((current) => current.map((document) => document.id === result.summary.id ? result.summary : document))
       setMapRevisions(result.revisions)
       setHistoryHasMore(result.historyHasMore)
       setHistoryNextOffset(result.historyNextOffset)
       setHistoryPaginationError('')
       setExternalChange(null)
-      localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify({ nodes: result.map.nodes, edges: result.map.edges }))
+      localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify(createPersistedMapContent(restoredNodes, result.map.edges)))
       setSavedAt('이전 버전 복원됨')
       window.setTimeout(() => showFullMindMap(400), 0)
     } catch (error) {
@@ -5629,10 +5639,12 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         { method: 'POST' },
       )
       serverBaseline.current = structuredClone(result.map)
-      resetHistory(result.map.nodes, result.map.edges)
-      setNodes(result.map.nodes)
+      const nextSelectedId = resolveDocumentNodeSelection(result.map.nodes, null, isPhoneViewport())
+      const restoredNodes = synchronizeNodeSelection(result.map.nodes, nextSelectedId)
+      resetHistory(restoredNodes, result.map.edges)
+      setNodes(restoredNodes)
       setEdges(result.map.edges)
-      setSelectedId(resolveDocumentNodeSelection(result.map.nodes, null, isPhoneViewport()))
+      setSelectedId(nextSelectedId)
       setDocuments((current) => current.map((document) => document.id === result.summary.id ? result.summary : document))
       setDailyBackups(result.dailyBackups)
       setMapRevisions(result.revisions)
@@ -5640,7 +5652,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       setHistoryNextOffset(result.historyNextOffset)
       setHistoryPaginationError('')
       setExternalChange(null)
-      localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify({ nodes: result.map.nodes, edges: result.map.edges }))
+      localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify(createPersistedMapContent(restoredNodes, result.map.edges)))
       setSavedAt(`${backup.date} 일일 백업 복원됨`)
       window.setTimeout(() => showFullMindMap(400), 0)
     } catch (error) {
@@ -6313,14 +6325,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   }
 
   const openNotification = (notification: UserNotification) => {
-    setSelectedGroupId(null)
     void markNotificationRead(notification)
-    pendingSelection.current = notification.nodeId
-    setViewMode('mindmap')
-    setTrashOpen(false)
     setNotificationsOpen(false)
-    if (notification.mapId === activeMapId) setSelectedId(notification.nodeId)
-    else setActiveMapId(notification.mapId)
+    selectCardAndReveal(notification.mapId, notification.nodeId)
   }
 
   const copySelectedNodeLink = async () => {
@@ -6964,7 +6971,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
               key={id}
               className={viewMode === id ? 'active' : ''}
               onClick={() => {
-                if (id !== 'mindmap' && selectedNode && !selectedNode.data.isWork) setSelectedId(null)
+                if (id !== 'mindmap' && selectedNode && !selectedNode.data.isWork) clearCardSelection()
                 setViewMode(id)
                 setMobileSidebarOpen(false)
                 setMobileInspectorOpen(false)
@@ -7334,7 +7341,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                           <Icon name={collapsed ? 'chevron' : 'chevron-down'} size={12} />
                         </button>
                         <button type="button" className="document-group-open" title={`${group.name} 그룹 개요`} aria-current={selectedGroup?.id === group.id ? 'page' : undefined} onClick={() => {
-                          setSelectedGroupId(group.id); setSelectedId(null); setRenamingMap(false); setMobileSidebarOpen(false); setMobileInspectorOpen(false)
+                          setSelectedGroupId(group.id); clearCardSelection(); setRenamingMap(false); setMobileSidebarOpen(false); setMobileInspectorOpen(false)
                         }}>
                           <Icon name="folder" size={14} />
                           <span className="document-group-label">
@@ -7500,9 +7507,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           editable={accountMode === 'editor'}
           clientId={CLIENT_ID}
           onNavigate={(mapId, rootId) => {
-            setSelectedGroupId(null); setViewMode('mindmap'); setMobileSidebarOpen(false)
-            pendingSelection.current = rootId ?? null
-            setSelectedId(rootId ?? null); setActiveMapId(mapId)
+            setMobileSidebarOpen(false)
+            selectCardAndReveal(mapId, rootId ?? null)
           }}
           onLaunch={setAiConversationLaunch}
           onConversations={(target) => setAiConversationPicker({ mapId: target.mapId, cardId: target.cardId, cardTitle: target.cardTitle ?? '', launch: target })}
@@ -8874,12 +8880,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           }}
           onOpenCard={(mapId, cardId) => {
             setDoorayMentionsOpen(false)
-            setSelectedGroupId(null)
-            pendingSelection.current = cardId
-            setViewMode('mindmap')
-            setTrashOpen(false)
-            if (mapId === activeMapId) setSelectedId(cardId)
-            else setActiveMapId(mapId)
+            selectCardAndReveal(mapId, cardId)
           }} />
       )}
       {sharedKnowledgeReviewOpen && mode === 'editor' && (
@@ -9185,7 +9186,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           </button>
         </div>
       )}
-      {lifecycleOpen && <DocumentLifecycle api={apiRequest} editable={accountMode === 'editor'} documents={documents} initialIds={selectedGroup?.mapIds ?? (activeMapId ? [activeMapId] : [])} scope={lifecycleEntry.scope} initialTab={lifecycleEntry.initialTab} userId={user.id} members={teamMembers} launchInWebUi={aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)} onClose={() => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }) }} onChanged={refreshLifecycleLibrary} onNavigate={(id, cardId) => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }); setSelectedGroupId(null); pendingSelection.current = cardId ?? null; setSelectedId(cardId ?? null); setActiveMapId(id); setViewMode('mindmap') }} />}
+      {lifecycleOpen && <DocumentLifecycle api={apiRequest} editable={accountMode === 'editor'} documents={documents} initialIds={selectedGroup?.mapIds ?? (activeMapId ? [activeMapId] : [])} scope={lifecycleEntry.scope} initialTab={lifecycleEntry.initialTab} userId={user.id} members={teamMembers} launchInWebUi={aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)} onClose={() => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }) }} onChanged={refreshLifecycleLibrary} onNavigate={(id, cardId) => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }); selectCardAndReveal(id, cardId ?? null) }} />}
     </div>
   )
 }

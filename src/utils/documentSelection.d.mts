@@ -14,3 +14,12 @@ export function synchronizeNodeSelection<T extends { id: string; selected?: bool
   nodes: ReadonlyArray<T>,
   selectedId: string | null,
 ): T[]
+
+export function hierarchyAncestorNodeIds(
+  edges: ReadonlyArray<{
+    source: string
+    target: string
+    data?: { relation?: string }
+  }>,
+  nodeId: string,
+): Set<string>

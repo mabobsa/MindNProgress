@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  hierarchyAncestorNodeIds,
   isPhoneViewport,
   PHONE_VIEWPORT_QUERY,
   resolveDocumentNodeSelection,
@@ -44,4 +45,15 @@ test('자식 카드를 추가해 선택하면 기존 부모 하이라이트를 �
     ['child', true],
   ])
   assert.equal(selected[1], sibling, '선택 상태가 바뀌지 않은 카드는 불필요하게 복제하지 않는다')
+})
+
+test('자동 선택으로 펼칠 상위 경로는 계층선만 따라가고 순환 관계에서도 종료한다', () => {
+  const ancestors = hierarchyAncestorNodeIds([
+    { source: 'root', target: 'branch' },
+    { source: 'branch', target: 'work', data: { relation: 'hierarchy' } },
+    { source: 'unrelated', target: 'work', data: { relation: 'knowledge' } },
+    { source: 'work', target: 'root' },
+  ], 'work')
+
+  assert.deepEqual([...ancestors].sort(), ['branch', 'root'])
 })

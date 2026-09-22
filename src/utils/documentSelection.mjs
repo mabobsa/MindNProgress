@@ -19,3 +19,21 @@ export function synchronizeNodeSelection(nodes, selectedId) {
     return Boolean(node.selected) === selected ? node : { ...node, selected }
   })
 }
+
+export function hierarchyAncestorNodeIds(edges, nodeId) {
+  const parentsById = new Map()
+  for (const edge of Array.isArray(edges) ? edges : []) {
+    if (!edge?.source || !edge?.target || edge.data?.relation === 'knowledge') continue
+    parentsById.set(edge.target, [...(parentsById.get(edge.target) ?? []), edge.source])
+  }
+
+  const result = new Set()
+  const remaining = [...(parentsById.get(nodeId) ?? [])]
+  while (remaining.length > 0) {
+    const ancestorId = remaining.pop()
+    if (!ancestorId || ancestorId === nodeId || result.has(ancestorId)) continue
+    result.add(ancestorId)
+    remaining.push(...(parentsById.get(ancestorId) ?? []))
+  }
+  return result
+}

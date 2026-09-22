@@ -3357,6 +3357,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       : (nodeSearchIndex + direction + nodeSearchMatches.length) % nodeSearchMatches.length
     const target = nodeSearchMatches[nextIndex]
     setNodeSearchIndex(nextIndex)
+    setNodes((current) => synchronizeNodeSelection(current, target.id))
     setSelectedId(target.id)
     focusedNodeIdRef.current = null
     setCenter(target.position.x + 109, target.position.y + 65, { zoom: Math.max(.85, Math.min(1.2, viewport.zoom)), duration: 420 })

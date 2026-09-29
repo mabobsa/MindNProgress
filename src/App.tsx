@@ -2540,6 +2540,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
 
   const dependencyBlockRef = useRef<HTMLDivElement | null>(null)
   const canvasWrapRef = useRef<HTMLElement | null>(null)
+  const inspectorContentRef = useRef<HTMLDivElement | null>(null)
   const sidebarResizeStart = useRef({ pointerX: 0, width: 226 })
   const inspectorResizeStart = useRef({ pointerX: 0, width: 278 })
   const descriptionTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -2616,6 +2617,14 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     }
     if (isPhoneViewport()) setMobileInspectorOpen(true)
   }, [selectedId])
+
+  useEffect(() => {
+    if (!selectedId || (isPhoneViewport() && !mobileInspectorOpen)) return
+    const frame = window.requestAnimationFrame(() => {
+      if (inspectorContentRef.current) inspectorContentRef.current.scrollTop = 0
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [mobileInspectorOpen, selectedId])
   const reconcileRemoteMap = useCallback((remoteMap: MapDocument) => {
     if (activeMapIdRef.current !== remoteMap.id) return
     const baseline = serverBaseline.current
@@ -7929,7 +7938,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                   <button onClick={() => setSelectedId(null)} aria-label="닫기"><Icon name="close" size={17} /></button>
                 </div>
               </div>
-              <div className="inspector-content image-inspector-content">
+              <div ref={inspectorContentRef} className="inspector-content image-inspector-content">
                 <div className="image-inspector-preview">
                   <img
                     src={imageAssetUrl(activeMapId, selectedNode.data.image.assetId)}
@@ -8029,7 +8038,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                   <button onClick={() => setSelectedId(null)} aria-label="닫기"><Icon name="close" size={17} /></button>
                 </div>
               </div>
-              <div className="inspector-content dooray-knowledge-inspector-content">
+              <div ref={inspectorContentRef} className="inspector-content dooray-knowledge-inspector-content">
                 <div className="dooray-knowledge-origin">
                   <div className="dooray-knowledge-provider-row">
                     <span className="dooray-linked-icon" aria-hidden="true">D</span>
@@ -8183,7 +8192,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                   <button onClick={() => setSelectedId(null)} aria-label="닫기"><Icon name="close" size={17} /></button>
                 </div>
               </div>
-              <div className="inspector-content">
+              <div ref={inspectorContentRef} className="inspector-content">
                 {mode === 'editor' && !documentArchived && <AiDelegationRecovery
                   key={`${selectedCommentMapId}:${selectedCommentNodeId ?? selectedNode.id}`}
                   mapId={selectedCommentMapId} cardId={selectedCommentNodeId ?? selectedNode.id}

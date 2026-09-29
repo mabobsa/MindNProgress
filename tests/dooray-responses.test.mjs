@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { buildDoorayHandoffPrompt, buildDoorayRoutingCatalog, createDoorayResponseService, parseDoorayAiResult, publicDoorayResponse, readDoorayResponseSource, validateDoorayRoute } from '../server/lib/doorayResponses.mjs'
+import { buildDoorayHandoffPrompt, buildDoorayRoutingCatalog, createDoorayResponseService, parseDoorayAiResult, publicDoorayResponse, readDoorayResponseSource, resolveDoorayRoutingResult, validateDoorayRoute } from '../server/lib/doorayResponses.mjs'
 import { redactDoorayTranscript } from '../server/lib/doorayExecutionHandoff.mjs'
 
 const item = { key: 'comment:post1:comment1', kind: 'mention-comment', projectId: 'p1', postId: 'post1', commentId: 'comment1',
@@ -97,6 +97,128 @@ async function fixture(t, overrides = {}) {
   }
   return { directory, deps, counts, operations, service: createDoorayResponseService(deps) }
 }
+test('선택적 대화만 제외하고 담당 카드·계층 검증은 유지한다', () => {
+  const resolved = resolveDoorayRoutingResult({ ...route, conversationId: 'other-card-chat' }, maps)
+  assert.equal(resolved.route.conversationId, null)
+  assert.equal(resolved.route.cardId, 'task1')
+  assert.equal(resolved.routingWarning.code, 'UNLINKED_REFERENCE_CONVERSATION')
+  assert.equal(resolved.routingWarning.conversationId, 'other-card-chat')
+  assert.equal(resolveDoorayRoutingResult(route, maps).routingWarning, null)
+  assert.equal(resolveDoorayRoutingResult({ ...route, conversationId: null }, maps).routingWarning, null)
+  for (const change of [{ cardId: 'missing' }, { cardId: 'knowledge1' }, { cardId: 'ref1' }, { action: 'group' }, { action: 'coordinator' }, { reason: '' }]) {
+    assert.throws(() => resolveDoorayRoutingResult({ ...route, ...change, conversationId: 'other-card-chat' }, maps))
+  }
+})
+
+const recoveredProposal = '기존 답변 전문\n\n한글과 **서식**, 공백을 보존합니다.  \n'
+const recoveredDecision = { kind: 'approval', reason: '사실 확인이 끝나 사용자 동의만 필요합니다.', questions: [],
+  approval: { title: '확인 결과 기록', scope: ['담당 카드에 확인 결과를 기록한다.'], exclusions: ['코드 변경과 하위 위임은 제외한다.'] } }
+
+async function legacyLinkFailure(t, overrides = {}) {
+  const context = await fixture(t, {
+    getDispatch: async (op) => ({ conversationId: op.conversationId, state: 'completed' }),
+    messages: async (op) => [assistant({ ...route, conversationId: 'other-card-chat', requestId: op.id,
+      proposal: recoveredProposal, decision: recoveredDecision })], ...overrides,
+  })
+  const job = { id: 'legacy-link-failure', userId: 'user1', status: 'failed', source,
+    error: 'AI가 선택한 대화가 담당 카드에 연결되어 있지 않습니다.',
+    settings: { machineId: 'main' }, attempt: 1, round: 0, createdAt: '2026-09-28T00:00:00.000Z', updatedAt: '2026-09-28T01:00:00.000Z',
+    router: { conversationId: 'completed-router', machineId: 'main', dedicated: true },
+    operation: { id: 'legacy-route-1-0', kind: 'router', machineId: 'main', conversationId: 'completed-router', dispatchAttempted: true } }
+  const file = path.join(context.directory, 'user1.json')
+  await context.deps.write(file, { jobs: [job] })
+  return { ...context, job, file }
+}
+
+test('접수 AI의 완성 제안은 참고 대화 경고와 함께 보존하고 추가 AI를 실행하지 않는다', async (t) => {
+  const { service, counts } = await fixture(t, { messages: async (op) => [assistant({ ...route, conversationId: 'other-card-chat',
+    requestId: op.id, proposal: recoveredProposal, decision: recoveredDecision })] })
+  await service.start({ id: 'user1' }, item)
+  const [job] = await until(service, 'user1', 'needs-approval')
+  assert.equal(job.proposal, recoveredProposal)
+  assert.equal(job.proposalSource, 'router')
+  assert.equal(job.route.conversationId, null)
+  assert.equal(job.conversationId, 'new-chat-1')
+  assert.equal(job.approval, null, '복구는 사용자 승인이 아니다')
+  assert.deepEqual(counts, { create: 1, dispatch: 1, link: 0 })
+})
+
+test('완성 제안이 없으면 잘못된 참고 대화를 제외하고 정상 담당 검토로 이어간다', async (t) => {
+  let selectedReference
+  const { service, counts } = await fixture(t, {
+    messages: async (op) => [assistant({ requestId: op.id, ...(op.kind === 'router'
+      ? { ...route, conversationId: 'other-card-chat' } : { proposal: recoveredProposal }) })],
+    prepareReview: async (_user, selected, settings) => { selectedReference = selected.conversationId; return { settings, context: {} } },
+  })
+  await service.start({ id: 'user1' }, item)
+  const [job] = await until(service, 'user1', 'proposal')
+  assert.equal(selectedReference, null)
+  assert.equal(job.proposalSource, 'review')
+  assert.equal(job.routingWarning.code, 'UNLINKED_REFERENCE_CONVERSATION')
+  assert.equal(counts.dispatch, 2)
+})
+
+test('기존 연결 실패 1건을 같은 기록·대화에서 전문 복구하고 중복 요청도 재실행하지 않는다', async (t) => {
+  const { service, job, file, counts } = await legacyLinkFailure(t)
+  const recovered = await service.recoverResult('user1', job.id, job.updatedAt)
+  assert.equal(recovered.status, 'needs-approval')
+  assert.equal(recovered.proposal, recoveredProposal)
+  assert.deepEqual(recovered.decision, recoveredDecision)
+  assert.equal(recovered.route.conversationId, null)
+  assert.equal(recovered.conversationId, job.router.conversationId)
+  assert.equal(recovered.approval, null)
+  assert.equal(recovered.canRecoverResult, false)
+  assert.deepEqual(await service.recoverResult('user1', job.id, job.updatedAt), recovered)
+  const stored = JSON.parse(await readFile(file, 'utf8')).jobs
+  assert.equal(stored.length, 1)
+  assert.deepEqual(stored[0].source, job.source)
+  assert.deepEqual(stored[0].operation, job.operation)
+  assert.equal(stored[0].attempt, job.attempt)
+  assert.equal(stored[0].resultRecovery.previousUpdatedAt, job.updatedAt)
+  assert.equal(stored[0].routingResult.result.conversationId, 'other-card-chat')
+  assert.deepEqual(counts, { create: 0, dispatch: 0, link: 0 })
+})
+
+test('복구는 계정·시각·완료·요청 ID·카드·승인 구분을 검증하고 실패 시 원본을 보존한다', async (t) => {
+  const scenarios = [
+    { run: (s, j) => s.recoverResult('user2', j.id, j.updatedAt) },
+    { run: (s, j) => s.recoverResult('user1', j.id, 'stale') },
+    { authorize: async () => { throw new Error('접근 불가') } },
+    { getDispatch: async () => { throw Object.assign(new Error('expired'), { status: 404 }) } },
+    { getDispatch: async () => ({ state: 'running', conversationId: 'completed-router' }) },
+    { getDispatch: async () => ({ state: 'completed', conversationId: 'different-router' }) },
+    ...[{ requestId: 'old-request' }, { proposal: '' }, { cardId: 'missing' }, { decision: { kind: 'approval' } }].map((change) => ({
+      messages: async (op) => [assistant({ ...route, conversationId: 'other-card-chat', requestId: op.id,
+        proposal: recoveredProposal, decision: recoveredDecision, ...change })],
+    })),
+  ]
+  for (const { run, ...overrides } of scenarios) {
+    const { service, job, file, counts } = await legacyLinkFailure(t, overrides)
+    const before = await readFile(file, 'utf8')
+    await assert.rejects(run ? run(service, job) : service.recoverResult('user1', job.id, job.updatedAt))
+    assert.equal(await readFile(file, 'utf8'), before)
+    assert.deepEqual(counts, { create: 0, dispatch: 0, link: 0 })
+  }
+})
+
+test('복구 조회 중 완료된 기록을 덮어쓰지 않고 구버전 재확인도 새 AI를 실행하지 않는다', async (t) => {
+  const { service, deps, job, file, counts } = await legacyLinkFailure(t)
+  const messages = deps.messages
+  deps.messages = async (op) => {
+    await assert.rejects(service.complete('user1', job.id), /상태 확인 중/)
+    await assert.rejects(service.recoverResult('user1', job.id, job.updatedAt), /처리 중/)
+    // 별도 프로세스의 변경도 마지막 저장 시 다시 확인한다.
+    await deps.write(file, { jobs: [{ ...job, status: 'completed', completedAt: '2026-09-28T02:00:00.000Z' }] })
+    return messages(op)
+  }
+  await assert.rejects(service.recoverResult('user1', job.id, job.updatedAt), /변경되어/)
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).jobs[0].status, 'completed')
+  assert.deepEqual(counts, { create: 0, dispatch: 0, link: 0 })
+  const retry = await legacyLinkFailure(t, { getDispatch: async () => { throw Object.assign(new Error('expired'), { status: 404 }) } })
+  await assert.rejects(retry.service.retry('user1', retry.job.id), /expired/)
+  assert.deepEqual(retry.counts, { create: 0, dispatch: 0, link: 0 })
+})
+
 async function until(service, userId, expected, timeoutMs = 3_000) {
   const startedAt = Date.now()
   let polls = 0

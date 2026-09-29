@@ -18,6 +18,8 @@ export type DoorayResponseJob = {
   id: string; itemKey: string; postId: string; subject: string; sourceUrl: string; status: string; proposal: string; error: string
   createdAt: string; updatedAt: string; conversationId: string | null; homeMachineRole: 'main' | 'sub'; canRetry: boolean
   recoveringAfterRestart?: boolean
+  canRecoverResult?: boolean; proposalSource?: 'router' | 'review' | null
+  routingWarning?: { code: string; conversationId: string; message: string } | null
   completedAt?: string | null; archiveStatus?: 'pending' | 'done' | 'warning' | null; archiveError?: string
   decision?: DoorayDecision | null; proposalRevision?: string; approval?: DoorayApproval | null; approvalHistory?: DoorayApproval[]
   route: { action: string; mapId: string; cardId: string; documentTitle: string; cardTitle: string; reason: string; requestSummary: string } | null
@@ -117,6 +119,14 @@ export function useDoorayResponses(clientId: string, userId: string) {
       if (!signal?.aborted) setPendingKeys(new Set(pending.current))
     }
   }
+  const recoverResult = async (job: DoorayResponseJob) => {
+    try {
+      await requestJson(`${base}/${encodeURIComponent(job.id)}/recover-result`, {
+        method: 'POST', body: JSON.stringify({ expectedUpdatedAt: job.updatedAt }),
+      })
+      await load()
+    } catch (failure) { setError(failure instanceof Error ? failure.message : '완료 답변 복구에 실패했습니다.') }
+  }
   const retry = async (id: string) => {
     try { await requestJson(`${base}/${encodeURIComponent(id)}/retry`, { method: 'POST' }); await load() }
     catch (failure) { setError(failure instanceof Error ? failure.message : '상태 확인에 실패했습니다.') }
@@ -159,7 +169,7 @@ export function useDoorayResponses(clientId: string, userId: string) {
       return launch
     } catch (failure) { if (!signal?.aborted) setError(failure instanceof Error ? failure.message : '승인 정보를 확인하지 못했습니다.'); return null }
   }
-  return { jobs, error, notice, selectedId, setSelectedId, open, setOpen, showCompleted, setShowCompleted, pendingKeys, settings, saveSettings, request, retry, refine, complete, approve, load, requestJson }
+  return { jobs, error, notice, selectedId, setSelectedId, open, setOpen, showCompleted, setShowCompleted, pendingKeys, settings, saveSettings, request, retry, recoverResult, refine, complete, approve, load, requestJson }
 }
 export const doorayResponseStatusLabel = (job: Pick<DoorayResponseJob, 'status' | 'recoveringAfterRestart'>) =>
   job.recoveringAfterRestart ? '재시작 후 제안 복구 중' : doorayResponseStatus[job.status] ?? job.status

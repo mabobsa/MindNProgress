@@ -866,7 +866,7 @@
 }
 
 [data-theme="dark"] .password-form label > span,
-[data-theme="dark"] .ai-dialog-content > label,
+[data-theme="dark"] .ai-dialog-options > label,
 [data-theme="dark"] .ai-workspace-field > label,
 [data-theme="dark"] .ai-dialog-grid label {
   color: var(--theme-text-secondary);

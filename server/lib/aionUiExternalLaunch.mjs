@@ -114,6 +114,11 @@ export function createAionUiWebLaunchUrl(baseUrl, launchId) {
   return url.toString()
 }
 
+export function createAionUiDesktopLaunchUrl(launchId) {
+  if (!LAUNCH_ID_PATTERN.test(String(launchId ?? ''))) throw new Error('AIONUI_EXTERNAL_LAUNCH_ID_INVALID')
+  return `aionui://conversation/new?launchId=${launchId}`
+}
+
 export function createAionUiConversationWebUrl(baseUrl, conversationId) {
   if (!CONVERSATION_ID_PATTERN.test(String(conversationId ?? ''))) {
     throw new Error('AIONUI_CONVERSATION_ID_INVALID')

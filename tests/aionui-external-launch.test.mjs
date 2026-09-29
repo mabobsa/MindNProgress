@@ -3,12 +3,25 @@ import test from 'node:test'
 import {
   AionUiExternalLaunchPayloadError,
   createAionUiConversationWebUrl,
+  createAionUiDesktopLaunchUrl,
   createAionUiWebLaunchUrl,
   normalizeAionUiExternalLaunchPayload,
   parseMindNProgressCompletionToken,
 } from '../server/lib/aionUiExternalLaunch.mjs'
 
 const COMPLETION_TOKEN = 'A'.repeat(43)
+
+test('긴 한글 전문은 서버 payload로 보존하고 데스크톱 URL에는 짧은 ticket만 넣는다', () => {
+  const prompt = '승인한 제안과 사용자 추가 요청을 그대로 전달합니다.\n'.repeat(1000)
+  const payload = normalizeAionUiExternalLaunchPayload({ agentId: 'codex', prompt,
+    completionUrl: `http://127.0.0.1:4176/api/integrations/aionui/launches/${COMPLETION_TOKEN}/conversation` })
+  assert.equal(payload.prompt, prompt.trim())
+  assert.ok(Buffer.from(JSON.stringify(payload)).toString('base64').length > 32767)
+  const url = createAionUiDesktopLaunchUrl('a'.repeat(64))
+  assert.equal(url, `aionui://conversation/new?launchId=${'a'.repeat(64)}`)
+  assert.ok(url.length < 128)
+  for (const invalid of [null, undefined, '', 'short', 'A'.repeat(64), '../other']) assert.throws(() => createAionUiDesktopLaunchUrl(invalid))
+})
 
 test('외부 대화 시작 payload는 허용된 필드만 정규화한다', () => {
   const payload = normalizeAionUiExternalLaunchPayload({

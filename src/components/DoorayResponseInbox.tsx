@@ -24,6 +24,7 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
   const [hint, setHint] = useState('')
   const [refining, setRefining] = useState(false)
   const [completing, setCompleting] = useState(false)
+  const [recovering, setRecovering] = useState(false)
   const [handoffId, setHandoffId] = useState('')
   const [executionHandoffId, setExecutionHandoffId] = useState('')
   const outstanding = response.jobs.filter((entry) => !entry.completedAt)
@@ -114,6 +115,8 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
               <button type="button" className="dooray-response-target" onClick={() => onOpenCard(job.route!.mapId, job.route!.cardId)}>{job.route.documentTitle} → {job.route.cardTitle}</button>
               <p>{job.route.reason}</p>
             </>}
+            {job.routingWarning && <p className="dooray-response-notice" role="status">{job.routingWarning.message}</p>}
+            {job.proposalSource === 'router' && <p className="dooray-response-notice">접수 AI가 작성한 제안입니다. 담당 AI의 별도 재검토는 진행하지 않았습니다.</p>}
             {job.proposal && <div className="dooray-response-proposal">{job.proposal}</div>}
             {job.proposal && <DoorayResponseDecision key={`${job.id}:${job.proposalRevision}`} job={job} response={response}
               disabled={completing || refining} onLaunchCard={onLaunchCard} />}
@@ -126,7 +129,11 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
               {executionHandoffs.map((entry) => <button type="button" key={entry.id} onClick={() => onOpenConversation({ ...job, ...entry.conversation! })}>인계 대화 보기 · {entry.target.documentTitle}</button>)}
               {approvalConversation && <button type="button" disabled={completing || refining} onClick={() => setExecutionHandoffId(job.id)}>새 문서의 상위 카드에서 이어가기</button>}
               {['proposal', 'needs-approval', 'approved'].includes(job.status) && job.route && <button type="button" disabled={completing || refining} onClick={() => setHandoffId(job.id)}>담당 카드로 전달하기</button>}
-              {job.canRetry && <button type="button" onClick={() => void response.retry(job.id)}>상태 다시 확인</button>}
+              {job.canRecoverResult ? <button type="button" disabled={recovering || completing || refining} onClick={() => {
+                setRecovering(true)
+                void response.recoverResult(job).finally(() => setRecovering(false))
+              }}>{recovering ? '완료 답변 확인 중…' : '완료 답변 복구'}</button>
+                : job.canRetry && <button type="button" onClick={() => void response.retry(job.id)}>상태 다시 확인</button>}
               {(['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'].includes(job.status) || (job.completedAt && job.archiveStatus !== 'done')) && <button type="button"
                 disabled={completing || refining} onClick={() => {
                   setCompleting(true)

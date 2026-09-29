@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -31,14 +31,18 @@ window.fetch = async (url, init = {}) => {
   else if (url.startsWith('/api/integrations/aionui/workspace-context')) body = workspaceContext;
   else if (url.startsWith('/api/integrations/aionui/workspaces?')) body = {userId:'fixture',machineId:'fixture',workspaces:[]};
   else if (url === '/api/integrations/aionui/dialog-preferences') body = {userId:'fixture',sections:{workspace:true,mcp:true,skills:true}};
-  else if (url === '/api/integrations/aionui/attributions') body = {editorId:'fixture',attributionToken:'fixture',completionUrl:'http://fixture.invalid/completion'};
+  else if (url === '/api/integrations/aionui/attributions') body = {editorId:'fixture',attributionToken:'fixture',completionUrl:'http://fixture.invalid/completion',statusUrl:'/api/integrations/aionui/launches/'+ 'A'.repeat(43) +'/status'};
+  else if (url.endsWith('/status')) {
+    if (a.statusHttp) return new Response(JSON.stringify({error:'시작 상태 조회 실패'}),{status:a.statusHttp});
+    body = {status:a.launchStatus || 'completed',conversationId:a.launchStatus ? null : 'fixture-conversation',launchUrl:'about:blank',error:a.confirmationError || ''};
+  }
   else if (url === '/api/integrations/aionui/external-conversation-launches') body = {launchUrl:'about:blank'};
   else throw new Error('예상하지 않은 테스트 요청: '+url);
   return new Response(JSON.stringify(body),{headers:{'Content-Type':'application/json'}});
 };
 let sequence = 0;
 window.renderDialog = (input = {}, flags = {}) => {
-  Object.assign(window.audit,{calls:[],fail:false,hold:false,closed:0,context:{map:{id:'map-coordinator',nodes:[{id:'root',data:{kind:'root'}},{id:'child',data:{kind:'task'}}],edges:[{source:'root',target:'child'}]},groupProject:{groupId:'group-manager',role:'coordinator',coordinatorMapId:'map-coordinator'}},...flags});
+  Object.assign(window.audit,{calls:[],fail:false,hold:false,closed:0,launchStatus:null,statusHttp:0,confirmationError:'',context:{map:{id:'map-coordinator',nodes:[{id:'root',data:{kind:'root'}},{id:'child',data:{kind:'task'}}],edges:[{source:'root',target:'child'}]},groupProject:{groupId:'group-manager',role:'coordinator',coordinatorMapId:'map-coordinator'}},...flags});
   root.render(React.createElement(AiConversationDialog,{key:++sequence,userId:'fixture',documentId:'map-coordinator',documentTitle:'총괄 문서',cardId:'root',cardTitle:'총괄 루트',purpose:'card',knowledgeSources:[],launchInWebUi:true,onClose:()=>window.audit.closed++,...input}));
 };
 window.fixtureReady = true;
@@ -115,6 +119,54 @@ test('실제 대화 팝업의 총괄 전문·전달 목적·조회 중 잠금·�
     const payload = posts.find(c => c.url.endsWith('/external-conversation-launches')).body
     assert.ok(payload.prompt.includes(expected)); assert.match(payload.title, /^\[그룹 총괄\]/)
 
+    await open({}, { launchStatus: 'pending' })
+    await evaluate('document.querySelector(".ai-dialog footer .primary").click(); document.querySelector(".ai-dialog footer .primary").click()')
+    await waitFor(() => evaluate('Boolean(document.querySelector(".ai-launch-confirmation")) && !document.querySelector(".ai-dialog header button").disabled'))
+    assert.equal(await evaluate('window.audit.closed'), 0, 'ticket 발급만으로 팝업을 닫지 않는다')
+    assert.equal(await evaluate('window.audit.calls.filter(c=>c.url.endsWith("/external-conversation-launches")).length'), 1)
+    assert.equal(await evaluate('document.querySelector(".ai-workspace-input input").matches(":disabled")'), true)
+    for (const [width, height] of [[1440, 900], [900, 480], [390, 640]]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
+      const layout = await evaluate(`(() => {
+        const content=document.querySelector('.ai-dialog-content'), notice=document.querySelector('.ai-launch-confirmation'), footer=document.querySelector('.ai-dialog footer');
+        return { contentBottom:content.getBoundingClientRect().bottom, noticeTop:notice.getBoundingClientRect().top,
+          noticeBottom:notice.getBoundingClientRect().bottom, footerTop:footer.getBoundingClientRect().top,
+          footerBottom:footer.getBoundingClientRect().bottom, overflow:getComputedStyle(content).overflowY };
+      })()`)
+      assert.ok(layout.contentBottom <= layout.noticeTop + 1 && layout.noticeBottom <= layout.footerTop + 1, '대기 안내는 스크롤되는 옵션 영역·하단 버튼과 겹치지 않는다')
+      assert.ok(layout.footerBottom <= height, '작은 화면에서도 닫기 버튼을 유지한다')
+      assert.equal(layout.overflow, 'auto')
+    }
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+    const pendingScreenshot = await send('Page.captureScreenshot', { format: 'png' })
+    const pendingScreenshotPath = path.join(tmpdir(), `mnp-ai-launch-pending-${Date.now()}.png`)
+    await writeFile(pendingScreenshotPath, Buffer.from(pendingScreenshot.data, 'base64'))
+    console.log(`AI 대화 생성 확인 UI: ${pendingScreenshotPath}`)
+    await evaluate('window.renderDialog({}, {launchStatus:"pending"})')
+    await waitFor(() => evaluate('Boolean(document.querySelector(".ai-launch-confirmation"))'))
+    assert.equal(await evaluate('document.querySelector(".ai-dialog footer .primary").disabled'), true)
+    assert.equal(await evaluate('window.audit.calls.filter(c=>c.method==="POST").length'), 0, '재마운트는 저장한 시작 상태만 확인한다')
+    await evaluate('window.audit.statusHttp=503; Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="상태 다시 확인").click()')
+    await waitFor(() => evaluate('document.querySelector(".ai-launch-error")?.textContent.includes("조회 실패")'))
+    assert.equal(await evaluate('window.audit.closed'), 0)
+    await evaluate('window.audit.statusHttp=0;window.audit.launchStatus="confirmation-failed";window.audit.confirmationError="작업공간 연결 검증 실패";Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="상태 다시 확인").click()')
+    await waitFor(() => evaluate('document.querySelector(".ai-launch-error")?.textContent.includes("작업공간 연결 검증 실패")'))
+    assert.equal(await evaluate('window.audit.closed'), 0)
+    await evaluate('window.audit.launchStatus=null;window.audit.confirmationError="";Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="상태 다시 확인").click()')
+    await waitFor(() => evaluate('window.audit.closed === 1'))
+    assert.equal(await evaluate('Object.keys(sessionStorage).some(k=>k.startsWith("mindnprogress-ai-launch:"))'), false)
+
+    await open({}, { launchStatus: 'pending' })
+    await evaluate('document.querySelector(".ai-dialog footer .primary").click()')
+    await waitFor(() => evaluate('Boolean(document.querySelector(".ai-launch-confirmation")) && !document.querySelector(".ai-dialog header button").disabled'))
+    await evaluate('window.audit.statusHttp=404;Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="상태 다시 확인").click()')
+    await waitFor(() => evaluate('document.querySelector(".ai-launch-error")?.textContent.includes("조회 실패")'))
+    await evaluate('window.confirm=()=>false;Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="대화 목록 확인 후 새로 준비").click()')
+    assert.equal(await evaluate('document.querySelector(".ai-dialog footer .primary").disabled'), true, '초기화 확인 취소 시 불명확 접수 상태를 유지한다')
+    await evaluate('window.confirm=()=>true;Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="대화 목록 확인 후 새로 준비").click()')
+    await waitFor(() => evaluate('!document.querySelector(".ai-launch-confirmation")'))
+    assert.equal(await evaluate('window.audit.calls.filter(c=>c.url.endsWith("/external-conversation-launches")).length'), 1, '초기화는 자동 재시작하지 않는다')
+
     await evaluate('window.renderDialog({}, {hold:true})')
     await waitFor(() => evaluate('document.querySelector(".ai-dialog [role=status]")?.textContent.includes("대화 역할")'))
     assert.equal(await evaluate('document.querySelector(".ai-dialog footer .primary").disabled'), true)
@@ -134,6 +186,9 @@ test('실제 대화 팝업의 총괄 전문·전달 목적·조회 중 잠금·�
     await evaluate('window.renderDialog({}, {hold:true})')
     await waitFor(() => evaluate('Boolean(document.querySelector(".ai-dialog [role=status]"))'))
     assert.equal(await open({ cardId: 'child' }), DEFAULT_AI_EDITOR_REQUEST)
+  } catch (error) {
+    console.error('대화 팝업 검증 실패:', error)
+    throw error
   } finally {
     if (send && socket?.readyState === WebSocket.OPEN) await send('Browser.close').catch(() => {})
     for (const item of pending.values()) clearTimeout(item.timer)

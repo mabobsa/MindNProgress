@@ -14,8 +14,8 @@ async function waitFor(action) {
   throw lastError ?? new Error('브라우저 검증 대기 시간 초과')
 }
 
-export async function checkDoorayResponseBrowser({ directory, baseUrl, password, deleteConversation, complete = false, approvalFlow }) {
-  const profile = path.join(directory, approvalFlow ? 'browser-profile-approval' : complete ? 'browser-profile-completion' : 'browser-profile')
+export async function checkDoorayResponseBrowser({ directory, baseUrl, password, deleteConversation, complete = false, approvalFlow, recoveryFlow = false }) {
+  const profile = path.join(directory, recoveryFlow ? 'browser-profile-recovery' : approvalFlow ? 'browser-profile-approval' : complete ? 'browser-profile-completion' : 'browser-profile')
   await mkdir(profile, { recursive: true })
   const child = spawn(process.env.MNP_TEST_BROWSER_EXE ?? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', [
     '--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--remote-debugging-port=0',
@@ -72,6 +72,17 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
       document.querySelector('.dooray-response-request').click();
       document.querySelector('.dooray-response-request').click();
     })()`)
+    if (recoveryFlow) {
+      await waitFor(() => evaluate(`Array.from(document.querySelectorAll('.dooray-response-actions button')).some(b => b.textContent === '완료 답변 복구')`))
+      assert.equal(await evaluate(`Array.from(document.querySelectorAll('.dooray-response-actions button')).some(b => b.textContent === '상태 다시 확인')`), false)
+      await evaluate(`Array.from(document.querySelectorAll('.dooray-response-actions button')).find(b => b.textContent === '완료 답변 복구').click()`)
+      await waitFor(() => evaluate('document.querySelector(".dooray-response-proposal")?.textContent.includes("경계값")'))
+      assert.ok(await evaluate(`document.querySelector('.dooray-response-detail').textContent.includes('접수 AI가 작성한 제안입니다.')`))
+      assert.ok(await evaluate(`document.querySelector('.dooray-response-detail').textContent.includes('참고 대화가 현재 담당 카드에 연결되어 있지 않아 제외')`))
+      assert.ok(await evaluate(`Array.from(document.querySelectorAll('.dooray-response-detail button')).some(b => b.textContent.includes('제안 승인'))`))
+      assert.equal(await evaluate('window.doorayResponseStarts'), 0)
+      return
+    }
     await waitFor(() => evaluate('document.querySelector(".dooray-response-proposal")?.textContent.includes("경계값")'))
     assert.equal(await evaluate('window.doorayResponseStarts'), 0, '제안 도착·승인 대기 버튼의 반복 클릭은 접수 API를 호출하지 않는다')
     const existingJobId = await evaluate('document.querySelector(".dooray-response-picker select").value')
@@ -129,9 +140,18 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
       })()`)
       assert.equal(await evaluate('document.querySelector(".ai-workspace-input input").value'), approvalFlow.executionWorkspace)
       await evaluate('document.querySelector(".ai-dialog footer button.primary").click()', true)
-      await waitFor(() => evaluate('!document.querySelector(".ai-dialog") || Boolean(document.querySelector(".ai-launch-error"))'))
+      await waitFor(() => evaluate('Boolean(document.querySelector(".ai-launch-confirmation")) && !document.querySelector(\'button[aria-label="AI 대화 옵션 닫기"]\').disabled'))
+      assert.equal(await evaluate('Boolean(document.querySelector(".ai-dialog"))'), true, '시작 링크를 열어도 생성 확인 전에는 팝업을 닫지 않는다')
+      assert.equal(await evaluate('document.querySelector(".ai-dialog footer button.primary").disabled'), true)
+      await evaluate('document.querySelector(".ai-dialog footer button.primary").click()')
       assert.equal(await evaluate('document.querySelector(".ai-launch-error")?.textContent ?? ""'), '', '승인된 새 대화 시작은 오류 없이 완료되어야 한다')
+      await evaluate('document.querySelector(\'button[aria-label="AI 대화 옵션 닫기"]\').click()')
+      await waitFor(() => evaluate('!document.querySelector(".ai-dialog")'))
+      await evaluate('Array.from(document.querySelectorAll(".dooray-response-decision button")).find(b => b.textContent === "승인한 제안으로 AI 대화 시작").click()')
+      await waitFor(() => evaluate('Boolean(document.querySelector(".ai-launch-confirmation"))'))
+      assert.equal(await evaluate('document.querySelector(".ai-dialog footer button.primary").disabled'), true, '다시 연 팝업도 기존 시작 요청의 결과를 기다린다')
       await approvalFlow.completeLaunch(request)
+      await waitFor(() => evaluate('!document.querySelector(".ai-dialog")'))
       await waitFor(() => evaluate('Array.from(document.querySelectorAll(".dooray-response-actions button")).some(b => b.textContent === "승인 대화 보기")'))
       await checkConversationViews()
       assert.equal(await evaluate('document.querySelector(".dooray-mentions-panel") === window.approvalDoorayPanel'), true)

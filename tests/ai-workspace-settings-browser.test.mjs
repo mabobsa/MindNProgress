@@ -81,7 +81,8 @@ window.fetch = async (url, init = {}) => {
     } else if(window.sectionFlags.hold) await new Promise(resolve=>window.sectionFlags.release=resolve);
     body={userId,sections:init.method==='PATCH'?window.sectionPreferences[userId]:saved};
   }
-  else if (url === '/api/integrations/aionui/attributions') body = {editorId:'fixture',attributionToken:'fixture',completionUrl:'http://fixture.invalid/completion'};
+  else if (url === '/api/integrations/aionui/attributions') body = {editorId:'fixture',attributionToken:'fixture',completionUrl:'http://fixture.invalid/completion',statusUrl:'/api/integrations/aionui/launches/'+ 'A'.repeat(43) +'/status'};
+  else if (url.endsWith('/status')) body = {status:'completed',conversationId:'fixture-conversation'};
   else if (url === '/api/integrations/aionui/external-conversation-launches') body = {launchUrl:'about:blank'};
   else throw new Error('예상하지 않은 테스트 요청: '+url);
   return new Response(JSON.stringify(body),{headers:{'Content-Type':'application/json'}});

@@ -140,10 +140,12 @@ import {
 import {
   AionUiExternalLaunchPayloadError,
   createAionUiConversationWebUrl,
+  createAionUiDesktopLaunchUrl,
   createAionUiWebLaunchUrl,
   normalizeAionUiExternalLaunchPayload,
   parseMindNProgressCompletionToken,
 } from './lib/aionUiExternalLaunch.mjs'
+import { createAionUiLaunchTracking } from './lib/aionUiLaunchTracking.mjs'
 import {
   isLocalLoopbackRequest,
   localLoopbackRedirectLocation,
@@ -453,6 +455,7 @@ const aiAttributions = new Map()
 const aiConversationAttributions = new Map()
 const aiConversationOrigins = new Map()
 const aiConversationLaunches = new Map()
+const aiLaunchTracking = createAionUiLaunchTracking()
 const aiWorkspaceHistories = new Map()
 const distributedWorkSettings = new Map()
 let machineRegistry = normalizeMachineRegistry([])
@@ -7684,9 +7687,10 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       } catch (error) { return sendJson(response, error.status ?? 500, { error: error.message }) }
     }
 
-    const doorayResponseRoute = url.pathname.match(/^\/api\/integrations\/dooray\/mentions\/responses(?:\/([a-zA-Z0-9_-]+)\/(retry|refine|complete|handoff|execution-handoff|approve))?$/)
+    const doorayResponseRoute = url.pathname.match(/^\/api\/integrations\/dooray\/mentions\/responses(?:\/([a-zA-Z0-9_-]+)\/(retry|refine|complete|handoff|execution-handoff|approve|recover-result))?$/)
     if (doorayResponseRoute) {
-      const user = requireSignedInUser(request, response)
+      // 복구는 기존 완료 답변의 재검증만 허용한다. 실행·승인 API의 로그인 조건은 그대로 유지한다.
+      const user = doorayResponseRoute[2] === 'recover-result' ? requireUser(request, response) : requireSignedInUser(request, response)
       if (!user) return
       if (!canEdit(user) || isPublicViewer(user)) return sendJson(response, 403, { error: '편집자만 AI 대응을 요청할 수 있습니다.' })
       try {
@@ -7707,6 +7711,10 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           return sendJson(response, 200, { jobs: await doorayResponses.list(user.id) })
         }
         if (request.method === 'POST' && doorayResponseRoute[1]) {
+          if (doorayResponseRoute[2] === 'recover-result') {
+            const body = await readJsonBody(request)
+            return sendJson(response, 200, { job: await doorayResponses.recoverResult(user.id, doorayResponseRoute[1], body.expectedUpdatedAt) })
+          }
           if (doorayResponseRoute[2] === 'approve') {
             const body = await readJsonBody(request)
             return sendJson(response, 200, { job: await doorayResponses.approve(user.id, doorayResponseRoute[1], body.proposalRevision) })
@@ -8022,6 +8030,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         }
         const completionUrl = `${completionBaseUrl}/api/integrations/aionui/launches/${completionToken}/conversation`
         aiConversationLaunches.get(sessionTokenKey(completionToken)).completionUrl = completionUrl
+        aiLaunchTracking.register(sessionTokenKey(completionToken), user.id, expiresAt)
         await persistAiAttributions()
         console.log('[AI attribution]', JSON.stringify({
           source: 'created', mapId, cardId, actorId: user.id, authorName,
@@ -8030,6 +8039,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         return sendJson(response, 201, {
           attributionToken,
           completionUrl,
+          statusUrl: `/api/integrations/aionui/launches/${completionToken}/status`,
           authorName,
           editorId: user.id,
           homeMachineId,
@@ -8089,18 +8099,24 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           if (!payload.prompt.includes(context.launch.initialRequest)) return sendJson(response, 409, { error: '승인 전문이 변경되거나 누락되었습니다. 다시 확인해 주세요.' })
         }
         if (!sameExecutionWorkspace(attribution.selection?.workspace, payload.workspace)) return sendJson(response, 409, { error: '확인한 작업공간과 실행 경로가 다릅니다. 다시 시작해 주세요.' })
-        const ticket = await fetchAionUiOn(launch.homeMachineId, '/api/internal/external-conversation-launches', {
-          method: 'POST',
-          body: payload,
+        const ticket = await aiLaunchTracking.issue(sessionTokenKey(completionToken), payload, async () => {
+          const result = await fetchAionUiOn(launch.homeMachineId, '/api/internal/external-conversation-launches', {
+            method: 'POST',
+            body: payload,
+          })
+          const launchUrl = createAionUiWebLaunchUrl(aionUiWebBaseUrlForMachine(launch.homeMachineId), result?.launchId)
+          const desktopLaunchUrl = createAionUiDesktopLaunchUrl(result?.launchId)
+          console.log('[AionUi launch ticket issued]', JSON.stringify({ mapId: launch.mapId, cardId: launch.cardId, homeMachineId: launch.homeMachineId }))
+          return {
+            launchId: result.launchId,
+            expiresAt: result.expiresAt ?? null,
+            launchUrl,
+            desktopLaunchUrl,
+            homeMachineId: launch.homeMachineId,
+            homeMachineLabel: machineLabel(launch.homeMachineId),
+          }
         })
-        const launchUrl = createAionUiWebLaunchUrl(aionUiWebBaseUrlForMachine(launch.homeMachineId), ticket?.launchId)
-        return sendJson(response, 201, {
-          launchId: ticket.launchId,
-          expiresAt: ticket.expiresAt ?? null,
-          launchUrl,
-          homeMachineId: launch.homeMachineId,
-          homeMachineLabel: machineLabel(launch.homeMachineId),
-        })
+        return sendJson(response, 201, ticket)
       } catch (error) {
         if (error instanceof AionUiExternalLaunchPayloadError) {
           return sendJson(response, 400, { error: error.message })
@@ -8111,7 +8127,20 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         // 완료·변경된 승인으로 시작하려는 요청은 외부 서버 장애가 아닌 승인 충돌이다.
         if (error.status === 409) return sendJson(response, 409, { error: error.message })
         console.error('[AionUi external conversation launch]', error)
-        return sendJson(response, 503, { error: 'AionUi WebUI 대화 시작 정보를 발급하지 못했습니다.' })
+        return sendJson(response, 503, { error: 'AionUi 대화 시작 정보를 발급하지 못했습니다. 상태 확인 후 기존 시작 정보를 사용해 주세요.' })
+      }
+    }
+
+    const aionUiLaunchStatusRoute = url.pathname.match(/^\/api\/integrations\/aionui\/launches\/([^/]+)\/status$/)
+    if (aionUiLaunchStatusRoute && request.method === 'GET') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 대화 시작 상태를 확인할 수 있습니다.' })
+      response.setHeader('Cache-Control', 'no-store')
+      try {
+        return sendJson(response, 200, aiLaunchTracking.read(sessionTokenKey(decodeURIComponent(aionUiLaunchStatusRoute[1])), user.id))
+      } catch (error) {
+        return sendJson(response, error.status ?? 503, { error: error.message })
       }
     }
 
@@ -8123,10 +8152,15 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         aiConversationLaunches.delete(tokenKey)
         return sendJson(response, 404, { error: 'AI 대화 시작 정보를 찾을 수 없습니다.' })
       }
+      const sendLaunchResult = (status, result) => {
+        aiLaunchTracking.finish(tokenKey, status, result)
+        console.log('[AionUi launch confirmation]', JSON.stringify({ status, mapId: launch.mapId, cardId: launch.cardId, conversationId: result.conversationId ?? null }))
+        return sendJson(response, status, result)
+      }
       const body = await readJsonBody(request)
       const conversationId = String(body.conversationId ?? '').trim()
       if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(conversationId)) {
-        return sendJson(response, 400, { error: '올바르지 않은 AionUi 대화 ID입니다.' })
+        return sendLaunchResult(400, { error: '올바르지 않은 AionUi 대화 ID입니다.' })
       }
 
       try {
@@ -8135,15 +8169,15 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           `/api/conversations/${encodeURIComponent(conversationId)}`,
         )
         if (!conversation || conversation.id !== conversationId) {
-          return sendJson(response, 409, { error: '생성된 AionUi 대화를 확인할 수 없습니다.' })
+          return sendLaunchResult(409, { error: '생성된 AionUi 대화를 확인할 수 없습니다.' })
         }
         if (launch.purpose === 'dooray-response') {
           const actualWorkspace = aiConversationLinkFromAionUiConversation(conversation)?.workspace
           assertDoorayExecutionWorkspace(actualWorkspace)
-          if (!sameExecutionWorkspace(aiAttributions.get(launch.attributionKey)?.selection?.workspace, actualWorkspace)) return sendJson(response, 409, { error: '생성된 대화의 작업공간이 시작 요청과 다릅니다.' })
+          if (!sameExecutionWorkspace(aiAttributions.get(launch.attributionKey)?.selection?.workspace, actualWorkspace)) return sendLaunchResult(409, { error: '생성된 대화의 작업공간이 시작 요청과 다릅니다.' })
           const approvalOptions = { handoffId: launch.doorayApproval.handoffId }
           const context = await doorayResponses.approvalContext(launch.startedBy, launch.doorayApproval.responseId, launch.doorayApproval.proposalRevision, approvalOptions)
-          if (context.linkedConversation && context.linkedConversation.conversationId !== conversationId) return sendJson(response, 409, { error: '이미 연결된 승인 대화가 있습니다.' })
+          if (context.linkedConversation && context.linkedConversation.conversationId !== conversationId) return sendLaunchResult(409, { error: '이미 연결된 승인 대화가 있습니다.' })
           // 담당이 없을 때만 구성용 대화로 연결한다. 담당이 있으면 아래 공통 카드
           // 연결·시작 카드 저장을 모두 마친 뒤 승인 실행을 허용한다.
           if (!launch.mapId && !launch.cardId) {
@@ -8151,18 +8185,18 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
               { conversationId, homeMachineId: launch.homeMachineId, homeMachineRole: launch.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub', linkedAt: new Date().toISOString() }, approvalOptions)
             const attribution = aiAttributions.get(launch.attributionKey)
             if (attribution) { attribution.conversationId = conversationId; await persistAiAttributions() }
-            return sendJson(response, 200, { conversationId, linked: true, purpose: launch.purpose })
+            return sendLaunchResult(200, { conversationId, linked: true, purpose: launch.purpose })
           }
         }
         const map = await readMap(launch.mapId)
         const targetNode = map?.nodes.find((node) => node.id === launch.cardId)
         if (!map || map.trashedAt || !targetNode) {
           aiConversationLaunches.delete(tokenKey)
-          return sendJson(response, 404, { error: 'AI 대화를 연결할 문서 또는 카드를 찾을 수 없습니다.' })
+          return sendLaunchResult(404, { error: 'AI 대화를 연결할 문서 또는 카드를 찾을 수 없습니다.' })
         }
         const attribution = aiAttributions.get(launch.attributionKey)
         const origin = aiConversationOrigins.get(conversationId)
-        if (origin && (origin.mapId !== launch.mapId || origin.cardId !== launch.cardId)) return sendJson(response, 409, { error: '다른 카드에서 시작한 대화의 소속을 변경할 수 없습니다.' })
+        if (origin && (origin.mapId !== launch.mapId || origin.cardId !== launch.cardId)) return sendLaunchResult(409, { error: '다른 카드에서 시작한 대화의 소속을 변경할 수 없습니다.' })
         if (attribution) {
           attribution.conversationId = conversationId
           await persistAiAttributions()
@@ -8184,7 +8218,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           })
           await persistAiConversationOrigins()
           aiConversationLaunches.delete(tokenKey)
-          return sendJson(response, 200, {
+          return sendLaunchResult(200, {
             conversationId,
             linked: false,
             purpose: launch.purpose,
@@ -8274,10 +8308,10 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         void runtimeLifecycle.track(() => refreshAiConversationRuntimeForMap(launch.mapId)).catch((error) => {
           console.warn('[AI conversation runtime link refresh]', error)
         })
-        return sendJson(response, 200, { conversationId, homeMachineId: launch.homeMachineId })
+        return sendLaunchResult(200, { conversationId, homeMachineId: launch.homeMachineId })
       } catch (error) {
         console.error('[AionUi conversation completion]', error)
-        return sendJson(response, error.status ?? 503, { error: error.status ? error.message : '생성된 AionUi 대화를 확인하지 못했습니다.' })
+        return sendLaunchResult(error.status ?? 503, { error: error.status ? error.message : '생성된 AionUi 대화를 확인하지 못했습니다.' })
       }
     }
 

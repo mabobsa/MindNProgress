@@ -21,6 +21,7 @@ import { WorkspaceSettingsDialog } from './WorkspaceSettingsDialog'
 import { WorkspaceHistoryList } from './WorkspaceHistoryList'
 import { useAiDialogSections } from './useAiDialogSections'
 import { useAiWorkspaceHistory } from './useAiWorkspaceHistory'
+import { useAiLaunchConfirmation } from './useAiLaunchConfirmation'
 import { loadWorkspaceContext, saveWorkspaceSetting, type WorkspaceContext, type WorkspaceChoice } from '../utils/workspaceSettings'
 
 type RuntimeOption = { id: string; label: string; description: string; providerId?: string }
@@ -111,13 +112,6 @@ function readMcpSelections(fallback = new Set<string>()) {
   }
 }
 
-function encodeBase64Json(value: unknown) {
-  const bytes = new TextEncoder().encode(JSON.stringify(value))
-  let binary = ''
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return btoa(binary)
-}
-
 export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, groupId, knowledgeSources, initialRequest, fullInitialRequest, doorayApproval, reconstructionRequestId, cardLayoutRequestId, launchInWebUi, onClose }: {
   userId: string
   documentId: string
@@ -141,6 +135,10 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   const [launching, setLaunching] = useState(false)
   const [error, setError] = useState('')
   const [launchError, setLaunchError] = useState('')
+  const launchBusy = useRef(false)
+  const confirmation = useAiLaunchConfirmation(JSON.stringify([userId, documentId, cardId, purpose,
+    doorayApproval?.responseId, doorayApproval?.proposalRevision, doorayApproval?.handoffId,
+    reconstructionRequestId, cardLayoutRequestId]), onClose)
   const dialogSections = useAiDialogSections(userId)
   const roleInput = useMemo(() => ({ mapId: documentId, cardId, purpose, groupId, initialRequest, fullInitialRequest }), [documentId, cardId, purpose, groupId, initialRequest, fullInitialRequest])
   const [roleResult, setRoleResult] = useState<{ input: typeof roleInput; role?: AiConversationRole; error?: string } | null>(null)
@@ -349,7 +347,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   }
 
   const launch = async () => {
-    if (!options || !selectedAgent || !modelId || !role || loading || error || launching) return
+    if (!options || !selectedAgent || !modelId || !role || loading || error || launching || launchBusy.current || confirmation.pending) return
     if (!workspace.trim() || (!workspaceExplicit && (!options.workspaceContext || options.workspaceContext.needsSelection))) {
       setWorkspacePrompt(true)
       return
@@ -373,6 +371,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
         // 빈 탭 상태 안내를 만들 수 없어도 ticket 발급과 이동은 계속합니다.
       }
     }
+    launchBusy.current = true
     setLaunching(true)
     setLaunchError('')
     try {
@@ -417,11 +416,12 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           requestPreview: userRequest.trim() || automaticRequest,
         }),
       })
-      const attribution = await attributionResponse.json().catch(() => ({})) as { attributionToken?: string; completionUrl?: string; editorId?: string; workspace?: string; error?: string; approvalRequest?: string }
+      const attribution = await attributionResponse.json().catch(() => ({})) as { attributionToken?: string; completionUrl?: string; statusUrl?: string; editorId?: string; workspace?: string; error?: string; approvalRequest?: string }
       if (!attributionResponse.ok || !attribution.attributionToken || !attribution.completionUrl || !attribution.editorId) {
         throw new Error(attribution.error ?? 'AI 작성자 정보를 준비하지 못했습니다.')
       }
       if (doorayApproval && !attribution.approvalRequest) throw new Error('서버에서 승인 전문을 확인하지 못했습니다. 대화를 시작하지 않았습니다.')
+      if (!attribution.statusUrl) throw new Error('서버가 대화 생성 확인을 지원하지 않습니다. MnP 서버를 업데이트해 주세요. 대화를 시작하지 않았습니다.')
       const prompt = buildAiConversationPrompt({
         purpose: role.purpose, doorayApproval,
         mapId: documentId,
@@ -445,46 +445,48 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
         workspace: attribution.workspace ?? launchWorkspace,
         autoSend: true,
       }
+      confirmation.begin(attribution.statusUrl, useWebLaunch)
+      const launchResponse = await fetch('/api/integrations/aionui/external-conversation-launches', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(launchPayload),
+        signal: AbortSignal.timeout(30_000),
+      })
+      const launchResult = await launchResponse.json().catch(() => ({})) as { launchUrl?: string; desktopLaunchUrl?: string; error?: string }
+      const launchUrl = useWebLaunch ? launchResult.launchUrl : launchResult.desktopLaunchUrl
+      if (!launchResponse.ok || !launchUrl) {
+        throw new Error(launchResult.error ?? 'AionUi 대화 시작 정보를 확인하지 못했습니다. 상태 확인 후 기존 시작 정보를 사용해 주세요.')
+      }
       if (useWebLaunch) {
-        const launchResponse = await fetch('/api/integrations/aionui/external-conversation-launches', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(launchPayload),
-        })
-        const launchResult = await launchResponse.json().catch(() => ({})) as { launchUrl?: string; error?: string }
-        if (!launchResponse.ok || !launchResult.launchUrl) {
-          throw new Error(launchResult.error ?? 'AionUi WebUI 대화 시작 정보를 발급하지 못했습니다.')
-        }
         if (!launchTab || launchTab.closed) {
           launchTab = null
-          throw new Error('준비 중이던 AionUi 탭이 닫혔습니다. 다시 시도해 주세요.')
+          throw new Error('준비 중이던 AionUi 탭이 닫혔습니다. 아래에서 같은 시작 정보를 다시 열어 주세요.')
         }
-        launchTab.location.href = launchResult.launchUrl
+        launchTab.location.href = launchUrl
         launchTab.focus()
         launchTab = null
       } else {
-        const data = encodeURIComponent(encodeBase64Json({ payload: JSON.stringify(launchPayload) }))
-        window.location.href = `${options.protocol}?v=1&data=${data}`
+        window.location.href = launchUrl
       }
       void rememberWorkspace(attribution.workspace ?? launchWorkspace)
       setWorkspacePrompt(false)
-      onClose()
     } catch (launchFailure) {
       if (launchTab && !launchTab.closed) launchTab.close()
       const message = launchFailure instanceof Error ? launchFailure.message : 'AI 대화를 시작하지 못했습니다.'
       setLaunchError(message)
     } finally {
+      launchBusy.current = false
       setLaunching(false)
     }
   }
 
   return (<>
-    <div className="ai-dialog-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <div className="ai-dialog-backdrop" onPointerDown={(event) => { if (!launching && event.target === event.currentTarget) onClose() }}>
       <section className="ai-dialog" role="dialog" aria-modal="true" aria-label="AI 대화 시작 옵션">
         <header>
           <div><span>AionUi 연동</span><strong>AI 대화 시작</strong><small>{cardTitle}</small></div>
-          <button type="button" onClick={onClose} aria-label="AI 대화 옵션 닫기">×</button>
+          <button type="button" onClick={onClose} disabled={launching} aria-label="AI 대화 옵션 닫기">×</button>
         </header>
         {doorayApproval && <p className="ai-dialog-message">{documentId && cardId ? `시작 카드: ${documentTitle} → ${cardTitle}` : '담당 카드 미지정: 승인된 문서 구성만 진행하며, 하위 작업은 생성된 문서의 상위 카드 대화로 인계해야 합니다.'}<br />승인한 제안을 새 대화에 전달합니다. 사용할 작업공간을 확인하세요. 취소하면 대화를 시작하지 않습니다.</p>}
         {roleLoading ? <div className="ai-dialog-message" role="status">문서의 대화 역할과 자동 적용 내용을 확인하는 중…</div> : roleError ? (
@@ -507,6 +509,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           </div>
         ) : options && (
           <div className="ai-dialog-content">
+          <fieldset className="ai-dialog-options" disabled={launching || Boolean(confirmation.pending)} aria-label="대화 실행 옵션">
             {knowledgeSources.length > 0 && (
               <div className="ai-knowledge-notice">
                 <strong>선행 지식 {knowledgeSources.length}개를 먼저 사용합니다.</strong>
@@ -667,10 +670,16 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
               <div className="ai-capability-list">{options.skills.map((skill) => <label key={skill.id} title={skill.description}><input type="checkbox" checked={selectedSkillIds.has(skill.id)} onChange={() => toggleSelection(setSelectedSkillIds, skill.id)} /><span><strong>{skill.name}</strong><small>{skill.description || '설명 없음'}</small></span></label>)}</div>
             </details>
             {dialogSections.error && <div className="ai-section-preferences-error" role="alert"><span>{dialogSections.error}</span><button type="button" onClick={dialogSections.retry}>다시 시도</button></div>}
-            {launchError && <div className="ai-launch-error" role="alert">{launchError}</div>}
+          </fieldset>
           </div>
         )}
-        <footer><span>응답은 {options?.machineLabel ?? '선택한 머신'}의 AionUi에서만 처리됩니다.</span><div><button type="button" onClick={onClose}>취소</button><button type="button" className="primary" onClick={() => { void launch() }} disabled={roleLoading || Boolean(roleError) || loading || launching || Boolean(error) || !selectedAgent || !modelId}>{launching ? '준비 중…' : 'AionUi에서 시작'}</button></div></footer>
+        {(launchError || confirmation.error) && <div className="ai-launch-error" role="alert">{confirmation.error || launchError}</div>}
+        {confirmation.pending && <div className="ai-launch-confirmation" role="status">
+          <strong>대화 생성 확인 중…</strong>
+          <span>AionUi에서 실제 대화가 생성·연결되면 자동으로 닫힙니다. 지연되면 AionUi 실행·로그인 상태와 대화 목록을 확인하세요. 새 대화를 자동으로 재요청하지 않습니다.</span>
+          <div><button type="button" onClick={confirmation.check}>상태 다시 확인</button>{confirmation.canReopen && <button type="button" onClick={confirmation.reopen} disabled={launching}>같은 시작 정보로 AionUi 다시 열기</button>}{confirmation.canReset && <button type="button" disabled={launching} onClick={() => { if (confirmation.reset()) setLaunchError('') }}>대화 목록 확인 후 새로 준비</button>}</div>
+        </div>}
+        <footer><span>응답은 {options?.machineLabel ?? '선택한 머신'}의 AionUi에서만 처리됩니다.</span><div><button type="button" onClick={onClose} disabled={launching}>{confirmation.pending ? '닫기' : '취소'}</button><button type="button" className="primary" onClick={() => { void launch() }} disabled={roleLoading || Boolean(roleError) || loading || launching || Boolean(confirmation.pending) || Boolean(error) || !selectedAgent || !modelId}>{launching ? '준비 중…' : confirmation.pending ? '대화 생성 확인 중…' : 'AionUi에서 시작'}</button></div></footer>
       </section>
     </div>
     {workspacePrompt && <WorkspaceSettingsDialog key={`${userId}:${options?.machineId}`} userId={userId} mapId={documentId} machineId={options?.machineId} name={documentTitle || cardTitle} initialWorkspace={workspace} workspaceHistory={workspaceHistory} onRemoveWorkspaceHistory={deleteWorkspaceHistory} onConfirm={selectWorkspace} onClose={() => setWorkspacePrompt(false)} />}

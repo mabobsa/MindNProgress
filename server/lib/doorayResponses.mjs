@@ -10,6 +10,7 @@ import { MNP_WORKFLOW_POLICIES } from '../../src/utils/aiContextInstructions.mjs
 const activeStates = new Set(['routing', 'reviewing', 'waiting-target'])
 const finishableStates = new Set(['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'])
 const maxAutomaticRestartRecoveries = 3
+const unlinkedConversationError = 'AI가 선택한 대화가 담당 카드에 연결되어 있지 않습니다.'
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const text = (value) => typeof value === 'string' ? value : ''
 const clip = (value, limit = 3000) => text(value).length > limit ? `${value.slice(0, limit)}\n[이후 내용 생략]` : text(value)
@@ -120,6 +121,7 @@ export function buildDoorayRoutingPrompt(job, operationId, catalog) {
 한 카드의 요청은 direct, 같은 문서의 여러 카드 조정은 coordinator(가장 가까운 공통 상위), 여러 문서 조정은 group(등록된 그룹 총괄 루트)을 선택하세요.
 후보에 필요한 문서의 카드가 없거나 내용이 부족하면 inspect와 inspectMapIds(최대 3개)를 반환하세요. 탐색은 최대 3회입니다. 담당을 아직 지정할 수 없다면 clarify와 구체적인 질문 또는 신규 문서·카드 구성안을 proposal에 작성하고 decision으로 질문과 승인 요청을 구분하세요.
 담당 기존 대화가 이번 요청과 같은 주제를 다룬다면 읽기 전용 문맥 조회 대상으로 conversationId를 지정하고, 적절한 대화가 없으면 null을 사용하세요. 기존 대화를 재개하거나 메시지를 보내지 않습니다.
+conversationId는 선택한 mapId·cardId의 conversations에 있는 ID만 사용하세요. 문서 재구성 전 카드나 같은 계보의 다른 카드에 연결된 대화는 현재 카드의 대화가 아니므로 null을 사용하세요.
 마지막 답변은 아래 형태의 JSON 코드 블록 하나로 작성하세요. requestId는 정확히 유지하세요.
 ${doorayDecisionInstructions}
 {"requestId":"${operationId}","action":"direct|coordinator|group|inspect|clarify","mapId":null,"cardId":null,"conversationId":null,"requestSummary":"이번 요청","reason":"담당 경로를 선택한 근거","inspectMapIds":[],"proposal":"질문 또는 구성안","decision":{"kind":"input|approval|proposal","reason":"구분 근거","questions":[],"approval":null}}
@@ -157,9 +159,22 @@ export function validateDoorayRoute(result, maps) {
   if (result.action === 'coordinator' && !map.edges.some((edge) => edge.source === card.id && edge.data?.relation !== 'knowledge')) throw error('선택한 카드에 조정할 하위 카드가 없습니다.', 409)
   if (result.action === 'group' && (map.responseGroup?.role !== 'coordinator' || card.data.kind !== 'root')) throw error('선택한 카드가 등록된 그룹 총괄 루트가 아닙니다.', 409)
   const linked = [...(card.data.aiConversations ?? []), ...(card.data.aiConversationId ? [{ conversationId: card.data.aiConversationId }] : [])]
-  if (result.conversationId && !linked.some((link) => link.conversationId === result.conversationId)) throw error('AI가 선택한 대화가 담당 카드에 연결되어 있지 않습니다.', 409)
+  if (result.conversationId && !linked.some((link) => link.conversationId === result.conversationId)) throw error(unlinkedConversationError, 409)
   return { action: result.action, mapId: map.id, cardId: card.id, documentTitle: map.title, cardTitle: card.data.label,
     conversationId: result.conversationId || null, reason: result.reason, requestSummary: result.requestSummary, sourceRevision: map.version }
+}
+
+export function resolveDoorayRoutingResult(result, maps) {
+  // 선택적 참고 대화만 제외한다. 카드·계층·담당 근거 검증은 완화하지 않는다.
+  const route = validateDoorayRoute({ ...result, conversationId: null }, maps)
+  const card = maps.find((map) => map.id === route.mapId).nodes.find((node) => node.id === route.cardId)
+  if (!result.conversationId || aiConversationLinksFromData(card.data).some((link) => link.conversationId === result.conversationId)) {
+    return { route: validateDoorayRoute(result, maps), routingWarning: null }
+  }
+  return { route, routingWarning: {
+    code: 'UNLINKED_REFERENCE_CONVERSATION', conversationId: String(result.conversationId).slice(0, 120),
+    message: 'AI가 선택한 참고 대화가 현재 담당 카드에 연결되어 있지 않아 제외했습니다. 서버에서 이 대화로 자동 연결·문맥 조회·재개하지 않았습니다.',
+  } }
 }
 
 export function buildDoorayReviewPrompt(job, operationId, context) {
@@ -181,10 +196,13 @@ export function publicDoorayResponse(job) {
   const handoff = job.handoff?.attempt === job.attempt && job.handoff?.sentAt && job.handoff?.conversationId ? job.handoff : null
   return { id: job.id, itemKey: job.source.item.key, postId: job.source.item.postId, sourceUrl: job.source.item.url,
     subject: job.source.subject, status: job.status, route: job.route ?? null, proposal: job.proposal ?? '', error: job.error ?? '',
+    routingWarning: job.routingWarning ?? null, proposalSource: job.proposalSource ?? null,
     createdAt: job.createdAt, updatedAt: job.updatedAt, conversationId: handoff?.conversationId ?? job.review?.conversationId ?? job.router?.conversationId ?? null,
     homeMachineId: handoff?.machineId ?? job.review?.machineId ?? job.settings.machineId,
     homeMachineRole: handoff?.homeMachineRole ?? job.operation?.settings?.machineRole ?? job.settings.machineRole ?? 'main',
     canRetry: job.status === 'failed' && !job.restartRecovery?.exhausted && Boolean(job.operation?.conversationId || job.operation?.dispatchAttempted),
+    canRecoverResult: job.status === 'failed' && job.error === unlinkedConversationError && job.operation?.kind === 'router'
+      && Boolean(job.operation.conversationId && job.operation.dispatchAttempted) && !job.completedAt && !job.approval,
     recoveringAfterRestart: Boolean(job.restartRecovery?.active && !job.completedAt),
     completedAt: job.completedAt ?? null, archiveStatus: job.archiveStatus ?? null, archiveError: job.archiveError ?? '',
     handedOffAt: job.handoff && job.handoff.attempt === job.attempt ? job.handoff.sentAt ?? null : null,
@@ -419,7 +437,7 @@ export function createDoorayResponseService(deps) {
     if (!result) throw error('이번 요청의 AI 결과를 확인하지 못했습니다. 대화에서 답변을 확인한 후 상태를 다시 확인해 주세요.', 409)
     if (operation.kind === 'review') {
       if (!text(result.proposal).trim()) throw error('AI가 대응 제안을 반환하지 않았습니다.', 409)
-      await patch(user.id, job.id, { ...readDoorayDecision(result.decision, 'proposal'), proposal: result.proposal, error: '', ...finishRestartRecovery(job) })
+      await patch(user.id, job.id, { ...readDoorayDecision(result.decision, 'proposal'), proposal: result.proposal, proposalSource: 'review', error: '', ...finishRestartRecovery(job) })
       return
     }
     if (result.action === 'inspect') {
@@ -437,9 +455,53 @@ export function createDoorayResponseService(deps) {
       await patch(user.id, job.id, { ...outcome,
         proposal: text(result.proposal) || text(result.reason) || '담당 문서·카드에 대한 추가 정보가 필요합니다.', ...finishRestartRecovery(job) })
     } else {
-      const route = validateDoorayRoute(result, await deps.loadMaps())
-      await patch(user.id, job.id, { route, operation: null, status: 'reviewing' })
+      const resolved = resolveDoorayRoutingResult(result, await deps.loadMaps())
+      if (resolved.routingWarning && text(result.proposal).trim()) {
+        await patch(user.id, job.id, { ...resolved, ...readDoorayDecision(result.decision, 'proposal'),
+          proposal: result.proposal, proposalSource: 'router', routingResult: { operationId: operation.id, result },
+          error: '', ...finishRestartRecovery(job) })
+      } else {
+        await patch(user.id, job.id, { ...resolved, operation: null, status: 'reviewing' })
+      }
     }
+  }
+  async function recoverResult(userId, id, expectedUpdatedAt) {
+    if (running.has(id)) throw error('이 대응을 처리 중입니다. 잠시 후 다시 확인해 주세요.', 409)
+    running.add(id)
+    try {
+      const user = await deps.user(userId)
+      if (!user) throw error('사용자를 확인할 수 없습니다.', 403)
+      const job = (await read(userId)).jobs.find((entry) => entry.id === id)
+      if (!job) throw error('AI 대응 요청을 찾을 수 없습니다.', 404)
+      if (expectedUpdatedAt && job.resultRecovery?.previousUpdatedAt === expectedUpdatedAt
+        && job.resultRecovery.operationId === job.operation?.id) return publicDoorayResponse(job)
+      if (!expectedUpdatedAt || job.updatedAt !== expectedUpdatedAt) throw error('대응 기록이 변경되었습니다. 새로고침 후 다시 확인해 주세요.', 409)
+      if (!publicDoorayResponse(job).canRecoverResult) throw error('완료 답변 복구 대상이 아닙니다.', 409)
+      const operation = job.operation
+      await deps.authorize?.(user, operation.machineId)
+      // 재요청 경로와 분리한다. 실행 기록이 만료되어도 AI를 다시 실행하지 않는다.
+      const dispatch = await deps.getDispatch(operation)
+      if (dispatch.state !== 'completed' || dispatch.conversationId !== operation.conversationId) {
+        throw error('기존 대화의 실행 완료를 확인하지 못했습니다. AI를 다시 실행하지 않았습니다.', 409)
+      }
+      const result = parseDoorayAiResult(await deps.messages(operation), operation.id)
+      if (!result || !text(result.proposal).trim()) throw error('이번 요청의 완료 제안을 찾지 못했습니다. AI를 다시 실행하지 않았습니다.', 409)
+      const resolved = resolveDoorayRoutingResult(result, await deps.loadMaps())
+      const outcome = readDoorayDecision(result.decision, 'proposal')
+      const recovered = await update(userId, (state) => {
+        const current = state.jobs.find((entry) => entry.id === id)
+        if (!current || current.updatedAt !== expectedUpdatedAt || current.operation?.id !== operation.id
+          || !publicDoorayResponse(current).canRecoverResult) throw error('대응 기록이 변경되어 복구를 중단했습니다.', 409)
+        const recoveredAt = new Date().toISOString()
+        Object.assign(current, resolved, outcome, { proposal: result.proposal, proposalSource: 'router',
+          routingResult: { operationId: operation.id, result }, error: '', updatedAt: recoveredAt,
+          resultRecovery: { previousUpdatedAt: expectedUpdatedAt, operationId: operation.id,
+            conversationId: operation.conversationId, proposalHash: digest(result.proposal), recoveredAt },
+          ...finishRestartRecovery(current) })
+        return current
+      })
+      return publicDoorayResponse(recovered)
+    } finally { running.delete(id) }
   }
   async function tick(userId, id) {
     if (running.has(id)) return
@@ -547,7 +609,7 @@ export function createDoorayResponseService(deps) {
     return { targets, preview: buildDoorayExecutionHandoff(job, target, transcript, conversationName) }
   }
   return {
-    start, complete, approvalContext, executionHandoffOptions,
+    start, complete, approvalContext, executionHandoffOptions, recoverResult,
     async prepareExecutionHandoff(userId, id, input) {
       if (input.confirmApprovedScope !== true) throw error('인계 대상·전문과 기존 승인 범위를 확인해 주세요.', 409)
       const { preview } = await executionHandoffOptions(userId, id, input.mapId)
@@ -667,6 +729,8 @@ export function createDoorayResponseService(deps) {
       return (await read(userId)).jobs.map(publicDoorayResponse)
     },
     async retry(userId, id) {
+      const existing = (await read(userId)).jobs.find((job) => job.id === id)
+      if (existing && publicDoorayResponse(existing).canRecoverResult) return recoverResult(userId, id, existing.updatedAt)
       await refreshDeleted(userId, (job) => job.id === id, true)
       await update(userId, (state) => {
         const job = state.jobs.find((entry) => entry.id === id)
@@ -696,6 +760,7 @@ export function createDoorayResponseService(deps) {
         Object.assign(current, { hint: hint.trim(), history, approvalHistory, approval: null, decision: null, sessions, router: current.conversationPolicy === 'dedicated' ? current.router : null,
           conversationPolicy: 'dedicated', status: 'routing', attempt: (current.attempt ?? 0) + 1,
           round: 0, inspectedMapIds: [], route: null, review: null, operation: null, proposal: '', error: '', restartRecovery: null,
+          routingWarning: null, routingResult: null, proposalSource: null, resultRecovery: null,
           updatedAt: new Date().toISOString() })
         return current
       })

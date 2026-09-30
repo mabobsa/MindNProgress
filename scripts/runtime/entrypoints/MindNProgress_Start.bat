@@ -24,8 +24,17 @@ if not exist "%MNP_CONTROLLER%" goto missing_controller
 
 echo [MindNProgress] Restarting. The browser opens when the server is ready.
 echo.
+rem The runtime controller prints Korean text. On the default CP949 console that
+rem output is mojibake for callers reading it as UTF-8 (pipes, log capture), so
+rem run under UTF-8 and restore the previous code page afterwards.
+set "MNP_PREV_CP="
+for /f "tokens=2 delims=:" %%p in ('chcp') do set "MNP_PREV_CP=%%p"
+set "MNP_PREV_CP=%MNP_PREV_CP: =%"
+set "MNP_PREV_CP=%MNP_PREV_CP:.=%"
+chcp 65001 >nul 2>&1
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive %MNP_WINDOW_OPTION% -ExecutionPolicy Bypass -File "%MNP_CONTROLLER%" -Action restart -AllowLegacyStop -OpenBrowser
 set "MNP_EXIT_CODE=%errorlevel%"
+if defined MNP_PREV_CP chcp %MNP_PREV_CP% >nul 2>&1
 echo.
 if "%MNP_EXIT_CODE%"=="0" (
   echo [MindNProgress] Restart complete.
@@ -50,9 +59,15 @@ goto done
 echo [MindNProgress] Usage: MindNProgress_Start.bat [--hidden]
 
 :done
+rem Pause only for a visible run with console input. Under --hidden the console
+rem exists but nobody can answer, and without console input (scheduled task,
+rem pipe) pause would block forever. timeout.exe is called by full path because
+rem PATH may resolve timeout to the Git Bash coreutils build.
 if not defined MNP_HIDDEN (
-  echo.
-  echo Press any key to close this window.
-  pause >nul
+  "%SystemRoot%\System32\timeout.exe" /t 0 /nobreak >nul 2>&1 && (
+    echo.
+    echo Press any key to close this window.
+    pause >nul
+  )
 )
 exit /b %MNP_EXIT_CODE%

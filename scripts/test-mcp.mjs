@@ -16,6 +16,7 @@ import { expectedMcpToolNames } from '../tests/helpers/mcpToolNames.mjs'
 
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const testDataDirectory = path.resolve(projectDirectory, '.mcp-test-data')
+const mockLiveConversationWorkspace = path.join(testDataDirectory, 'live-worker')
 const expectedPrefix = `${projectDirectory}${path.sep}`
 if (!testDataDirectory.startsWith(expectedPrefix) || path.basename(testDataDirectory) !== '.mcp-test-data') {
   throw new Error('MCP 테스트 데이터 경로가 프로젝트 내부의 전용 디렉터리가 아닙니다.')
@@ -44,6 +45,7 @@ async function startMockAionUi({
   conversationName = 'MCP 전체 대화 조회 검증',
   conversationCreatedAt = Date.parse('2026-07-20T00:00:00.000Z'),
   conversationModelId = `${modelId}[1m]`,
+  conversationWorkspace = mockLiveConversationWorkspace,
 } = {}) {
   let conversationRuntimeState = 'running'
   const dispatchRequests = []
@@ -101,7 +103,7 @@ async function startMockAionUi({
         type: 'acp',
         created_at: conversationCreatedAt,
         modified_at: conversationCreatedAt + 60_000,
-        extra: { agent_id: agentId, current_model_id: conversationModelId, backend: 'claude' },
+        extra: { agent_id: agentId, current_model_id: conversationModelId, backend: 'claude', workspace: conversationWorkspace },
         runtime: {
           state: conversationRuntimeState,
           is_processing: conversationRuntimeState === 'running',
@@ -167,6 +169,50 @@ async function startMockAionUi({
           pending_confirmations: 0, turn_id: null,
         },
       })
+    }
+    if (request.method === 'GET'
+      && requestUrl.pathname === `/api/conversations/${conversationId}/messages`
+      && requestUrl.searchParams.get('content_mode') === 'compact') {
+      const before = requestUrl.searchParams.get('before')
+      if (requestUrl.searchParams.get('limit') !== '200') {
+        return send({ error: 'unexpected conversation statistics limit' }, 400)
+      }
+      if (before === null) {
+        return send({
+          items: [
+            { id: 'compact-user-2', type: 'text', position: 'right', backend_turn_id: 'turn-2' },
+            ...Array.from({ length: 16 }, (_, index) => ({
+              id: `compact-assistant-${index}`,
+              type: 'text',
+              position: 'left',
+              backend_turn_id: 'turn-2',
+            })),
+            ...Array.from({ length: 183 }, (_, index) => ({
+              id: `compact-tool-${index}`,
+              type: 'acp_tool_call',
+              position: 'left',
+              backend_turn_id: 'turn-2',
+            })),
+          ],
+          oldest_cursor: 'compact-user-2',
+          newest_cursor: 'compact-tool-182',
+          has_more_before: true,
+          has_more_after: false,
+        })
+      }
+      if (before === 'compact-user-2') {
+        return send({
+          items: [
+            { id: 'compact-user-1', type: 'text', position: 'right', backend_turn_id: 'turn-1' },
+            { id: 'compact-answer-1', type: 'text', position: 'left', backend_turn_id: 'turn-1' },
+          ],
+          oldest_cursor: 'compact-user-1',
+          newest_cursor: 'compact-answer-1',
+          has_more_before: false,
+          has_more_after: false,
+        })
+      }
+      return send({ error: 'unexpected conversation statistics cursor' }, 400)
     }
     if (request.method === 'GET'
       && requestUrl.pathname === `/api/conversations/${conversationId}/messages`
@@ -1104,6 +1150,12 @@ async function main() {
     assert.equal(conversationList.conversations.length, 1)
     assert.equal(conversationList.conversations[0].runtime.state, 'running')
     assert.equal(conversationList.conversations[0].available, true)
+    assert.equal(conversationList.conversations[0].workspace, mockLiveConversationWorkspace)
+    assert.equal(conversationList.conversations[0].contextHealth.state, 'healthy')
+    assert.equal(conversationList.conversations[0].contextHealth.metrics.eventCount, 202)
+    assert.equal(conversationList.conversations[0].contextHealth.metrics.conversationTurnCount, 2)
+    assert.equal(conversationList.conversations[0].contextHealth.metrics.messagePageCount, 2)
+    assert.equal(conversationList.conversations[0].contextHealth.metrics.historyComplete, true)
     const conversationCandidates = await invoke('mindnprogress_list_ai_conversations', { mapId, cardId: 'task-a' })
     assert.equal(conversationCandidates.latestConversationId, 'conversation-test')
     assert.equal(conversationCandidates.conversations.length, 1)
@@ -1111,6 +1163,8 @@ async function main() {
     assert.equal(conversationCandidates.conversations[0].model.label, 'Claude Test Model')
     assert.equal(conversationCandidates.conversations[0].runtime.state, 'running')
     assert.match(conversationCandidates.selectionRule.exclude, /running.*waiting-confirmation/)
+    assert.match(conversationCandidates.selectionRule.preferResume, /workspaceBinding=pool-rebindable.*workspacePoolId/)
+    assert.match(conversationCandidates.selectionRule.chooseNew, /같은 workspacePoolId 안의 Fork 경로 차이만으로 새 대화를 만들지 마세요/)
     const emptyDelegations = await invoke('mindnprogress_list_ai_delegations', { mapId, parentCardId: 'task-a' })
     assert.deepEqual(emptyDelegations.delegations, [])
     await invokeExpectError('mindnprogress_delegate_ai_work', {

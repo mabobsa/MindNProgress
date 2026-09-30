@@ -575,15 +575,22 @@ export class WorkspacePoolManager {
     }, 0)
   }
 
-  orderedRecoverableWorkers() {
+  orderedRecoverableWorkers(preferredWorkspace = null) {
+    const preferredRoot = String(preferredWorkspace ?? '').trim()
+    const preferredWorkerId = preferredRoot
+      ? this.registry.workers.find((workspace) => normalizedPath(workspace.root) === normalizedPath(preferredRoot))?.id ?? null
+      : null
     return this.registry.workers
       .map((workspace, index) => ({
         workspace,
         index,
+        preferred: workspace.id === preferredWorkerId,
         lastAssignedAt: this.workerLastAssignedAt(workspace.id),
       }))
       .filter(({ workspace }) => this.recoverableIdleWorkspaceState(workspace.id))
-      .sort((left, right) => left.lastAssignedAt - right.lastAssignedAt || left.index - right.index)
+      .sort((left, right) => Number(right.preferred) - Number(left.preferred)
+        || left.lastAssignedAt - right.lastAssignedAt
+        || left.index - right.index)
       .map(({ workspace }) => workspace)
   }
 
@@ -1132,7 +1139,7 @@ export class WorkspacePoolManager {
       const leaseId = `lease-${randomBytes(16).toString('hex')}`
       const branch = `mnp/${jobId}`
       const failures = []
-      for (const workspace of this.orderedRecoverableWorkers()) {
+      for (const workspace of this.orderedRecoverableWorkers(workspaceHint)) {
         let current = this.state.workspaces[workspace.id] ?? { status: 'idle' }
         if (this.recoverablePreparationFailureState(current)) {
           try {

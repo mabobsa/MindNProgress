@@ -1047,8 +1047,11 @@ test('유휴 worker는 registry 고정 순서가 아니라 가장 오래 배정�
       },
     })
     await manager.initialize()
+    assert.equal(manager.orderedRecoverableWorkers(workers[1].root)[0].id, 'fork2')
     const lease = await manager.acquire({ workspaceHint: integrationRoot, cardLabel: '공정 배정' })
     assert.equal(lease.workspaceId, 'fork4')
+    const affinityLease = await manager.acquire({ workspaceHint: workers[1].root, cardLabel: '기존 대화 재위임' })
+    assert.equal(affinityLease.workspaceId, 'fork2')
   } finally {
     await rm(root, { recursive: true, force: true })
   }

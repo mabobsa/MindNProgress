@@ -3,8 +3,9 @@ import { createHash } from 'node:crypto'
 export const AI_CONVERSATION_CONTEXT_THRESHOLDS = Object.freeze({
   cautionUsageRatio: 0.65,
   saturatedUsageRatio: 0.8,
-  cautionMessageCount: 100,
-  saturatedMessageCount: 180,
+  fallbackContextSize: 200_000,
+  cautionConversationTurnCount: 40,
+  saturatedConversationTurnCount: 80,
   cautionConsecutiveResumeCount: 5,
   saturatedConsecutiveResumeCount: 10,
 })
@@ -17,10 +18,15 @@ function finiteCount(value) {
 function contextUsage(value) {
   const used = finiteCount(value?.used)
   const size = finiteCount(value?.size)
+  const estimatedSize = used !== null && !size
+    ? AI_CONVERSATION_CONTEXT_THRESHOLDS.fallbackContextSize
+    : null
   return {
     used,
     size,
     ratio: used !== null && size ? used / size : null,
+    estimatedSize,
+    estimatedRatio: used !== null && estimatedSize ? used / estimatedSize : null,
   }
 }
 
@@ -30,31 +36,45 @@ function reason(code, message) {
 
 export function assessAiConversationContextHealth(input, observedAt = new Date().toISOString()) {
   const usage = contextUsage(input?.usage)
-  const messageCount = finiteCount(input?.messageCount)
-  const messageCountExact = input?.messageCountExact === true
+  const conversationTurnCount = finiteCount(input?.conversationTurnCount ?? input?.messageCount)
+  const conversationTurnCountExact = input?.conversationTurnCountExact === true
+    || input?.messageCountExact === true
   const delegationCount = finiteCount(input?.delegationCount) ?? 0
   const consecutiveResumeCount = finiteCount(input?.consecutiveResumeCount) ?? 0
-  const historyAvailable = messageCount !== null
+  const historyAvailable = conversationTurnCount !== null
   const saturatedReasons = []
   const cautionReasons = []
+  const coverageReasons = []
 
   if (usage.ratio !== null && usage.ratio >= AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedUsageRatio) {
     saturatedReasons.push(reason('CONVERSATION_CONTEXT_USAGE_HIGH', `문맥 사용률이 ${Math.round(usage.ratio * 100)}%입니다.`))
   } else if (usage.ratio !== null && usage.ratio >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionUsageRatio) {
     cautionReasons.push(reason('CONVERSATION_CONTEXT_USAGE_CAUTION', `문맥 사용률이 ${Math.round(usage.ratio * 100)}%입니다.`))
+  } else if (usage.estimatedRatio !== null
+    && usage.estimatedRatio >= AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedUsageRatio) {
+    saturatedReasons.push(reason('CONVERSATION_CONTEXT_USED_HIGH', `문맥 사용량 지표가 ${usage.used.toLocaleString('ko-KR')}로 보수 기준의 ${Math.round(usage.estimatedRatio * 100)}%입니다.`))
+  } else if (usage.estimatedRatio !== null
+    && usage.estimatedRatio >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionUsageRatio) {
+    cautionReasons.push(reason('CONVERSATION_CONTEXT_USED_CAUTION', `문맥 사용량 지표가 ${usage.used.toLocaleString('ko-KR')}로 보수 기준의 ${Math.round(usage.estimatedRatio * 100)}%입니다.`))
   }
-  if (messageCount !== null && messageCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedMessageCount) {
-    saturatedReasons.push(reason('CONVERSATION_MESSAGE_COUNT_HIGH', `확인된 메시지가 ${messageCount}개입니다.`))
-  } else if (messageCount !== null && messageCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionMessageCount) {
-    cautionReasons.push(reason('CONVERSATION_MESSAGE_COUNT_CAUTION', `확인된 메시지가 ${messageCount}개입니다.`))
+  if (usage.used === null && conversationTurnCount !== null
+    && conversationTurnCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedConversationTurnCount) {
+    saturatedReasons.push(reason('CONVERSATION_TURN_COUNT_HIGH', `확인된 대화 실행 턴이 ${conversationTurnCount}개입니다.`))
+  } else if (usage.used === null && conversationTurnCount !== null
+    && conversationTurnCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionConversationTurnCount) {
+    cautionReasons.push(reason('CONVERSATION_TURN_COUNT_CAUTION', `확인된 대화 실행 턴이 ${conversationTurnCount}개입니다.`))
   }
-  if (consecutiveResumeCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedConsecutiveResumeCount) {
+  if (usage.used === null
+    && consecutiveResumeCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedConsecutiveResumeCount) {
     saturatedReasons.push(reason('CONVERSATION_RESUME_STREAK_HIGH', `같은 대화를 연속 ${consecutiveResumeCount}회 이어갔습니다.`))
-  } else if (consecutiveResumeCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionConsecutiveResumeCount) {
+  } else if (usage.used === null
+    && consecutiveResumeCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionConsecutiveResumeCount) {
     cautionReasons.push(reason('CONVERSATION_RESUME_STREAK_CAUTION', `같은 대화를 연속 ${consecutiveResumeCount}회 이어갔습니다.`))
   }
-  if (historyAvailable && !messageCountExact) {
-    cautionReasons.push(reason('CONVERSATION_HISTORY_INCOMPLETE', '메시지 이력이 한 페이지를 넘어 전체 개수는 하한값입니다.'))
+  if (historyAvailable && !conversationTurnCountExact) {
+    const incompleteHistory = reason('CONVERSATION_HISTORY_INCOMPLETE', '대화 이력 통계가 일부 범위이므로 실행 턴 수는 하한값입니다.')
+    if (usage.used === null) cautionReasons.push(incompleteHistory)
+    else coverageReasons.push(incompleteHistory)
   }
 
   const state = saturatedReasons.length > 0
@@ -65,19 +85,32 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
         ? 'caution'
         : 'healthy'
   const reasons = state === 'saturated'
-    ? [...saturatedReasons, ...cautionReasons]
+    ? [...saturatedReasons, ...cautionReasons, ...coverageReasons]
     : state === 'unknown'
       ? [reason('CONVERSATION_CONTEXT_HEALTH_UNAVAILABLE', '대화 메시지 이력을 확인하지 못했습니다.')]
-      : cautionReasons
+      : [...cautionReasons, ...coverageReasons]
   const recommendation = state === 'healthy' ? 'resume' : 'new'
   const resumeAllowed = state === 'healthy' || state === 'caution'
   const metrics = {
     contextUsed: usage.used,
     contextSize: usage.size,
     contextUsageRatio: usage.ratio,
-    messageCount,
-    messageCountExact,
-    historyComplete: historyAvailable && messageCountExact,
+    estimatedContextSize: usage.estimatedSize,
+    estimatedContextUsageRatio: usage.estimatedRatio,
+    conversationTurnCount,
+    conversationTurnCountExact,
+    messageCount: conversationTurnCount,
+    messageCountExact: conversationTurnCountExact,
+    historyComplete: historyAvailable && conversationTurnCountExact,
+    eventCount: finiteCount(input?.eventCount),
+    eventCountExact: input?.eventCountExact === true,
+    textMessageCount: finiteCount(input?.textMessageCount),
+    userMessageCount: finiteCount(input?.userMessageCount),
+    assistantMessageCount: finiteCount(input?.assistantMessageCount),
+    toolCallCount: finiteCount(input?.toolCallCount),
+    otherEventCount: finiteCount(input?.otherEventCount),
+    backendTurnCount: finiteCount(input?.backendTurnCount),
+    messagePageCount: finiteCount(input?.pageCount),
     delegationCount,
     consecutiveResumeCount,
   }

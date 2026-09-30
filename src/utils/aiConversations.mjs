@@ -56,6 +56,7 @@ export function normalizeAiConversationLink(value) {
   const startedAt = Number.isFinite(Date.parse(value.startedAt)) ? new Date(value.startedAt).toISOString() : linkedAt
   const candidateHomeMachineId = cleanText(value.homeMachineId, 64).toLowerCase()
   const homeMachineId = MACHINE_ID_PATTERN.test(candidateHomeMachineId) ? candidateHomeMachineId : ''
+  const workspacePoolId = cleanText(value.workspacePoolId, 120)
   return {
     conversationId,
     ...(homeMachineId ? { homeMachineId } : {}),
@@ -67,6 +68,7 @@ export function normalizeAiConversationLink(value) {
     skills: cleanOptions(value.skills),
     mcpServers: cleanOptions(value.mcpServers),
     ...(cleanText(value.workspace, 4_096) ? { workspace: cleanText(value.workspace, 4_096) } : {}),
+    ...(workspacePoolId ? { workspacePoolId } : {}),
     ...(cleanText(value.requestPreview, 240) ? { requestPreview: cleanText(value.requestPreview, 240) } : {}),
     ...(startedBy ? { startedBy } : {}),
     ...(startedAt ? { startedAt } : {}),

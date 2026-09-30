@@ -30,6 +30,16 @@ test('대화가 생성된 머신 ID를 정규화하고 올바르지 않은 값�
   }).homeMachineId, undefined)
 })
 
+test('작업공간 풀 ID를 대화 연결 메타데이터에 보존한다', () => {
+  const link = normalizeAiConversationLink({
+    conversationId: 'conversation-pooled',
+    workspace: 'C:\\Git\\Holdem_Fork3',
+    workspacePoolId: 'holdem',
+  })
+  assert.equal(link.workspace, 'C:\\Git\\Holdem_Fork3')
+  assert.equal(link.workspacePoolId, 'holdem')
+})
+
 test('새 대화를 추가해도 기존 대화와 시작 옵션을 유지한다', () => {
   const existing = {
     aiConversationId: 'conversation-first',

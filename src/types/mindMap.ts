@@ -113,6 +113,7 @@ export type AiConversationLink = {
   skills: AiConversationOptionSnapshot[]
   mcpServers: AiConversationOptionSnapshot[]
   workspace?: string
+  workspacePoolId?: string
   requestPreview?: string
   startedBy?: AiConversationOptionSnapshot
   startedAt?: string

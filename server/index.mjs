@@ -40,6 +40,7 @@ import { resolveAttributionWithoutToken, resolveScopedAttribution } from './lib/
 import { readAionUiSubscriptionUsage } from './lib/aionUiSubscriptionUsage.mjs'
 import { resolveConversationDisplay } from './lib/aiConversationDisplay.mjs'
 import { assessAiConversationContextHealth } from './lib/aiConversationContextHealth.mjs'
+import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
 import { aiDelegationReportArchived, aiDelegationReportArchivePending, createAiDelegationReportArchiver } from './lib/aiDelegationReportArchive.mjs'
 import {
@@ -3072,6 +3073,7 @@ async function dispatchPreparedAiDelegation({
         skills: selection.enabledSkillIds.map((skillId) => ({ id: skillId, label: skillId })),
         mcpServers: selection.mcpIds.map((mcpId) => ({ id: mcpId, label: mcpId })),
         workspace: selection.workspace,
+        workspacePoolId: workspaceLease?.poolId ?? null,
         requestPreview: instruction,
         startedBy: { id: attribution.startedBy, label: users.find((candidate) => candidate.id === attribution.startedBy)?.name ?? attribution.startedBy },
         startedAt: new Date().toISOString(),
@@ -5115,18 +5117,42 @@ function aiConversationDelegationContextStats(conversationId, { excludeDelegatio
 }
 
 async function fetchAiConversationMessageStatistics(conversationId, machineId) {
+  const items = []
+  let before = ''
+  let pageCount = 0
+  let historyComplete = false
+  let latestPageHasMoreAfter = false
   try {
-    const page = await fetchAionUiOn(machineId,
-      `/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=200&content_mode=compact`,
-      { timeoutMs: 5_000 })
-    if (!Array.isArray(page?.items)) return { messageCount: null, messageCountExact: false }
-    return {
-      messageCount: page.items.length,
-      messageCountExact: page.has_more_before !== true && page.has_more_after !== true,
+    for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
+      const query = new URLSearchParams({
+        limit: '200',
+        content_mode: 'compact',
+        ...(before ? { before } : {}),
+      })
+      const page = await fetchAionUiOn(
+        machineId,
+        `/api/conversations/${encodeURIComponent(conversationId)}/messages?${query}`,
+        { timeoutMs: 5_000 },
+      )
+      if (!Array.isArray(page?.items)) {
+        if (pageCount === 0) return { conversationTurnCount: null, conversationTurnCountExact: false }
+        break
+      }
+      pageCount += 1
+      items.push(...page.items)
+      if (pageIndex === 0) latestPageHasMoreAfter = page.has_more_after === true
+      if (page.has_more_before !== true) {
+        historyComplete = !latestPageHasMoreAfter
+        break
+      }
+      const nextBefore = String(page.oldest_cursor ?? '').trim()
+      if (!nextBefore || nextBefore === before) break
+      before = nextBefore
     }
   } catch {
-    return { messageCount: null, messageCountExact: false }
+    if (pageCount === 0) return { conversationTurnCount: null, conversationTurnCountExact: false }
   }
+  return summarizeAiConversationMessages(items, { historyComplete, pageCount })
 }
 
 async function inspectAiConversationContextHealth(
@@ -8237,6 +8263,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           conversationId,
           homeMachineId: launch.homeMachineId,
           ...selection,
+          workspacePoolId: workspacePoolManager.poolForWorkspace(selection.workspace)?.poolId ?? null,
           startedBy: { id: actor.id, label: actor.name },
           startedAt: normalizedIsoDate(conversation.created_at),
           linkedAt: new Date().toISOString(),
@@ -9896,6 +9923,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         cardId: targetCard.id,
         startedBy: attribution.startedBy,
         linkedAt: new Date().toISOString(),
+        workspace: selection.workspace,
+        workspacePoolId: workspaceLease?.poolId ?? null,
         homeMachineId: targetHomeMachineId,
       })
       aiConversationAttributions.set(conversationAttributionKey(mapId, targetCard.id), {
@@ -9934,6 +9963,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
             skills: selection.enabledSkillIds.map((skillId) => ({ id: skillId, label: skillId })),
             mcpServers: selection.mcpIds.map((mcpId) => ({ id: mcpId, label: mcpId })),
             workspace: selection.workspace,
+            workspacePoolId: workspaceLease?.poolId ?? null,
             requestPreview: instruction,
             startedBy: { id: attribution.startedBy, label: users.find((candidate) => candidate.id === attribution.startedBy)?.name ?? attribution.startedBy },
             startedAt: new Date().toISOString(),
@@ -10157,44 +10187,64 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       }).filter(Boolean)
       const observedAt = new Date().toISOString()
       const conversations = await Promise.all(links.map(async (link) => {
-        if (!machineAccessibleByUser(user, link.homeMachineId)) {
+        const origin = aiConversationOrigins.get(link.conversationId)
+        const recordedWorkspace = origin?.workspace ?? link.workspace
+        const recordedWorkspacePool = workspacePoolManager.poolForWorkspace(recordedWorkspace)
+        const recordedWorkspacePoolId = recordedWorkspacePool?.poolId
+          ?? origin?.workspacePoolId
+          ?? link.workspacePoolId
+          ?? null
+        const recordedLink = normalizeAiConversationLink({
+          ...link,
+          workspace: recordedWorkspace,
+          workspacePoolId: recordedWorkspacePoolId,
+        }) ?? link
+        const workspaceBinding = recordedWorkspacePool ? 'pool-rebindable' : 'fixed'
+        if (!machineAccessibleByUser(user, recordedLink.homeMachineId)) {
           return {
-            ...link,
-            homeMachineLabel: machineLabel(link.homeMachineId),
-            homeMachineRole: link.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
+            ...recordedLink,
+            workspaceBinding,
+            homeMachineLabel: machineLabel(recordedLink.homeMachineId),
+            homeMachineRole: recordedLink.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
             accessible: false,
             available: false,
             name: '',
             modifiedAt: null,
-            runtime: normalizeAiConversationRuntime(link.conversationId, null, observedAt),
+            runtime: normalizeAiConversationRuntime(recordedLink.conversationId, null, observedAt),
             contextHealth: assessAiConversationContextHealth({
-              conversationId: link.conversationId,
+              conversationId: recordedLink.conversationId,
               runtimeState: 'unknown',
-              messageCount: null,
-              messageCountExact: false,
-              ...aiConversationDelegationContextStats(link.conversationId),
+              conversationTurnCount: null,
+              conversationTurnCountExact: false,
+              ...aiConversationDelegationContextStats(recordedLink.conversationId),
             }, observedAt),
           }
         }
         try {
-          const conversation = await fetchAiConversationRuntime(link.conversationId)
-          if (!conversation || String(conversation.id) !== link.conversationId) throw new Error('AIONUI_CONVERSATION_NOT_FOUND')
+          const conversation = await fetchAiConversationRuntime(recordedLink.conversationId)
+          if (!conversation || String(conversation.id) !== recordedLink.conversationId) throw new Error('AIONUI_CONVERSATION_NOT_FOUND')
           const recoveredLink = aiConversationLinkFromAionUiConversation(conversation)
+          const currentWorkspace = recoveredLink?.workspace ?? recordedWorkspace
+          const currentWorkspacePool = workspacePoolManager.poolForWorkspace(currentWorkspace)
+          const currentWorkspacePoolId = currentWorkspacePool?.poolId
+            ?? recordedWorkspacePoolId
           const enrichedLink = normalizeAiConversationLink({
-            ...link,
-            agent: link.agent ?? recoveredLink?.agent,
-            model: link.model ?? recoveredLink?.model,
-            providerId: link.providerId ?? recoveredLink?.providerId,
-            mode: link.mode ?? recoveredLink?.mode,
-            thoughtLevel: link.thoughtLevel ?? recoveredLink?.thoughtLevel,
-            skills: link.skills.length > 0 ? link.skills : recoveredLink?.skills,
-            mcpServers: link.mcpServers.length > 0 ? link.mcpServers : recoveredLink?.mcpServers,
-            workspace: link.workspace ?? recoveredLink?.workspace,
-            startedAt: link.startedAt ?? recoveredLink?.startedAt,
-          }) ?? link
-          const contextHealth = await inspectAiConversationContextHealth(link.conversationId, conversation, enrichedLink.homeMachineId)
+            ...recordedLink,
+            agent: recordedLink.agent ?? recoveredLink?.agent,
+            model: recordedLink.model ?? recoveredLink?.model,
+            providerId: recordedLink.providerId ?? recoveredLink?.providerId,
+            mode: recordedLink.mode ?? recoveredLink?.mode,
+            thoughtLevel: recordedLink.thoughtLevel ?? recoveredLink?.thoughtLevel,
+            skills: recordedLink.skills.length > 0 ? recordedLink.skills : recoveredLink?.skills,
+            mcpServers: recordedLink.mcpServers.length > 0 ? recordedLink.mcpServers : recoveredLink?.mcpServers,
+            workspace: currentWorkspace,
+            workspacePoolId: currentWorkspacePoolId,
+            startedAt: recordedLink.startedAt ?? recoveredLink?.startedAt,
+          }) ?? recordedLink
+          const contextHealth = await inspectAiConversationContextHealth(recordedLink.conversationId, conversation, enrichedLink.homeMachineId)
           return {
             ...enrichedLink,
+            workspaceBinding: currentWorkspacePool ? 'pool-rebindable' : 'fixed',
             homeMachineLabel: machineLabel(enrichedLink.homeMachineId),
             homeMachineRole: enrichedLink.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
             accessible: true,
@@ -10202,25 +10252,26 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
             name: String(conversation.name ?? ''),
             startedAt: enrichedLink.startedAt ?? normalizedIsoDate(conversation.created_at),
             modifiedAt: normalizedIsoDate(conversation.modified_at, enrichedLink.linkedAt ?? null),
-            runtime: normalizeAiConversationRuntime(link.conversationId, conversation, observedAt),
+            runtime: normalizeAiConversationRuntime(recordedLink.conversationId, conversation, observedAt),
             contextHealth,
           }
         } catch {
           return {
-            ...link,
-            homeMachineLabel: machineLabel(link.homeMachineId),
-            homeMachineRole: link.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
+            ...recordedLink,
+            workspaceBinding,
+            homeMachineLabel: machineLabel(recordedLink.homeMachineId),
+            homeMachineRole: recordedLink.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
             accessible: true,
             available: false,
             name: '',
             modifiedAt: null,
-            runtime: normalizeAiConversationRuntime(link.conversationId, null, observedAt),
+            runtime: normalizeAiConversationRuntime(recordedLink.conversationId, null, observedAt),
             contextHealth: assessAiConversationContextHealth({
-              conversationId: link.conversationId,
+              conversationId: recordedLink.conversationId,
               runtimeState: 'unknown',
-              messageCount: null,
-              messageCountExact: false,
-              ...aiConversationDelegationContextStats(link.conversationId),
+              conversationTurnCount: null,
+              conversationTurnCountExact: false,
+              ...aiConversationDelegationContextStats(recordedLink.conversationId),
             }, observedAt),
           }
         }

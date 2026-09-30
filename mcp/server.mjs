@@ -1521,8 +1521,8 @@ async function main() {
       ...result,
       selectionRule: {
         exclude: 'runtime.state가 running 또는 waiting-confirmation이거나 available=false이거나 contextHealth.resumeAllowed=false인 대화는 일반 위임의 이어가기 후보에서 제외하세요.',
-        preferResume: 'contextHealth.state=healthy이고 현재 지시가 같은 업무 흐름의 후속 작업이며 실행 환경(agent, model, mode, workspace, MCP)이 호환되는 idle 대화만 이어가세요. resume에는 contextHealth.assessmentId를 전달하세요.',
-        chooseNew: 'contextHealth가 caution·saturated·unknown이거나 업무 목적·실행 환경이 다르거나 독립 검토·새 범위이면 새 대화를 선택하세요. caution은 정확히 이어지는 작은 후속 작업일 때만 평가를 확인하고 예외적으로 이어갈 수 있습니다.',
+        preferResume: 'contextHealth.state=healthy이고 현재 지시가 같은 업무 흐름의 후속 작업이며 실행 환경(agent, model, mode, MCP)이 호환되는 idle 대화만 이어가세요. workspaceBinding=fixed이면 workspace도 일치해야 합니다. workspaceBinding=pool-rebindable이면 같은 workspacePoolId 안의 worker 경로 차이는 호환되며 MnP가 기존 worker를 우선하되 필요하면 안전하게 재배정합니다. resume에는 contextHealth.assessmentId를 전달하세요.',
+        chooseNew: 'contextHealth가 caution·saturated·unknown이거나 업무 목적·실행 환경이 다르거나 독립 검토·새 범위이면 새 대화를 선택하세요. 같은 workspacePoolId 안의 Fork 경로 차이만으로 새 대화를 만들지 마세요. caution은 정확히 이어지는 작은 후속 작업일 때만 평가를 확인하고 예외적으로 이어갈 수 있습니다.',
         recovery: '중단된 동일 위임은 문맥 포화와 관계없이 새 위임을 만들지 말고 기존 위임 복구·재개 절차를 사용하세요.',
         inspect: '목록 메타데이터만으로 관련성을 판단하기 어려운 후보에 한해서 mindnprogress_get_ai_conversation_transcript에 conversationId를 지정해 확인하세요.',
       },

@@ -26,7 +26,8 @@ test('공통 배치는 같은 재시작 명령에서 숨김 옵션만 분기하�
   assert.match(script, /-NonInteractive %MNP_WINDOW_OPTION% -ExecutionPolicy/)
   assert.doesNotMatch(script, /wscript\.exe|cscript\.exe|\bstart\s+"/i)
   assert.match(script, /set "MNP_EXIT_CODE=%errorlevel%"/)
-  assert.match(script, /if not defined MNP_HIDDEN \([\s\S]*pause >nul\s+\)\s+exit \/b %MNP_EXIT_CODE%/)
+  assert.match(script, /if not defined MNP_HIDDEN \(\s+"%SystemRoot%\\System32\\timeout\.exe" \/t 0 \/nobreak >nul 2>&1 && \(\s+echo\.\s+echo Press any key to close this window\.\s+pause >nul\s+\)\s+\)\s+exit \/b %MNP_EXIT_CODE%/)
+  assert.equal([...script.matchAll(/^\s*pause >nul\s*$/gm)].length, 1)
 })
 
 for (const scenario of [
@@ -34,7 +35,7 @@ for (const scenario of [
   { name: '실패', controllerExitCode: 7 },
   { name: '제어 스크립트 누락', controllerExitCode: null },
 ]) {
-  test(`Windows 콘솔 배치 격리 실행: ${scenario.name}`, { skip: process.platform !== 'win32', timeout: 20_000 }, async () => {
+  test(`Windows 파이프 배치 격리 실행: ${scenario.name}`, { skip: process.platform !== 'win32', timeout: 20_000 }, async () => {
     // 공백과 특수 문자가 있는 설치 경로 및 다른 현재 디렉터리에서도 실행해야 한다.
     const directory = await mkdtemp(path.join(tmpdir(), 'mnp-console-restart space & bang!-'))
     const scripts = path.join(directory, 'MindNProgress', 'scripts')
@@ -61,14 +62,15 @@ exit ${scenario.controllerExitCode}
       ], {
         cwd: tmpdir(), windowsHide: true, windowsVerbatimArguments: true, timeout: 15_000,
       })
-      // 테스트용 콘솔을 띄우지 않고 배치의 마지막 pause에 입력한다.
-      execution.child.stdin.end('\r\n')
+      // 파이프 입력을 닫아 대화형 콘솔이 없는 실행을 재현한다.
+      execution.child.stdin.end()
       const result = await execution.then(
         ({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
         (error) => ({ code: error.code, stdout: error.stdout, stderr: error.stderr }),
       )
       assert.equal(result.code, scenario.controllerExitCode ?? 1, `${result.stdout}\n${result.stderr}`)
-      assert.match(result.stdout, /Press any key to close this window/)
+      assert.doesNotMatch(result.stdout, /Press any key/i)
+      assert.doesNotMatch(result.stderr, /Press any key/i)
       if (scenario.controllerExitCode === null) {
         assert.match(result.stdout, /Runtime controller is missing/)
         assert.doesNotMatch(result.stdout, /Restart complete|fixture controller/)

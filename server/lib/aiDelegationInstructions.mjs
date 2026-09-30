@@ -13,13 +13,14 @@ export function buildDelegatedInstruction({
   attributionToken,
   instruction,
   workspaceLease,
-  event = 'new',
+  event,
   includeCompletion = false,
 }) {
+  if (!['new', 'resume', 'recovery'].includes(event)) throw new Error('위임 실행 상태 event가 필요합니다.')
   const workspaceInstruction = buildWorkspaceInstruction(workspaceLease)
   const entryInstruction = event === 'new'
     ? MNP_CONTEXT_BOOTSTRAP_INSTRUCTION
-    : `실행 상태: ${event}. 이미 바인딩된 대화이므로 get_context를 반복하지 말고 대상별 조회 도구로 최신 카드·문서·AI 작업 상태를 확인하세요.`
+    : `실행 상태: ${event}. 이 대화에서 get_context가 이미 성공했다면 반복하지 말고 대상별 조회 도구로 최신 카드·문서·AI 작업 상태를 확인하세요. 첫 진입에서 성공 응답을 받지 못했다면 전달된 mapId와 cardId로 get_context를 한 번 성공적으로 호출하세요.`
   const completionInstruction = includeCompletion
     ? '\n\n사용자가 중지한 같은 위임을 직접 이어 완료하는 턴입니다. 실제 작업·카드 기록·필수 체크포인트를 모두 마친 마지막 턴의 최종 답변 직전에만 `mindnprogress_complete_ai_delegation`을 호출하세요.'
     : ''
@@ -37,6 +38,10 @@ guide, selection.taskLinks.startupInspection, selection.aiWorkCoordination, next
 ${workspaceInstruction ? `${workspaceInstruction}\n\n` : ''}# 상위 AI 지시
 
 ${instruction.trim()}${completionInstruction}`
+}
+
+export function buildPreparedAiDelegationInstruction({ strategy, ...input }) {
+  return buildDelegatedInstruction({ ...input, event: strategy })
 }
 
 export function delegationRecoveryInstruction(delegation, instruction, recovery = null, conversationDisplayLabel = delegation.targetConversationId) {

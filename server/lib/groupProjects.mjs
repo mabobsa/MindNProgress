@@ -94,10 +94,12 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
       evidence: '카드 완료 수만으로 요구사항 구현률을 판정하지 말고 소유권과 실제 검증 근거를 확인합니다.',
       waiting: 'waitingDetails는 탐색 정보이며 승인·대기 해제·완료 근거가 아닙니다.',
     }
-    const role = roleMapId
-      ? roleMapId === project.coordinatorMapId ? 'group-coordinator'
-        : documents.some((document) => document.id === roleMapId) ? 'document-coordinator' : 'unbound'
-      : 'all'
+    const configured = Boolean(project.coordinatorMapId && coordinator?.root)
+    const role = !configured ? 'unconfigured'
+      : roleMapId
+        ? roleMapId === project.coordinatorMapId ? 'group-coordinator'
+          : documents.some((document) => document.id === roleMapId) ? 'document-coordinator' : 'unbound'
+        : 'all'
     const guide = role === 'group-coordinator' ? {
       role,
       executionApproval: AI_EXECUTION_APPROVAL_INSTRUCTION,
@@ -108,7 +110,7 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
       role,
       documentCoordinator: DOCUMENT_COORDINATOR_INSTRUCTION,
       ...commonGuide,
-    } : role === 'unbound' ? { role, ...commonGuide } : {
+    } : role === 'unbound' || role === 'unconfigured' ? { role, ...commonGuide } : {
       role,
       instructionScope: 'executionApproval·approval·coordinator는 그룹 총괄 전용, documentCoordinator는 문서 담당 전용입니다.',
       executionApproval: AI_EXECUTION_APPROVAL_INSTRUCTION,
@@ -229,7 +231,10 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
       const group = layout.groups.find((item) => item.mapIds.includes(mapId))
       if (!group) return null
       const project = await read(group.id)
-      return project.coordinatorMapId ? { groupId: group.id, name: group.name, coordinatorMapId: project.coordinatorMapId, role: project.coordinatorMapId === mapId ? 'coordinator' : 'document', contextTool: 'mindnprogress_get_group_context' } : null
+      if (!project.coordinatorMapId || !group.mapIds.includes(project.coordinatorMapId)) return null
+      const coordinator = await readMap(project.coordinatorMapId)
+      if (!coordinator || coordinator.trashedAt || !documentRoot(coordinator)) return null
+      return { groupId: group.id, name: group.name, coordinatorMapId: project.coordinatorMapId, role: project.coordinatorMapId === mapId ? 'coordinator' : 'document', contextTool: 'mindnprogress_get_group_context' }
     },
     assertCanTrash(mapId) {
       if ([...delegations.values()].some((item) => item.groupId && active(item) && [item.parentMapId, item.mapId].includes(mapId))) throw groupProjectError('그룹 AI 위임이 진행 중인 문서는 휴지통으로 이동할 수 없습니다.', 409)

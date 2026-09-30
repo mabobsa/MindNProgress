@@ -632,10 +632,10 @@ async function main() {
 
     const guide = await invoke('mindnprogress_read_me_first')
     assert.match(guide.guide.product, /MindNProgress/)
-    assert.equal(guide.guide.version, '4.24')
-    assert.equal(guide.guide.contextLifecycle.binding.state, 'bound')
-    assert.equal(guide.guide.contextLifecycle.refresh.repeatGetContext, false)
-    assert.equal(guide.guide.contextLifecycle.refresh.card, 'mindnprogress_get_card')
+    assert.equal(guide.guide.version, '4.25')
+    assert.equal(guide.guide.contextLifecycle.binding.state, 'unbound')
+    assert.match(guide.guide.contextLifecycle.binding.next, /get_context를 한 번 성공적으로 호출/)
+    assert.equal(guide.guide.contextLifecycle.refresh, undefined)
     assert.match(guide.guide.contextLifecycle.writeSafety.before, /version 또는 SHA-256/)
     assert.match(guide.guide.contextLifecycle.writeSafety.verify, /실제 저장 결과/)
     assert.match(guide.guide.recordingPolicy.allowed, /\[진행\].*\[차단\].*\[결과\]/)
@@ -646,7 +646,11 @@ async function main() {
     assert.match(toolDescription('mindnprogress_supersede_ai_delegation'), /사용자가 명시적으로 요청.*감사 이력/)
     assert.match(guide.guide.authoringCore.join('\n'), /description.*sharedKnowledge.*댓글/)
     assert.equal(guide.guide.knowledgeLinePolicy.evaluateAt, 'after-work')
-    assert.match(guide.guide.knowledgeLinePolicy.rule, /실제로 조회하고 사용한 현재 sharedKnowledge/)
+    assert.match(guide.guide.knowledgeLinePolicy.rule, /실제 조회·사용.*sharedKnowledge|sharedKnowledge를 이번 작업에서 실제 조회·사용/)
+    assert.match(guide.guide.knowledgeLinePolicy.rule, /reuse-first.*inspect-if-insufficient/)
+    assert.match(guide.guide.knowledgeLinePolicy.rule, /같은 문서.*검증된 sharedKnowledge.*실제 조회·사용.*후속 재사용/)
+    assert.match(guide.guide.knowledgeLinePolicy.rule, /미확정·충돌·타 문서·일회성·정책 불명.*연결하지 말고.*제안/)
+    assert.match(guide.guide.waitingPolicy, /waitingItems.*\[차단\].*해제.*\[진행\].*미해결/s)
     assert.match(toolDescription('mindnprogress_manage_knowledge_line'), /guide\.knowledgeLinePolicy/)
     assert.ok(toolDescription('mindnprogress_patch_card_text').includes('\\uXXXX'))
     assert.match(toolDescription('mindnprogress_patch_card_text'), /after\.sha256.*expectedSha256.*이전 해시를 재사용하지 않음/)
@@ -932,6 +936,7 @@ async function main() {
       attributionToken: attribution.attributionToken,
     })
     assert.equal(context.contextSchemaVersion, '3.3')
+    assert.equal(context.guide.contextLifecycle.binding.state, 'bound')
     assert.deepEqual(context.currentConversation, {
       displayLabel: 'MCP 전체 대화 조회 검증 (conversation-test)',
     })
@@ -941,6 +946,8 @@ async function main() {
     assert.equal(context.document.outline.find((card) => card.id === 'task-a')?.parentId, 'branch-a')
     assert.equal(context.document.outline.find((card) => card.id === 'task-a')?.waitingItems[0].resumeCondition, '개발 서버 배포')
     assert.equal(context.selection.card.id, 'task-a')
+    assert.equal(context.selection.role.id, 'card')
+    assert.match(context.selection.workflow.instruction, /분석·제안만 요청받았다면.*변경하지/)
     assert.equal(context.selection.card.data.waitingItems[0].note, '응답 형식 확정 필요')
     assert.equal(context.selection.card.position, undefined)
     assert.equal(context.selection.taskLinks.available.length, 2)
@@ -1343,6 +1350,25 @@ async function main() {
     assert.equal(delegated.delegation.parentCardId, 'task-a', '다른 카드 get_context 조회가 위임 기준 카드를 변경했습니다.')
     assert.equal(delegated.delegation.strategy, 'new')
     assert.equal(delegated.mapVersion, delegationArguments.sourceRevision + 1)
+    const delegatedRoleTransport = new StdioClientTransport({
+      command: process.execPath,
+      args: ['mcp/server.mjs'],
+      cwd: projectDirectory,
+      env: { ...environment, AIONUI_CONVERSATION_ID: 'conversation-delegated' },
+      stderr: 'pipe',
+    })
+    const delegatedRoleClient = new Client({ name: 'mindnprogress-delegated-role', version: '1.0.0' })
+    await delegatedRoleClient.connect(delegatedRoleTransport)
+    try {
+      const delegatedContext = parseToolResult('mindnprogress_get_context', await delegatedRoleClient.callTool({
+        name: 'mindnprogress_get_context',
+        arguments: { mapId, cardId: delegatedChild.id },
+      }))
+      assert.equal(delegatedContext.selection.role.id, 'worker')
+      assert.match(delegatedContext.selection.role.instruction, /상위 AI가 맡긴 카드 범위/)
+    } finally {
+      await delegatedRoleClient.close()
+    }
     assertReasonMessagePair(delegated, 'AI 위임 접수 응답')
     assert.equal(delegated.reasonCode, 'AI_DELEGATION_ACCEPTED')
     assertReasonMessagePair(delegated.delegation, 'AI 위임 공개 상태')
@@ -2078,7 +2104,10 @@ async function main() {
         checklist: [{ id: 'check-partial-merge', text: '부분 병합 보존', done: false }],
         blockedBy: ['task-a'],
         aiConversationId: 'conversation-partial-merge',
-        waitingItems: [{ label: '캐릭터 아트 전달', resumeCondition: '최종 PNG 수령' }],
+        waitingItems: [
+          { label: '캐릭터 아트 전달', resumeCondition: '최종 PNG 수령' },
+          { label: '외부 검수 결정', resumeCondition: '검수 결과 승인' },
+        ],
       },
     })
     const waitingCard = waitingCardResult.card
@@ -2088,6 +2117,15 @@ async function main() {
     assert.equal(waitingCard.data.waitingItems[0].label, '캐릭터 아트 전달')
     assert.ok(waitingCard.data.waitingItems[0].id)
     assert.ok(waitingCard.data.waitingItems[0].since)
+    assert.equal(waitingCard.data.waitingItems.length, 2)
+    const partiallyReleasedCard = await invoke('mindnprogress_update_card', {
+      mapId,
+      cardId: waitingCard.id,
+      responseMode: 'affected',
+      data: { waitingItems: [waitingCard.data.waitingItems[1]] },
+    })
+    assert.deepEqual(partiallyReleasedCard.card.data.waitingItems.map((item) => item.id), [waitingCard.data.waitingItems[1].id])
+    assert.notEqual(partiallyReleasedCard.card.data.status, 'done')
     assert.equal(waitingCardResult.document.rootProgress, 15)
     assert.equal(waitingCardResult.document.rootStatus, 'in-progress')
     assert.equal(waitingCardResult.root.progress, 15)
@@ -2114,7 +2152,7 @@ async function main() {
       'aiConversationId',
     ]
     const preservedCardData = Object.fromEntries(
-      partialMergePreservedFields.map((field) => [field, waitingCard.data[field]]),
+      partialMergePreservedFields.map((field) => [field, partiallyReleasedCard.card.data[field]]),
     )
     const partialUpdateResult = await invoke('mindnprogress_update_card', {
       mapId,
@@ -2624,6 +2662,11 @@ async function main() {
     assert.equal(repeatedDeleteConversationLinkResponse.status, 404)
 
     const groupLibrary = await invoke('mindnprogress_list_documents', {})
+    const unconfiguredGroup = await invoke('mindnprogress_get_group_context', { groupId: 'group-mcp-regression' })
+    assert.ok(unconfiguredGroup.documents.some((document) => document.id === mapId))
+    assert.equal(unconfiguredGroup.project.coordinatorMapId, null)
+    assert.equal(unconfiguredGroup.guide.role, 'unconfigured')
+    assert.equal(unconfiguredGroup.guide.documentCoordinator, undefined)
     const groupTestId = 'group-mcp-project'
     await invoke('mindnprogress_save_document_layout', {
       documentLayout: {
@@ -2634,6 +2677,8 @@ async function main() {
     })
     const emptyGroup = await invoke('mindnprogress_get_group_context', { groupId: groupTestId })
     assert.equal(emptyGroup.project.version, 0)
+    assert.equal(emptyGroup.guide.role, 'unconfigured')
+    assert.equal(emptyGroup.guide.documentCoordinator, undefined)
     const managedGroup = await invoke('mindnprogress_update_group_project', {
       groupId: groupTestId, baseVersion: 0, source: '기획 원본 경로', sourceVersion: 'v1', objective: '요구사항 전체 구현', createCoordinator: true,
     })
@@ -2719,7 +2764,7 @@ async function main() {
     const coordinatorChild = await invoke('mindnprogress_add_card', { mapId: managedGroup.coordinator.id, parentCardId: managedGroup.coordinator.root.id, data: { label: '총괄 문서의 일반 하위 카드', kind: 'task', isWork: false } })
     const coordinatorChildContext = await invoke('mindnprogress_get_context', { mapId: managedGroup.coordinator.id, cardId: coordinatorChild.card.id, detailLevel: 'full' })
     assert.doesNotMatch(JSON.stringify(coordinatorChildContext.guide), /# 사용자 승인과 실행 범위/)
-    assert.equal(coordinatorChildContext.selection.role.id, 'worker')
+    assert.equal(coordinatorChildContext.selection.role.id, 'card')
     assert.doesNotMatch(coordinatorChildContext.groupProject.instruction, /# 그룹의 두 단계 사용자 승인/)
     const commonGuideAgain = await invoke('mindnprogress_read_me_first', {})
     assert.doesNotMatch(JSON.stringify(commonGuideAgain.guide), /# 사용자 승인과 실행 범위/)
@@ -2858,6 +2903,8 @@ async function main() {
       totalCalls: [...calledTools.values()].reduce((sum, count) => sum + count, 0),
       measuredTools: usageTotals.tools.filter((tool) => tool.calls > 0).length,
       measuredCalls: usageTotals.totalCalls,
+      readMeFirstResponseChars: JSON.stringify(guide).length,
+      selectedContextResponseChars: JSON.stringify(context).length,
       status: 'passed',
     }, null, 2))
   } catch (error) {

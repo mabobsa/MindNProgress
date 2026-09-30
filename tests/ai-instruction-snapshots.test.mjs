@@ -11,6 +11,7 @@ import {
   GROUP_COORDINATOR_INSTRUCTION,
 } from '../src/utils/aiApprovalInstructions.mjs'
 import { buildAiInstructionSnapshots, buildOrdinaryRecoverySnapshot } from './helpers/aiInstructionSnapshots.mjs'
+import { buildDelegatedInstruction, buildPreparedAiDelegationInstruction } from '../server/lib/aiDelegationInstructions.mjs'
 
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const budget = JSON.parse(await readFile(path.join(projectDirectory, 'tests/fixtures/ai-instruction-budget.json'), 'utf8'))
@@ -37,7 +38,7 @@ test('17개 역할·상태 전문은 고정 snapshot과 문자 예산을 지킨�
   assert.match(byName['worker-new-no-lease'], /# 대화 문맥 초기화/)
   assert.doesNotMatch(byName['worker-new-no-lease'], /# 할당된 작업공간/)
   assert.equal(occurrences(byName['worker-new-lease'], '# 할당된 작업공간'), 1)
-  assert.match(byName['worker-resume'], /실행 상태: resume.*get_context를 반복하지/s)
+  assert.match(byName['worker-resume'], /실행 상태: resume.*이미 성공했다면 반복하지 말고.*성공 응답을 받지 못했다면.*get_context를 한 번 성공적으로 호출/s)
   assert.doesNotMatch(byName['worker-resume'], /# 대화 문맥 초기화/)
   assert.match(byName['shared-knowledge-proposal'], /workflow: `proposal-only`.*writePolicy: `forbidden`/s)
   assert.match(byName['parent-wake'], /실행 상태: parent-wake/)
@@ -64,4 +65,21 @@ test('17개 역할·상태 전문은 고정 snapshot과 문자 예산을 지킨�
   assert.equal(occurrences(combined, GROUP_APPROVAL_INSTRUCTION), 0)
   assert.equal(occurrences(combined, 'mindnprogress_complete_ai_delegation'), 1)
   assert.equal(occurrences(buildOrdinaryRecoverySnapshot(), 'mindnprogress_complete_ai_delegation'), 0)
+})
+
+test('위임 전문은 실행 이벤트 누락을 거부하고 신규와 재개의 첫 조회를 구분한다', () => {
+  const args = { mapId: 'map-test', cardId: 'card-test', editorId: 'editor-test', attributionToken: 'token-test', instruction: '요청 범위를 검증하세요.' }
+  assert.throws(() => buildDelegatedInstruction(args), /event가 필요/)
+  const first = buildDelegatedInstruction({ ...args, event: 'new' })
+  const resumed = buildDelegatedInstruction({ ...args, event: 'resume' })
+  assert.equal(occurrences(first, '# 대화 문맥 초기화'), 1)
+  assert.equal(occurrences(resumed, '# 대화 문맥 초기화'), 0)
+  assert.match(resumed, /이미 성공했다면 반복하지 말고/)
+  assert.match(resumed, /성공 응답을 받지 못했다면.*한 번 성공적으로 호출/)
+  const queued = { strategy: 'resume', pendingInstruction: '기존 대화의 미완료 작업을 재개하세요.' }
+  const queuedResume = buildPreparedAiDelegationInstruction({ ...args, instruction: queued.pendingInstruction, strategy: queued.strategy })
+  const immediateResume = buildDelegatedInstruction({ ...args, instruction: queued.pendingInstruction, event: 'resume' })
+  assert.equal(queuedResume, immediateResume)
+  assert.equal(occurrences(queuedResume, '# 대화 문맥 초기화'), 0)
+  assert.throws(() => buildPreparedAiDelegationInstruction(args), /event가 필요/)
 })

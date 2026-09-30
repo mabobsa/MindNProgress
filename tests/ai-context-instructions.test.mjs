@@ -4,6 +4,8 @@ import {
   MNP_CONTEXT_BOOTSTRAP_INSTRUCTION,
   MNP_CONTEXT_LIFECYCLE,
   MNP_MCP_SERVER_INSTRUCTIONS,
+  MNP_WORKFLOW_POLICIES,
+  MNP_ROLE_POINTERS,
 } from '../src/utils/aiContextInstructions.mjs'
 import { buildAiConversationPrompt } from '../src/utils/aiConversationLaunch.mjs'
 import { buildGroupDocumentInstruction } from '../server/lib/groupDocumentInstructions.mjs'
@@ -46,6 +48,19 @@ test('일반 AI 대화가 공통 문맥 생명주기 지침을 사용한다', ()
   assert.ok(prompt.includes(MNP_CONTEXT_BOOTSTRAP_INSTRUCTION))
   assert.match(prompt, /실행 상태: `new`/)
   assert.match(prompt, /전용 workflow의 쓰기 정책이 일반 기록 지시보다 우선/)
+})
+
+test('일반 카드의 allowed는 요청 승인 범위를 넓히지 않는다', () => {
+  assert.equal(MNP_WORKFLOW_POLICIES.normal.writePolicy, 'allowed')
+  assert.match(MNP_WORKFLOW_POLICIES.normal.instruction, /수정 승인 자체가 아닙니다/)
+  assert.match(MNP_WORKFLOW_POLICIES.normal.instruction, /분석·제안만 요청받았다면 원본 카드·댓글·상태를 변경하지 않습니다/)
+  assert.match(MNP_ROLE_POINTERS.card, /위임이 확인되지 않으면.*worker 권한을 추정하지/s)
+  const prompt = buildAiConversationPrompt({
+    mapId: 'map-test', cardId: 'card-test', editorId: 'editor-test', attributionToken: 'token-test',
+    request: '현재 카드를 분석만 해 주세요.',
+  })
+  assert.match(prompt, /writePolicy: `allowed`/)
+  assert.match(prompt, /분석·제안만 요청받았다면 원본 카드·댓글·상태를 변경하지 않습니다/)
 })
 
 test('그룹 문서 지시는 get_context 바인딩 뒤 그룹 문맥을 최신화한다', () => {

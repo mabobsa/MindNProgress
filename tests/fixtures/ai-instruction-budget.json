@@ -6,11 +6,11 @@
   "execDeclarationSource": "구현 직전 활성 MCP 등록 표면에서 캡처했으며 input schema deep-equal로 불변을 검증합니다.",
   "perToolWrapperChars": 35,
   "serverInstructionsChars": 468,
-  "toolDescriptionChars": 10062,
-  "fixedSurfaceChars": 37162,
-  "dynamicTotalChars": 20706,
-  "maxDynamicChars": 2833,
-  "maxStartChars": 39995,
+  "toolDescriptionChars": 10694,
+  "fixedSurfaceChars": 37794,
+  "dynamicTotalChars": 21135,
+  "maxDynamicChars": 2906,
+  "maxStartChars": 40700,
   "repetitionCounts": {
     "contextBootstrap": 9,
     "writePolicy": 10,
@@ -60,23 +60,23 @@
     },
     {
       "name": "leaf-new",
-      "chars": 741,
-      "sha256": "c5eb49967e595b9bd7d6b91e1dc8012f04273f5f01bb761e30616f0efa7f0b8e"
+      "chars": 830,
+      "sha256": "f11bfb32ed28cd6575e31a80cbba853519141ffd7697be1a0fe52f6bcca47713"
     },
     {
       "name": "group-coordinator-new",
-      "chars": 1229,
-      "sha256": "5721b2e43f6435cea4ac9896fc92d41b7a4dc46f77cb6c0befcd6e13944e9cc9"
+      "chars": 1264,
+      "sha256": "86e1cb5c6c002555f6ab4eefc9f07c98f25a7ea49d234f71bf6ee3ae9ddf2ac3"
     },
     {
       "name": "group-proposal-only",
-      "chars": 1425,
-      "sha256": "06afa582801bf9ec692f930eb04d2b264274800e7c97f0ae8f6830aa37602d7f"
+      "chars": 1460,
+      "sha256": "bb33f428790b4c3df85ca33606091b8a55b89cb37dc333b18d08ba03611379c9"
     },
     {
       "name": "document-coordinator-new",
-      "chars": 929,
-      "sha256": "04e4c69952b10de9cbe9c8a4b6a0ce2030e8c94c0075929331cf75c5eeff26b7"
+      "chars": 1018,
+      "sha256": "3caa38c1e562f054c37ea42e2e18f75ffe0e393183b125659fd27b3763b94ac4"
     },
     {
       "name": "document-delivery",
@@ -95,8 +95,8 @@
     },
     {
       "name": "worker-resume",
-      "chars": 575,
-      "sha256": "9fadeeb1bbf3d689fa9fb95075fffb22793f376cc669dd973f03848f903e1ead"
+      "chars": 648,
+      "sha256": "29c98e41cc81ecec9fc90da00e0714470a9448f3170f2cceb16bec2b09ad5a82"
     },
     {
       "name": "shared-knowledge-proposal",
@@ -110,13 +110,13 @@
     },
     {
       "name": "group-parent-wake",
-      "chars": 1605,
-      "sha256": "834dae27b2d787362b0976feb6c36bff79b9bc9b16d172e05ecbbc74d18fb218"
+      "chars": 1640,
+      "sha256": "b744017098b12c9f21bb2f53f3a9e7e31ee1af61f5326c907b3e2436bff62cf2"
     },
     {
       "name": "user-stop-recovery",
-      "chars": 2833,
-      "sha256": "d836e6a8fe3ad186ddf53f626d739eac629cfc073f2fb197b6c8745c343c8495"
+      "chars": 2906,
+      "sha256": "990b8902fd8c718c979d7dc8c1aa9b91fd37e0bc0a0e95679c0c2ff7802e8db0"
     },
     {
       "name": "reconstruction",

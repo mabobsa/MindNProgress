@@ -28,7 +28,7 @@ import {
 } from './lib/groupDocumentInstructions.mjs'
 import { createDoorayResponseIntegration } from './lib/doorayResponseIntegration.mjs'
 import { MNP_ROLE_POINTERS } from '../src/utils/aiContextInstructions.mjs'
-import { buildDelegatedInstruction, buildParentWakeInstruction, delegationRecoveryInstruction } from './lib/aiDelegationInstructions.mjs'
+import { buildDelegatedInstruction, buildPreparedAiDelegationInstruction, buildParentWakeInstruction, delegationRecoveryInstruction } from './lib/aiDelegationInstructions.mjs'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { hostname, networkInterfaces, tmpdir } from 'node:os'
@@ -2899,13 +2899,14 @@ async function dispatchPreparedAiDelegation({
     homeMachineId: targetHomeMachineId,
   })
   await persistAiAttributions()
-  const delegatedInstruction = buildDelegatedInstruction({
+  const delegatedInstruction = buildPreparedAiDelegationInstruction({
     mapId: map.id,
     cardId: targetCard.id,
     editorId: parentAttribution.startedBy ?? user.id,
     attributionToken,
     instruction,
     workspaceLease,
+    strategy,
   })
   const delegatedConversationTitle = strategy === 'new'
     ? formatAiConversationTitle(map.title, targetCard.data?.label ?? targetCard.id)
@@ -9827,14 +9828,14 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         homeMachineId: targetHomeMachineId,
       })
       await persistAiAttributions()
-      const delegatedInstruction = buildDelegatedInstruction({
+      const delegatedInstruction = buildPreparedAiDelegationInstruction({
         mapId,
         cardId: targetCard.id,
         editorId: parentAttribution.startedBy ?? user.id,
         attributionToken,
         instruction: crossDocument ? `${MNP_ROLE_POINTERS.document}\n\n${instruction}` : instruction,
         workspaceLease,
-        event: strategy,
+        strategy,
       })
 
       const delegatedConversationTitle = strategy === 'new'

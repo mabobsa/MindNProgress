@@ -32,13 +32,21 @@ export const MNP_CONTEXT_LIFECYCLE = Object.freeze({
   }),
 })
 
+export const MNP_UNSELECTED_CONTEXT_LIFECYCLE = Object.freeze({
+  binding: Object.freeze({
+    state: 'unbound',
+    next: '선택 카드가 아직 없어 카드 바인딩 전입니다. 카드가 정해지면 해당 mapId와 cardId로 get_context를 한 번 성공적으로 호출하세요.',
+  }),
+  writeSafety: MNP_CONTEXT_LIFECYCLE.writeSafety,
+})
+
 export const MNP_RECORDING_POLICY = Object.freeze({
   allowed: '의미 있는 진행·차단·결과만 [진행]·[차단]·[결과] summary와 검증 가능한 detail 댓글로 남기고, 후속 카드가 재사용할 확정 결론만 sharedKnowledge에 요약합니다.',
   forbidden: '읽기 전용 workflow에서는 대화로만 결과를 반환하고 카드·댓글·sharedKnowledge·상태를 변경하지 않습니다.',
 })
 
 export const MNP_WORKFLOW_POLICIES = Object.freeze({
-  normal: Object.freeze({ workflow: 'card-work', writePolicy: 'allowed', instruction: '사용자 요청 또는 위임 범위의 카드 작업과 기록을 허용합니다.' }),
+  normal: Object.freeze({ workflow: 'card-work', writePolicy: 'allowed', instruction: 'allowed는 기록 도구의 사용 가능 상태이며 수정 승인 자체가 아닙니다. 실제 수정·위임은 이번 사용자 요청 또는 확인된 위임 범위에서만 수행하세요. 분석·제안만 요청받았다면 원본 카드·댓글·상태를 변경하지 않습니다.' }),
   approvalRequired: Object.freeze({ workflow: 'group-coordination', writePolicy: 'approval-required', instruction: '최신 그룹 승인 범위를 확인하고, 미승인 분석·제안은 대화로만 반환합니다.' }),
   proposalOnly: Object.freeze({ workflow: 'proposal-only', writePolicy: 'forbidden', instruction: '승인 화면에 반환할 제안만 작성하고 원본 카드와 기록을 변경하지 않습니다.' }),
   reconstruction: Object.freeze({ workflow: 'reconstruction', writePolicy: 'forbidden', instruction: '전용 요청의 제안함만 사용할 수 있으며 원본 문서·카드·기록을 변경하지 않습니다.' }),
@@ -49,7 +57,8 @@ export const MNP_WORKFLOW_POLICIES = Object.freeze({
 export const MNP_CONTEXT_NEXT_STEP = '`selection.taskLinks.startupInspection`을 따른 뒤 사용자 요청 또는 위임 범위의 작업을 수행하세요. 기록 가능 여부는 `selection.workflow.writePolicy`, 기록 형식은 `guide.recordingPolicy`, 저장 확인은 `guide.contextLifecycle.writeSafety`를 따르세요.'
 
 export const MNP_ROLE_POINTERS = Object.freeze({
-  group: '역할: group coordinator. mindnprogress_get_group_context의 현재 역할 guide에서 최신 승인·소유권 정책을 확인하세요.',
-  document: '역할: document coordinator. mindnprogress_get_group_context의 guide.documentCoordinator를 사용하고 구현은 자기 문서의 실제 하위 업무에 위임하세요.',
+  group: '역할: group coordinator. mindnprogress_get_group_context의 현재 역할 guide에서 최신 승인·소유권 정책을 확인하세요. 조회 실패나 역할 불일치면 역할 의존 쓰기·위임을 보류하세요.',
+  document: '역할: document coordinator. mindnprogress_get_group_context의 guide.documentCoordinator를 확인하고 구현은 자기 문서의 실제 하위 업무에 위임하세요. 조회 실패나 역할 불일치면 역할 의존 쓰기·위임을 보류하세요.',
   worker: '역할: delegated worker. 상위 AI가 맡긴 카드 범위와 직접 연결된 지식만 사용하세요.',
+  card: '역할: 일반 카드 작업. 확인된 사용자 요청 범위만 수행하고, 실제 위임이 확인되지 않으면 상위 AI의 지시나 worker 권한을 추정하지 마세요.',
 })

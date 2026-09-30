@@ -1520,9 +1520,11 @@ async function main() {
     return {
       ...result,
       selectionRule: {
-        exclude: 'runtime.state가 running 또는 waiting-confirmation이거나 available=false이거나 contextHealth.resumeAllowed=false인 대화는 일반 위임의 이어가기 후보에서 제외하세요.',
-        preferResume: 'contextHealth.state=healthy이고 현재 지시가 같은 업무 흐름의 후속 작업이며 실행 환경(agent, model, mode, MCP)이 호환되는 idle 대화만 이어가세요. workspaceBinding=fixed이면 workspace도 일치해야 합니다. workspaceBinding=pool-rebindable이면 같은 workspacePoolId 안의 worker 경로 차이는 호환되며 MnP가 기존 worker를 우선하되 필요하면 안전하게 재배정합니다. resume에는 contextHealth.assessmentId를 전달하세요.',
-        chooseNew: 'contextHealth가 caution·saturated·unknown이거나 업무 목적·실행 환경이 다르거나 독립 검토·새 범위이면 새 대화를 선택하세요. 같은 workspacePoolId 안의 Fork 경로 차이만으로 새 대화를 만들지 마세요. caution은 정확히 이어지는 작은 후속 작업일 때만 평가를 확인하고 예외적으로 이어갈 수 있습니다.',
+        exclude: 'available=false이거나 contextHealth.resumeAllowed=false인 대화는 일반 위임의 이어가기 후보에서 제외하세요. runtime.state가 idle이 아닌 대화에는 지금 이어가기를 요청하지 마세요.',
+        preferResume: '현재 지시가 같은 업무 흐름의 후속 작업이고 실행 환경(agent, model, mode, MCP)이 호환되는 idle 대화는 contextHealth.state가 healthy이면 이어가세요. unverified는 전체 문맥 크기가 없어 포화 여부를 판정할 수 없는 상태입니다. contextUsed와 실제 업무 연속성을 확인하고, 같은 흐름의 후속 작업에 한해서만 경고를 인지한 채 이어가기를 시도할 수 있습니다. workspaceBinding=fixed이면 workspace도 일치해야 합니다. workspaceBinding=pool-rebindable이면 같은 workspacePoolId 안의 worker 경로 차이는 호환되며 MnP가 기존 worker를 우선하되 필요하면 안전하게 재배정합니다. resume에는 contextHealth.assessmentId를 전달하세요.',
+        busy: '같은 업무의 대상 대화가 running 또는 waiting-confirmation이면 현재 실행과 관련 위임의 통합이 끝난 뒤 후보 목록을 다시 조회하고 판단하세요. 실행 중이라는 이유만으로 같은 업무의 새 대화를 열거나 새 위임을 자동 예약하지 마세요. 독립 검토·새 범위는 별도 대화가 필요할 수 있습니다.',
+        chooseNew: 'contextHealth가 saturated·unknown이거나 업무 목적·실행 환경이 다르거나 독립 검토·새 범위이면 새 대화를 선택하세요. 같은 workspacePoolId 안의 Fork 경로 차이만으로 새 대화를 만들지 마세요. caution은 정확히 이어지는 작은 후속 작업일 때만 평가를 확인하고 예외적으로 이어갈 수 있습니다.',
+        metrics: 'decisionReason에는 conversationTurnCount를 실행 턴, eventCount를 저장 이벤트, toolCallCount를 도구 호출로 구분해 기록하세요. eventCount나 toolCallCount를 메시지 수 또는 실행 턴 수라고 표현하지 마세요. contextSize=null이면 contextUsed를 임의의 퍼센트로 환산하거나 포화·여유라고 단정하지 마세요. 새 대화를 선택했다면 문맥 포화, 업무 범위 차이, 독립 검토, 실행 환경 차이 중 실제 근거를 정확히 적으세요.',
         recovery: '중단된 동일 위임은 문맥 포화와 관계없이 새 위임을 만들지 말고 기존 위임 복구·재개 절차를 사용하세요.',
         inspect: '목록 메타데이터만으로 관련성을 판단하기 어려운 후보에 한해서 mindnprogress_get_ai_conversation_transcript에 conversationId를 지정해 확인하세요.',
       },

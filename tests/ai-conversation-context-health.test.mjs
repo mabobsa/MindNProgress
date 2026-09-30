@@ -22,7 +22,7 @@ test('짧고 사용량이 낮은 대화는 같은 업무 후속 작업의 이어
   assert.equal(result.metrics.estimatedContextSize, null)
 })
 
-test('실행 턴 80개 이상과 연속 이어가기 12회인 대화는 새 대화를 강제한다', () => {
+test('사용량이 없으면 실행 턴 80개와 연속 이어가기 12회도 포화로 단정하지 않는다', () => {
   const result = assessAiConversationContextHealth({
     ...base,
     usage: {},
@@ -31,9 +31,9 @@ test('실행 턴 80개 이상과 연속 이어가기 12회인 대화는 새 대�
     delegationCount: 13,
     consecutiveResumeCount: 12,
   })
-  assert.equal(result.state, 'saturated')
+  assert.equal(result.state, 'caution')
   assert.equal(result.recommendation, 'new')
-  assert.equal(result.resumeAllowed, false)
+  assert.equal(result.resumeAllowed, true)
   assert.deepEqual(result.reasonCodes, [
     'CONVERSATION_TURN_COUNT_HIGH',
     'CONVERSATION_RESUME_STREAK_HIGH',
@@ -47,6 +47,38 @@ test('문맥 사용률이 주의 구간이면 새 대화를 권장하되 명시�
   assert.equal(result.recommendation, 'new')
   assert.equal(result.resumeAllowed, true)
   assert.deepEqual(result.reasonCodes, ['CONVERSATION_CONTEXT_USAGE_CAUTION'])
+})
+
+test('검증된 전체 문맥 크기의 사용률이 80% 이상이면 이어가기를 차단한다', () => {
+  const result = assessAiConversationContextHealth({ ...base, usage: { used: 160_000, size: 200_000 } })
+  assert.equal(result.state, 'saturated')
+  assert.equal(result.recommendation, 'new')
+  assert.equal(result.resumeAllowed, false)
+  assert.deepEqual(result.reasonCodes, ['CONVERSATION_CONTEXT_USAGE_HIGH'])
+})
+
+test('전체 문맥 크기가 0으로 보고되면 크기 미확인으로 취급하고 포화를 단정하지 않는다', () => {
+  const result = assessAiConversationContextHealth({ ...base, usage: { used: 188_230, size: 0 } })
+  assert.equal(result.state, 'unverified')
+  assert.equal(result.recommendation, 'resume')
+  assert.equal(result.resumeAllowed, true)
+  assert.equal(result.metrics.contextSize, null)
+  assert.equal(result.metrics.contextUsageRatio, null)
+  assert.deepEqual(result.reasonCodes, ['CONVERSATION_CONTEXT_SIZE_UNKNOWN'])
+})
+
+test('문맥 크기가 없고 실행 턴이 많으면 주의하되 이어가기를 차단하지 않는다', () => {
+  const result = assessAiConversationContextHealth({
+    ...base,
+    usage: { used: 188_230, size: null },
+    conversationTurnCount: 80,
+  })
+  assert.equal(result.state, 'caution')
+  assert.equal(result.resumeAllowed, true)
+  assert.deepEqual(result.reasonCodes, [
+    'CONVERSATION_TURN_COUNT_HIGH',
+    'CONVERSATION_CONTEXT_SIZE_UNKNOWN',
+  ])
 })
 
 test('실제 사용량이 낮으면 재개 횟수만으로 새 대화를 강제하지 않는다', () => {

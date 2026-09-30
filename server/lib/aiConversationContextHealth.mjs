@@ -3,11 +3,10 @@ import { createHash } from 'node:crypto'
 export const AI_CONVERSATION_CONTEXT_THRESHOLDS = Object.freeze({
   cautionUsageRatio: 0.65,
   saturatedUsageRatio: 0.8,
-  fallbackContextSize: 200_000,
   cautionConversationTurnCount: 40,
-  saturatedConversationTurnCount: 80,
+  highConversationTurnCount: 80,
   cautionConsecutiveResumeCount: 5,
-  saturatedConsecutiveResumeCount: 10,
+  highConsecutiveResumeCount: 10,
 })
 
 function finiteCount(value) {
@@ -17,16 +16,12 @@ function finiteCount(value) {
 
 function contextUsage(value) {
   const used = finiteCount(value?.used)
-  const size = finiteCount(value?.size)
-  const estimatedSize = used !== null && !size
-    ? AI_CONVERSATION_CONTEXT_THRESHOLDS.fallbackContextSize
-    : null
+  const reportedSize = finiteCount(value?.size)
+  const size = reportedSize > 0 ? reportedSize : null
   return {
     used,
     size,
     ratio: used !== null && size ? used / size : null,
-    estimatedSize,
-    estimatedRatio: used !== null && estimatedSize ? used / estimatedSize : null,
   }
 }
 
@@ -42,6 +37,9 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
   const delegationCount = finiteCount(input?.delegationCount) ?? 0
   const consecutiveResumeCount = finiteCount(input?.consecutiveResumeCount) ?? 0
   const historyAvailable = conversationTurnCount !== null
+  const historyComplete = historyAvailable && (input?.historyComplete === undefined
+    ? conversationTurnCountExact
+    : input.historyComplete === true)
   const saturatedReasons = []
   const cautionReasons = []
   const coverageReasons = []
@@ -50,31 +48,33 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
     saturatedReasons.push(reason('CONVERSATION_CONTEXT_USAGE_HIGH', `문맥 사용률이 ${Math.round(usage.ratio * 100)}%입니다.`))
   } else if (usage.ratio !== null && usage.ratio >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionUsageRatio) {
     cautionReasons.push(reason('CONVERSATION_CONTEXT_USAGE_CAUTION', `문맥 사용률이 ${Math.round(usage.ratio * 100)}%입니다.`))
-  } else if (usage.estimatedRatio !== null
-    && usage.estimatedRatio >= AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedUsageRatio) {
-    saturatedReasons.push(reason('CONVERSATION_CONTEXT_USED_HIGH', `문맥 사용량 지표가 ${usage.used.toLocaleString('ko-KR')}로 보수 기준의 ${Math.round(usage.estimatedRatio * 100)}%입니다.`))
-  } else if (usage.estimatedRatio !== null
-    && usage.estimatedRatio >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionUsageRatio) {
-    cautionReasons.push(reason('CONVERSATION_CONTEXT_USED_CAUTION', `문맥 사용량 지표가 ${usage.used.toLocaleString('ko-KR')}로 보수 기준의 ${Math.round(usage.estimatedRatio * 100)}%입니다.`))
   }
-  if (usage.used === null && conversationTurnCount !== null
-    && conversationTurnCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedConversationTurnCount) {
-    saturatedReasons.push(reason('CONVERSATION_TURN_COUNT_HIGH', `확인된 대화 실행 턴이 ${conversationTurnCount}개입니다.`))
-  } else if (usage.used === null && conversationTurnCount !== null
+  if (usage.ratio === null && conversationTurnCount !== null
+    && conversationTurnCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.highConversationTurnCount) {
+    cautionReasons.push(reason('CONVERSATION_TURN_COUNT_HIGH', `확인된 대화 실행 턴이 ${conversationTurnCount}개입니다. 실제 문맥 포화 여부는 확인되지 않았습니다.`))
+  } else if (usage.ratio === null && conversationTurnCount !== null
     && conversationTurnCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionConversationTurnCount) {
     cautionReasons.push(reason('CONVERSATION_TURN_COUNT_CAUTION', `확인된 대화 실행 턴이 ${conversationTurnCount}개입니다.`))
   }
-  if (usage.used === null
-    && consecutiveResumeCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedConsecutiveResumeCount) {
-    saturatedReasons.push(reason('CONVERSATION_RESUME_STREAK_HIGH', `같은 대화를 연속 ${consecutiveResumeCount}회 이어갔습니다.`))
-  } else if (usage.used === null
+  if (usage.ratio === null
+    && consecutiveResumeCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.highConsecutiveResumeCount) {
+    cautionReasons.push(reason('CONVERSATION_RESUME_STREAK_HIGH', `같은 대화를 연속 ${consecutiveResumeCount}회 이어갔습니다. 실제 문맥 포화 여부는 확인되지 않았습니다.`))
+  } else if (usage.ratio === null
     && consecutiveResumeCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionConsecutiveResumeCount) {
     cautionReasons.push(reason('CONVERSATION_RESUME_STREAK_CAUTION', `같은 대화를 연속 ${consecutiveResumeCount}회 이어갔습니다.`))
   }
-  if (historyAvailable && !conversationTurnCountExact) {
-    const incompleteHistory = reason('CONVERSATION_HISTORY_INCOMPLETE', '대화 이력 통계가 일부 범위이므로 실행 턴 수는 하한값입니다.')
-    if (usage.used === null) cautionReasons.push(incompleteHistory)
-    else coverageReasons.push(incompleteHistory)
+  if (historyAvailable && (!historyComplete || !conversationTurnCountExact)) {
+    const incompleteCoverage = !historyComplete
+      ? reason('CONVERSATION_HISTORY_INCOMPLETE', '대화 이력 통계가 일부 범위이므로 실행 턴 수는 하한값입니다.')
+      : reason('CONVERSATION_TURN_ATTRIBUTION_INCOMPLETE', '전체 이력을 조회했지만 일부 이벤트의 실행 턴 ID가 없어 턴 수는 하한값입니다.')
+    if (usage.used === null) cautionReasons.push(incompleteCoverage)
+    else coverageReasons.push(incompleteCoverage)
+  }
+  if (usage.used !== null && usage.size === null) {
+    coverageReasons.push(reason(
+      'CONVERSATION_CONTEXT_SIZE_UNKNOWN',
+      `Aion이 문맥 사용량 ${usage.used.toLocaleString('ko-KR')}은 제공했지만 전체 문맥 크기는 제공하지 않아 사용률로 환산하지 않았습니다.`,
+    ))
   }
 
   const state = saturatedReasons.length > 0
@@ -83,25 +83,28 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
       ? 'unknown'
       : cautionReasons.length > 0
         ? 'caution'
-        : 'healthy'
+        : usage.used !== null && usage.size === null
+          ? 'unverified'
+          : 'healthy'
   const reasons = state === 'saturated'
     ? [...saturatedReasons, ...cautionReasons, ...coverageReasons]
     : state === 'unknown'
       ? [reason('CONVERSATION_CONTEXT_HEALTH_UNAVAILABLE', '대화 메시지 이력을 확인하지 못했습니다.')]
       : [...cautionReasons, ...coverageReasons]
-  const recommendation = state === 'healthy' ? 'resume' : 'new'
-  const resumeAllowed = state === 'healthy' || state === 'caution'
+  const recommendation = state === 'healthy' || state === 'unverified' ? 'resume' : 'new'
+  const resumeAllowed = state === 'healthy' || state === 'unverified' || state === 'caution'
   const metrics = {
     contextUsed: usage.used,
     contextSize: usage.size,
     contextUsageRatio: usage.ratio,
-    estimatedContextSize: usage.estimatedSize,
-    estimatedContextUsageRatio: usage.estimatedRatio,
+    // 기존 응답 소비자와의 호환을 위해 필드는 유지하되, 알 수 없는 크기를 추정하지 않습니다.
+    estimatedContextSize: null,
+    estimatedContextUsageRatio: null,
     conversationTurnCount,
     conversationTurnCountExact,
     messageCount: conversationTurnCount,
     messageCountExact: conversationTurnCountExact,
-    historyComplete: historyAvailable && conversationTurnCountExact,
+    historyComplete,
     eventCount: finiteCount(input?.eventCount),
     eventCountExact: input?.eventCountExact === true,
     textMessageCount: finiteCount(input?.textMessageCount),
@@ -122,8 +125,10 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
   })).digest('hex')
   const message = state === 'healthy'
     ? '현재 문맥 상태에서 같은 업무 흐름의 후속 작업은 이어갈 수 있습니다.'
+    : state === 'unverified'
+      ? '전체 문맥 크기가 없어 포화 여부를 검증할 수 없습니다. 실제 사용량과 업무 연속성을 확인한 뒤, 같은 흐름의 후속 작업에 한해 이어가기를 시도할 수 있습니다.'
     : state === 'caution'
-      ? '대화 문맥이 길어지고 있어 새 대화를 권장합니다. 정확히 이어지는 후속 작업만 현재 평가를 확인한 뒤 재사용하세요.'
+      ? '문맥 사용률 또는 대화 길이에서 주의 신호가 있습니다. 새 대화를 고려하되, 정확히 이어지는 후속 작업은 현재 평가를 확인한 뒤 재사용할 수 있습니다.'
       : state === 'saturated'
         ? '대화 문맥이 포화 기준에 도달해 일반적인 새 위임은 새 대화로 시작해야 합니다.'
         : '대화 문맥 상태를 확인하지 못해 일반적인 새 위임은 새 대화로 시작해야 합니다.'

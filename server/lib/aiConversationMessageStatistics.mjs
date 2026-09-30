@@ -6,12 +6,9 @@ function normalizedPosition(value) {
   return String(value ?? '').trim().toLowerCase()
 }
 
-function isToolEvent(type) {
+function isToolCall(type) {
   return type === 'tool_call'
     || type === 'acp_tool_call'
-    || type === 'tool_result'
-    || type === 'acp_tool_result'
-    || type === 'tool_group'
 }
 
 export function summarizeAiConversationMessages(items, {
@@ -26,6 +23,7 @@ export function summarizeAiConversationMessages(items, {
   let userMessageCount = 0
   let assistantMessageCount = 0
   let toolCallCount = 0
+  let unattributedTurnEventCount = 0
 
   for (const message of messages) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) continue
@@ -38,12 +36,14 @@ export function summarizeAiConversationMessages(items, {
     if (backendTurnId) backendTurnIds.add(backendTurnId)
 
     const type = normalizedMessageType(message.type)
-    if (isToolEvent(type)) {
+    if (isToolCall(type)) {
       toolCallCount += 1
+      if (!backendTurnId) unattributedTurnEventCount += 1
       continue
     }
     if (type !== 'text') continue
     textMessageCount += 1
+    if (!backendTurnId) unattributedTurnEventCount += 1
     const position = normalizedPosition(message.position)
     if (position === 'right' || position === 'user') userMessageCount += 1
     else if (position === 'left' || position === 'assistant') assistantMessageCount += 1
@@ -55,10 +55,10 @@ export function summarizeAiConversationMessages(items, {
   const conversationTurnCount = Math.max(backendTurnIds.size, userMessageCount)
   return {
     conversationTurnCount,
-    conversationTurnCountExact: historyComplete,
+    conversationTurnCountExact: historyComplete && unattributedTurnEventCount === 0,
     // 기존 응답 소비자를 위한 호환 별칭이다. 더 이상 저장 이벤트 개수를 뜻하지 않는다.
     messageCount: conversationTurnCount,
-    messageCountExact: historyComplete,
+    messageCountExact: historyComplete && unattributedTurnEventCount === 0,
     eventCount,
     eventCountExact: historyComplete,
     textMessageCount,

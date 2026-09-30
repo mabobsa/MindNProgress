@@ -67,7 +67,8 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
     const incompleteCoverage = !historyComplete
       ? reason('CONVERSATION_HISTORY_INCOMPLETE', '대화 이력 통계가 일부 범위이므로 실행 턴 수는 하한값입니다.')
       : reason('CONVERSATION_TURN_ATTRIBUTION_INCOMPLETE', '전체 이력을 조회했지만 일부 이벤트의 실행 턴 ID가 없어 턴 수는 하한값입니다.')
-    if (usage.used === null) cautionReasons.push(incompleteCoverage)
+    // 전체 이력을 확보했다면 턴 ID 누락만으로 새 대화를 권장하지 않습니다.
+    if (usage.used === null && !historyComplete) cautionReasons.push(incompleteCoverage)
     else coverageReasons.push(incompleteCoverage)
   }
   if (usage.used !== null && usage.size === null) {
@@ -83,7 +84,8 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
       ? 'unknown'
       : cautionReasons.length > 0
         ? 'caution'
-        : usage.used !== null && usage.size === null
+        : (usage.used !== null && usage.size === null)
+          || (usage.used === null && historyComplete && !conversationTurnCountExact)
           ? 'unverified'
           : 'healthy'
   const reasons = state === 'saturated'
@@ -126,7 +128,9 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
   const message = state === 'healthy'
     ? '현재 문맥 상태에서 같은 업무 흐름의 후속 작업은 이어갈 수 있습니다.'
     : state === 'unverified'
-      ? '전체 문맥 크기가 없어 포화 여부를 검증할 수 없습니다. 실제 사용량과 업무 연속성을 확인한 뒤, 같은 흐름의 후속 작업에 한해 이어가기를 시도할 수 있습니다.'
+      ? usage.used === null
+        ? '문맥 사용량이 아직 보고되지 않았고 일부 실행 턴 ID가 없어 포화 여부를 검증할 수 없습니다. 같은 흐름의 후속 작업은 최신 상태를 확인한 뒤 이어갈 수 있습니다.'
+        : '전체 문맥 크기가 없어 포화 여부를 검증할 수 없습니다. 실제 사용량과 업무 연속성을 확인한 뒤, 같은 흐름의 후속 작업에 한해 이어가기를 시도할 수 있습니다.'
     : state === 'caution'
       ? '문맥 사용률 또는 대화 길이에서 주의 신호가 있습니다. 새 대화를 고려하되, 정확히 이어지는 후속 작업은 현재 평가를 확인한 뒤 재사용할 수 있습니다.'
       : state === 'saturated'

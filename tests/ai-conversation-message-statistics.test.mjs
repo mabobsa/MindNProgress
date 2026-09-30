@@ -86,6 +86,24 @@ test('페이지가 완전해도 실행 턴 ID가 없는 이벤트가 있으면 �
   assert.deepEqual(health.reasonCodes, ['CONVERSATION_TURN_ATTRIBUTION_INCOMPLETE'])
 })
 
+test('막 생성된 대화의 첫 메시지에 턴 ID와 사용량이 없어도 새 대화를 권장하지 않는다', () => {
+  const statistics = summarizeAiConversationMessages([
+    event('user-1', 'text', 'right', null),
+  ], { historyComplete: true })
+  const health = assessAiConversationContextHealth({
+    conversationId: 'conversation-new',
+    usage: {},
+    ...statistics,
+  })
+  assert.equal(statistics.conversationTurnCount, 1)
+  assert.equal(statistics.conversationTurnCountExact, false)
+  assert.equal(health.state, 'unverified')
+  assert.equal(health.recommendation, 'resume')
+  assert.equal(health.resumeAllowed, true)
+  assert.deepEqual(health.reasonCodes, ['CONVERSATION_TURN_ATTRIBUTION_INCOMPLETE'])
+  assert.match(health.message, /문맥 사용량이 아직 보고되지 않았고/)
+})
+
 test('서로 다른 backend 실행 턴 80개도 사용량을 모르면 주의 신호일 뿐 포화 확정은 아니다', () => {
   const statistics = summarizeAiConversationMessages(
     Array.from({ length: 80 }, (_, index) => event(`assistant-${index}`, 'text', 'left', `turn-${index}`)),

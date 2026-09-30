@@ -7083,7 +7083,6 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
             <span className={`access-dot ${user.role}`} />
             {user.role === 'admin' ? '관리자' : mode === 'editor' ? '편집자' : '뷰어'}
           </div>
-          <button className="share-button" onClick={() => window.alert('공유 기능은 현재 준비 중입니다.')}><Icon name="share" size={16} />공유</button>
           <div className="account-menu-wrap">
             <button className="user-menu" onClick={() => setAccountMenuOpen((current) => !current)} title={`${user.email} · 계정 메뉴`} aria-expanded={accountMenuOpen}>
               <span className="avatar">{user.name.replace(/\s/g, '').slice(0, 2)}</span>

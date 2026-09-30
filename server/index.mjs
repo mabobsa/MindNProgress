@@ -39,7 +39,7 @@ import { detectReleasedWaitingItems } from './lib/waitingItems.mjs'
 import { resolveAttributionWithoutToken, resolveScopedAttribution } from './lib/attributionScope.mjs'
 import { readAionUiSubscriptionUsage } from './lib/aionUiSubscriptionUsage.mjs'
 import { resolveConversationDisplay } from './lib/aiConversationDisplay.mjs'
-import { assessAiConversationContextHealth } from './lib/aiConversationContextHealth.mjs'
+import { applyAiConversationDelegationModelPolicy, assessAiConversationContextHealth, isAiDelegationModelBlocked } from './lib/aiConversationContextHealth.mjs'
 import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
 import { aiDelegationReportArchived, aiDelegationReportArchivePending, createAiDelegationReportArchiver } from './lib/aiDelegationReportArchive.mjs'
@@ -2465,6 +2465,7 @@ async function runGroupDocumentInstructionDispatch(instruction, user) {
           conversation,
           instruction.targetHomeMachineId,
           { excludeInstructionId: instruction.id },
+          aiConversationLinksFromData(targetCard.data).find((link) => link.conversationId === instruction.requestedConversationId)?.model?.id,
         )
         if (contextHealth.assessmentId !== instruction.conversationAssessmentId) {
           return updateGroupDocumentInstruction(instruction.id, {
@@ -2477,7 +2478,9 @@ async function runGroupDocumentInstructionDispatch(instruction, user) {
         if (!contextHealth.resumeAllowed) {
           return updateGroupDocumentInstruction(instruction.id, {
             state: 'expired',
-            reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE',
+            reasonCode: contextHealth.reasonCodes.includes('CONVERSATION_MODEL_REUSE_BLOCKED')
+              ? 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_MODEL_BLOCKED'
+              : 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE',
             message: contextHealth.message,
             conversationContextHealth: contextHealth,
           })
@@ -4389,6 +4392,7 @@ async function drainWaitingWorkspaceDelegations() {
             conversation,
             delegationTargetMachineId(queued),
             { excludeDelegationId: queued.id },
+            aiConversationLinksFromData(targetCard.data).find((link) => link.conversationId === queued.targetConversationId)?.model?.id,
           )
           if (contextHealth.assessmentId !== queued.conversationAssessmentId || !contextHealth.resumeAllowed) {
             await updateAiDelegation(queued.id, {
@@ -5160,6 +5164,7 @@ async function inspectAiConversationContextHealth(
   conversation = null,
   machineId = conversationHomeMachineId(conversationId),
   exclusions = {},
+  linkedModelId = '',
 ) {
   const resolvedConversation = conversation ?? await fetchAiConversationRuntime(conversationId)
   const runtime = normalizeAiConversationRuntime(conversationId, resolvedConversation)
@@ -5168,13 +5173,17 @@ async function inspectAiConversationContextHealth(
       .catch(() => null),
     fetchAiConversationMessageStatistics(conversationId, machineId),
   ])
-  return assessAiConversationContextHealth({
+  const contextHealth = assessAiConversationContextHealth({
     conversationId,
     modifiedAt: normalizedIsoDate(resolvedConversation?.modified_at, null),
     runtimeState: runtime.state,
     usage,
     ...messages,
     ...aiConversationDelegationContextStats(conversationId, exclusions),
+  })
+  return applyAiConversationDelegationModelPolicy(contextHealth, {
+    linkedModelId,
+    runtimeModelId: resolvedConversation?.extra?.current_model_id,
   })
 }
 
@@ -9112,7 +9121,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           )
           try {
             const conversation = await fetchAiConversationRuntime(requestedConversationId)
-            const contextHealth = await inspectAiConversationContextHealth(requestedConversationId, conversation, targetHomeMachineId)
+            const contextHealth = await inspectAiConversationContextHealth(requestedConversationId, conversation, targetHomeMachineId, {}, linked.model?.id)
             if (!conversationAssessmentId) return sendGroupDocumentInstructionResponse(
               response, 409, 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_ASSESSMENT_REQUIRED',
               '기존 문서 AI 대화 이어가기는 최신 문맥 상태 평가가 필요합니다. 대상 루트 카드의 대화 후보를 다시 조회하세요.',
@@ -9124,7 +9133,9 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
               { contextHealth },
             )
             if (!contextHealth.resumeAllowed) return sendGroupDocumentInstructionResponse(
-              response, 409, 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE',
+              response, 409, contextHealth.reasonCodes.includes('CONVERSATION_MODEL_REUSE_BLOCKED')
+                ? 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_MODEL_BLOCKED'
+                : 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE',
               contextHealth.message,
               { contextHealth },
             )
@@ -9158,6 +9169,10 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         if (!selection) return sendGroupDocumentInstructionResponse(
           response, 409, 'GROUP_DOCUMENT_INSTRUCTION_SELECTION_UNRESOLVED',
           '대상 문서 루트 AI의 종류와 모델 정보를 확인하지 못했습니다.',
+        )
+        if (strategy === 'new' && isAiDelegationModelBlocked(selection.model.id)) return sendGroupDocumentInstructionResponse(
+          response, 409, 'GROUP_DOCUMENT_INSTRUCTION_MODEL_BLOCKED',
+          'GPT-5.6-Sol 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.',
         )
 
         const now = new Date().toISOString()
@@ -9498,7 +9513,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
               `대화가 ${runtime.state} 상태이므로 지금 이어갈 수 없습니다.`, { runtime })
           }
           if (!resumesInterruptedDelegation) {
-            const contextHealth = await inspectAiConversationContextHealth(targetConversationId, conversation, targetHomeMachineId)
+            const contextHealth = await inspectAiConversationContextHealth(targetConversationId, conversation, targetHomeMachineId, {}, linked?.model?.id)
             if (!conversationAssessmentId) {
               return sendAiDelegationResponse(response, 409, 'AI_DELEGATION_CONVERSATION_ASSESSMENT_REQUIRED',
                 '일반적인 기존 대화 이어가기는 최신 문맥 상태 평가가 필요합니다. 대화 후보를 다시 조회해 assessmentId를 전달하세요.', {
@@ -9512,9 +9527,11 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
               })
             }
             if (!contextHealth.resumeAllowed) {
-              const reasonCode = contextHealth.state === 'saturated'
-                ? 'AI_DELEGATION_CONVERSATION_CONTEXT_SATURATED'
-                : 'AI_DELEGATION_CONVERSATION_CONTEXT_UNKNOWN'
+              const reasonCode = contextHealth.reasonCodes.includes('CONVERSATION_MODEL_REUSE_BLOCKED')
+                ? 'AI_DELEGATION_CONVERSATION_MODEL_BLOCKED'
+                : contextHealth.state === 'saturated'
+                  ? 'AI_DELEGATION_CONVERSATION_CONTEXT_SATURATED'
+                  : 'AI_DELEGATION_CONVERSATION_CONTEXT_UNKNOWN'
               return sendAiDelegationResponse(response, 409, reasonCode, contextHealth.message, { contextHealth })
             }
           }
@@ -9543,6 +9560,10 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       }
       if (!selection) return sendAiDelegationResponse(response, 409, 'AI_DELEGATION_SELECTION_UNRESOLVED',
         '위임 대화의 AI 종류와 모델 정보를 확인하지 못했습니다.')
+      if (strategy === 'new' && isAiDelegationModelBlocked(selection.model.id)) return sendAiDelegationResponse(
+        response, 409, 'AI_DELEGATION_MODEL_BLOCKED',
+        'GPT-5.6-Sol 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.',
+      )
 
       let resumedDelegation = null
       if (crossDocument && strategy === 'new') {
@@ -10160,7 +10181,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       const card = map?.nodes.find((node) => node.id === cardId)
       if (!map || map.trashedAt || !card) return sendJson(response, 404, { error: '카드를 찾을 수 없습니다.' })
       const currentAttribution = aiConversationAttributions.get(conversationAttributionKey(mapId, cardId))
-      const links = aiConversationLinksFromData(card.data).map((link) => {
+      const cardLinks = aiConversationLinksFromData(card.data)
+      const links = cardLinks.map((link) => {
         const homeMachineId = conversationHomeMachineId(link.conversationId, link)
         if (link.conversationId !== currentAttribution?.conversationId) {
           return normalizeAiConversationLink({ ...link, homeMachineId })
@@ -10241,7 +10263,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
             workspacePoolId: currentWorkspacePoolId,
             startedAt: recordedLink.startedAt ?? recoveredLink?.startedAt,
           }) ?? recordedLink
-          const contextHealth = await inspectAiConversationContextHealth(recordedLink.conversationId, conversation, enrichedLink.homeMachineId)
+          const linkedModelId = cardLinks.find((link) => link.conversationId === recordedLink.conversationId)?.model?.id
+          const contextHealth = await inspectAiConversationContextHealth(recordedLink.conversationId, conversation, enrichedLink.homeMachineId, {}, linkedModelId)
           return {
             ...enrichedLink,
             workspaceBinding: currentWorkspacePool ? 'pool-rebindable' : 'fixed',

@@ -145,3 +145,30 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
     message,
   }
 }
+
+export function isAiDelegationModelBlocked(modelId) {
+  return /^gpt-5\.6-sol(?:\[.*\])?$/.test(String(modelId ?? '').trim().toLowerCase())
+}
+
+export function applyAiConversationDelegationModelPolicy(contextHealth, { linkedModelId, runtimeModelId } = {}) {
+  const linked = String(linkedModelId ?? '').trim().toLowerCase()
+  const runtime = String(runtimeModelId ?? '').trim().toLowerCase()
+  const blocked = [linked, runtime].some(isAiDelegationModelBlocked)
+  const assessmentId = createHash('sha256').update(JSON.stringify({
+    contextAssessmentId: contextHealth.assessmentId,
+    linkedModelId: linked,
+    runtimeModelId: runtime,
+  })).digest('hex')
+  if (!blocked) return { ...contextHealth, assessmentId }
+  const code = 'CONVERSATION_MODEL_REUSE_BLOCKED'
+  const message = 'GPT-5.6-Sol로 진행된 대화는 새 AI 위임에 이어 쓰지 않습니다. 다른 모델을 명시해 새 대화를 만드세요.'
+  return {
+    ...contextHealth,
+    assessmentId,
+    recommendation: 'new',
+    resumeAllowed: false,
+    reasonCodes: [...contextHealth.reasonCodes, code],
+    reasons: [...contextHealth.reasons, { code, message }],
+    message,
+  }
+}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { assessAiConversationContextHealth } from '../server/lib/aiConversationContextHealth.mjs'
+import { applyAiConversationDelegationModelPolicy, assessAiConversationContextHealth, isAiDelegationModelBlocked } from '../server/lib/aiConversationContextHealth.mjs'
 
 const base = {
   conversationId: 'conversation-a',
@@ -141,4 +141,21 @@ test('평가 ID는 관측 시각이 아니라 대화 변경과 객관적 지표�
     runtimeState: 'running',
   }, '2026-09-22T02:00:00.000Z').assessmentId)
   assert.notEqual(first.assessmentId, changed.assessmentId)
+})
+
+test('GPT-5.6-Sol로 기록되었거나 현재 사용하는 대화는 문맥이 건강해도 새 위임에 이어 쓰지 않는다', () => {
+  const healthy = assessAiConversationContextHealth(base)
+  const recorded = applyAiConversationDelegationModelPolicy(healthy, { linkedModelId: 'gpt-5.6-sol', runtimeModelId: 'gpt-6-sol' })
+  const current = applyAiConversationDelegationModelPolicy(healthy, { linkedModelId: 'gpt-6-sol', runtimeModelId: 'GPT-5.6-Sol[1m]' })
+  const other = applyAiConversationDelegationModelPolicy(healthy, { linkedModelId: 'gpt-6-sol', runtimeModelId: 'gpt-6-sol' })
+  assert.equal(recorded.state, 'healthy')
+  assert.equal(recorded.resumeAllowed, false)
+  assert.equal(current.resumeAllowed, false)
+  assert.equal(recorded.recommendation, 'new')
+  assert.ok(recorded.reasonCodes.includes('CONVERSATION_MODEL_REUSE_BLOCKED'))
+  assert.equal(other.resumeAllowed, true)
+  assert.notEqual(recorded.assessmentId, current.assessmentId)
+  assert.notEqual(other.assessmentId, healthy.assessmentId)
+  assert.equal(isAiDelegationModelBlocked('gpt-5.6-sol'), true)
+  assert.equal(isAiDelegationModelBlocked('gpt-5.6-solution'), false)
 })

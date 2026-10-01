@@ -1,0 +1,196 @@
+{
+  "startingHead": "84e8add0b9127230826a2b101e594a106033705d",
+  "implementationHead": "398168c9f5f2d8e3f077ac33273d6effbe8baa4b",
+  "historical": [
+    {
+      "file": "docs/ai-guidance-rollback-2026-10-01/initial-response-evidence.json",
+      "sha256": "a4bfb0598d0df8b864ad17a4a7511faf7cff4ae957e2e9a03992c54888779e25",
+      "startingBlobSha256": "a4bfb0598d0df8b864ad17a4a7511faf7cff4ae957e2e9a03992c54888779e25",
+      "replacementCharacters": 0
+    },
+    {
+      "file": "docs/ai-guidance-rollback-2026-10-01/before-surface-and-prompts.json",
+      "sha256": "3a86835358291223fb55ce905e3cb3b71163837a59bcdae7818e351236d11088",
+      "startingBlobSha256": "3a86835358291223fb55ce905e3cb3b71163837a59bcdae7818e351236d11088",
+      "replacementCharacters": 0
+    },
+    {
+      "file": "docs/ai-guidance-rollback-2026-10-01/after-surface-and-prompts.json",
+      "sha256": "f4654c7aaae9897bd1ae593c3d5821bdcbf26f1b1116842dc72960f09caaea87",
+      "startingBlobSha256": "f4654c7aaae9897bd1ae593c3d5821bdcbf26f1b1116842dc72960f09caaea87",
+      "replacementCharacters": 0
+    },
+    {
+      "file": "docs/ai-guidance-rollback-2026-10-01/followup-commit-inventory.json",
+      "sha256": "5923afac3ef6123218461d15588197cb45cd3c40f2b35e2e5d34c3679875d003",
+      "startingBlobSha256": "5923afac3ef6123218461d15588197cb45cd3c40f2b35e2e5d34c3679875d003",
+      "replacementCharacters": 0
+    },
+    {
+      "file": "docs/ai-guidance-rollback-2026-10-01/followup-logs/2026-10-01T08-12-15-239Z-build.log",
+      "sha256": "c1dee74305c1b20fea873cb7d5e9d33503c4f9c22ff5e097535f34cf3d9daf60",
+      "startingBlobSha256": "c1dee74305c1b20fea873cb7d5e9d33503c4f9c22ff5e097535f34cf3d9daf60",
+      "recordedSha256": "c1dee74305c1b20fea873cb7d5e9d33503c4f9c22ff5e097535f34cf3d9daf60",
+      "replacementCharacters": 0
+    },
+    {
+      "file": "docs/ai-guidance-rollback-2026-10-01/followup-logs/2026-10-01T08-12-15-239Z-git-diff-check.log",
+      "sha256": "6c234eebe9d723037312647a30056cb78540936a9fd6e0cae1b189108687d097",
+      "startingBlobSha256": "6c234eebe9d723037312647a30056cb78540936a9fd6e0cae1b189108687d097",
+      "recordedSha256": "6c234eebe9d723037312647a30056cb78540936a9fd6e0cae1b189108687d097",
+      "replacementCharacters": 0
+    },
+    {
+      "file": "docs/ai-guidance-rollback-2026-10-01/followup-logs/2026-10-01T08-12-15-239Z-lint.log",
+      "sha256": "90282c8897e22cf61a2caf9bf389c3b9bdec616142f32d672feb4be04408eae0",
+      "startingBlobSha256": "90282c8897e22cf61a2caf9bf389c3b9bdec616142f32d672feb4be04408eae0",
+      "recordedSha256": "90282c8897e22cf61a2caf9bf389c3b9bdec616142f32d672feb4be04408eae0",
+      "replacementCharacters": 0
+    },
+    {
+      "file": "docs/ai-guidance-rollback-2026-10-01/followup-logs/2026-10-01T08-12-15-239Z-related.log",
+      "sha256": "365cc82b4dcfec3a568f2faefd0a9d0b1fa64ef69c8c477aa3962298de5fe040",
+      "startingBlobSha256": "365cc82b4dcfec3a568f2faefd0a9d0b1fa64ef69c8c477aa3962298de5fe040",
+      "recordedSha256": "365cc82b4dcfec3a568f2faefd0a9d0b1fa64ef69c8c477aa3962298de5fe040",
+      "replacementCharacters": 0
+    },
+    {
+      "file": "docs/ai-guidance-rollback-2026-10-01/followup-logs/2026-10-01T08-12-15-239Z-results.json",
+      "sha256": "292d460a9b22149901fa935849f635a4b6f97949ed45d68639ed4ce530798c23",
+      "startingBlobSha256": "292d460a9b22149901fa935849f635a4b6f97949ed45d68639ed4ce530798c23",
+      "replacementCharacters": 0
+    },
+    {
+      "file": "docs/ai-guidance-rollback-2026-10-01/followup-logs/2026-10-01T08-12-15-239Z-test-mcp.log",
+      "sha256": "54bcf6cf9630c0eb035260327a84d646fe10eb5e9ad8e1d50de7a765a03de5c6",
+      "startingBlobSha256": "54bcf6cf9630c0eb035260327a84d646fe10eb5e9ad8e1d50de7a765a03de5c6",
+      "recordedSha256": "54bcf6cf9630c0eb035260327a84d646fe10eb5e9ad8e1d50de7a765a03de5c6",
+      "replacementCharacters": 0
+    },
+    {
+      "file": "docs/ai-guidance-rollback-2026-10-01/followup-logs/2026-10-01T08-12-15-239Z-test-unit.log",
+      "sha256": "c8b5acd8182efe7ac941c521676ac7ada2d49b7fa60405853b7c69994d37cb02",
+      "startingBlobSha256": "c8b5acd8182efe7ac941c521676ac7ada2d49b7fa60405853b7c69994d37cb02",
+      "recordedSha256": "c8b5acd8182efe7ac941c521676ac7ada2d49b7fa60405853b7c69994d37cb02",
+      "replacementCharacters": 0
+    }
+  ],
+  "testedSources": [
+    {
+      "file": "scripts/collect-child-output.mjs",
+      "workingTreeSha256": "688dbbabb1265e068bd2c07006d8293899bd577a81183355984ac0071f9c7d9b",
+      "gitBlobSha256": "688dbbabb1265e068bd2c07006d8293899bd577a81183355984ac0071f9c7d9b",
+      "workingTreeGitObject": "e2c2be71309e789e51f3efc32a4eaac8d479de5b",
+      "committedGitObject": "e2c2be71309e789e51f3efc32a4eaac8d479de5b"
+    },
+    {
+      "file": "scripts/verify-guidance-rollback.mjs",
+      "workingTreeSha256": "c97411b499feb794a8f12ff25bdafe7dfcc860c68c6078b7e9d4be9b9acf1be6",
+      "gitBlobSha256": "c97411b499feb794a8f12ff25bdafe7dfcc860c68c6078b7e9d4be9b9acf1be6",
+      "workingTreeGitObject": "fa78ac47a80fa5152a7dc975fb8fa9baec42b87f",
+      "committedGitObject": "fa78ac47a80fa5152a7dc975fb8fa9baec42b87f"
+    },
+    {
+      "file": "tests/collect-child-output.test.mjs",
+      "workingTreeSha256": "79d9e1ec8a15714677ca999fae1c399a903dda062487149f7088b469ca5b303f",
+      "gitBlobSha256": "79d9e1ec8a15714677ca999fae1c399a903dda062487149f7088b469ca5b303f",
+      "workingTreeGitObject": "0ac9989868ec86ed60faddf01ae69af667fcc33d",
+      "committedGitObject": "0ac9989868ec86ed60faddf01ae69af667fcc33d"
+    },
+    {
+      "file": "tests/initial-guidance-restoration.test.mjs",
+      "workingTreeSha256": "d129c87a49b6e05d36fd095c88f661d5788db32f5b509c5d91d20dcc752dfadb",
+      "gitBlobSha256": "d129c87a49b6e05d36fd095c88f661d5788db32f5b509c5d91d20dcc752dfadb",
+      "workingTreeGitObject": "72702d8c6b6a14ce8e61a6367a3ad9acfe2e445d",
+      "committedGitObject": "72702d8c6b6a14ce8e61a6367a3ad9acfe2e445d"
+    }
+  ],
+  "newRuns": [
+    {
+      "runId": "2026-10-01T10-06-11-439Z",
+      "validationHead": "84e8add0b9127230826a2b101e594a106033705d",
+      "resultsFile": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-06-11-439Z-results.json",
+      "resultsSha256": "47a1a03bde6efde70992e33f3e208c3cc112043cd8cbb5049f7e0c6b08625959",
+      "logs": [
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-06-11-439Z-supplement.log",
+          "sha256": "96bf82599110d8f076269a06f687a655d6989e5cf66534f8a83516e5688ed47c",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-06-11-439Z-related.log",
+          "sha256": "c5d05983c7c9a69d02295ee9aa8d8fa8170511f42dca80636ae582f648831ccd",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-06-11-439Z-test-mcp.log",
+          "sha256": "8454202061077d03b28d40bf045456315a6e18fc864abd87c683925cb7793ced",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-06-11-439Z-test-unit.log",
+          "sha256": "81a533c5a8604225958f4b3c767079e17139468995c0b568df8b8129e7fe5792",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-06-11-439Z-lint.log",
+          "sha256": "90282c8897e22cf61a2caf9bf389c3b9bdec616142f32d672feb4be04408eae0",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-06-11-439Z-build.log",
+          "sha256": "2f141eae856291c30ded6f76d131d22de7488e02222aea7eba1900d975cd7818",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-06-11-439Z-git-diff-check.log",
+          "sha256": "a32201670fed035400d6ce8b4841a99bc9df266fabd619f1348f9d347ec0bab1",
+          "replacementCharacters": 0
+        }
+      ]
+    },
+    {
+      "runId": "2026-10-01T10-10-42-261Z",
+      "validationHead": "398168c9f5f2d8e3f077ac33273d6effbe8baa4b",
+      "resultsFile": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-10-42-261Z-results.json",
+      "resultsSha256": "81bcd0c6851dac9e38e97129f88e11b00abd22a5c9bb4d2105930ed70566bb0d",
+      "logs": [
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-10-42-261Z-supplement.log",
+          "sha256": "6a32b09df095d2790dc21014f2d6ecbb2da141c74cc58bea714b0cf0a13233cf",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-10-42-261Z-related.log",
+          "sha256": "f1f943e9c86f0da888131b60320c00416a5321c7011f75624a05110750e672d0",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-10-42-261Z-test-mcp.log",
+          "sha256": "8454202061077d03b28d40bf045456315a6e18fc864abd87c683925cb7793ced",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-10-42-261Z-test-unit.log",
+          "sha256": "3e7b4462fddd71d96a2240e98063c6de0a8124b28a74d82261b434f2cbe14c8c",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-10-42-261Z-lint.log",
+          "sha256": "90282c8897e22cf61a2caf9bf389c3b9bdec616142f32d672feb4be04408eae0",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-10-42-261Z-build.log",
+          "sha256": "2b1698f4a14f5ac38d6fc28c11bb6dac8415d1b2aeb884047204ce4e140a9a44",
+          "replacementCharacters": 0
+        },
+        {
+          "file": "docs/ai-guidance-rollback-2026-10-01/supplement-logs/2026-10-01T10-10-42-261Z-git-diff-check.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "replacementCharacters": 0
+        }
+      ]
+    }
+  ]
+}

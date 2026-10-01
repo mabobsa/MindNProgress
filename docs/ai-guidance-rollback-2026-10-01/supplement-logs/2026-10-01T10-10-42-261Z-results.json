@@ -1,0 +1,252 @@
+{
+  "runId": "2026-10-01T10-10-42-261Z",
+  "validationHead": "398168c9f5f2d8e3f077ac33273d6effbe8baa4b",
+  "results": [
+    {
+      "name": "supplement",
+      "command": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "--test",
+        "tests/collect-child-output.test.mjs",
+        "tests/initial-guidance-restoration.test.mjs"
+      ],
+      "startedAt": "2026-10-01T10:10:42.265Z",
+      "finishedAt": "2026-10-01T10:10:46.965Z",
+      "exitCode": 0,
+      "signal": null,
+      "file": "2026-10-01T10-10-42-261Z-supplement.log",
+      "sha256": "6a32b09df095d2790dc21014f2d6ecbb2da141c74cc58bea714b0cf0a13233cf",
+      "phases": [
+        {
+          "tests": 11,
+          "suites": 0,
+          "pass": 11,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        }
+      ],
+      "totals": {
+        "tests": 11,
+        "pass": 11,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    },
+    {
+      "name": "related",
+      "command": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "--test",
+        "tests/initial-guidance-restoration.test.mjs",
+        "tests/ai-context-instructions.test.mjs",
+        "tests/ai-approval-instructions.test.mjs",
+        "tests/ai-conversation-launch.test.mjs",
+        "tests/group-document-instructions.test.mjs",
+        "tests/group-project-coordinator-guard.test.mjs",
+        "tests/ai-instruction-snapshots.test.mjs",
+        "tests/mcp-instruction-surface.test.mjs",
+        "tests/ai-conversation-context-health.test.mjs",
+        "tests/ai-delegations.test.mjs",
+        "tests/group-project-api.test.mjs",
+        "tests/dooray-responses.test.mjs"
+      ],
+      "startedAt": "2026-10-01T10:10:47.172Z",
+      "finishedAt": "2026-10-01T10:11:02.854Z",
+      "exitCode": 0,
+      "signal": null,
+      "file": "2026-10-01T10-10-42-261Z-related.log",
+      "sha256": "f1f943e9c86f0da888131b60320c00416a5321c7011f75624a05110750e672d0",
+      "phases": [
+        {
+          "tests": 143,
+          "suites": 0,
+          "pass": 143,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        }
+      ],
+      "totals": {
+        "tests": 143,
+        "pass": 143,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    },
+    {
+      "name": "test-mcp",
+      "command": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+        "run",
+        "test:mcp"
+      ],
+      "startedAt": "2026-10-01T10:11:03.078Z",
+      "finishedAt": "2026-10-01T10:11:23.840Z",
+      "exitCode": 0,
+      "signal": null,
+      "file": "2026-10-01T10-10-42-261Z-test-mcp.log",
+      "sha256": "8454202061077d03b28d40bf045456315a6e18fc864abd87c683925cb7793ced",
+      "phases": [],
+      "totals": {
+        "tests": 0,
+        "pass": 0,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    },
+    {
+      "name": "test-unit",
+      "command": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+        "run",
+        "test:unit"
+      ],
+      "startedAt": "2026-10-01T10:11:24.082Z",
+      "finishedAt": "2026-10-01T10:13:58.567Z",
+      "exitCode": 0,
+      "signal": null,
+      "file": "2026-10-01T10-10-42-261Z-test-unit.log",
+      "sha256": "3e7b4462fddd71d96a2240e98063c6de0a8124b28a74d82261b434f2cbe14c8c",
+      "phases": [
+        {
+          "phase": 1,
+          "files": 137,
+          "concurrency": 4,
+          "tests": 814,
+          "suites": 1,
+          "pass": 799,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 15,
+          "todo": 0
+        },
+        {
+          "phase": 2,
+          "files": 1,
+          "concurrency": 1,
+          "tests": 7,
+          "suites": 0,
+          "pass": 7,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        {
+          "phase": 3,
+          "files": 1,
+          "concurrency": 1,
+          "tests": 1,
+          "suites": 0,
+          "pass": 1,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        {
+          "phase": 4,
+          "files": 1,
+          "concurrency": 1,
+          "tests": 1,
+          "suites": 0,
+          "pass": 1,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        }
+      ],
+      "totals": {
+        "tests": 823,
+        "pass": 808,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 15,
+        "todo": 0
+      }
+    },
+    {
+      "name": "lint",
+      "command": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+        "run",
+        "lint"
+      ],
+      "startedAt": "2026-10-01T10:13:58.809Z",
+      "finishedAt": "2026-10-01T10:14:00.489Z",
+      "exitCode": 0,
+      "signal": null,
+      "file": "2026-10-01T10-10-42-261Z-lint.log",
+      "sha256": "90282c8897e22cf61a2caf9bf389c3b9bdec616142f32d672feb4be04408eae0",
+      "phases": [],
+      "totals": {
+        "tests": 0,
+        "pass": 0,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    },
+    {
+      "name": "build",
+      "command": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+        "run",
+        "build"
+      ],
+      "startedAt": "2026-10-01T10:14:00.693Z",
+      "finishedAt": "2026-10-01T10:14:08.895Z",
+      "exitCode": 0,
+      "signal": null,
+      "file": "2026-10-01T10-10-42-261Z-build.log",
+      "sha256": "2b1698f4a14f5ac38d6fc28c11bb6dac8415d1b2aeb884047204ce4e140a9a44",
+      "phases": [],
+      "totals": {
+        "tests": 0,
+        "pass": 0,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    },
+    {
+      "name": "git-diff-check",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "startedAt": "2026-10-01T10:14:09.106Z",
+      "finishedAt": "2026-10-01T10:14:09.319Z",
+      "exitCode": 0,
+      "signal": null,
+      "file": "2026-10-01T10-10-42-261Z-git-diff-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "phases": [],
+      "totals": {
+        "tests": 0,
+        "pass": 0,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    }
+  ]
+}

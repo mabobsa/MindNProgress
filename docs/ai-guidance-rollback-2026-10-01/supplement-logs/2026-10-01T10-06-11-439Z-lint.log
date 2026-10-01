@@ -1,0 +1,5 @@
+
+> mindnprogress@0.0.0 lint
+> oxlint
+
+tests/ai-conversation-role-browser.test.mjs:198:136: warning eslint(no-unsafe-finally): Unsafe `finally` block. help: Control flow inside `try` or `catch` blocks will be overwritten by this statement.

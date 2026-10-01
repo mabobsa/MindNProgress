@@ -384,6 +384,13 @@ test('새 대화에서 명시하지 않은 실행 환경은 최근 대화와 상
   assert.equal(selection.workspace, 'C:\\Git\\Game_Integration\\game-client')
 })
 
+test('상위 대화가 GPT-6.1-Sol이어도 대상 카드의 최근 GPT-6-Sol이 모델 상속에서 우선한다', () => {
+  const target = { agent: { id: 'codex', label: 'Codex CLI' }, model: { id: 'gpt-6-sol', label: 'GPT-6-Sol' } }
+  const parent = { agent: { id: 'codex', label: 'Codex CLI' }, model: { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol' } }
+  assert.equal(mergeAiDelegationSelections(undefined, target, parent).model.id, 'gpt-6-sol')
+  assert.equal(mergeAiDelegationSelections({ agentId: 'codex', modelId: 'gpt-6.1-sol' }, target, parent).model.id, 'gpt-6.1-sol')
+})
+
 test('명시적인 빈 스킬과 MCP 목록은 상위 설정으로 다시 채우지 않는다', () => {
   const selection = mergeAiDelegationSelections(
     { agentId: 'claude', modelId: 'opus', enabledSkillIds: [], mcpIds: [] },

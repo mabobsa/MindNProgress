@@ -9312,7 +9312,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         )
         if (strategy === 'new' && isAiDelegationModelBlocked(selection.model.id)) return sendGroupDocumentInstructionResponse(
           response, 409, 'GROUP_DOCUMENT_INSTRUCTION_MODEL_BLOCKED',
-          'GPT-5.6-Sol 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.',
+          'GPT-5.6-Sol 또는 GPT-6-Sol 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.',
         )
 
         const now = new Date().toISOString()
@@ -9702,7 +9702,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         '위임 대화의 AI 종류와 모델 정보를 확인하지 못했습니다.')
       if (strategy === 'new' && isAiDelegationModelBlocked(selection.model.id)) return sendAiDelegationResponse(
         response, 409, 'AI_DELEGATION_MODEL_BLOCKED',
-        'GPT-5.6-Sol 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.',
+        'GPT-5.6-Sol 또는 GPT-6-Sol 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.',
       )
 
       let resumedDelegation = null

@@ -54,7 +54,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       for await (const chunk of req) chunks.push(chunk)
       body = JSON.parse(Buffer.concat(chunks).toString() || '{}')
     }
-    if (url.pathname === '/api/agents/management') return send([{ id: 'claude', name: 'Claude', agent_type: 'acp', backend: 'claude', installed: true, enabled: true, available_models: { current_model_id: 'opus', available_models: [{ value: 'opus', name: 'Opus' }, { value: 'gpt-5.6-sol', name: 'GPT-5.6-Sol' }] } }])
+    if (url.pathname === '/api/agents/management') return send([{ id: 'claude', name: 'Claude', agent_type: 'acp', backend: 'claude', installed: true, enabled: true, available_models: { current_model_id: 'opus', available_models: [{ value: 'opus', name: 'Opus' }, { value: 'gpt-5.6-sol', name: 'GPT-5.6-Sol' }, { value: 'gpt-6-sol', name: 'GPT-6-Sol' }] } }])
     if (['/api/providers', '/api/skills', '/api/mcp/servers'].includes(url.pathname)) return send([])
     if (url.pathname === '/api/internal/conversation-runtimes/active') return send({ conversations: [] })
     if (url.pathname.endsWith('/capabilities')) return send({ schemaVersion: 3, explicitCompletionAfterInterruption: true, historyOnlyReports: true })
@@ -239,21 +239,25 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       assert.equal(linked.contextHealth.resumeAllowed, true, JSON.stringify(linked.contextHealth))
       return linked.contextHealth.assessmentId
     }
-    conversations.get(documentConversationId).extra.current_model_id = 'gpt-5.6-sol'
-    const blockedCandidates = await api(`/api/maps/${target.id}/cards/${targetRoot}/ai-conversations`)
-    const blockedCandidate = blockedCandidates.body.conversations.find((item) => item.conversationId === documentConversationId)
-    assert.equal(blockedCandidate.contextHealth.resumeAllowed, false)
-    assert.equal(blockedCandidate.contextHealth.recommendation, 'new')
-    assert.ok(blockedCandidate.contextHealth.reasonCodes.includes('CONVERSATION_MODEL_REUSE_BLOCKED'))
-    const blockedResume = await api(delegateUrl, 'POST', {
-      ...args, targetRevision: (await api(`/api/maps/${target.id}`)).body.map.version,
-      strategy: 'resume', conversationId: documentConversationId,
-      conversationAssessmentId: blockedCandidate.contextHealth.assessmentId,
-      idempotencyKey: 'blocked-model-resume',
-    }, sourceHeaders)
-    assert.equal(blockedResume.status, 409)
-    assert.equal(blockedResume.body.reasonCode, 'AI_DELEGATION_CONVERSATION_MODEL_BLOCKED')
-    assert.equal(calls.some((call) => call.operationId === 'blocked-model-resume'), false)
+    for (const blockedModelId of ['gpt-5.6-sol', 'gpt-6-sol']) {
+      const blockedSuffix = blockedModelId.replaceAll('.', '_')
+      const blockedResumeId = `blocked-model-resume-${blockedSuffix}`
+      conversations.get(documentConversationId).extra.current_model_id = blockedModelId
+      const blockedCandidates = await api(`/api/maps/${target.id}/cards/${targetRoot}/ai-conversations`)
+      const blockedCandidate = blockedCandidates.body.conversations.find((item) => item.conversationId === documentConversationId)
+      assert.equal(blockedCandidate.contextHealth.resumeAllowed, false)
+      assert.equal(blockedCandidate.contextHealth.recommendation, 'new')
+      assert.ok(blockedCandidate.contextHealth.reasonCodes.includes('CONVERSATION_MODEL_REUSE_BLOCKED'))
+      const blockedResume = await api(delegateUrl, 'POST', {
+        ...args, targetRevision: (await api(`/api/maps/${target.id}`)).body.map.version,
+        strategy: 'resume', conversationId: documentConversationId,
+        conversationAssessmentId: blockedCandidate.contextHealth.assessmentId,
+        idempotencyKey: blockedResumeId,
+      }, sourceHeaders)
+      assert.equal(blockedResume.status, 409)
+      assert.equal(blockedResume.body.reasonCode, 'AI_DELEGATION_CONVERSATION_MODEL_BLOCKED')
+      assert.equal(calls.some((call) => call.operationId === blockedResumeId), false)
+    }
     conversations.get(documentConversationId).extra.current_model_id = 'opus'
     const beforeLeaf = (await api(`/api/maps/${target.id}`, 'GET', undefined, childHeaders)).body.map
     const leafId = 'implementation-leaf'
@@ -265,14 +269,17 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       },
     }, childHeaders)
     assert.equal(withLeaf.status, 200)
-    const blockedNew = await api(`/api/maps/${target.id}/ai-delegations`, 'POST', {
-      targetCardId: leafId, sourceRevision: withLeaf.body.map.version, strategy: 'new',
-      instruction: '하위 구현을 검증하세요.', decisionReason: '새 대화 모델 정책 검사',
-      idempotencyKey: 'blocked-model-new', newConversation: { agentId: 'claude', modelId: 'gpt-5.6-sol', workspace: projectDirectory },
-    }, childHeaders)
-    assert.equal(blockedNew.status, 409)
-    assert.equal(blockedNew.body.reasonCode, 'AI_DELEGATION_MODEL_BLOCKED')
-    assert.equal(calls.some((call) => call.operationId === 'blocked-model-new'), false)
+    for (const blockedModelId of ['gpt-5.6-sol', 'gpt-6-sol']) {
+      const blockedNewId = `blocked-model-new-${blockedModelId.replaceAll('.', '_')}`
+      const blockedNew = await api(`/api/maps/${target.id}/ai-delegations`, 'POST', {
+        targetCardId: leafId, sourceRevision: withLeaf.body.map.version, strategy: 'new',
+        instruction: '하위 구현을 검증하세요.', decisionReason: '새 대화 모델 정책 검사',
+        idempotencyKey: blockedNewId, newConversation: { agentId: 'claude', modelId: blockedModelId, workspace: projectDirectory },
+      }, childHeaders)
+      assert.equal(blockedNew.status, 409)
+      assert.equal(blockedNew.body.reasonCode, 'AI_DELEGATION_MODEL_BLOCKED')
+      assert.equal(calls.some((call) => call.operationId === blockedNewId), false)
+    }
     const leaf = await api(`/api/maps/${target.id}/ai-delegations`, 'POST', {
       targetCardId: leafId, sourceRevision: withLeaf.body.map.version, strategy: 'new', instruction: '하위 구현을 검증하세요.', decisionReason: '독립 하위 업무입니다.', idempotencyKey: 'nested-leaf', newConversation: { agentId: 'claude', modelId: 'opus', workspace: projectDirectory },
     }, childHeaders)
@@ -603,26 +610,30 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       idempotencyKey: 'group-instruction-queued',
       newConversation: undefined,
     }
-    const blockedGroupNew = await api(instructionUrl, 'POST', {
-      ...instructionArgs, targetRevision: latestInstructionTarget.version,
-      idempotencyKey: 'group-instruction-blocked-model-new',
-      newConversation: { agentId: 'claude', modelId: 'gpt-5.6-sol', workspace: projectDirectory },
-    }, sourceHeaders)
-    assert.equal(blockedGroupNew.status, 409)
-    assert.equal(blockedGroupNew.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_MODEL_BLOCKED')
     const instructedConversationId = instructed.body.instruction.targetConversationId
-    conversations.get(instructedConversationId).extra.current_model_id = 'gpt-5.6-sol'
-    const blockedGroupCandidates = await api(`/api/maps/${instructionDocument.id}/cards/${instructionDocument.nodes[0].id}/ai-conversations`)
-    const blockedGroupCandidate = blockedGroupCandidates.body.conversations.find((item) => item.conversationId === instructedConversationId)
-    assert.equal(blockedGroupCandidate.contextHealth.resumeAllowed, false)
-    const blockedGroupResume = await api(instructionUrl, 'POST', {
-      ...queuedInstructionArgs,
-      conversationAssessmentId: blockedGroupCandidate.contextHealth.assessmentId,
-      idempotencyKey: 'group-instruction-blocked-model-resume',
-    }, sourceHeaders)
-    assert.equal(blockedGroupResume.status, 409)
-    assert.equal(blockedGroupResume.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_MODEL_BLOCKED')
-    assert.equal(calls.some((call) => call.operationId === 'gdi:group-instruction-blocked-model-resume'), false)
+    for (const blockedModelId of ['gpt-5.6-sol', 'gpt-6-sol']) {
+      const blockedSuffix = blockedModelId.replaceAll('.', '_')
+      const blockedGroupNew = await api(instructionUrl, 'POST', {
+        ...instructionArgs, targetRevision: latestInstructionTarget.version,
+        idempotencyKey: `group-instruction-blocked-model-new-${blockedSuffix}`,
+        newConversation: { agentId: 'claude', modelId: blockedModelId, workspace: projectDirectory },
+      }, sourceHeaders)
+      assert.equal(blockedGroupNew.status, 409)
+      assert.equal(blockedGroupNew.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_MODEL_BLOCKED')
+      conversations.get(instructedConversationId).extra.current_model_id = blockedModelId
+      const blockedGroupCandidates = await api(`/api/maps/${instructionDocument.id}/cards/${instructionDocument.nodes[0].id}/ai-conversations`)
+      const blockedGroupCandidate = blockedGroupCandidates.body.conversations.find((item) => item.conversationId === instructedConversationId)
+      assert.equal(blockedGroupCandidate.contextHealth.resumeAllowed, false)
+      const blockedGroupResumeId = `group-instruction-blocked-model-resume-${blockedSuffix}`
+      const blockedGroupResume = await api(instructionUrl, 'POST', {
+        ...queuedInstructionArgs,
+        conversationAssessmentId: blockedGroupCandidate.contextHealth.assessmentId,
+        idempotencyKey: blockedGroupResumeId,
+      }, sourceHeaders)
+      assert.equal(blockedGroupResume.status, 409)
+      assert.equal(blockedGroupResume.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_MODEL_BLOCKED')
+      assert.equal(calls.some((call) => call.operationId === `gdi:${blockedGroupResumeId}`), false)
+    }
     conversations.get(instructedConversationId).extra.current_model_id = 'opus'
     busyGroupInstructionConversationReads = 2
     const queuedInstruction = await api(instructionUrl, 'POST', queuedInstructionArgs, sourceHeaders)

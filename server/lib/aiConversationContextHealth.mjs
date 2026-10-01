@@ -151,7 +151,7 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
 }
 
 export function isAiDelegationModelBlocked(modelId) {
-  return /^gpt-5\.6-sol(?:\[.*\])?$/.test(String(modelId ?? '').trim().toLowerCase())
+  return /^gpt-(?:5\.6|6(?:\.0)?)-sol(?:\[.*\])?$/.test(String(modelId ?? '').trim().toLowerCase())
 }
 
 export function applyAiConversationDelegationModelPolicy(contextHealth, { linkedModelId, runtimeModelId } = {}) {
@@ -165,7 +165,7 @@ export function applyAiConversationDelegationModelPolicy(contextHealth, { linked
   })).digest('hex')
   if (!blocked) return { ...contextHealth, assessmentId }
   const code = 'CONVERSATION_MODEL_REUSE_BLOCKED'
-  const message = 'GPT-5.6-Sol로 진행된 대화는 새 AI 위임에 이어 쓰지 않습니다. 다른 모델을 명시해 새 대화를 만드세요.'
+  const message = 'GPT-5.6-Sol 또는 GPT-6-Sol로 진행된 대화는 새 AI 위임에 이어 쓰지 않습니다. 다른 모델을 명시해 새 대화를 만드세요.'
   return {
     ...contextHealth,
     assessmentId,

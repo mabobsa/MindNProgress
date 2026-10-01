@@ -1,12 +1,16 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "toolCount": 59,
   "schemaDescriptionCount": 143,
-  "serverInstructionsChars": 616,
+  "sourceConstantChars": 616,
+  "sourceConstantSha256": "cd24be035e93b5923ec24f3148330ba5aac2c4f3a71c9851861b4e66e8c57cdd",
+  "serverInstructionsChars": 922,
+  "serverInstructionsSha256": "8b9f506f7079ef160331fdfecdc0cd3ab77d9a4814c087c97389c43a6da74844",
   "toolNameChars": 1996,
   "toolDescriptionChars": 12546,
   "inputSchemaJsonChars": 46313,
-  "rawRegisteredSurfaceChars": 61471,
+  "rawRegisteredSurfaceChars": 61777,
+  "rawRegisteredSurfaceMeaning": "initialize instructions와 도구 이름·설명·inputSchema JSON 문자열 길이의 합계입니다. 전송 JSON이나 호스트 총주입량이 아닙니다.",
   "hostMetadata": {
     "measured": false,
     "reason": "MCP 호스트의 exec 선언과 wrapper 렌더링은 이 저장소에서 결정하지 않습니다."

@@ -61,6 +61,8 @@ const client = new Client({ name: 'measure-ai-instructions', version: '1.0.0' })
 
 try {
   await client.connect(transport)
+  const registeredInstructions = client.getInstructions()
+  if (typeof registeredInstructions !== 'string') throw new Error('initialize 응답의 instructions가 없습니다.')
   const tools = [...(await client.listTools()).tools].sort((a, b) => a.name.localeCompare(b.name))
   const toolDescriptionChars = tools.reduce((sum, tool) => sum + tool.description.length, 0)
   const toolNameChars = tools.reduce((sum, tool) => sum + tool.name.length, 0)
@@ -76,14 +78,18 @@ try {
   const snapshotText = instructionSnapshots.map((snapshot) => snapshot.text).join('\n')
   const count = (token) => snapshotText.split(token).length - 1
   const budget = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     toolCount: tools.length,
     schemaDescriptionCount: tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0),
-    serverInstructionsChars: MNP_MCP_SERVER_INSTRUCTIONS.length,
+    sourceConstantChars: MNP_MCP_SERVER_INSTRUCTIONS.length,
+    sourceConstantSha256: createHash('sha256').update(MNP_MCP_SERVER_INSTRUCTIONS).digest('hex'),
+    serverInstructionsChars: registeredInstructions.length,
+    serverInstructionsSha256: createHash('sha256').update(registeredInstructions).digest('hex'),
     toolNameChars,
     toolDescriptionChars,
     inputSchemaJsonChars,
-    rawRegisteredSurfaceChars: MNP_MCP_SERVER_INSTRUCTIONS.length + toolNameChars + toolDescriptionChars + inputSchemaJsonChars,
+    rawRegisteredSurfaceChars: registeredInstructions.length + toolNameChars + toolDescriptionChars + inputSchemaJsonChars,
+    rawRegisteredSurfaceMeaning: 'initialize instructions와 도구 이름·설명·inputSchema JSON 문자열 길이의 합계입니다. 전송 JSON이나 호스트 총주입량이 아닙니다.',
     hostMetadata: { measured: false, reason: 'MCP 호스트의 exec 선언과 wrapper 렌더링은 이 저장소에서 결정하지 않습니다.' },
     historicalHostAssumption: { execDeclarationChars: 24_602, perToolWrapperChars: 35, note: '과거 캡처·상수이며 이번 전체 주입량 실측값이 아닙니다.' },
     dynamicTotalChars,

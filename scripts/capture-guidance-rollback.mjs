@@ -11,36 +11,10 @@ import { buildAiInstructionSnapshots } from '../tests/helpers/aiInstructionSnaps
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const output = path.join(root, 'docs/ai-guidance-rollback-2026-10-01')
 const phase = process.argv[2]
-if (!['before', 'after'].includes(phase)) throw new Error('before 또는 after를 지정하세요.')
+if (phase !== 'after') throw new Error('기존 before 원본은 보존합니다. 과거 실측 재현은 capture-guidance-evidence.mjs를 사용하고 현재 캡처에는 after를 지정하세요.')
 const digest = (text) => createHash('sha256').update(text).digest('hex')
 const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' })
-const baseline = '11a5079d62a9493e55548fe5b1ccbe0ffa3eb94c'
-const startHead = 'eaa7eeda712c76e59c19ed771cbba077b72ada1e'
-if (phase === 'before' && git('rev-parse', 'HEAD').trim() !== startHead) {
-  throw new Error('변경 전 캡처는 승인된 시작 HEAD에서만 다시 만들 수 있습니다.')
-}
 await mkdir(output, { recursive: true })
-
-if (phase === 'before') {
-  const commits = git('log', '--reverse', '--format=%H%x09%s', `${baseline}..HEAD`).trim().split('\n').map((line) => {
-    const [hash, subject] = line.split('\t')
-    const changes = git('diff-tree', '--no-commit-id', '--name-status', '-r', hash).trim().split('\n')
-      .filter(Boolean).map((entry) => {
-        const [status, ...file] = entry.split('\t')
-        return { status, file: file.join('\t') }
-      })
-    return { hash, subject, changes }
-  })
-  await writeFile(path.join(output, 'commit-file-inventory.json'), `${JSON.stringify({ baseline, startHead, commits }, null, 2)}\n`)
-  const sourceFiles = [
-    'src/utils/aiContextInstructions.mjs', 'src/utils/aiApprovalInstructions.mjs',
-    'src/utils/aiConversationLaunch.mjs', 'mcp/server.mjs', 'server/index.mjs',
-    'server/lib/groupDocumentInstructions.mjs', 'server/lib/groupProjects.mjs',
-    'server/lib/doorayResponses.mjs', 'server/lib/workspacePool.mjs',
-  ]
-  const sources = Object.fromEntries(sourceFiles.map((file) => [file, git('show', `${baseline}:${file}`)]))
-  await writeFile(path.join(output, 'baseline-guide-sources.json'), `${JSON.stringify({ baseline, sources }, null, 2)}\n`)
-}
 
 const transport = new StdioClientTransport({
   command: process.execPath,
@@ -51,13 +25,18 @@ const transport = new StdioClientTransport({
 const client = new Client({ name: 'guidance-rollback-capture', version: '1.0.0' })
 try {
   await client.connect(transport)
+  const registeredInstructions = client.getInstructions()
+  if (typeof registeredInstructions !== 'string') throw new Error('initialize 응답의 instructions가 없습니다.')
   const tools = [...(await client.listTools()).tools].sort((a, b) => a.name.localeCompare(b.name))
   const snapshots = (await buildAiInstructionSnapshots()).map(({ name, text, router }) => ({
     name, text, router: router ?? null, length: text.length, sha256: digest(text),
   }))
   const capture = {
     head: git('rev-parse', 'HEAD').trim(),
-    serverInstructions: { text: MNP_MCP_SERVER_INSTRUCTIONS, length: MNP_MCP_SERVER_INSTRUCTIONS.length, sha256: digest(MNP_MCP_SERVER_INSTRUCTIONS) },
+    capturedAt: new Date().toISOString(),
+    workingTreeDiffSha256: digest(git('diff', 'HEAD', '--', 'mcp', 'server', 'src', 'scripts', 'tests')),
+    sourceConstant: { text: MNP_MCP_SERVER_INSTRUCTIONS, length: MNP_MCP_SERVER_INSTRUCTIONS.length, sha256: digest(MNP_MCP_SERVER_INSTRUCTIONS) },
+    serverInstructions: { origin: 'SDK Client.getInstructions(): initialize 응답', text: registeredInstructions, length: registeredInstructions.length, sha256: digest(registeredInstructions) },
     tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
     snapshots,
   }

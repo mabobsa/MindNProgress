@@ -31,6 +31,7 @@ test('최신 59개 이름·input schema와 복구한 도구 설명 전문을 검
   const client = new Client({ name: 'rollback-surface-test', version: '1.0.0' })
   try {
     await client.connect(transport)
+    const registeredInstructions = client.getInstructions()
     const tools = [...(await client.listTools()).tools].sort((a, b) => a.name.localeCompare(b.name))
     assert.deepEqual(tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), fixture)
     assert.equal(tools.length, 59)
@@ -50,11 +51,18 @@ test('최신 59개 이름·input schema와 복구한 도구 설명 전문을 검
     assert.match(descriptions.get('mindnprogress_recover_ai_delegation'), /복구.*mindnprogress_list_ai_delegations.*상태.*확인/s)
     assert.match(descriptions.get('mindnprogress_search_content'), /ranked.*catalog.*page.hasMore.*coverage/s)
     assert.match(MNP_MCP_SERVER_INSTRUCTIONS, /read_me_first.*get_context.*guide.*nextStep/s)
-    assert.equal(MNP_MCP_SERVER_INSTRUCTIONS.length, budget.serverInstructionsChars)
+    assert.equal(MNP_MCP_SERVER_INSTRUCTIONS.length, budget.sourceConstantChars)
+    assert.equal(createHash('sha256').update(MNP_MCP_SERVER_INSTRUCTIONS).digest('hex'), budget.sourceConstantSha256)
+    assert.ok(registeredInstructions.startsWith(MNP_MCP_SERVER_INSTRUCTIONS))
+    assert.match(registeredInstructions, /Dooray 승인 새 대화.*get_dooray_response_approval.*승인 범위/s)
+    assert.ok(registeredInstructions.length > MNP_MCP_SERVER_INSTRUCTIONS.length)
+    assert.equal(registeredInstructions.length, budget.serverInstructionsChars)
+    assert.equal(createHash('sha256').update(registeredInstructions).digest('hex'), budget.serverInstructionsSha256)
     assert.equal(tools.reduce((sum, tool) => sum + tool.description.length, 0), budget.toolDescriptionChars)
     assert.equal(tools.reduce((sum, tool) => sum + tool.name.length, 0), budget.toolNameChars)
     assert.equal(tools.reduce((sum, tool) => sum + JSON.stringify(tool.inputSchema).length, 0), budget.inputSchemaJsonChars)
     assert.equal(budget.hostMetadata.measured, false)
+    assert.equal(budget.rawRegisteredSurfaceChars, registeredInstructions.length + budget.toolNameChars + budget.toolDescriptionChars + budget.inputSchemaJsonChars)
   } finally {
     await client.close()
   }

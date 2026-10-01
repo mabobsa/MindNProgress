@@ -41,4 +41,18 @@
 | `351b131` | `server/lib/doorayResponses.mjs`의 proposal workflow/writePolicy 안내만 복구. `server/index.mjs`·Dooray 기능·런치·UI·테스트·문서의 나머지 변경은 승인·원문 복구 제품 기능으로 보존. 정확한 파일 목록은 JSON의 해당 커밋 18개 항목. | M/P |
 | `60f4e51` | `mcp/server.mjs`, `server/index.mjs`, `server/lib/aiDelegationInstructions.mjs`, `src/utils/aiContextInstructions.mjs`: compact/bound/workflow/builder를 복구. `server/lib/groupProjects.mjs`: 그룹 guide는 복구하되 `forDocument` 총괄 유효성 검사만 보존. `scripts/test-mcp.mjs`: 축약 assertion은 복구하고 대기 일부 해제 검증은 보존. snapshot·표면 테스트와 두 fixture는 상세 전문·59개 schema로 재구성. | M |
 
-제품 변경의 출처 추적은 커밋별 전체 파일 목록(JSON), 위 변경 단위 표, 보존 diff 문서로 함께 한다. 특정 커밋에서 파일 전체를 옛 버전으로 복원하지 않았다.
+제품 변경의 출처 추적은 커밋별 전체 파일 목록(JSON), 위 변경 단위 표, 보존 diff 문서로 함께 한다. 순수 지침 파일인 `src/utils/aiContextInstructions.mjs`, `aiApprovalInstructions.mjs`, `aiConversationLaunch.mjs`와 `.d.mts`는 기준선 전체 문자열과 일치하도록 복구했다. 제품·지침 혼합 파일은 지침 구간을 복구하고 이후 제품 변경 단위를 보존했다. 파일 전체 복원이 전혀 없었다는 종전 절대 표현은 실제 Git diff와 달라 정정한다.
+
+## 후속 main과 후보 추적
+
+초기 시작 HEAD는 계속 `eaa7eeda712c76e59c19ed771cbba077b72ada1e`다. 보완 시작 후보는 `08b22533640e13e1bd2f461c253f238c3723f9d9`, 별도로 보존한 main HEAD는 `c541fd7c85cc29caef0619d713945fd6018cafc8`이다. 초기 21개는 이력 범위이며 최신 main까지 22개 원본 커밋을 `followup-commit-inventory.json`에 전수 등록한다. 후보 전용 복구·보존·병합·계측·보고 커밋은 같은 JSON의 `candidateOnlyCommits`로 구분한다. 최종 산출물 커밋 자신의 ID는 자기 본문에 기록할 수 없으므로 최종 HEAD는 06 결과 댓글과 최종 회신에서 확정한다.
+
+| 후속 커밋 | 분류 | 파일·변경 단위 | 의존성·검증 |
+|---|---|---|---|
+| `c541fd7` | P | `server/lib/aiConversationContextHealth.mjs` 모델 정규식과 메시지, `server/index.mjs` 두 차단 메시지, `mcp/server.mjs` 후보 제외·새 대화 안내, `tests/ai-conversation-context-health.test.mjs`·`ai-delegations.test.mjs`·`group-project-api.test.mjs`의 GPT-6-Sol/GPT-6.0-Sol 차단과 GPT-6.1-Sol 허용 | 기존 assessment·모델 정책에 의존. 6개 파일의 원 변경과 병합 델타에서 추가/삭제 줄이 정확히 같은지 검사. 모델·위임·그룹 API 회귀 |
+| `37aac975` | R | 상세 지침과 전달 경로 복구. 순수 지침 파일 전체 일치와 혼합 파일 구간 복구를 구분 | 기준선 실제 guide·전달 전문 대조 |
+| `08b22533` | P/M | 세 안전 의미, 총괄 유효성, Dooray 기한 재적용과 복구된 지침 회귀. RB07 최신 updatedAt 존재 assertion만 추가. 대기 부분 해제 계약은 기존 유지 | `preserved-improvements.md`와 원본 hunk |
+| `378dc5e` | P | clean main c541fd7을 공통 조상 eaa7eed에서 후보에 안전 병합. 충돌 없음 | main 변경 6개 파일의 변경 줄 일치와 c541fd7 조상 검사 |
+| `7cc83ac` 및 최종 증거 커밋 | P | 실제 initialize 계측, 과거 Git 재현, 초기 guide 원문 검사, 대상표·로그 보완 | 제품 지침 구조를 재적용하지 않음. 최신 이름/schema·실제 초기 호출·unit·lint·build·Git 검사 |
+
+`followup-commit-inventory.json`의 `mixedFileDiffs`는 최신 main 대비 혼합 6개 파일의 전문 diff다. `pureGuidanceRestoration`은 순수 지침 4개 파일의 전체 문자열·해시 일치 증거다. `preservedProductTestDiffs`는 검색·workspace·런타임·위임·문맥 건강도 테스트 6개 파일이 최신 main과 그대로 일치하는 증거다. 다른 지침 관련 회귀는 상세 원문 의미로 복구했고, c541fd7 그룹 API 추가 변경은 병합 델타의 줄 단위 대조로 보존을 확인했다.

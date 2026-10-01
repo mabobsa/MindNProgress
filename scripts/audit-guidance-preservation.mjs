@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { digest } from './capture-guidance-evidence.mjs'
@@ -12,6 +12,23 @@ const baseline = '11a5079d62a9493e55548fe5b1ccbe0ffa3eb94c'
 const initialHead = 'eaa7eeda712c76e59c19ed771cbba077b72ada1e'
 const preservedMainHead = git('rev-parse', 'main').trim()
 const candidateHead = git('rev-parse', 'HEAD').trim()
+const evidence = JSON.parse(await readFile(path.join(output, 'initial-response-evidence.json'), 'utf8'))
+const baselineSessions = evidence.runs.find((run) => run.name === 'baseline').sessions
+const candidateSessions = evidence.runs.find((run) => run.name === 'candidate').sessions
+const initialResponsePathChecks = candidateSessions.map((session, index) => {
+  const original = JSON.parse(baselineSessions[index].response.text)
+  const current = JSON.parse(session.response.text)
+  assert.equal(session.guide.text, baselineSessions[index].guide.text)
+  if (!current.selection) return { name: session.name, fullGuide: true }
+  assert.deepEqual(current.selection.taskLinks.startupInspection, original.selection.taskLinks.startupInspection)
+  assert.equal(current.nextStep, original.nextStep)
+  assert.equal(current.groupProject.instruction, original.groupProject.instruction)
+  assert.deepEqual(current.selection.aiWorkCoordination.childDelegation, original.selection.aiWorkCoordination.childDelegation)
+  return { name: session.name, fullGuide: true, startupInspection: true, nextStep: true, groupInstruction: true, childDelegation: true }
+})
+assert.equal(git('diff', evidence.runs.find((run) => run.name === 'candidate').head, candidateHead, '--', 'mcp', 'server', 'src'), '')
+const originalBeforeSha256 = digest(await readFile(path.join(output, 'before-surface-and-prompts.json'), 'utf8'))
+assert.equal(originalBeforeSha256, evidence.originalBeforeSha256)
 const commits = git('log', '--reverse', '--format=%H%x09%s', `${baseline}..${preservedMainHead}`).trim().split('\n').map((line) => {
   const [hash, subject] = line.split('\t')
   return { hash, subject, changes: git('diff-tree', '--no-commit-id', '--name-status', '-r', hash).trim().split('\n').filter(Boolean).map((entry) => { const [status, file] = entry.split('\t'); return { status, file } }) }
@@ -60,18 +77,21 @@ const rb07 = [
     sourceUnit: original, originalPatchHunks: relevantHunks(sourceCommit, token),
     initialUnit: initial, finalUnit: final,
     initialUnitSha256: digest(initial), finalUnitSha256: digest(final),
-    alreadyRetained: initial === final,
+    initialUnitUnchanged: initial === final,
+    currentFollowupNoOp: final === block('08b22533', first, last),
     additionalAssertionCommit: id === 'latest-updatedAt' ? '08b22533640e13e1bd2f461c253f238c3723f9d9' : null,
     additionalAssertionPatch: id === 'latest-updatedAt' ? relevantHunks('08b22533', 'recoveredCurrent') : '',
     dependency: id === 'latest-updatedAt' ? '복구 후 목록의 최신 updatedAt을 후속 변경의 expectedUpdatedAt에 전달하는 계약' : 'waitingItems 부분 갱신과 미해결 항목이 남는 카드의 미완료 상태',
     verification: 'npm run test:mcp',
   }
 })
-assert.ok(rb07.find((item) => item.id === 'partial-waiting').alreadyRetained)
+assert.ok(rb07.every((item) => item.currentFollowupNoOp))
+assert.ok(rb07.find((item) => item.id === 'partial-waiting').initialUnitUnchanged)
 assert.match(rb07[0].finalUnit, /recoveredList.*recoveredCurrent.*updatedAt.*expectedUpdatedAt/s)
 assert.match(rb07[1].finalUnit, /waitingItems\[1\]\.id.*status, 'done'/s)
 await writeFile(path.join(output, 'followup-commit-inventory.json'), `${JSON.stringify({
   baseline, initialHead, preservedMainHead, candidateHead, capturedAt: new Date().toISOString(),
+  initialResponsePathChecks, originalBeforeSha256,
   mainCommitCount: commits.length, commits,
   candidateOnlyCommits: git('log', '--reverse', '--format=%H%x09%s', `${preservedMainHead}..${candidateHead}`).trim().split('\n'),
   mainPreservation, pureGuidanceRestoration,
@@ -79,4 +99,4 @@ await writeFile(path.join(output, 'followup-commit-inventory.json'), `${JSON.str
   rb07, rb07CandidateFollowupDiff: git('diff', '08b22533', candidateHead, '--', mcpFile),
   preservedProductTestDiffs: Object.fromEntries(['tests/global-search-api.test.mjs', 'tests/global-search.test.mjs', 'tests/workspace-pool.test.mjs', 'tests/runtime-entrypoints.test.mjs', 'tests/ai-delegations.test.mjs', 'tests/ai-conversation-context-health.test.mjs'].map((file) => { const diff = git('diff', preservedMainHead, candidateHead, '--', file); assert.equal(diff, ''); return [file, diff] })),
 }, null, 2)}\n`)
-process.stdout.write(`${JSON.stringify({ mainCommitCount: commits.length, preservedMainHead, candidateHead, rb07: rb07.map(({ id, alreadyRetained }) => ({ id, alreadyRetained })), mainPreservation: true })}\n`)
+process.stdout.write(`${JSON.stringify({ mainCommitCount: commits.length, preservedMainHead, candidateHead, rb07: rb07.map(({ id, initialUnitUnchanged, currentFollowupNoOp }) => ({ id, initialUnitUnchanged, currentFollowupNoOp })), mainPreservation: true })}\n`)

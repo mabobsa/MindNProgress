@@ -45,6 +45,8 @@
 
 감사 메타데이터의 원문 경로 비교와 no-op 구분을 확정한 뒤 감사 스크립트를 다시 실행해 통과했고 lint·Git 공백 검사를 재확인해 종료 0이었다. `git fsck --no-reflogs`도 종료 0이며 연결되지 않은 기존 객체 안내만 출력했다. 객체를 삭제하거나 정리하지 않았다. 로그 SHA-256, 이전 before 파일의 문자열 해시와 Git blob, 커밋 제목·세 본문 절·Co-Authored-By 부재를 별도로 검증했다.
 
+최초 후속 산출물 커밋 57e4966에는 저장소의 `*.log` ignore 규칙 때문에 요약 JSON만 포함된 것을 Git 파일 목록에서 확인했다. 원문 6개는 후속 별도 산출물 커밋에 명시적으로 추가한다. 해당 로그 디렉터리의 예외와 `*.log -text` 속성만 두어 원문 바이트를 Git에 보존하고, staging/commit blob의 SHA-256을 results.json의 원래 기록과 대조한다. 검증 결과나 원문을 새 실행 결과로 바꾸지 않았다. 원문 추가 후 첫 staging 공백 검사는 Vite가 출력한 `[plugin builtin:vite-reporter] `의 마지막 공백으로 종료 1이었다. 출력 바이트를 수정하지 않고 원문 `.log`에만 `whitespace=-blank-at-eol`을 지정해 출력 끝 공백을 보존했다. 제품·테스트·문서의 공백 검사는 그대로 두고 staging 검사를 다시 수행한다.
+
 먼저 수행한 초기 guide·표면·snapshot·모델·총괄 guard 5파일 확인은 16/16 통과했다. 별도로 Git archive 재현에서 기준선과 현재의 read_me_first, leaf·총괄·문서 담당 get_context guide 및 세 get_group_context guide 전체 문자열·해시 일치를 확인했다. 저장된 실제 응답에서 startupInspection·nextStep·groupProject.instruction·childDelegation 전체도 기준선과 정확히 같다. 이전 before 원본은 변경하지 않았다.
 
 이번 보완에서도 운영 서버·예약 작업·실제 Dooray 연동·Holdem 작업공간을 변경하지 않았다. 단위 테스트의 격리 서버·임시 fixture와 테스트 생성 프로세스만 사용했다. 미검증은 07 독립 판정, 루트의 main 반영, 운영 적용과 실제 호스트 총주입량, 조건부 브라우저 6개·실제 Git pool 9개다. 06 자체 검증을 07 독립 품질 검증 완료라고 해석하지 않는다.

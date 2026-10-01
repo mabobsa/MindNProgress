@@ -1,0 +1,4 @@
+warning: in the working copy of 'docs/ai-guidance-rollback-2026-10-01/actual-guidance-comparison.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/ai-guidance-rollback-2026-10-01/preserved-improvements.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/ai-guidance-rollback-2026-10-01/target-inventory.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/audit-guidance-preservation.mjs', LF will be replaced by CRLF the next time Git touches it

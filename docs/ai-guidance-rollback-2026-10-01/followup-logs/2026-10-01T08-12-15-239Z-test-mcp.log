@@ -1,0 +1,14 @@
+
+> mindnprogress@0.0.0 test:mcp
+> node scripts/test-mcp.mjs
+
+{
+  "registeredTools": 59,
+  "calledTools": 59,
+  "totalCalls": 207,
+  "measuredTools": 58,
+  "measuredCalls": 223,
+  "readMeFirstResponseChars": 15269,
+  "selectedContextResponseChars": 22052,
+  "status": "passed"
+}

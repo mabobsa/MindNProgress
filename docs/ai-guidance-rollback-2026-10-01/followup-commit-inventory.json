@@ -2,8 +2,8 @@
   "baseline": "11a5079d62a9493e55548fe5b1ccbe0ffa3eb94c",
   "initialHead": "eaa7eeda712c76e59c19ed771cbba077b72ada1e",
   "preservedMainHead": "c541fd7c85cc29caef0619d713945fd6018cafc8",
-  "candidateHead": "7cc83acb459df10d908dfcde211784f5e4941054",
-  "capturedAt": "2026-10-01T08:26:28.278Z",
+  "candidateHead": "57e4966e2c947b6706288961126e5674e0123b49",
+  "capturedAt": "2026-10-01T08:29:24.196Z",
   "initialResponsePathChecks": [
     {
       "name": "read-me-first",
@@ -754,7 +754,8 @@
     "37aac97573c727cfac8e044fd3ab13e0556a9011\t[김용민] 상세 AI 지침 전달 경로를 기준선으로 복구",
     "08b22533640e13e1bd2f461c253f238c3723f9d9\t[김용민] 독립 안전 개선과 상세 지침 회귀 검증 보존",
     "378dc5eaa100c84435c316009545280f1e633f72\t[김용민] 최신 main의 위임 모델 재사용 제한을 롤백 후보에 병합",
-    "7cc83acb459df10d908dfcde211784f5e4941054\t[김용민] 실제 MCP 등록 전문 계측과 초기 상세 지침 복구 증거 보완"
+    "7cc83acb459df10d908dfcde211784f5e4941054\t[김용민] 실제 MCP 등록 전문 계측과 초기 상세 지침 복구 증거 보완",
+    "57e4966e2c947b6706288961126e5674e0123b49\t[김용민] 롤백 후보의 최신 보존 대상과 검증 원문 기록"
   ],
   "mainPreservation": [
     {

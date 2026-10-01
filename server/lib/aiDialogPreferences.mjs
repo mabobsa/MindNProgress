@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto'
-import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { isAiDialogSectionsPatch, normalizeAiDialogSections } from '../../src/utils/aiDialogSections.mjs'
+import { replaceFileWithRetry } from './replaceFileWithRetry.mjs'
 
-export async function createAiDialogPreferences({ dataDirectory, replaceFile = rename }) {
+export async function createAiDialogPreferences({ dataDirectory, replaceFile = replaceFileWithRetry }) {
   const file = path.join(dataDirectory, '_ai-dialog-preferences.json')
   let records = new Map()
   try {

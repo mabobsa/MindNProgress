@@ -2,6 +2,7 @@ import { createServer } from 'node:http'
 import { createRuntimeLifecycle, installRuntimeShutdown } from './lib/runtimeLifecycle.mjs'
 import { createAiWorkspaceSettings } from './lib/aiWorkspaceSettings.mjs'
 import { createAiDialogPreferences } from './lib/aiDialogPreferences.mjs'
+import { replaceFileWithRetry } from './lib/replaceFileWithRetry.mjs'
 import { createDocumentMutationGate, createDocumentReconstruction, reconstructionError } from './lib/documentReconstruction.mjs'
 import { createReconstructionRequests } from './lib/documentReconstructionRequests.mjs'
 import { createCardLayoutRequests } from './lib/cardLayoutRequests.mjs'
@@ -30,7 +31,7 @@ import { createDoorayResponseIntegration } from './lib/doorayResponseIntegration
 import { MNP_ROLE_POINTERS } from '../src/utils/aiContextInstructions.mjs'
 import { buildDelegatedInstruction, buildPreparedAiDelegationInstruction, buildParentWakeInstruction, delegationRecoveryInstruction } from './lib/aiDelegationInstructions.mjs'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { hostname, networkInterfaces, tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -536,22 +537,6 @@ function removeEventClient(client) {
   const clientInfo = eventClients.get(client)
   if (!eventClients.delete(client) || !clientInfo?.mapId) return
   queueMicrotask(() => broadcastPresence(clientInfo.mapId))
-}
-
-async function replaceFileWithRetry(temporaryFile, targetFile) {
-  const retryableCodes = new Set(['EACCES', 'EBUSY', 'EEXIST', 'EPERM'])
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    try {
-      await rename(temporaryFile, targetFile)
-      return
-    } catch (error) {
-      if (!retryableCodes.has(error?.code) || attempt === 5) {
-        await rm(temporaryFile, { force: true }).catch(() => undefined)
-        throw error
-      }
-      await new Promise((resolve) => setTimeout(resolve, 15 * (2 ** attempt)))
-    }
-  }
 }
 
 function broadcastEvent(payload, predicate = () => true) {

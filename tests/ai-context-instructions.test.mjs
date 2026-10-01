@@ -26,12 +26,11 @@ test('초기 문맥 바인딩과 이후 대상별 최신성 갱신을 구분한�
   assert.match(MNP_CONTEXT_LIFECYCLE.verification.action, /실제 저장 결과/)
 })
 
-test('MCP 연결 지침은 초기 라우팅만 제공하고 상세 정책은 문맥 응답에 맡긴다', () => {
+test('MCP 연결 지침은 초기 순서와 상세 문맥 조회 경로를 안내한다', () => {
   assert.match(MNP_MCP_SERVER_INSTRUCTIONS, /mindnprogress_read_me_first/)
   assert.match(MNP_MCP_SERVER_INSTRUCTIONS, /mindnprogress_get_context/)
   assert.match(MNP_MCP_SERVER_INSTRUCTIONS, /guide.*nextStep.*reasonCode.*message/s)
   assert.match(MNP_MCP_SERVER_INSTRUCTIONS, /mindnprogress_get_group_context/)
-  assert.ok(MNP_MCP_SERVER_INSTRUCTIONS.length < 1_200)
   assert.doesNotMatch(MNP_MCP_SERVER_INSTRUCTIONS, /mindnprogress_patch_card_text|mindnprogress_complete_ai_delegation|waitingItems/)
 })
 

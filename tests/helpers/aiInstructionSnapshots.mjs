@@ -1,17 +1,48 @@
 import {
+  AI_DELEGATION_FOLLOWUP_INSTRUCTION,
+  AI_DELEGATION_REPORT_INSTRUCTION,
+  AI_EXECUTION_APPROVAL_INSTRUCTION,
+  DOCUMENT_COORDINATOR_INSTRUCTION,
+  GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION,
+  GROUP_APPROVAL_INSTRUCTION,
   buildGroupCoordinatorRequest,
   buildGroupDocumentProposalRequest,
   buildGroupDocumentRequest,
 } from '../../src/utils/aiApprovalInstructions.mjs'
-import { MNP_MCP_SERVER_INSTRUCTIONS } from '../../src/utils/aiContextInstructions.mjs'
+import { MNP_CONTEXT_BOOTSTRAP_INSTRUCTION, MNP_MCP_SERVER_INSTRUCTIONS } from '../../src/utils/aiContextInstructions.mjs'
 import { buildAiConversationPrompt, buildSharedKnowledgeCleanupRequest } from '../../src/utils/aiConversationLaunch.mjs'
-import {
-  buildDelegatedInstruction,
-  buildParentWakeInstruction,
-  delegationRecoveryInstruction,
-} from '../../server/lib/aiDelegationInstructions.mjs'
+import { buildWorkspaceInstruction } from '../../server/lib/workspacePool.mjs'
 import { buildGroupDocumentInstruction } from '../../server/lib/groupDocumentInstructions.mjs'
 import { buildDoorayReviewPrompt } from '../../server/lib/doorayResponses.mjs'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import vm from 'node:vm'
+
+// The restored production builders live in the server entry point. Evaluate their
+// current source with isolated dependencies to snapshot the actual delivered text.
+const serverSource = readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../server/index.mjs'), 'utf8')
+function extract(first, last) {
+  const start = serverSource.indexOf(first)
+  const end = serverSource.indexOf(last, start + first.length)
+  if (start < 0 || end < 0) throw new Error(`서버 전문 조립 경계를 찾지 못했습니다: ${first}`)
+  return serverSource.slice(start, end)
+}
+const instructionBuilders = vm.runInNewContext(`${extract('function buildDelegatedInstruction(', 'function sendGroupDocumentInstructionResponse(')}
+${extract('function delegationRecoveryInstruction(', 'function delegationPublicView(')}
+${extract('function aiDelegationResultSection(', 'function aiDelegationRecoveryKey(')}
+({ buildDelegatedInstruction, delegationRecoveryInstruction, parentWakeInstruction })`, {
+  MNP_CONTEXT_BOOTSTRAP_INSTRUCTION, buildWorkspaceInstruction,
+  DOCUMENT_COORDINATOR_INSTRUCTION, AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION,
+  AI_DELEGATION_FOLLOWUP_INSTRUCTION, GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_REPORT_INSTRUCTION,
+  groupProjects: { forDocument: async () => null },
+  readMap: async () => null, documentRoot: () => null,
+  aiDelegationReportResult: () => ({ availability: 'captured', text: '구현과 검증을 완료했습니다.' }),
+  aiDelegationSucceeded: () => true,
+  resolveAiConversationDisplay: async () => ({ displayLabel: '하위 대화' }),
+  delegationTargetMachineId: () => 'machine-fixture',
+})
+const { buildDelegatedInstruction, delegationRecoveryInstruction, parentWakeInstruction } = instructionBuilders
 
 const identity = {
   mapId: 'map-fixture',
@@ -48,7 +79,7 @@ const delegation = {
 const conversationPrompt = (purpose, request) => buildAiConversationPrompt({ ...identity, purpose, request })
 const workerInstruction = '승인된 카드 구현과 검증을 수행하고 결과를 기록하세요.'
 
-export function buildAiInstructionSnapshots() {
+export async function buildAiInstructionSnapshots() {
   const groupRequest = buildGroupCoordinatorRequest({ groupId: 'group-fixture' })
   const groupProposalRequest = buildGroupCoordinatorRequest({
     groupId: 'group-fixture',
@@ -78,15 +109,16 @@ export function buildAiInstructionSnapshots() {
       instructionId: 'instruction-fixture', parentConversationId: 'conversation-parent',
       instructionType: 'execution', approvalScope: 'implementation',
       approvalEvidence: '사용자가 이 문서의 구현 범위를 승인했습니다.', instruction: workerInstruction,
-      editorId: identity.editorId, attributionToken: identity.attributionToken, strategy: 'new',
+      editorId: identity.editorId, attributionToken: identity.attributionToken,
+      documentCoordinatorInstruction: DOCUMENT_COORDINATOR_INSTRUCTION,
     }) },
-    { name: 'worker-new-no-lease', text: buildDelegatedInstruction({ ...identity, instruction: workerInstruction, event: 'new' }) },
-    { name: 'worker-new-lease', text: buildDelegatedInstruction({ ...identity, instruction: workerInstruction, workspaceLease, event: 'new' }) },
-    { name: 'worker-resume', text: buildDelegatedInstruction({ ...identity, instruction: workerInstruction, event: 'resume' }) },
+    { name: 'worker-new-no-lease', text: buildDelegatedInstruction({ ...identity, instruction: workerInstruction }) },
+    { name: 'worker-new-lease', text: buildDelegatedInstruction({ ...identity, instruction: workerInstruction, workspaceLease }) },
+    { name: 'worker-resume', text: buildDelegatedInstruction({ ...identity, instruction: workerInstruction }) },
     { name: 'shared-knowledge-proposal', text: conversationPrompt('shared-knowledge-review', buildSharedKnowledgeCleanupRequest({})) },
-    { name: 'parent-wake', text: buildParentWakeInstruction({ delegation, reportResult: result, outcome: '완료', conversationDisplayLabel: '하위 대화' }) },
-    { name: 'group-parent-wake', text: buildParentWakeInstruction({ delegation, reportResult: result, groupCoordinator: true, outcome: '완료', conversationDisplayLabel: '하위 대화' }) },
-    { name: 'user-stop-recovery', text: buildDelegatedInstruction({ ...identity, instruction: recovery, workspaceLease, event: 'recovery', includeCompletion: true }) },
+    { name: 'parent-wake', text: await parentWakeInstruction(delegation, result) },
+    { name: 'group-parent-wake', text: await parentWakeInstruction({ ...delegation, groupId: 'group-fixture' }, result) },
+    { name: 'user-stop-recovery', text: buildDelegatedInstruction({ ...identity, instruction: recovery, workspaceLease }) },
     { name: 'reconstruction', text: conversationPrompt('document-reconstruction', '최신 문서를 읽고 재구성 제안만 작성하세요.') },
     { name: 'layout', text: conversationPrompt('card-layout', '현재 계층을 보존한 배치 제안만 작성하세요.') },
     { name: 'dooray-proposal', text: buildDoorayReviewPrompt(doorayJob, 'dooray-operation-fixture', { document: { id: identity.mapId }, card: { id: identity.cardId } }) },
@@ -100,5 +132,5 @@ export function buildAiInstructionSnapshots() {
 
 export function buildOrdinaryRecoverySnapshot() {
   const recovery = delegationRecoveryInstruction(delegation, workerInstruction, { failureCategory: 'restart' }, '하위 대화')
-  return buildDelegatedInstruction({ ...identity, instruction: recovery, workspaceLease, event: 'recovery' })
+  return buildDelegatedInstruction({ ...identity, instruction: recovery, workspaceLease })
 }

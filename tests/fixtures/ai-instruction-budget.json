@@ -1,23 +1,27 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "toolCount": 59,
   "schemaDescriptionCount": 143,
-  "execDeclarationChars": 24602,
-  "execDeclarationSource": "구현 직전 활성 MCP 등록 표면에서 캡처했으며 input schema deep-equal로 불변을 검증합니다.",
-  "perToolWrapperChars": 35,
-  "serverInstructionsChars": 468,
-  "toolDescriptionChars": 11011,
-  "fixedSurfaceChars": 38146,
-  "dynamicTotalChars": 21135,
-  "maxDynamicChars": 2906,
-  "maxStartChars": 41052,
+  "serverInstructionsChars": 616,
+  "toolNameChars": 1996,
+  "toolDescriptionChars": 12546,
+  "inputSchemaJsonChars": 46313,
+  "rawRegisteredSurfaceChars": 61471,
+  "hostMetadata": {
+    "measured": false,
+    "reason": "MCP 호스트의 exec 선언과 wrapper 렌더링은 이 저장소에서 결정하지 않습니다."
+  },
+  "historicalHostAssumption": {
+    "execDeclarationChars": 24602,
+    "perToolWrapperChars": 35,
+    "note": "과거 캡처·상수이며 이번 전체 주입량 실측값이 아닙니다."
+  },
+  "dynamicTotalChars": 35521,
+  "maxDynamicChars": 4598,
   "repetitionCounts": {
-    "contextBootstrap": 9,
-    "writePolicy": 10,
-    "workspace": 2,
-    "completion": 1,
-    "doorayProposal": 1,
-    "doorayApproval": 1
+    "contextBootstrap": 12,
+    "workspace": 3,
+    "completion": 4
   },
   "verificationDescriptions": [
     "mindnprogress_add_card",
@@ -61,83 +65,83 @@
     },
     {
       "name": "leaf-new",
-      "chars": 830,
-      "sha256": "f11bfb32ed28cd6575e31a80cbba853519141ffd7697be1a0fe52f6bcca47713"
+      "chars": 1004,
+      "sha256": "a5a87243342ec980d1899be4b2b8d12f90e34a592a3d8e8e6d94b955d31ec839"
     },
     {
       "name": "group-coordinator-new",
-      "chars": 1264,
-      "sha256": "86e1cb5c6c002555f6ab4eefc9f07c98f25a7ea49d234f71bf6ee3ae9ddf2ac3"
+      "chars": 4348,
+      "sha256": "63b0e66890af2dc1ef9461b62b3873cc7bdbebf41f4b22195cc8ada1dab068bb"
     },
     {
       "name": "group-proposal-only",
-      "chars": 1460,
-      "sha256": "bb33f428790b4c3df85ca33606091b8a55b89cb37dc333b18d08ba03611379c9"
+      "chars": 4598,
+      "sha256": "85df6f84bad0fab80e7c242d3ad295f9f29f6c55e9bb556ffde86bea14e60483"
     },
     {
       "name": "document-coordinator-new",
-      "chars": 1018,
-      "sha256": "3caa38c1e562f054c37ea42e2e18f75ffe0e393183b125659fd27b3763b94ac4"
+      "chars": 2121,
+      "sha256": "2b1973ed00d57a29e1ca78524ee7c71091a12a26d14601cb22f9244f66e818f1"
     },
     {
       "name": "document-delivery",
-      "chars": 1080,
-      "sha256": "4827bcad86d793ea73e297ddb92ff117529ec132434de374e5ec06e42bea88b3"
+      "chars": 2959,
+      "sha256": "87945dcf058297792f542998d74e82d01080c5600bb575379b80dba4e93b1f38"
     },
     {
       "name": "worker-new-no-lease",
-      "chars": 727,
-      "sha256": "9fa9ee37bffbae88f8d6680b59a48868c9ce6f810a8de8dee2a9693f95ff9997"
+      "chars": 1260,
+      "sha256": "d4ca1f02cf9964e2e4242812352bab45d0f1bdf4e8bc2bd232ef906ffc226aaf"
     },
     {
       "name": "worker-new-lease",
-      "chars": 2388,
-      "sha256": "bccce8ca52da4b01bcca94e1efcad660f2fa5e94ab36b4d1d60d75300e9b0462"
+      "chars": 2920,
+      "sha256": "96d19f1ad5461eded4808440d421df9496f07c11eca5ff54e8af4557495215b7"
     },
     {
       "name": "worker-resume",
-      "chars": 648,
-      "sha256": "29c98e41cc81ecec9fc90da00e0714470a9448f3170f2cceb16bec2b09ad5a82"
+      "chars": 1260,
+      "sha256": "d4ca1f02cf9964e2e4242812352bab45d0f1bdf4e8bc2bd232ef906ffc226aaf"
     },
     {
       "name": "shared-knowledge-proposal",
-      "chars": 1566,
-      "sha256": "85b76ddc6485734b3e9d78c1b4ef5a5e83e5fa2aa0957ecd4d4cd356d02ad69e"
+      "chars": 1816,
+      "sha256": "ceb815ae11ce81acbbe9ad08b5482ac4c63726788cdecbd5de6b370f9ec36bb2"
     },
     {
       "name": "parent-wake",
-      "chars": 1184,
-      "sha256": "3ea1b13f599546f42574d3b2bb09ff1c2907e4e34beaffd9ccb384a403fd5b33"
+      "chars": 1177,
+      "sha256": "47de8e932ab6ba933b5c930888b6b0cf7e80ae1f5d0bc46384e5dfc08b788b9f"
     },
     {
       "name": "group-parent-wake",
-      "chars": 1640,
-      "sha256": "b744017098b12c9f21bb2f53f3a9e7e31ee1af61f5326c907b3e2436bff62cf2"
+      "chars": 3451,
+      "sha256": "9b582b52a38a96974ddec6a193c5a73dcd527d07defdd2573c40657aedeebcf9"
     },
     {
       "name": "user-stop-recovery",
-      "chars": 2906,
-      "sha256": "990b8902fd8c718c979d7dc8c1aa9b91fd37e0bc0a0e95679c0c2ff7802e8db0"
+      "chars": 3710,
+      "sha256": "87c085fda83b97e71c779e06b34183d7f453aa0b9636b6bb4bcce8302d7ed72f"
     },
     {
       "name": "reconstruction",
-      "chars": 762,
-      "sha256": "8c4b21246adbd7e29c9ed38dce14a1dfedfecd52ca77cc428ab51aeaab843efc"
+      "chars": 1007,
+      "sha256": "489ecf7c37358435dbff4bf9bba057062a95ca4da4ab3f81ba94d94c7a073561"
     },
     {
       "name": "layout",
-      "chars": 757,
-      "sha256": "1f45cf0b4299aeb409543c655e5e703c2cc5be08b452f57372203e445749eb63"
+      "chars": 1007,
+      "sha256": "0a5ed8852d5473447beba3cc8d5a5964b1e25c529a51af78fa849558b0f236b4"
     },
     {
       "name": "dooray-proposal",
-      "chars": 2442,
-      "sha256": "b2b7dd81248b5da16c9b86f83bd30b0434d0485b7fa9f7afabcfe7c9d6c59bf7"
+      "chars": 2351,
+      "sha256": "063c8a6d59e88cc9c4b68aa2fb43255d2abf0ffe25d98cd85da26d714b179748"
     },
     {
       "name": "dooray-approval",
-      "chars": 463,
-      "sha256": "c5cffb4e96d8a2c65a7959fabfecd7e67126027b085c8d6dbba8c61973947525"
+      "chars": 532,
+      "sha256": "7c9ede483bbda64bfe3c85283b0959ce4a4032e12c20f7ab307c27111dc2e0dd"
     }
   ]
 }

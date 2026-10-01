@@ -1499,6 +1499,7 @@ async function main() {
     assert.equal(recoveredRun.recovery.reusedConversation, true)
     const recoveredList = await invoke('mindnprogress_list_ai_delegations', { mapId, parentCardId: 'task-a', targetCardId: delegatedChild.id })
     const recoveredCurrent = recoveredList.delegations.find((item) => item.id === recoveredRun.delegation.id)
+    assert.ok(recoveredCurrent?.updatedAt, '복구 뒤 실제 위임 목록에서 최신 updatedAt을 확인해야 합니다.')
     await invoke('mindnprogress_refresh_ai_delegation', { mapId, delegationId: recoveredRun.delegation.id, expectedUpdatedAt: recoveredCurrent.updatedAt })
     await invokeExpectError('mindnprogress_retry_ai_delegation_report', { mapId, delegationId: recoveredRun.delegation.id, expectedUpdatedAt: recoveredCurrent.updatedAt }, /작업 완료|상태가 변경/)
     await invokeExpectError('mindnprogress_finalize_ai_coordination', { mapId, delegationId: recoveredRun.delegation.id, expectedUpdatedAt: recoveredCurrent.updatedAt }, /문서 조정 전용|상태가 변경/)

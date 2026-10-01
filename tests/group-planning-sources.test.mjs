@@ -141,7 +141,7 @@ test('기준 요약·재구성 기본값과 총괄·문서 AI 전문은 여러 �
   })
   for (const prompt of [coordinatorPrompt, buildGroupDocumentRequest({ groupId: 'group-test', groupName: '시험' })]) {
     assert.match(prompt, /get_group_context/)
-    assert.doesNotMatch(prompt, /project\.sources의 모든 기획서 주소·개별 버전/)
+    assert.match(prompt, /project\.sources의 모든 기획서 주소·개별 버전/)
   }
   assert.match(GROUP_COORDINATOR_INSTRUCTION, /project\.sources의 모든 기획서 주소·개별 버전/)
   assert.match(GROUP_COORDINATOR_INSTRUCTION, /추가 기획서를 기존 원본의 대체본으로 간주하지/)

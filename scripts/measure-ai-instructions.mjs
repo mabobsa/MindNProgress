@@ -10,8 +10,6 @@ import { buildAiInstructionSnapshots } from '../tests/helpers/aiInstructionSnaps
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const fixturePath = path.join(projectDirectory, 'tests/fixtures/ai-instruction-budget.json')
 const toolSurfaceFixturePath = path.join(projectDirectory, 'tests/fixtures/mcp-tool-input-schema.json')
-const execDeclarationChars = 24_602
-const perToolWrapperChars = 35
 const verificationDescriptions = [
   'mindnprogress_add_card',
   'mindnprogress_apply_reconstruction',
@@ -65,37 +63,35 @@ try {
   await client.connect(transport)
   const tools = [...(await client.listTools()).tools].sort((a, b) => a.name.localeCompare(b.name))
   const toolDescriptionChars = tools.reduce((sum, tool) => sum + tool.description.length, 0)
-  const fixedSurfaceChars = execDeclarationChars + toolDescriptionChars
-    + perToolWrapperChars * tools.length + MNP_MCP_SERVER_INSTRUCTIONS.length
-  const snapshots = buildAiInstructionSnapshots().map(({ name, text }) => ({
+  const toolNameChars = tools.reduce((sum, tool) => sum + tool.name.length, 0)
+  const inputSchemaJsonChars = tools.reduce((sum, tool) => sum + JSON.stringify(tool.inputSchema).length, 0)
+  const instructionSnapshots = await buildAiInstructionSnapshots()
+  const snapshots = instructionSnapshots.map(({ name, text }) => ({
     name,
     chars: text.length,
     sha256: createHash('sha256').update(text).digest('hex'),
   }))
   const dynamicTotalChars = snapshots.reduce((sum, snapshot) => sum + snapshot.chars, 0)
   const maxDynamicChars = Math.max(...snapshots.map((snapshot) => snapshot.chars))
-  const snapshotText = buildAiInstructionSnapshots().map((snapshot) => snapshot.text).join('\n')
+  const snapshotText = instructionSnapshots.map((snapshot) => snapshot.text).join('\n')
   const count = (token) => snapshotText.split(token).length - 1
   const budget = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     toolCount: tools.length,
     schemaDescriptionCount: tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0),
-    execDeclarationChars,
-    execDeclarationSource: '구현 직전 활성 MCP 등록 표면에서 캡처했으며 input schema deep-equal로 불변을 검증합니다.',
-    perToolWrapperChars,
     serverInstructionsChars: MNP_MCP_SERVER_INSTRUCTIONS.length,
+    toolNameChars,
     toolDescriptionChars,
-    fixedSurfaceChars,
+    inputSchemaJsonChars,
+    rawRegisteredSurfaceChars: MNP_MCP_SERVER_INSTRUCTIONS.length + toolNameChars + toolDescriptionChars + inputSchemaJsonChars,
+    hostMetadata: { measured: false, reason: 'MCP 호스트의 exec 선언과 wrapper 렌더링은 이 저장소에서 결정하지 않습니다.' },
+    historicalHostAssumption: { execDeclarationChars: 24_602, perToolWrapperChars: 35, note: '과거 캡처·상수이며 이번 전체 주입량 실측값이 아닙니다.' },
     dynamicTotalChars,
     maxDynamicChars,
-    maxStartChars: fixedSurfaceChars + maxDynamicChars,
     repetitionCounts: {
       contextBootstrap: count('# 대화 문맥 초기화'),
-      writePolicy: count('writePolicy:'),
       workspace: count('# 할당된 작업공간'),
       completion: count('mindnprogress_complete_ai_delegation'),
-      doorayProposal: count('workflow: dooray-proposal'),
-      doorayApproval: count('진입: approval-first'),
     },
     verificationDescriptions,
     snapshots,

@@ -212,7 +212,10 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
       const group = layout.groups.find((item) => item.mapIds.includes(mapId))
       if (!group) return null
       const project = await read(group.id)
-      return project.coordinatorMapId ? { groupId: group.id, name: group.name, coordinatorMapId: project.coordinatorMapId, role: project.coordinatorMapId === mapId ? 'coordinator' : 'document', contextTool: 'mindnprogress_get_group_context' } : null
+      if (!project.coordinatorMapId || !group.mapIds.includes(project.coordinatorMapId)) return null
+      const coordinator = await readMap(project.coordinatorMapId)
+      if (!coordinator || coordinator.trashedAt || !documentRoot(coordinator)) return null
+      return { groupId: group.id, name: group.name, coordinatorMapId: project.coordinatorMapId, role: project.coordinatorMapId === mapId ? 'coordinator' : 'document', contextTool: 'mindnprogress_get_group_context' }
     },
     assertCanTrash(mapId) {
       if ([...delegations.values()].some((item) => item.groupId && active(item) && [item.parentMapId, item.mapId].includes(mapId))) throw groupProjectError('그룹 AI 위임이 진행 중인 문서는 휴지통으로 이동할 수 없습니다.', 409)

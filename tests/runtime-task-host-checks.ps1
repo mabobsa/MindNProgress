@@ -106,7 +106,16 @@ exit 0
         # their SHOW events just because ancestry could not be resolved.
         $_.WindowClass -match 'ConsoleWindowClass|CASCADIA_HOSTING_WINDOW_CLASS' -or @($mnpObservedPids | Where-Object { $mnpIds -contains $_ }).Count -gt 0
     })
-    Assert-MnpHost ($mnpEvents.Count -eq 0) ('Visible startup windows detected: ' + ($mnpEvents | ConvertTo-Json -Depth 4 -Compress))
+    $mnpEventDetails = @($mnpEvents | ForEach-Object {
+        $mnpEvent = $_
+        [pscustomobject]@{
+            ProcessId = $mnpEvent.ProcessId
+            Ancestry = $mnpEvent.Ancestry
+            WindowClass = $mnpEvent.WindowClass
+            FixtureAncestryMatch = @($mnpObservedPids | Where-Object { $mnpEvent.Ancestry -contains $_ }).Count -gt 0
+        }
+    })
+    Assert-MnpHost ($mnpEvents.Count -eq 0) ('Visible startup windows detected: ' + ($mnpEventDetails | ConvertTo-Json -Depth 4 -Compress) + '; fixture PIDs: ' + ($mnpObservedPids -join ','))
     Write-Host 'Task host checks passed: 10 launches; 0 SHOW events; start-icon chain, lifetime, parent, cwd, exit 0/7 and missing-file checks passed.'
 } finally {
     # Only release the fixture we created. Its own deadline also prevents orphans.

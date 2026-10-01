@@ -75,6 +75,41 @@ test('unit runner는 명시적 동시성 override와 자식 종료 코드를 보
   assert.equal(exitCode, 7)
 })
 
+test('전역 창 관찰과 Windows 기동 fixture는 다른 파일과 병렬 실행하지 않고 실패를 보존한다', async () => {
+  const names = [
+    'runtime-task-host.test.mjs',
+    'beta.test.mjs',
+    'runtime-supervisor.test.mjs',
+    'alpha.test.mjs',
+    'runtime-entrypoints.test.mjs',
+  ]
+  const calls = []
+  const exitCode = await runUnitTests({
+    environment: {},
+    output: { log: () => {} },
+    readDirectory: async () => names.map((name) => entry(name)),
+    spawnProcess: (_command, args) => {
+      calls.push(args)
+      return exitingChild(calls.length === 1 ? 7 : 0)
+    },
+  })
+
+  assert.equal(exitCode, 7)
+  assert.deepEqual(calls.map((args) => args.slice(0, 2)), [
+    ['--test', '--test-concurrency=4'],
+    ['--test', '--test-concurrency=1'],
+    ['--test', '--test-concurrency=1'],
+    ['--test', '--test-concurrency=1'],
+  ])
+  assert.deepEqual(calls.flatMap((args) => args.slice(2).map((file) => path.basename(file))), [
+    'alpha.test.mjs',
+    'beta.test.mjs',
+    'runtime-entrypoints.test.mjs',
+    'runtime-supervisor.test.mjs',
+    'runtime-task-host.test.mjs',
+  ])
+})
+
 test('unit runner는 잘못된 동시성 값을 테스트 실행 전에 거부한다', async () => {
   const invalidOverrides = [
     { value: '', message: /1 이상의 정수/ },

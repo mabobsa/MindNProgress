@@ -8,6 +8,11 @@ const scriptPath = fileURLToPath(import.meta.url)
 
 export const UNIT_TEST_CONCURRENCY_ENV = 'MNP_UNIT_TEST_CONCURRENCY'
 export const DEFAULT_UNIT_TEST_CONCURRENCY = 4
+const isolatedTestNames = new Set([
+  'runtime-entrypoints.test.mjs',
+  'runtime-supervisor.test.mjs',
+  'runtime-task-host.test.mjs',
+])
 
 export function resolveUnitTestConcurrency(environment = process.env) {
   const rawValue = environment[UNIT_TEST_CONCURRENCY_ENV]
@@ -40,17 +45,28 @@ export async function runUnitTests({
 
   if (testFiles.length === 0) throw new Error('실행할 단위 테스트를 찾지 못했습니다.')
 
-  const args = ['--test', `--test-concurrency=${concurrency}`, ...testFiles]
-  output.log(`[unit runner] files=${testFiles.length}, concurrency=${concurrency}`)
-  const child = spawnProcess(nodeExecutable, args, {
-    cwd: rootDirectory,
-    stdio: 'inherit',
-  })
-  const exitCode = await new Promise((resolve, reject) => {
-    child.once('error', reject)
-    child.once('exit', (code) => resolve(code))
-  })
-  return exitCode ?? 1
+  const parallelFiles = testFiles.filter((file) => !isolatedTestNames.has(path.basename(file)))
+  const isolatedFiles = testFiles.filter((file) => isolatedTestNames.has(path.basename(file)))
+  const phases = [
+    ...(parallelFiles.length > 0 ? [{ files: parallelFiles, concurrency }] : []),
+    ...isolatedFiles.map((file) => ({ files: [file], concurrency: 1 })),
+  ]
+  output.log(`[unit runner] files=${testFiles.length}, concurrency=${concurrency}${isolatedFiles.length > 0 ? `, isolated=${isolatedFiles.length}` : ''}`)
+
+  let exitCode = 0
+  for (const [index, phase] of phases.entries()) {
+    if (isolatedFiles.length > 0) output.log(`[unit runner] phase=${index + 1}/${phases.length}, files=${phase.files.length}, concurrency=${phase.concurrency}`)
+    const child = spawnProcess(nodeExecutable, ['--test', `--test-concurrency=${phase.concurrency}`, ...phase.files], {
+      cwd: rootDirectory,
+      stdio: 'inherit',
+    })
+    const phaseExitCode = await new Promise((resolve, reject) => {
+      child.once('error', reject)
+      child.once('exit', (code) => resolve(code))
+    })
+    if (exitCode === 0 && phaseExitCode !== 0) exitCode = phaseExitCode ?? 1
+  }
+  return exitCode
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {

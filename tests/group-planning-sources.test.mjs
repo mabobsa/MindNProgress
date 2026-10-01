@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createGroupProjects } from '../server/lib/groupProjects.mjs'
+import { replaceFileWithRetry } from '../server/lib/replaceFileWithRetry.mjs'
 import { groupCriteriaFingerprint, applyGroupWaitingReview, groupWaitingDetails } from '../server/lib/groupWaitingReviews.mjs'
 import { GROUP_PLANNING_SOURCE_LIMIT, groupPlanningSources, withGroupPlanningSources, groupProjectCriteriaEqual, groupPlanningSourceSummary, groupPlanningBaseline } from '../src/utils/groupPlanningSources.mjs'
 import { groupProjectDraftAfterRefresh } from '../src/utils/groupOverview.mjs'
@@ -23,7 +24,7 @@ async function fixture(action) {
     const map = { id: 'map-test', title: '담당 문서', version: 4, nodes: [{ id: 'root', data: { kind: 'root', label: '최상위', status: 'planned', isWork: false, waitingItems: [{ id: 'wait', label: '최종 아트', resumeCondition: '아트 제공 후 재개' }] } }], edges: [] }
     const group = { id: 'group-test', name: '기획 그룹', mapIds: [map.id] }
     const forbidden = () => { throw Error('기준 저장으로 문서·배치·AI를 변경하면 안 됩니다.') }
-    const create = () => createGroupProjects({ dataDirectory: directory, replaceFile: rename, listMaps: async () => [map], readMap: async () => map, saveMap: forbidden, readLayout: async () => ({ groups: [group] }), writeLayout: forbidden, delegations: new Map(), publicDelegation: (item) => item, runtimeSnapshot: () => [] })
+    const create = () => createGroupProjects({ dataDirectory: directory, replaceFile: replaceFileWithRetry, listMaps: async () => [map], readMap: async () => map, saveMap: forbidden, readLayout: async () => ({ groups: [group] }), writeLayout: forbidden, delegations: new Map(), publicDelegation: (item) => item, runtimeSnapshot: () => [] })
     const file = path.join(directory, '_group-projects', 'group-test.json')
     await mkdir(path.dirname(file), { recursive: true })
     const original = `${JSON.stringify(legacy(), null, 2)}\n`

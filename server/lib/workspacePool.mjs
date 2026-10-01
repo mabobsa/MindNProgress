@@ -5,6 +5,7 @@ import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { aiDelegationWorkspaceLeaseMatches, retryableExternalLimitCategory } from './aiDelegations.mjs'
+import { replaceFileWithRetry } from './replaceFileWithRetry.mjs'
 
 const execFileAsync = promisify(execFile)
 const idleDriftReason = '작업공간에 소유자를 확정할 수 없는 변경이 있습니다.'
@@ -154,12 +155,12 @@ function driftFolderName(now = new Date()) {
   return now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
 }
 
-function atomicJson(file, value) {
+function atomicJson(file, value, replaceFile = rename) {
   return (async () => {
     await mkdir(path.dirname(file), { recursive: true })
     const temporary = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
     await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
-    await rename(temporary, file)
+    await replaceFile(temporary, file)
   })()
 }
 
@@ -356,10 +357,11 @@ Unity Play Mode, 재임포트, 동적 폰트·Atlas 생성 등의 검증은 어�
 }
 
 export class WorkspacePoolManager {
-  constructor({ registryFile, stateFile, gitRunner = defaultGitRunner } = {}) {
+  constructor({ registryFile, stateFile, gitRunner = defaultGitRunner, replaceStateFile = replaceFileWithRetry } = {}) {
     this.registryFile = path.resolve(String(registryFile ?? '').trim())
     this.stateFile = path.resolve(String(stateFile ?? '').trim())
     this.git = gitRunner
+    this.replaceStateFile = replaceStateFile
     this.registry = null
     this.state = null
     this.queue = Promise.resolve()
@@ -2560,7 +2562,8 @@ export class WorkspacePoolManager {
 
   async persist() {
     if (!this.state) return
-    this.state.updatedAt = new Date().toISOString()
-    await atomicJson(this.stateFile, this.state)
+    const updatedAt = new Date().toISOString()
+    await atomicJson(this.stateFile, { ...this.state, updatedAt }, this.replaceStateFile)
+    this.state.updatedAt = updatedAt
   }
 }

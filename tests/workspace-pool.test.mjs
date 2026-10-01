@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -12,6 +12,7 @@ import {
   integrationStatusRetryReasonCode,
   normalizeCheckpointCommitMessage,
 } from '../server/lib/workspacePool.mjs'
+import { replaceFileWithRetry } from '../server/lib/replaceFileWithRetry.mjs'
 
 const execFileAsync = promisify(execFile)
 const checkpointCommitMessage = {
@@ -21,6 +22,77 @@ const checkpointCommitMessage = {
   changes: '일본 전용 진입 경로로 등록 책임을 일원화하고 중복 등록을 제거했습니다.',
   scope: 'JAPAN_SERVICE 로그인 흐름에만 적용됩니다.',
 }
+
+test('상태 파일 저장의 일시적 EPERM은 기존 파일을 유지하다 같은 임시 파일로 재시도한다', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'mnp-state-retry-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const shared = path.join(root, 'shared')
+  await mkdir(shared)
+  const stateFile = path.join(shared, 'state.json')
+  const previous = { updatedAt: '2020-01-01T00:00:00.000Z', marker: 'old' }
+  await writeFile(stateFile, `${JSON.stringify(previous)}\n`)
+  let attempts = 0
+  let temporaryFile
+  const manager = new WorkspacePoolManager({
+    stateFile,
+    replaceStateFile: (from, to) => replaceFileWithRetry(from, to, { renameFile: async (source, target) => {
+      attempts += 1
+      assert.equal(target, stateFile)
+      if (temporaryFile) assert.equal(source, temporaryFile)
+      temporaryFile = source
+      if (attempts === 1) {
+        assert.deepEqual(JSON.parse(await readFile(target, 'utf8')), previous)
+        assert.equal(manager.state.updatedAt, previous.updatedAt)
+        assert.equal(JSON.parse(await readFile(source, 'utf8')).marker, 'new')
+        throw Object.assign(new Error('일시적 접근 거부'), { code: 'EPERM' })
+      }
+      await rename(source, target)
+    } }),
+  })
+  manager.state = { ...previous, marker: 'new' }
+
+  await manager.persist()
+
+  assert.equal(attempts, 2)
+  assert.deepEqual(JSON.parse(await readFile(stateFile, 'utf8')), manager.state)
+  assert.equal(manager.state.marker, 'new')
+  assert.notEqual(manager.state.updatedAt, previous.updatedAt)
+  assert.deepEqual(await readdir(shared), ['state.json'])
+})
+
+test('상태 파일 저장의 지속적 EPERM은 원래 오류를 반환하고 기존 파일·메모리 시각을 보존하며 임시 파일을 정리한다', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'mnp-state-retry-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const shared = path.join(root, 'shared')
+  await mkdir(shared)
+  const stateFile = path.join(shared, 'state.json')
+  const previous = { updatedAt: '2020-01-01T00:00:00.000Z', marker: 'old' }
+  await writeFile(stateFile, `${JSON.stringify(previous)}\n`)
+  const failure = Object.assign(new Error('지속적 접근 거부'), { code: 'EPERM' })
+  let attempts = 0
+  let temporaryFile
+  const manager = new WorkspacePoolManager({
+    stateFile,
+    replaceStateFile: (from, to) => replaceFileWithRetry(from, to, { renameFile: async (source, target) => {
+      attempts += 1
+      assert.equal(target, stateFile)
+      if (temporaryFile) assert.equal(source, temporaryFile)
+      temporaryFile = source
+      assert.deepEqual(JSON.parse(await readFile(target, 'utf8')), previous)
+      assert.equal(manager.state.updatedAt, previous.updatedAt)
+      assert.equal(JSON.parse(await readFile(source, 'utf8')).marker, 'new')
+      throw failure
+    } }),
+  })
+  manager.state = { ...previous, marker: 'new' }
+
+  await assert.rejects(() => manager.persist(), (error) => error === failure)
+
+  assert.equal(attempts, 6)
+  assert.deepEqual(JSON.parse(await readFile(stateFile, 'utf8')), previous)
+  assert.deepEqual(manager.state, { ...previous, marker: 'new' })
+  assert.deepEqual(await readdir(shared), ['state.json'])
+})
 
 async function git(cwd, ...args) {
   const result = await execFileAsync('git', args, { cwd, windowsHide: true })

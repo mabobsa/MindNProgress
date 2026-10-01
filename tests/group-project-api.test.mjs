@@ -191,10 +191,10 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.equal(delegated.body.delegation.coordinationOnly, true)
     assert.equal(delegated.body.delegation.workspaceLease, null)
     const documentConversationId = delegated.body.delegation.targetConversationId
-    assert.match(calls[0].instruction, /역할: document coordinator.*get_group_context의 guide\.documentCoordinator/s)
+    assert.match(calls[0].instruction, /이 작업은 그룹 문서 최상위 카드의 분석·조정 업무.*mindnprogress_get_group_context/s)
     assert.ok(!calls[0].instruction.includes(AI_EXECUTION_APPROVAL_INSTRUCTION))
     assert.ok(!calls[0].instruction.includes(GROUP_APPROVAL_INSTRUCTION))
-    assert.ok(!calls[0].instruction.includes(DOCUMENT_COORDINATOR_INSTRUCTION))
+    assert.ok(calls[0].instruction.includes(DOCUMENT_COORDINATOR_INSTRUCTION))
     assert.equal((await api(delegateUrl, 'POST', args, sourceHeaders)).body.repeated, true)
     assert.equal(calls.length, 1)
     const currentTarget = (await api(`/api/maps/${target.id}`)).body.map
@@ -221,8 +221,8 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     const operationId = recovery.body.delegation.childOperationId
     assert.ok(dispatches.has(operationId))
     const recoveryCall = calls.find((call) => call.operationId === operationId)
-    assert.match(recoveryCall.instruction, /역할: document coordinator.*get_group_context의 guide\.documentCoordinator/s)
-    assert.match(recoveryCall.instruction, /worker나 lease를 임의로 만들지/)
+    assert.match(recoveryCall.instruction, /이 작업은 그룹 문서 최상위 카드의 분석·조정 업무.*mindnprogress_get_group_context/s)
+    assert.match(recoveryCall.instruction, /작업공간을 임의로 점유하거나 새 lease를 만들지/)
     assert.ok(!recoveryCall.instruction.includes(AI_EXECUTION_APPROVAL_INSTRUCTION))
     assert.ok(!recoveryCall.instruction.includes(GROUP_APPROVAL_INSTRUCTION))
     assert.ok(!recoveryCall.instruction.includes(DOCUMENT_COORDINATOR_INSTRUCTION))
@@ -307,7 +307,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.equal(wake.targetConversationId, 'group-parent')
     assert.ok(wake.instruction.includes(target.id))
     assert.ok(wake.instruction.includes(coordinatorId))
-    assert.match(wake.instruction, /역할: group coordinator.*최신 그룹 문맥/s)
+    assert.match(wake.instruction, /# 사용자 승인과 실행 범위.*# 그룹의 두 단계 사용자 승인/s)
     assert.ok(wake.instruction.includes(GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION))
     assert.ok(!wake.instruction.includes(AI_EXECUTION_APPROVAL_INSTRUCTION))
     assert.ok(!wake.instruction.includes(GROUP_APPROVAL_INSTRUCTION))

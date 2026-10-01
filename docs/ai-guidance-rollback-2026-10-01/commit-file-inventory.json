@@ -1,0 +1,688 @@
+{
+  "baseline": "11a5079d62a9493e55548fe5b1ccbe0ffa3eb94c",
+  "startHead": "eaa7eeda712c76e59c19ed771cbba077b72ada1e",
+  "commits": [
+    {
+      "hash": "7aae8f066d3b74f4b01871ada98df7a0ec83a07a",
+      "subject": "[김용민] MindNProgress 지침 경량화 및 회귀 고정",
+      "changes": [
+        {
+          "status": "M",
+          "file": "mcp/server.mjs"
+        },
+        {
+          "status": "M",
+          "file": "package.json"
+        },
+        {
+          "status": "A",
+          "file": "scripts/measure-ai-instructions.mjs"
+        },
+        {
+          "status": "M",
+          "file": "scripts/test-mcp.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/index.mjs"
+        },
+        {
+          "status": "A",
+          "file": "server/lib/aiDelegationInstructions.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/doorayResponses.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/groupDocumentInstructions.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/groupProjects.mjs"
+        },
+        {
+          "status": "M",
+          "file": "src/utils/aiApprovalInstructions.mjs"
+        },
+        {
+          "status": "M",
+          "file": "src/utils/aiContextInstructions.mjs"
+        },
+        {
+          "status": "M",
+          "file": "src/utils/aiConversationLaunch.d.mts"
+        },
+        {
+          "status": "M",
+          "file": "src/utils/aiConversationLaunch.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-approval-instructions.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-context-instructions.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-conversation-launch.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-conversation-role.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-delegation-reports-api.test.mjs"
+        },
+        {
+          "status": "A",
+          "file": "tests/ai-instruction-snapshots.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-limit-workspace-recovery.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/dooray-responses-api.test.mjs"
+        },
+        {
+          "status": "A",
+          "file": "tests/fixtures/ai-instruction-budget.json"
+        },
+        {
+          "status": "A",
+          "file": "tests/fixtures/mcp-tool-input-schema.json"
+        },
+        {
+          "status": "M",
+          "file": "tests/group-document-instructions.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/group-planning-sources.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/group-project-api.test.mjs"
+        },
+        {
+          "status": "A",
+          "file": "tests/helpers/aiInstructionSnapshots.mjs"
+        },
+        {
+          "status": "A",
+          "file": "tests/mcp-instruction-surface.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "1994e714a19e52744501d2dbec6607a609bc64ed",
+      "subject": "[김용민] MCP 복구 안전 계약과 Dooray 회귀 안정화",
+      "changes": [
+        {
+          "status": "M",
+          "file": "mcp/server.mjs"
+        },
+        {
+          "status": "M",
+          "file": "scripts/measure-ai-instructions.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/dooray-responses.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/fixtures/ai-instruction-budget.json"
+        },
+        {
+          "status": "M",
+          "file": "tests/fixtures/mcp-tool-input-schema.json"
+        },
+        {
+          "status": "M",
+          "file": "tests/mcp-instruction-surface.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "428c54ae71309708f3585aab10e1a417454a5c59",
+      "subject": "[김용민] 그룹 문서 지시 단일 실행 경쟁 제거",
+      "changes": [
+        {
+          "status": "M",
+          "file": "server/index.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/groupDocumentInstructions.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/group-document-instructions.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "e4356cb08671f662ad1d82929802f8ed31ec6f2b",
+      "subject": "[김용민] 단위 테스트 파일 동시성 제한",
+      "changes": [
+        {
+          "status": "M",
+          "file": "scripts/run-unit-tests.mjs"
+        },
+        {
+          "status": "A",
+          "file": "tests/unit-test-runner.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "66241ac851683c05773d46bd6ab03c6e40dd9fce",
+      "subject": "[김용민] unit runner 상한 회귀와 이벤트 스트림 기동 안정화",
+      "changes": [
+        {
+          "status": "M",
+          "file": "tests/event-stream-api.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/unit-test-runner.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "351b131784d1093b44a4a20e89b2a28a63a83095",
+      "subject": "[김용민] Dooray 완료 제안 복구와 승인 대화 시작 안정화",
+      "changes": [
+        {
+          "status": "M",
+          "file": "docs/dooray-response-lifecycle.md"
+        },
+        {
+          "status": "M",
+          "file": "server/index.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/aionUiExternalLaunch.mjs"
+        },
+        {
+          "status": "A",
+          "file": "server/lib/aionUiLaunchTracking.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/doorayResponses.mjs"
+        },
+        {
+          "status": "M",
+          "file": "src/components/AiConversationDialog.css"
+        },
+        {
+          "status": "M",
+          "file": "src/components/AiConversationDialog.tsx"
+        },
+        {
+          "status": "M",
+          "file": "src/components/DoorayResponseInbox.tsx"
+        },
+        {
+          "status": "A",
+          "file": "src/components/useAiLaunchConfirmation.ts"
+        },
+        {
+          "status": "M",
+          "file": "src/components/useDoorayResponses.ts"
+        },
+        {
+          "status": "M",
+          "file": "src/dark.css"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-conversation-role-browser.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-workspace-settings-browser.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/aionui-external-launch.test.mjs"
+        },
+        {
+          "status": "A",
+          "file": "tests/aionui-launch-tracking.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/dooray-responses-api.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/dooray-responses.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/helpers/doorayResponseBrowser.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "73dbf8a93b1067d24f8398f5a62f250ae02e22fe",
+      "subject": "[김용민] 모바일 세부 정보 위임 현황 표시 복원",
+      "changes": [
+        {
+          "status": "M",
+          "file": "src/App.tsx"
+        },
+        {
+          "status": "M",
+          "file": "tests/helpers/touchMenuBrowser.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "cd802794f9cf41907a815e3a6ca6e3a085bcfd0a",
+      "subject": "[김용민] AI 대화 재사용과 작업공간 재배정 보완",
+      "changes": [
+        {
+          "status": "M",
+          "file": "mcp/server.mjs"
+        },
+        {
+          "status": "M",
+          "file": "scripts/test-mcp.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/index.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/aiConversationContextHealth.mjs"
+        },
+        {
+          "status": "A",
+          "file": "server/lib/aiConversationMessageStatistics.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/workspacePool.mjs"
+        },
+        {
+          "status": "M",
+          "file": "src/types/mindMap.ts"
+        },
+        {
+          "status": "M",
+          "file": "src/utils/aiConversations.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-conversation-context-health.test.mjs"
+        },
+        {
+          "status": "A",
+          "file": "tests/ai-conversation-message-statistics.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-conversations.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/workspace-pool.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "e88881e179f5e0192ff4678aa61b76529af1ccb5",
+      "subject": "[김용민] AI 대화 문맥 판정 근거와 재사용 안내 정정",
+      "changes": [
+        {
+          "status": "M",
+          "file": "mcp/server.mjs"
+        },
+        {
+          "status": "M",
+          "file": "scripts/test-mcp.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/aiConversationContextHealth.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/aiConversationMessageStatistics.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-conversation-context-health.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-conversation-message-statistics.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/workspace-pool.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "4d57e9a8196f5452bb72c7fd81011187c84668c0",
+      "subject": "[김용민] GPT-5.6-Sol 위임 대화 재사용 차단",
+      "changes": [
+        {
+          "status": "M",
+          "file": "mcp/server.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/index.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/aiConversationContextHealth.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-conversation-context-health.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/group-project-api.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "edda3bd30a26d29d90c247466f2ac572b0f7e0a3",
+      "subject": "[김용민] 배치 비대화형 실행 시 멈춤·한글 깨짐 수정",
+      "changes": [
+        {
+          "status": "M",
+          "file": "MindNProgress_Backup.bat"
+        },
+        {
+          "status": "M",
+          "file": "MindNProgress_Restore.bat"
+        },
+        {
+          "status": "M",
+          "file": "scripts/runtime/entrypoints/MindNProgress_Start.bat"
+        }
+      ]
+    },
+    {
+      "hash": "ac3390dd161886f7f1995a9147015c0c4cb1fc3e",
+      "subject": "[김용민] 상단 메뉴의 미구현 공유 버튼 제거",
+      "changes": [
+        {
+          "status": "M",
+          "file": "src/App.css"
+        },
+        {
+          "status": "M",
+          "file": "src/App.tsx"
+        }
+      ]
+    },
+    {
+      "hash": "60f4e51189f2583ba9a2bc53b7d20fbecea423f4",
+      "subject": "[김용민] MnP 지침 바인딩·역할·재개 및 도구 설명 보완",
+      "changes": [
+        {
+          "status": "M",
+          "file": "mcp/server.mjs"
+        },
+        {
+          "status": "M",
+          "file": "scripts/test-mcp.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/index.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/aiDelegationInstructions.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/groupProjects.mjs"
+        },
+        {
+          "status": "M",
+          "file": "src/utils/aiContextInstructions.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-context-instructions.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-instruction-snapshots.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/fixtures/ai-instruction-budget.json"
+        },
+        {
+          "status": "M",
+          "file": "tests/fixtures/mcp-tool-input-schema.json"
+        },
+        {
+          "status": "M",
+          "file": "tests/helpers/aiInstructionSnapshots.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/mcp-instruction-surface.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "46941106fc80aafec84ca63ce3101f34a9f37e22",
+      "subject": "[김용민] Windows 런타임 파이프 진입점 회귀 정합화",
+      "changes": [
+        {
+          "status": "M",
+          "file": "tests/runtime-entrypoints.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "0fd56d8176e954fd360ab17b6c1fc28a2ccdb664",
+      "subject": "[김용민] 대화 탐색 검증 서버 기동 하네스 안정화",
+      "changes": [
+        {
+          "status": "M",
+          "file": "tests/ai-conversation-navigation-api.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "38b0ba853def9ff2ce9d381656e80c8b0055843f",
+      "subject": "[김용민] 초기 AI 대화의 문맥 권장 판정 보정",
+      "changes": [
+        {
+          "status": "M",
+          "file": "mcp/server.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/aiConversationContextHealth.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-conversation-message-statistics.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "7ae01210e0f5e669e01fcf6b81eb2c0297d8eb0b",
+      "subject": "[김용민] 사용자와 AI 공용 문서 전체 검색 구현",
+      "changes": [
+        {
+          "status": "M",
+          "file": "README.md"
+        },
+        {
+          "status": "A",
+          "file": "docs/global-search.md"
+        },
+        {
+          "status": "M",
+          "file": "mcp/server.mjs"
+        },
+        {
+          "status": "M",
+          "file": "scripts/measure-ai-instructions.mjs"
+        },
+        {
+          "status": "M",
+          "file": "scripts/test-mcp.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/index.mjs"
+        },
+        {
+          "status": "A",
+          "file": "server/lib/globalSearch.mjs"
+        },
+        {
+          "status": "M",
+          "file": "src/App.css"
+        },
+        {
+          "status": "M",
+          "file": "src/App.tsx"
+        },
+        {
+          "status": "A",
+          "file": "src/components/GlobalSearchDialog.css"
+        },
+        {
+          "status": "A",
+          "file": "src/components/GlobalSearchDialog.tsx"
+        },
+        {
+          "status": "M",
+          "file": "src/dark.css"
+        },
+        {
+          "status": "A",
+          "file": "src/utils/globalSearch.d.mts"
+        },
+        {
+          "status": "A",
+          "file": "src/utils/globalSearch.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/fixtures/ai-instruction-budget.json"
+        },
+        {
+          "status": "M",
+          "file": "tests/fixtures/mcp-tool-input-schema.json"
+        },
+        {
+          "status": "A",
+          "file": "tests/global-search-api.test.mjs"
+        },
+        {
+          "status": "A",
+          "file": "tests/global-search-browser.test.mjs"
+        },
+        {
+          "status": "A",
+          "file": "tests/global-search-dialog-browser.test.mjs"
+        },
+        {
+          "status": "A",
+          "file": "tests/global-search.test.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/helpers/mcpToolNames.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/mcp-instruction-surface.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "7d932713c53e718b8b1a65358f7ca906aa93dbbb",
+      "subject": "[김용민] Windows 런타임 회귀를 전체 단위 테스트에서 격리",
+      "changes": [
+        {
+          "status": "M",
+          "file": "scripts/run-unit-tests.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/runtime-task-host-checks.ps1"
+        },
+        {
+          "status": "M",
+          "file": "tests/unit-test-runner.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "754750eaa88f2023efd94de05fc2bb8ce7214562",
+      "subject": "[김용민] 대화 접힘 설정의 파일 교체 재시도 통일",
+      "changes": [
+        {
+          "status": "M",
+          "file": "server/index.mjs"
+        },
+        {
+          "status": "M",
+          "file": "server/lib/aiDialogPreferences.mjs"
+        },
+        {
+          "status": "A",
+          "file": "server/lib/replaceFileWithRetry.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/ai-dialog-preferences.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "3028e763babbfe973eee24bf09fb60bc8160d9cc",
+      "subject": "[김용민] 그룹 기획서 테스트의 파일 교체 재시도 경로 통일",
+      "changes": [
+        {
+          "status": "M",
+          "file": "tests/group-planning-sources.test.mjs"
+        }
+      ]
+    },
+    {
+      "hash": "eaa7eeda712c76e59c19ed771cbba077b72ada1e",
+      "subject": "[김용민] 작업공간 상태 파일 교체 재시도 보완",
+      "changes": [
+        {
+          "status": "M",
+          "file": "server/lib/workspacePool.mjs"
+        },
+        {
+          "status": "M",
+          "file": "tests/workspace-pool.test.mjs"
+        }
+      ]
+    }
+  ]
+}

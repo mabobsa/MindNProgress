@@ -35,7 +35,7 @@ window.fixtureLoadId = crypto.randomUUID();
 createRoot(document.getElementById('root')).render(React.createElement(React.StrictMode,null,React.createElement(App)));
 `
 
-test('휴대폰의 문서·카드 선택은 주소와 저장 위치를 갱신하고 새로고침 후 그대로 복원한다', { skip: process.env.MNP_BROWSER_TEST !== '1', timeout: 60000 }, async () => {
+test('휴대폰은 최근 카드 선택만 복원하고 문서 목록과 세부정보를 하나씩 열며 데스크톱 동작을 유지한다', { skip: process.env.MNP_BROWSER_TEST !== '1', timeout: 60000 }, async () => {
   const { createServer } = await import('vite')
   const react = (await import('@vitejs/plugin-react')).default
   const directory = await mkdtemp(path.join(tmpdir(), 'mnp-location-browser-'))
@@ -101,6 +101,18 @@ test('휴대폰의 문서·카드 선택은 주소와 저장 위치를 갱신하
       return result.result.value
     }
     const loaded = async (cardId, pathname) => until(() => evaluate(`location.pathname===${JSON.stringify(pathname)} && Boolean(document.querySelector(${JSON.stringify(`.react-flow__node.selected[data-id="${cardId}"]`)}))`), `선택 복원 실패: ${pathname}`)
+    const phonePanels = async (sidebar, inspector) => until(() => evaluate(`(() => {
+      const library = document.querySelector('#document-library-panel');
+      const details = document.querySelector('#node-inspector-panel');
+      return library.classList.contains('mobile-open') === ${sidebar}
+        && details.classList.contains('mobile-open') === ${inspector}
+        && (getComputedStyle(library).visibility === 'visible') === ${sidebar}
+        && (getComputedStyle(details).visibility === 'visible') === ${inspector}
+        && document.querySelector('.mobile-library-toggle').getAttribute('aria-expanded') === '${sidebar}'
+        && document.querySelector('.mobile-inspector-toggle').getAttribute('aria-expanded') === '${inspector}';
+    })()`), '휴대폰 패널 열림 상태 불일치')
+    const openLibrary = () => evaluate('document.querySelector(".mobile-library-toggle").click()')
+    const openInspector = () => evaluate('document.querySelector(".mobile-inspector-toggle").click()')
     const navigate = async pathname => { await send('Page.navigate', { url: base + pathname }) }
     const reload = async () => {
       const previous = await evaluate('window.fixtureLoadId')
@@ -113,23 +125,43 @@ test('휴대폰의 문서·카드 선택은 주소와 저장 위치를 갱신하
     await navigate('/mindmap/map-common/root?source=phone#keep')
     await loaded('root', '/mindmap/map-common/root')
     assert.equal(await evaluate('matchMedia("(max-width: 720px)").matches'), true)
+    await phonePanels(false, false)
+    await openLibrary(); await phonePanels(true, false)
     await evaluate('document.querySelector(".map-item[data-library-menu-id=map-other]").click()')
     await until(() => evaluate('Boolean(document.querySelector(".react-flow__node[data-id=other-task]"))'), '다른 문서 이동 실패')
     await evaluate('document.querySelector(".react-flow__node[data-id=other-task]").click()')
     await loaded('other-task', '/mindmap/map-other/other-task')
+    await phonePanels(false, true)
+    await openLibrary(); await phonePanels(true, false)
+    await loaded('other-task', '/mindmap/map-other/other-task')
+    await openInspector(); await phonePanels(false, true)
+    await openInspector(); await phonePanels(false, false)
+    // 같은 카드를 다시 선택하는 경로에서도 문서 목록과 세부정보가 동시에 열리지 않는다.
+    await openLibrary(); await phonePanels(true, false)
+    await evaluate('document.querySelector(".react-flow__node[data-id=other-task]").click()')
+    await phonePanels(false, true)
     assert.equal(await evaluate('location.search+location.hash'), '?source=phone#keep')
     assert.deepEqual(await evaluate('JSON.parse(localStorage.getItem("mindnprogress-last-location:selection-test"))'), { mapId: 'map-other', viewMode: 'mindmap', nodeId: 'other-task' })
     await reload(); await loaded('other-task', '/mindmap/map-other/other-task')
+    await phonePanels(false, false)
+    await openInspector(); await phonePanels(false, true)
+    await openLibrary(); await phonePanels(true, false)
+    await reload(); await loaded('other-task', '/mindmap/map-other/other-task')
+    await phonePanels(false, false)
 
     await navigate('/'); await loaded('other-task', '/mindmap/map-other/other-task')
+    await phonePanels(false, false)
     await navigate('/mindmap/'); await loaded('other-task', '/mindmap/map-other/other-task')
+    await phonePanels(false, false)
     await navigate('/viewer/mindmap/map-other/other-task'); await loaded('other-task', '/viewer/mindmap/map-other/other-task')
     await reload(); await loaded('other-task', '/viewer/mindmap/map-other/other-task')
+    await phonePanels(false, false)
 
     await navigate('/mindmap/map-common/root'); await loaded('root', '/mindmap/map-common/root')
     await evaluate('document.querySelector(".react-flow__node[data-id=common-task]").click()')
     await loaded('common-task', '/mindmap/map-common/common-task')
     await reload(); await loaded('common-task', '/mindmap/map-common/common-task')
+    await phonePanels(false, false)
 
     await evaluate('localStorage.setItem("mindnprogress-last-location:selection-test",JSON.stringify({mapId:"map-other",viewMode:"mindmap",nodeId:"deleted-card"}))')
     await navigate('/')
@@ -150,10 +182,16 @@ test('휴대폰의 문서·카드 선택은 주소와 저장 위치를 갱신하
     await evaluate('document.querySelector("button[aria-label^=\\"화면 테마:\\"]").click()')
     await loaded('other-task', '/mindmap/map-other/other-task')
     await reload(); await loaded('other-task', '/mindmap/map-other/other-task')
+    await phonePanels(false, false)
 
     await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
     await navigate('/mindmap/map-other/other-task'); await loaded('other-task', '/mindmap/map-other/other-task')
     await reload(); await loaded('other-task', '/mindmap/map-other/other-task')
+    assert.equal(await evaluate('getComputedStyle(document.querySelector("#node-inspector-panel")).visibility'), 'visible')
+    assert.equal(await evaluate('getComputedStyle(document.querySelector("#document-library-panel")).visibility'), 'visible')
+    await evaluate('document.querySelector(".react-flow__node[data-id=root]").click()')
+    await loaded('root', '/mindmap/map-other/root')
+    assert.equal(await evaluate('getComputedStyle(document.querySelector("#node-inspector-panel")).visibility'), 'visible')
     assert.deepEqual(errors, [])
   } finally {
     if (send && socket?.readyState === WebSocket.OPEN) await send('Browser.close').catch(() => {})

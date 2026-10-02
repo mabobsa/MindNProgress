@@ -2336,8 +2336,21 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const [archivedDocuments, setArchivedDocuments] = useState<MapSummary[]>([])
   const [adminOpen, setAdminOpen] = useState(false)
   const closeAdminPanel = useCallback(() => setAdminOpen(false), [])
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
-  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false)
+  const [mobilePanel, setMobilePanel] = useState<'sidebar' | 'inspector' | null>(null)
+  const mobileSidebarOpen = mobilePanel === 'sidebar'
+  const mobileInspectorOpen = mobilePanel === 'inspector'
+  const setMobileSidebarOpen = useCallback((open: SetStateAction<boolean>) => {
+    setMobilePanel((current) => {
+      const nextOpen = typeof open === 'function' ? open(current === 'sidebar') : open
+      return nextOpen ? 'sidebar' : current === 'sidebar' ? null : current
+    })
+  }, [])
+  const setMobileInspectorOpen = useCallback((open: SetStateAction<boolean>) => {
+    setMobilePanel((current) => {
+      const nextOpen = typeof open === 'function' ? open(current === 'inspector') : open
+      return nextOpen ? 'inspector' : current === 'inspector' ? null : current
+    })
+  }, [])
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [distributedWorkOpen, setDistributedWorkOpen] = useState(false)
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false)
@@ -2603,7 +2616,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     }
     mobileViewport.addEventListener('change', closeMobilePanelsOnDesktop)
     return () => mobileViewport.removeEventListener('change', closeMobilePanelsOnDesktop)
-  }, [])
+  }, [setMobileInspectorOpen, setMobileSidebarOpen])
 
   useEffect(() => {
     if (!selectedId) {
@@ -2618,7 +2631,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       return
     }
     if (isPhoneViewport()) setMobileInspectorOpen(true)
-  }, [selectedId])
+  }, [selectedId, setMobileInspectorOpen])
 
   useEffect(() => {
     if (!selectedId || (isPhoneViewport() && !mobileInspectorOpen)) return
@@ -2878,7 +2891,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       cardId: nodeId,
       requestId: (current?.requestId ?? 0) + 1,
     }))
-  }, [selectCardLocally])
+  }, [selectCardLocally, setMobileInspectorOpen])
 
   const activeDocument = [...documents, ...archivedDocuments].find((document) => document.id === activeMapId) ?? null
   const activeRootState = useMemo(() => rootStateOf(nodes, edges), [edges, nodes])
@@ -4103,6 +4116,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         const nextSelectedId = deepLinkTargetsMap
           ? deepLinkedNodeId
           : resolveDocumentNodeSelection(map.nodes, requestedNodeId, isPhoneViewport())
+        if (lastLoadedMapId.current === null && isPhoneViewport()) {
+          suppressMobileInspectorSelection.current = nextSelectedId
+        }
         const loadedNodes = synchronizeNodeSelection(map.nodes, nextSelectedId)
         serverBaseline.current = structuredClone(map)
         resetHistory(loadedNodes, map.edges)
@@ -4133,6 +4149,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
             selectedNodeIdBeforeReload,
             isPhoneViewport(),
           )
+          if (lastLoadedMapId.current === null && isPhoneViewport()) {
+            suppressMobileInspectorSelection.current = nextSelectedId
+          }
           const loadedNodes = synchronizeNodeSelection(localMap.nodes, nextSelectedId)
           serverBaseline.current = null
           resetHistory(loadedNodes, localMap.edges)
@@ -4882,7 +4901,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       y: Math.max(8, Math.min(clientY, window.innerHeight - menuHeight)),
       nodeId,
     })
-  }, [mode, nodes, selectCardLocally])
+  }, [mode, nodes, selectCardLocally, setMobileInspectorOpen])
 
   const openNodeContextMenu = useCallback((event: ReactMouseEvent, nodeId: string) => {
     const touchSuppression = suppressTouchContextMenu.current
@@ -6411,7 +6430,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     }
     setSelectedId(node.id)
     if (isPhoneViewport()) setMobileInspectorOpen(true)
-  }, [cancelKnowledgeConnection, connectKnowledgeCards, knowledgeConnection])
+  }, [cancelKnowledgeConnection, connectKnowledgeCards, knowledgeConnection, setMobileInspectorOpen])
 
   const onKnowledgeTargetEnter = useCallback((_event: ReactMouseEvent, node: MindMapNode) => {
     if (!knowledgeConnection) return
@@ -6827,7 +6846,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     const node = nodesRef.current.find((candidate) => candidate.id === gesture.nodeId)
     if (node) stopNodeDrag({ ...node, position: gesture.currentPosition, selected: true }, true)
     else restoreNodeDragForTouchPan()
-  }, [cancelTouchCardGesture, restoreNodeDragForTouchPan, setNodes, stopNodeDrag, toggleNodeFocus])
+  }, [cancelTouchCardGesture, restoreNodeDragForTouchPan, setMobileInspectorOpen, setNodes, stopNodeDrag, toggleNodeFocus])
 
   useEffect(() => {
     const cancelOnBlur = () => cancelTouchCardGesture(true)

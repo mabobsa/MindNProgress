@@ -9,3 +9,4 @@ export type StoredWorkspaceLocation = {
 export function workspaceLocationStorageKey(userId: unknown): string | null
 export function normalizeWorkspaceLocation(value: unknown): StoredWorkspaceLocation | null
 export function restorableWorkspaceLocation(value: unknown, availableMapIds: unknown): StoredWorkspaceLocation | null
+export function workspaceLocationPath(value: unknown, viewerEntry?: boolean): string | null

@@ -77,7 +77,7 @@ import { rootDeletionPlan } from './utils/rootDeletion.mjs'
 import { sharedKnowledgeMaxLength } from './utils/sharedKnowledgePolicy.mjs'
 import { extractTextLinks } from './utils/textLinks.mjs'
 import { touchPointCentroid, touchPointDistance, viewportForTouchGesture } from './utils/touchViewport.mjs'
-import { normalizeWorkspaceLocation, restorableWorkspaceLocation, workspaceLocationStorageKey } from './utils/workspaceLocation.mjs'
+import { normalizeWorkspaceLocation, restorableWorkspaceLocation, workspaceLocationPath, workspaceLocationStorageKey } from './utils/workspaceLocation.mjs'
 import { appliedUiTheme, applyUiTheme, storedUiTheme, UI_THEME_STORAGE_KEY, type UiTheme } from './theme'
 
 const DOCUMENT_COLORS = [
@@ -3476,15 +3476,15 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
             ? maps.find((map) => map.id === storedLocation.mapId) ?? null
             : null
           const targetDocument = requestedDocument ?? restoredDocument ?? maps[0] ?? archive[0]
-          if (!deepLink && storedLocation) {
-            setViewMode(storedLocation.viewMode)
-            pendingSelection.current = isPhoneViewport() ? null : storedLocation.nodeId
+          if (storedLocation) {
+            setViewMode(deepLink?.viewMode ?? storedLocation.viewMode)
+            pendingSelection.current = storedLocation.nodeId
           }
           if (deepLink) {
             pendingDeepLink.current = {
               ...deepLink,
               mapId: targetDocument.id,
-              nodeId: requestedDocument ? deepLink.nodeId : null,
+              nodeId: requestedDocument ? deepLink.nodeId : storedLocation?.nodeId ?? null,
             }
           }
           setActiveMapId(targetDocument.id)
@@ -3507,14 +3507,27 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   }, [initialGroupId, accountMode, setEdges, setNodes])
 
   useEffect(() => {
+    if (selectedGroupId) {
+      const pathname = `/groups/${encodeURIComponent(selectedGroupId)}`
+      if (window.location.pathname !== pathname) {
+        window.history.replaceState(window.history.state, '', `${pathname}${window.location.search}${window.location.hash}`)
+      }
+      return
+    }
     if (!activeMapId || loadedMapId !== activeMapId) return
-    const storedLocation = storeWorkspaceLocation(user.id, {
+    const location = {
       mapId: activeMapId,
       viewMode,
       nodeId: selectedId,
-    })
+    }
+    const storedLocation = storeWorkspaceLocation(user.id, location)
     if (storedLocation) lastWorkspaceLocation.current = storedLocation
-  }, [activeMapId, loadedMapId, selectedId, user.id, viewMode])
+    const viewerEntry = decodePathSegment(window.location.pathname.split('/')[1])?.toLowerCase() === 'viewer'
+    const pathname = workspaceLocationPath(location, viewerEntry)
+    if (pathname && window.location.pathname !== pathname) {
+      window.history.replaceState(window.history.state, '', `${pathname}${window.location.search}${window.location.hash}`)
+    }
+  }, [activeMapId, loadedMapId, selectedGroupId, selectedId, user.id, viewMode])
 
   useEffect(() => {
     void Promise.all([
@@ -9230,8 +9243,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
 }
 
 function App() {
-  const deepLink = parseWorkspaceDeepLink(window.location.pathname)
-  const groupId = parseGroupDeepLink(window.location.pathname)
+  const [deepLink] = useState(() => parseWorkspaceDeepLink(window.location.pathname))
+  const [groupId] = useState(() => parseGroupDeepLink(window.location.pathname))
   const deepLinkEntry = deepLink !== null || groupId !== null
   const [user, setUser] = useState<AuthUser | null>(null)
   const [checkingSession, setCheckingSession] = useState(true)
@@ -9272,7 +9285,7 @@ function App() {
       await apiRequest('/api/auth/logout', { method: 'POST' })
     } finally {
       setUser(null)
-      if (deepLinkEntry) window.location.replace('/')
+      if (parseWorkspaceDeepLink(window.location.pathname) || parseGroupDeepLink(window.location.pathname)) window.location.replace('/')
     }
   }
 

@@ -54,6 +54,19 @@ test('통합 정리 대기를 실패로 표시하지 않고 충돌 파일과 재
   } }).label, '통합 대기')
 })
 
+test('격리된 통합 실패는 자동 재개 불가여도 복구 필요와 수동 확인 안내를 표시한다', () => {
+  const item = { state: 'failed', childStatus: 'completed', workspaceResult: { status: 'quarantined' }, recovery: { recoveryAvailable: false } }
+  assert.deepEqual(groupDelegationPresentation(item), { label: '통합 복구 필요', tone: 'danger', attention: true })
+  assert.match(groupDelegationReportHint(item), /격리/)
+  assert.match(groupDelegationReportHint(item), /수동/)
+  assert.equal(groupDelegationPresentation({ ...item, childStatus: 'failed' }).label, '작업공간 복구 필요')
+  assert.deepEqual(groupDelegationPresentation({ ...item, state: 'waiting-parent' }), { label: '통합 복구 필요', tone: 'warning', attention: true })
+  for (const state of ['completed', 'superseded', 'closed']) {
+    assert.equal(groupDelegationPresentation({ ...item, state }).attention, false)
+    assert.equal(groupDelegationReportHint({ ...item, state }), '')
+  }
+})
+
 test('보고 전달 대기·전달 중·수신 완료와 상위 실행 상태를 분리해 표시한다', () => {
   assert.equal(groupDelegationPresentation({ state: 'waiting-parent', workCompleted: true, reportPending: true }).label, '작업 완료 · 총괄에 결과 전달 대기')
   assert.equal(groupDelegationPresentation({ state: 'waking-parent', workCompleted: true, reportPending: true }).label, '작업 완료 · 총괄에 결과 전달 중')

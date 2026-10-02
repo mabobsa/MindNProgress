@@ -1,5 +1,6 @@
 import { groupWaitingPresentation } from './groupWaiting.mjs'
 import { groupProjectCriteriaEqual } from './groupPlanningSources.mjs'
+import { aiDelegationRequiresRecovery } from './aiDelegationStatus.mjs'
 
 export function groupProjectDraftAfterRefresh(current, previousBase, incoming) {
   if (!current || !previousBase) return incoming
@@ -41,8 +42,11 @@ const completedReportLabels = {
 export function groupDelegationPresentation(item) {
   if (!item) return { label: '위임 없음', tone: 'muted', attention: false }
   const state = item.displayState ?? item.state
-  const attention = attentionStates.has(state) || item.recovery?.recoveryAvailable === true || item.recovery?.reportRetryAvailable === true
-  const label = item.workCompleted && item.reportStatus === 'received' && ['completed', 'waking-parent'].includes(state)
+  const quarantined = item.workspaceResult?.status === 'quarantined' && aiDelegationRequiresRecovery(item)
+  const attention = quarantined || attentionStates.has(state) || item.recovery?.recoveryAvailable === true || item.recovery?.reportRetryAvailable === true
+  const label = quarantined
+    ? item.childStatus === 'completed' || item.workspaceResult?.childStatus === 'completed' ? '통합 복구 필요' : '작업공간 복구 필요'
+    : item.workCompleted && item.reportStatus === 'received' && ['completed', 'waking-parent'].includes(state)
     ? '작업 완료 · 총괄 수신 완료'
     : item.workCompleted && item.reportPending && completedReportLabels[state] ? completedReportLabels[state]
     : state === 'waiting-integration' && ['integration-worktree-dirty', 'integration-untracked-collision'].includes(item.workspaceResult?.reasonCode) ? '작업 완료 · 통합 정리 대기'
@@ -53,6 +57,11 @@ export function groupDelegationPresentation(item) {
 }
 
 export function groupDelegationReportHint(item) {
+  if (item?.workspaceResult?.status === 'quarantined' && aiDelegationRequiresRecovery(item)) {
+    return item.recovery?.recoveryAvailable
+      ? '작업공간이 격리되어 복구가 필요합니다. 오류와 보존된 변경을 확인하고 기존 위임을 복구하세요.'
+      : '작업공간이 격리되어 수동 확인과 복구가 필요합니다. 오류와 보존된 변경을 확인해 작업공간을 복구하세요.'
+  }
   if ((item?.displayState ?? item?.state) === 'waiting-integration') {
     const result = item.workspaceResult
     if (result?.waitingReason) {

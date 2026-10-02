@@ -1,8 +1,14 @@
 const terminalStates = new Set(['completed', 'failed', 'superseded', 'closed'])
+const resolvedStates = new Set(['completed', 'superseded', 'closed'])
 
-function isVisibleDelegation(item) {
+export function aiDelegationRequiresRecovery(item) {
+  return item?.recovery?.recoveryAvailable === true
+    || (!resolvedStates.has(item?.state) && item?.workspaceResult?.status === 'quarantined')
+}
+
+export function isVisibleAiDelegation(item) {
   return !terminalStates.has(item?.state)
-    || item?.recovery?.recoveryAvailable === true
+    || aiDelegationRequiresRecovery(item)
     || item?.recovery?.reportRetryAvailable === true
 }
 
@@ -11,6 +17,9 @@ function usefulDetail(item) {
     item?.message,
     item?.recoveryDispatchError,
     item?.childError,
+    item?.workspaceError,
+    item?.workspaceResult?.error,
+    item?.integrationError,
     item?.parentError,
   ].find((value) => typeof value === 'string' && value.trim())?.trim() ?? ''
 }
@@ -23,7 +32,7 @@ function currentMapParentCardId(item, mapId) {
 export function aiDelegationStatusByCard(delegations, mapId) {
   const grouped = new Map()
   for (const item of delegations ?? []) {
-    if (!item?.id || !isVisibleDelegation(item)) continue
+    if (!item?.id || !isVisibleAiDelegation(item)) continue
     const cardId = currentMapParentCardId(item, mapId)
     if (!cardId) continue
     const current = grouped.get(cardId) ?? new Map()
@@ -33,10 +42,10 @@ export function aiDelegationStatusByCard(delegations, mapId) {
 
   return Object.fromEntries([...grouped.entries()].map(([cardId, itemMap]) => {
     const items = [...itemMap.values()]
-    const recovery = items.filter((item) => item.recovery?.recoveryAvailable === true)
-    const report = items.filter((item) => item.recovery?.recoveryAvailable !== true
+    const recovery = items.filter(aiDelegationRequiresRecovery)
+    const report = items.filter((item) => !aiDelegationRequiresRecovery(item)
       && item.recovery?.reportRetryAvailable === true)
-    const active = items.filter((item) => item.recovery?.recoveryAvailable !== true
+    const active = items.filter((item) => !aiDelegationRequiresRecovery(item)
       && item.recovery?.reportRetryAvailable !== true
       && !terminalStates.has(item.state))
     const kind = recovery.length > 0 ? 'recovery' : report.length > 0 ? 'report' : 'active'

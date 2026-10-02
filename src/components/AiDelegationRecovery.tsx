@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { completedReplacementDelegations, type AiDelegationSummary } from '../utils/aiDelegationManagement.mjs'
+import { aiDelegationRequiresRecovery, isVisibleAiDelegation } from '../utils/aiDelegationStatus.mjs'
 import { groupDelegationPresentation, groupDelegationReportHint, type GroupDelegation } from '../utils/groupOverview.mjs'
 import './AiDelegationRecovery.css'
 
@@ -165,11 +166,8 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
     }
   }
 
-  const pending = items.filter((item) =>
-    !['completed', 'failed', 'superseded', 'closed'].includes(item.state)
-    || item.recovery?.recoveryAvailable
-    || item.recovery?.reportRetryAvailable)
-  const recoveryCount = pending.filter((item) => item.recovery?.recoveryAvailable || item.recovery?.reportRetryAvailable).length
+  const pending = items.filter(isVisibleAiDelegation)
+  const recoveryCount = pending.filter((item) => aiDelegationRequiresRecovery(item) || item.recovery?.reportRetryAvailable).length
   const activeCount = pending.length - recoveryCount
   const sectionTitle = recoveryCount > 0
     ? activeCount > 0 ? 'AI 위임 현황 및 복구' : 'AI 작업 복구'
@@ -180,8 +178,8 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
   ].filter(Boolean).join(' · ') || '상태 확인'
   const sectionSummary = recoveryCount > 0
     ? activeCount > 0
-      ? '진행 중인 AI 위임을 확인하고, 중단된 작업 재개나 결과 전달 등 필요한 후속 조치를 할 수 있습니다.'
-      : '중단된 작업을 재개하거나 저장된 결과를 다시 전달하고, 복구할 수 없는 기록을 완료로 표시하지 않고 정리할 수 있습니다.'
+      ? '진행 중인 AI 위임과 복구가 필요한 작업을 확인하고, 가능한 후속 조치를 할 수 있습니다.'
+      : '복구가 필요한 위임의 오류를 확인하고, 가능한 작업 재개나 결과 전달을 진행할 수 있습니다.'
     : '진행 중인 AI 위임의 현재 상태를 확인할 수 있습니다.'
   useEffect(() => {
     if (!previewedItemId.current || pending.some((item) => item.id === previewedItemId.current)) return
@@ -208,6 +206,7 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
       const candidates = completedReplacementDelegations(item, items)
       const selectedReplacementId = replacementIds[item.id] ?? candidates[0]?.id ?? ''
       const closing = closeDraft?.id === item.id
+      const errorDetail = item.recoveryDispatchError || item.childError || item.workspaceError || item.workspaceResult?.error || item.integrationError || item.parentError
       return <div
         className="ai-delegation-recovery-item"
         key={item.id}
@@ -239,7 +238,7 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
           <span>{groupDelegationPresentation(item).label}</span>
         </div>
         {groupDelegationReportHint(item) && <p className="ai-delegation-recovery-guidance">{groupDelegationReportHint(item)}</p>}
-        {(item.recoveryDispatchError || item.childError || item.parentError) && <p className="ai-delegation-recovery-error-detail">{item.recoveryDispatchError || item.childError || item.parentError}</p>}
+        {errorDetail && <p className="ai-delegation-recovery-error-detail">{errorDetail}</p>}
         {candidates.length > 1 && <label className="ai-delegation-replacement">
           <span>완료된 후속 위임</span>
           <select disabled={busy} value={selectedReplacementId} onChange={(event) => setReplacementIds((current) => ({ ...current, [item.id]: event.target.value }))}>
@@ -260,7 +259,7 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
           {candidates.length > 0 && <button type="button" {...actionAccessibility('후속 성공으로 종료', actionHints.supersede)} disabled={busy} onClick={() => void action(item, 'supersede')}>후속 성공으로 종료</button>}
           {item.closure?.closeAvailable && <button type="button" {...actionAccessibility('보고하지 않고 종료', actionHints.openClose)} className="danger" disabled={busy} onClick={() => setCloseDraft({ id: item.id, reason: item.workCompleted ? 'result-invalidated' : 'no-longer-needed', note: '' })}>보고하지 않고 종료</button>}
         </div>}
-        {item.closure?.reason === 'workspace-changes-preserved' && <p className="ai-delegation-recovery-guidance">보존할 작업공간 변경이 있어 종료할 수 없습니다. 기존 작업을 재개하거나 작업공간을 먼저 정리하세요.</p>}
+        {item.closure?.reason === 'workspace-changes-preserved' && <p className="ai-delegation-recovery-guidance">보존할 작업공간 변경이 있어 종료할 수 없습니다. 기존 변경을 보존한 채 작업공간을 먼저 복구하세요.</p>}
       </div>
     })}
     {error && <p role="alert">{error}</p>}

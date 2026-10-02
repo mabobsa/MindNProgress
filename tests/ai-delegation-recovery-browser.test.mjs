@@ -9,6 +9,8 @@ const fixture = `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { AiDelegationRecovery } from '/src/components/AiDelegationRecovery.tsx';
+import { AiDelegationStatusBadge } from '/src/components/AiConversationRuntimeBadge.tsx';
+import { aiDelegationStatusByCard } from '/src/utils/aiDelegationStatus.mjs';
 const root = createRoot(document.getElementById('root'));
 const originalFetch = window.fetch.bind(window);
 window.audit = { calls: [], confirm: true, fail: false, focus: null, selection: null, preview: null };
@@ -29,8 +31,12 @@ let sequence = 0;
 const selectCard = (mapId,cardId) => { window.audit.selection = {mapId,cardId} };
 const previewCards = (cards) => { window.audit.preview = cards };
 window.renderChildRecovery = (props={}) => root.render(React.createElement(AiDelegationRecovery,{key:++sequence,mapId:'child-map',cardId:'child',onSelectCard:selectCard,onPreviewCards:previewCards,...props}));
-window.renderRecovery = (props={}) => root.render(React.createElement(AiDelegationRecovery,{key:++sequence,mapId:'parent-map',cardId:'parent',onSelectCard:selectCard,onPreviewCards:previewCards,...props}));
-window.failedRecovery = () => {item.state='failed';item.recovery={recoveryAvailable:true};item.childError='모델 용량 초과';window.renderRecovery()};
+window.renderRecovery = (props={}) => root.render(React.createElement(React.Fragment,null,
+  React.createElement(AiDelegationStatusBadge,{status:aiDelegationStatusByCard([item],'parent-map').parent}),
+  React.createElement(AiDelegationRecovery,{key:++sequence,mapId:'parent-map',cardId:'parent',onSelectCard:selectCard,onPreviewCards:previewCards,...props})));
+window.failedRecovery = () => {item.state='failed';item.workspaceResult=null;item.workspaceError=null;item.recovery={recoveryAvailable:true};item.childError='모델 용량 초과';window.renderRecovery()};
+window.quarantinedIntegration = () => {item.state='failed';item.childStatus='completed';item.workCompleted=false;item.reportPending=false;item.reportStatus=null;item.childError=null;item.parentError=null;item.workspaceError='로컬 변경으로 cherry-pick 실패';item.workspaceResult={status:'quarantined',childStatus:'completed'};item.recovery={recoveryAvailable:false,failureCategory:'non-retryable',recommendedAction:'inspect-failure'};item.closure={closeAvailable:false,reason:'workspace-changes-preserved'};window.renderRecovery()};
+window.resolvedQuarantine = state => {item.state=state;window.renderRecovery()};
 window.reportOnly = () => {item.state='parent-wake-failed';item.childError=null;item.parentError='보고 사용량 초과';item.workCompleted=true;item.reportPending=true;item.recovery={recoveryAvailable:false,reportRetryAvailable:true};item.closure={closeAvailable:true,reason:'completed-child-report-abandonment'};window.renderRecovery()};
 window.waitingReport = () => {item.state='waiting-parent';item.childError=null;item.parentError=null;item.workCompleted=true;item.reportPending=true;item.reportStatus='waiting';item.reportWaitReason='parent-busy';item.recovery=null;item.closure=null;window.renderRecovery()};
 window.deliveringReport = () => {item.state='waking-parent';item.reportStatus='delivering';window.renderRecovery()};
@@ -160,6 +166,19 @@ test('상위 카드 복구 화면은 하위 카드를 제외하고 AI 없이 재
     assert.ok(last.url.endsWith('/close'))
     assert.equal(last.body.confirmClosedWithoutCompletion, true)
     assert.equal(last.body.confirmResultReportDiscarded, true)
+    const beforeQuarantinePosts = await evaluate('window.audit.calls.filter(c=>c.method==="POST").length')
+    await evaluate('window.quarantinedIntegration()'); await ready()
+    assert.equal(await evaluate('document.querySelector(".ai-delegation-status-badge")?.textContent'), 'AI 위임 복구 필요')
+    assert.match(await evaluate('document.querySelector(".ai-delegation-recovery-heading")?.textContent'), /복구 필요 1건/)
+    assert.match(await evaluate('document.body.textContent'), /통합 복구 필요/)
+    assert.match(await evaluate('document.body.textContent'), /격리되어 수동 확인과 복구가 필요/)
+    assert.match(await evaluate('document.querySelector(".ai-delegation-recovery-error-detail")?.textContent'), /로컬 변경으로 cherry-pick 실패/)
+    assert.equal(await evaluate('Array.from(document.querySelectorAll("button")).some(b=>["기존 작업 재개","결과 전달 재시도","후속 성공으로 종료","보고하지 않고 종료"].includes(b.textContent))'), false)
+    assert.equal(await evaluate('window.audit.calls.filter(c=>c.method==="POST").length'), beforeQuarantinePosts)
+    for (const state of ['completed', 'superseded', 'closed']) {
+      await evaluate(`window.resolvedQuarantine(${JSON.stringify(state)})`)
+      await waitFor(() => evaluate('!document.querySelector(".ai-delegation-recovery") && !document.querySelector(".ai-delegation-status-badge")'))
+    }
     await evaluate('window.failedRecovery()'); await ready()
     assert.equal(await evaluate('Array.from(document.querySelectorAll("button")).some(b=>b.textContent==="기존 작업 재개")'), true)
     await evaluate('window.waitingReport()'); await ready()

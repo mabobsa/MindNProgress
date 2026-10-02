@@ -53,3 +53,38 @@ test('위임 현황은 위임한 상위 카드에만 표시하고 위임받은 �
   assert.equal(result.child, undefined)
   assert.equal(result.same.count, 1)
 })
+
+test('자동 재개가 불가능한 격리 위임도 상위 카드의 복구 필요 건수에 포함한다', () => {
+  const item = {
+    id: 'quarantined', mapId: 'child-map', parentMapId: 'map-a', parentCardId: 'parent', targetCardId: 'child',
+    state: 'failed', childStatus: 'completed', updatedAt: '2026-10-02T02:52:12.649Z',
+    workspaceResult: { status: 'quarantined' }, workspaceError: '로컬 변경으로 통합 실패',
+    recovery: { recoveryAvailable: false, failureCategory: 'non-retryable', recommendedAction: 'inspect-failure' },
+  }
+  const original = structuredClone(item)
+  const result = aiDelegationStatusByCard([
+    item,
+    { id: 'active', mapId: 'map-a', parentCardId: 'parent', state: 'running' },
+    { id: 'report', mapId: 'map-a', parentCardId: 'parent', state: 'parent-wake-failed', recovery: { recoveryAvailable: false, reportRetryAvailable: true } },
+  ], 'map-a')
+
+  assert.equal(result.parent.kind, 'recovery')
+  assert.equal(result.parent.count, 3)
+  assert.equal(result.parent.recoveryCount, 1)
+  assert.equal(result.parent.activeCount, 1)
+  assert.equal(result.parent.reportCount, 1)
+  assert.match(result.parent.title, /AI 작업 복구 필요 1건/)
+  assert.match(result.parent.title, /로컬 변경으로 통합 실패/)
+  assert.equal(result.child, undefined)
+  assert.deepEqual(item, original, '표시를 위해 자동 재개 가능 여부나 위임 기록을 바꾸지 않는다')
+})
+
+test('종료된 격리 이력과 변경이 보존되지 않은 일반 실패는 복구 배지를 남기지 않는다', () => {
+  const items = ['completed', 'superseded', 'closed'].map((state) => ({
+    id: state, mapId: 'map-a', parentCardId: 'parent', state,
+    workspaceResult: { status: 'quarantined' }, recovery: { recoveryAvailable: false },
+  }))
+  items.push({ id: 'clean-failure', mapId: 'map-a', parentCardId: 'parent', state: 'failed', workspaceResult: { status: 'failed-clean' }, recovery: { recoveryAvailable: false } })
+
+  assert.deepEqual(aiDelegationStatusByCard(items, 'map-a'), {})
+})

@@ -17,6 +17,8 @@ export type AiDelegationSummary = {
   updatedAt: string
   childStatus?: string | null
   childError?: string | null
+  workspaceError?: string | null
+  integrationError?: string | null
   parentDispatchState?: string | null
   parentError?: string | null
   recoveryDispatchError?: string | null
@@ -25,7 +27,7 @@ export type AiDelegationSummary = {
   workCompleted?: boolean
   reportPending?: boolean
   workspaceLease?: { leaseId?: string } | null
-  workspaceResult?: { status?: string; headCommit?: string; integratedCommit?: string } | null
+  workspaceResult?: { status?: string; headCommit?: string; integratedCommit?: string; childStatus?: string; error?: string } | null
   recovery?: {
     recoveryAvailable: boolean
     reportRetryAvailable?: boolean

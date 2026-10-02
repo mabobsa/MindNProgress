@@ -8778,28 +8778,31 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         return sendJson(response, 404, { error: '복구할 AI 위임을 찾을 수 없습니다.' })
       }
       const mapId = delegation.mapId
-      if (!await aionCoreSupportsExplicitCompletionAfterInterruption(delegationTargetMachineId(delegation))) {
-        return sendJson(response, 503, {
-          error: '현재 실행 중인 AionCore가 중단 후 명시적 완료 신호를 지원하지 않습니다. AionCore를 최신 빌드로 재기동해 주세요.',
-          code: 'AIONCORE_EXPLICIT_COMPLETION_UNAVAILABLE',
-        })
-      }
+      const recoveryAvailability = aiDelegationRecoveryAvailability(delegation)
+      const retryIntegration = recoveryAvailability?.recoveryAvailable === true
+        && recoveryAvailability.recommendedAction === 'retry-integration'
       if (!humanAction && delegation.parentCardId !== source.cardId) {
         return sendJson(response, 403, {
           error: '이 위임을 관리하는 상위 카드에서만 복구할 수 있습니다.',
           code: 'AI_DELEGATION_RECOVERY_ORIGIN_MISMATCH',
         })
       }
-      const recoveryAvailability = aiDelegationRecoveryAvailability(delegation)
       const retryableParentWakeFailure = ['parent-wake-failed', 'failed', 'waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity'].includes(delegation.state)
         && recoveryAvailability?.recoveryAvailable === true
         && recoveryAvailability.recommendedAction === 'resume-existing'
       if (!['recovery-required', 'integration-recovery-required', 'waiting-child-resume'].includes(delegation.state)
-        && !retryableParentWakeFailure && !delegation.pendingRecovery) {
+        && !retryableParentWakeFailure && !retryIntegration && !delegation.pendingRecovery) {
         return sendJson(response, 409, {
           error: `현재 위임 상태(${delegation.state})는 명시적인 재시작 복구 대상이 아닙니다.`,
           code: 'AI_DELEGATION_RECOVERY_NOT_REQUIRED',
           delegation: delegationPublicView(delegation),
+        })
+      }
+
+      if (!retryIntegration && !await aionCoreSupportsExplicitCompletionAfterInterruption(delegationTargetMachineId(delegation))) {
+        return sendJson(response, 503, {
+          error: '현재 실행 중인 AionCore가 중단 후 명시적 완료 신호를 지원하지 않습니다. AionCore를 최신 빌드로 재기동해 주세요.',
+          code: 'AIONCORE_EXPLICIT_COMPLETION_UNAVAILABLE',
         })
       }
 
@@ -8851,6 +8854,40 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       const restoredTargetCard = map.nodes.find((node) => node.id === delegation.targetCardId)
       if (!isAiConversationLinked(restoredTargetCard.data, delegation.targetConversationId)) {
         return sendJson(response, 409, { error: '위임 대상 카드와 기존 AI 대화의 연결을 확인할 수 없습니다.' })
+      }
+
+      if (retryIntegration) {
+        try {
+          const conversation = await fetchAiConversationRuntime(delegation.targetConversationId)
+          const runtime = normalizeAiConversationRuntime(delegation.targetConversationId, conversation)
+          if (runtime.state !== 'idle') return sendJson(response, 409, { error: `대상 대화가 ${runtime.state} 상태이므로 지금 통합을 재시도할 수 없습니다.`, runtime })
+          await validateAiDelegationAction(request, aiDelegations.get(delegation.id), body, true)
+          const workspaceResult = await workspacePoolManager.recoverLocalChangesIntegrationFailure(
+            delegation.workspaceLease.leaseId,
+            { mapId, cardId: delegation.targetCardId, conversationId: delegation.targetConversationId },
+          )
+          const current = aiDelegations.get(delegation.id)
+          const repeated = current.state === 'waiting-integration'
+          const updated = repeated ? current : await updateAiDelegation(delegation.id, {
+            state: 'waiting-integration', childError: workspaceResult.childError ?? null,
+            workspaceResult, workspaceError: null, integrationError: null,
+            parentDispatchState: null, parentTurnId: null, parentError: null, parentResource: null,
+            wakeOperationId: null, reportReceipt: null, reportWaitReason: null, reportArchive: null,
+            reportPayloadHash: null, reportResultAvailability: null, reportResultHash: null,
+            reportResultTurnId: null, reportPreparedAt: null, completedAt: null,
+            integrationRecoveryRequestedAt: new Date().toISOString(),
+            attemptHistory: aiDelegationAttemptHistory(delegation, '사용자가 로컬 변경 해소 후 완료 커밋의 통합 재시도 요청'),
+          })
+          return sendJson(response, 202, {
+            delegation: delegationPublicView(updated), repeated,
+            recovery: { kind: 'retry-integration', reusedWorkspace: true, reusedConversation: true, childReexecuted: false },
+          })
+        } catch (error) {
+          return sendJson(response, error.status ?? 409, {
+            error: `통합을 재시도하지 못했습니다: ${error?.message ?? String(error)}`,
+            code: error?.code ?? 'AI_DELEGATION_INTEGRATION_RECOVERY_FAILED',
+          })
+        }
       }
 
       const linked = aiConversationLinksFromData(restoredTargetCard.data)

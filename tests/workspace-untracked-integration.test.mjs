@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -74,6 +76,175 @@ async function oldQuarantine(f) {
   await f.manager.persist()
   return head
 }
+
+async function localChangesQuarantine(t) {
+  const f = await fixture(t, ['first.txt'])
+  await put(f.worker, 'base.txt', '완료된 두 번째 커밋\n')
+  await f.manager.checkpoint(f.lease.leaseId, { jobId: f.lease.jobId, mapId: 'map-test', cardId: 'card-test',
+    conversationId: 'conversation-test', paths: ['base.txt'], commitMessage })
+  const hooks = path.join(f.root, 'integration-hooks')
+  await put(hooks, 'post-commit', "#!/bin/sh\nprintf 'user local change\\n' > base.txt\n")
+  await git(f.worker, ['config', 'core.hooksPath', hooks])
+  await assert.rejects(f.manager.finalize(f.lease.leaseId, { childStatus: 'completed' }), /local changes/i)
+  await git(f.worker, ['config', 'core.hooksPath', path.join(f.root, 'no-hooks')])
+  assert.equal(f.manager.state.leases[f.lease.leaseId].status, 'quarantined')
+  return f
+}
+const localRecoveryScope = { mapId: 'map-test', cardId: 'card-test', conversationId: 'conversation-test' }
+
+test('로컬 변경 해소 후 부분 적용을 보존하고 완료 커밋을 한 번만 통합한다', realGit, async (t) => {
+  const f = await localChangesQuarantine(t)
+  const original = structuredClone(f.manager.state)
+  const failed = original.leases[f.lease.leaseId]
+  const failedHead = await git(f.worker, ['rev-parse', 'HEAD'])
+  assert.notEqual(failedHead, failed.integrationBaseCommit)
+  assert.notEqual(failedHead, failed.headCommit)
+  await assert.rejects(f.manager.recoverLocalChangesIntegrationFailure(f.lease.leaseId, localRecoveryScope), /로컬 변경/)
+  assert.deepEqual(f.manager.state, original)
+  assert.equal(await readFile(path.join(f.worker, 'base.txt'), 'utf8'), 'user local change\n')
+  await rename(path.join(f.worker, 'base.txt'), path.join(f.root, 'user-backup.txt'))
+  await git(f.worker, ['restore', 'base.txt'])
+  await put(f.worker, 'user-untracked.txt', '사용자 파일\n')
+  await assert.rejects(f.manager.recoverLocalChangesIntegrationFailure(f.lease.leaseId, localRecoveryScope), /로컬 변경/)
+  await rename(path.join(f.worker, 'user-untracked.txt'), path.join(f.root, 'user-untracked-backup.txt'))
+  // 구버전의 격리 결과에도 적용한다. 기록된 실패 HEAD 대신 체크포인트와 부분 적용을 대조한다.
+  delete f.manager.state.leases[f.lease.leaseId].result.integrationFailureHeadCommit
+  await f.manager.persist()
+  const restarted = new WorkspacePoolManager(f)
+  await restarted.initialize()
+  const recovered = await restarted.recoverLocalChangesIntegrationFailure(f.lease.leaseId, localRecoveryScope)
+  assert.equal(recovered.status, 'waiting-integration')
+  assert.equal(recovered.childStatus, 'completed')
+  assert.equal(recovered.integrationHeadCommit, null, '부분 적용 HEAD를 완료 후보로 오인하면 안 된다.')
+  const history = restarted.state.leases[f.lease.leaseId].integrationRecoveryHistory
+  assert.equal(history.length, 1)
+  assert.equal(await git(f.worker, ['rev-parse', history[0].backupRef]), failedHead)
+  assert.equal(await git(f.worker, ['rev-parse', f.lease.branch]), failed.headCommit)
+  const restartedAgain = new WorkspacePoolManager(f)
+  await restartedAgain.initialize()
+  assert.deepEqual(await restartedAgain.recoverLocalChangesIntegrationFailure(f.lease.leaseId, localRecoveryScope), recovered)
+  assert.deepEqual(await restartedAgain.recoverUntrackedIntegrationFailure(f.lease.leaseId), recovered, '서버 위임 레코드 저장 전 장애도 이어 처리한다.')
+  const completed = await restartedAgain.finalize(f.lease.leaseId, { childStatus: 'completed' })
+  assert.equal(completed.status, 'completed')
+  assert.equal(await git(f.main, ['rev-list', '--count', `${f.lease.baseCommit}..HEAD`]), '2')
+  assert.equal(await readFile(path.join(f.main, 'base.txt'), 'utf8'), '완료된 두 번째 커밋\n')
+  assert.equal(await readFile(path.join(f.main, 'first.txt'), 'utf8'), 'worker:first.txt\n')
+  assert.equal(await readFile(path.join(f.root, 'user-backup.txt'), 'utf8'), 'user local change\n')
+  assert.equal(restartedAgain.state.workspaces.fork2.status, 'idle')
+  assert.deepEqual(await restartedAgain.finalize(f.lease.leaseId, { childStatus: 'completed' }), completed)
+})
+
+test('통합 재시도는 소유권·세션·체크포인트·수동 커밋 불일치를 격리 상태로 보존한다', realGit, async (t) => {
+  const f = await localChangesQuarantine(t)
+  await git(f.worker, ['restore', 'base.txt'])
+  const original = structuredClone(f.manager.state)
+  const sessionPath = path.join(f.worker, '.ai-session.json')
+  const session = await readFile(sessionPath, 'utf8')
+  await assert.rejects(f.manager.recoverLocalChangesIntegrationFailure(f.lease.leaseId, { ...localRecoveryScope, conversationId: 'other' }), /소유권/)
+  await writeFile(sessionPath, JSON.stringify({ ...JSON.parse(session), leaseId: 'other' }))
+  await assert.rejects(f.manager.recoverLocalChangesIntegrationFailure(f.lease.leaseId, localRecoveryScope), /세션/)
+  await writeFile(sessionPath, session)
+  f.manager.state.leases[f.lease.leaseId].checkpoints = []
+  await assert.rejects(f.manager.recoverLocalChangesIntegrationFailure(f.lease.leaseId, localRecoveryScope), /체크포인트/)
+  f.manager.state = structuredClone(original)
+  await git(f.worker, ['cherry-pick', '--quit'])
+  await git(f.worker, ['commit', '--allow-empty', '-m', '[김용민] 검증용 수동 커밋', '-m', '[배경]\n복구 검증\n[원인]\n통합 브랜치 변경 재현\n[수정]\n빈 커밋 추가'])
+  await assert.rejects(f.manager.recoverLocalChangesIntegrationFailure(f.lease.leaseId, localRecoveryScope), /HEAD/)
+  delete f.manager.state.leases[f.lease.leaseId].result.integrationFailureHeadCommit
+  await assert.rejects(f.manager.recoverLocalChangesIntegrationFailure(f.lease.leaseId, localRecoveryScope), /적용 결과/)
+  assert.equal(f.manager.state.leases[f.lease.leaseId].status, 'quarantined')
+  assert.equal(f.manager.state.leases[f.lease.leaseId].integrationRecoveryHistory, undefined)
+})
+
+test('통합 복구 API는 최신 승인·유휴 대화·정리된 fork를 확인하고 하위 AI 실행 없이 통합 대기로 전환한다', realGit, async (t) => {
+  const f = await localChangesQuarantine(t)
+  const dataDirectory = path.join(f.root, 'server-data')
+  await mkdir(dataDirectory)
+  await writeFile(path.join(dataDirectory, '_workspace-pool.json'), JSON.stringify(f.manager.state))
+  const now = new Date().toISOString()
+  const resultText = '기존 완료 결과를 그대로 보존합니다.'
+  const delegation = { id: 'local-integration', mapId: 'map-test', parentCardId: 'parent', targetCardId: 'card-test',
+    parentConversationId: 'parent-conversation', targetConversationId: 'conversation-test', state: 'failed',
+    childStatus: 'completed', childTurnId: 'original-turn', childOperationId: 'original-operation',
+    childResultSnapshot: resultText, childResultHash: createHash('sha256').update(resultText).digest('hex'),
+    childResultTurnId: 'original-turn', workspaceLease: f.lease,
+    workspaceResult: f.manager.state.leases[f.lease.leaseId].result,
+    startedBy: 'user-admin', createdAt: now, updatedAt: now, completedAt: now }
+  await writeFile(path.join(dataDirectory, '_ai-delegations.json'), JSON.stringify([delegation]))
+  const map = { id: 'map-test', title: '통합 재시도 검증', version: 1,
+    nodes: [{ id: 'parent', position: { x: 0, y: 0 }, data: { kind: 'root', label: '상위', status: 'planned', progress: 0, aiConversationId: 'parent-conversation' } },
+      { id: 'card-test', position: { x: 300, y: 0 }, data: { kind: 'task', label: '완료 작업', status: 'done', progress: 100, isWork: true, aiConversationId: 'conversation-test', sharedKnowledge: resultText } }],
+    edges: [{ id: 'edge', source: 'parent', target: 'card-test' }] }
+  await writeFile(path.join(dataDirectory, 'map-test.json'), JSON.stringify(map))
+  const posts = []
+  let runtimeState = 'idle'
+  const upstream = createServer(async (request, response) => {
+    if (request.method === 'POST') posts.push(request.url)
+    const send = (data, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ success: status < 400, data })) }
+    if (request.url.endsWith('/capabilities')) return send({ schemaVersion: 3, workspaceLeaseVersion: 0, explicitCompletionAfterInterruption: false })
+    if (request.url === '/api/conversations/conversation-test') return send({ id: 'conversation-test', runtime: { state: runtimeState, isProcessing: runtimeState !== 'idle', pendingConfirmations: 0 }, extra: { workspace: f.worker } })
+    if (request.url === '/api/internal/conversation-runtimes/active') return send({ items: [] })
+    return send({}, 404)
+  })
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve))
+  const probe = createServer()
+  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve))
+  const port = probe.address().port
+  await new Promise(resolve => probe.close(resolve))
+  const baseUrl = `http://127.0.0.1:${port}`
+  let errors = ''
+  const server = spawn(process.execPath, ['server/index.mjs'], { cwd: path.resolve(import.meta.dirname, '..'), windowsHide: true,
+    stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, MNP_DATA_DIR: dataDirectory, MNP_API_HOST: '127.0.0.1',
+      MNP_API_PORT: String(port), MNP_WEB_PORT: String(port), MNP_WORKSPACE_POOL_REGISTRY: f.registryFile,
+      MNP_AIONUI_URL: `http://127.0.0.1:${upstream.address().port}`, MNP_AI_DELEGATION_POLL_INTERVAL_MS: '60000', MNP_ADMIN_PASSWORD: 'test-integration-password' } })
+  server.stderr.on('data', chunk => { errors += chunk })
+  try {
+    let ready = false
+    for (let attempt = 0; attempt < 150; attempt++) {
+      try { if ((await fetch(baseUrl + '/api/health')).ok) { ready = true; break } } catch { /* 준비 대기 */ }
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    assert.ok(ready, errors)
+    const login = await fetch(baseUrl + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@mind.local', password: 'test-integration-password' }) })
+    assert.equal(login.status, 200)
+    const headers = { Cookie: login.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' }
+    const endpoint = baseUrl + '/api/maps/map-test/ai-delegations/local-integration/recover'
+    const input = { instruction: '로컬 변경을 해소했으므로 완료 커밋의 통합만 재시도합니다.', expectedUpdatedAt: now, sourceRevision: 1, targetRevision: 1, confirmApprovedScope: true }
+    const post = body => fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) })
+    assert.equal((await post({ ...input, expectedUpdatedAt: 'stale' })).status, 409)
+    assert.equal((await post({ ...input, confirmApprovedScope: false })).status, 400)
+    runtimeState = 'running'
+    assert.equal((await post(input)).status, 409)
+    runtimeState = 'idle'
+    const dirty = await post(input)
+    assert.equal(dirty.status, 409)
+    assert.match((await dirty.json()).error, /로컬 변경/)
+    assert.equal(JSON.parse(await readFile(path.join(dataDirectory, '_workspace-pool.json'), 'utf8')).leases[f.lease.leaseId].status, 'quarantined')
+    await rename(path.join(f.worker, 'base.txt'), path.join(f.root, 'api-user-backup.txt'))
+    await git(f.worker, ['restore', 'base.txt'])
+    const response = await post(input)
+    const body = await response.json()
+    assert.equal(response.status, 202, JSON.stringify({ body, errors }))
+    assert.equal(body.recovery.kind, 'retry-integration')
+    assert.equal(body.recovery.childReexecuted, false)
+    assert.equal(body.delegation.state, 'waiting-integration')
+    const saved = JSON.parse(await readFile(path.join(dataDirectory, '_ai-delegations.json'), 'utf8'))[0]
+    assert.equal(saved.childOperationId, delegation.childOperationId)
+    assert.equal(saved.childResultSnapshot, resultText)
+    assert.equal(saved.childResultHash, delegation.childResultHash)
+    assert.equal(saved.childTurnId, delegation.childTurnId)
+    assert.equal(saved.workspaceLease.leaseId, f.lease.leaseId)
+    assert.equal(saved.attemptHistory.length, 1)
+    assert.equal((await post(input)).status, 409, '중복 요청이 새 하위 실행을 만들면 안 된다.')
+    assert.deepEqual(posts, [])
+    const savedMap = JSON.parse(await readFile(path.join(dataDirectory, 'map-test.json'), 'utf8'))
+    assert.deepEqual(savedMap.nodes, map.nodes)
+  } finally {
+    if (server.exitCode === null) { const exited = new Promise(resolve => server.once('exit', resolve)); server.kill(); await exited }
+    upstream.closeAllConnections()
+    await new Promise(resolve => upstream.close(resolve))
+  }
+})
 
 describe('미추적 파일 충돌 통합 복구', { concurrency: 3 }, () => {
 test('충돌 경로 조회 지연은 격리가 아니라 다음 폴링 대기로 보존한다', async (t) => {

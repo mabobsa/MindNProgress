@@ -7,6 +7,7 @@ import {
   aiDelegationWaitPollDue,
   aiDelegationBlocksResume,
   aiDelegationRecoveryAvailability,
+  localChangesIntegrationCommits,
   aiDelegationReportResult,
   aiDelegationLimitState,
   aiDelegationAttemptHistory,
@@ -30,6 +31,27 @@ import {
   AI_DELEGATION_COMPLETION_NOTIFICATION_TYPE,
   aiDelegationCompletionNotice,
 } from '../server/lib/aiDelegations.mjs'
+
+test('로컬 변경으로 중단된 완료 커밋 통합은 AI 재개와 구분해서 복구한다', () => {
+  const commit = 'a'.repeat(40)
+  const result = { status: 'quarantined', childStatus: 'completed', headCommit: commit,
+    integrationBranch: 'mnp/integrate/job-test', integrationBaseCommit: 'b'.repeat(40),
+    error: `Command failed: git cherry-pick ${commit}\nerror: your local changes would be overwritten by cherry-pick.\nhint: commit or stash` }
+  const delegation = { state: 'failed', workspaceLease: { leaseId: 'lease-test' }, workspaceResult: result }
+  assert.deepEqual(localChangesIntegrationCommits(result), [commit])
+  assert.deepEqual(aiDelegationRecoveryAvailability(delegation), {
+    failurePhase: 'integration', failureCategory: 'workspace-local-changes', recoveryAvailable: true,
+    recommendedAction: 'retry-integration', recoveryTool: 'mindnprogress_recover_ai_delegation',
+  })
+  for (const patch of [{ childStatus: 'failed' }, { integratedCommit: commit }, { integrationBranch: null },
+    { conflictRound: 1 }, { unmergedFiles: ['file'] }, { error: 'fatal: permission denied' },
+    { error: `Command failed: git cherry-pick ${commit}\nerror: untracked working tree files would be overwritten by merge` }]) {
+    assert.equal(localChangesIntegrationCommits({ ...result, ...patch }), null)
+    assert.notEqual(aiDelegationRecoveryAvailability({ ...delegation, workspaceResult: { ...result, ...patch } })?.recommendedAction, 'retry-integration')
+  }
+  assert.equal(aiDelegationRecoveryAvailability({ ...delegation, state: 'completed' }), null)
+  assert.equal(aiDelegationRecoveryAvailability({ ...delegation, pendingRecovery: {} }).recoveryAvailable, false)
+})
 
 test('하위 작업 완료 알림은 실제 완료 판정에 도달한 위임에 한 번만 만들고 차단 알림과 타입을 구분한다', () => {
   const completed = {

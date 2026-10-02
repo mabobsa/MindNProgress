@@ -58,6 +58,7 @@ export function groupDelegationPresentation(item) {
 
 export function groupDelegationReportHint(item) {
   if (item?.workspaceResult?.status === 'quarantined' && aiDelegationRequiresRecovery(item)) {
+    if (item.recovery?.recommendedAction === 'retry-integration') return 'fork 작업공간의 로컬 변경을 보존·정리한 뒤 통합 재시도를 요청하세요. 완료된 하위 AI 작업과 커밋을 그대로 사용합니다.'
     return item.recovery?.recoveryAvailable
       ? '작업공간이 격리되어 복구가 필요합니다. 오류와 보존된 변경을 확인하고 기존 위임을 복구하세요.'
       : '작업공간이 격리되어 수동 확인과 복구가 필요합니다. 오류와 보존된 변경을 확인해 작업공간을 복구하세요.'

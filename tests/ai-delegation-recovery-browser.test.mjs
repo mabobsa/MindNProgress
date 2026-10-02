@@ -36,7 +36,8 @@ window.renderRecovery = (props={}) => root.render(React.createElement(React.Frag
   React.createElement(AiDelegationRecovery,{key:++sequence,mapId:'parent-map',cardId:'parent',onSelectCard:selectCard,onPreviewCards:previewCards,...props})));
 window.failedRecovery = () => {item.state='failed';item.workspaceResult=null;item.workspaceError=null;item.recovery={recoveryAvailable:true};item.childError='모델 용량 초과';window.renderRecovery()};
 window.quarantinedIntegration = () => {item.state='failed';item.childStatus='completed';item.workCompleted=false;item.reportPending=false;item.reportStatus=null;item.childError=null;item.parentError=null;item.workspaceError='로컬 변경으로 cherry-pick 실패';item.workspaceResult={status:'quarantined',childStatus:'completed'};item.recovery={recoveryAvailable:false,failureCategory:'non-retryable',recommendedAction:'inspect-failure'};item.closure={closeAvailable:false,reason:'workspace-changes-preserved'};window.renderRecovery()};
-window.resolvedQuarantine = state => {item.state=state;window.renderRecovery()};
+window.resolvedQuarantine = state => {item.state=state;item.recovery=null;window.renderRecovery()};
+window.retryIntegration = () => {item.recovery={recoveryAvailable:true,failureCategory:'workspace-local-changes',recommendedAction:'retry-integration'};window.renderRecovery()};
 window.reportOnly = () => {item.state='parent-wake-failed';item.childError=null;item.parentError='보고 사용량 초과';item.workCompleted=true;item.reportPending=true;item.recovery={recoveryAvailable:false,reportRetryAvailable:true};item.closure={closeAvailable:true,reason:'completed-child-report-abandonment'};window.renderRecovery()};
 window.waitingReport = () => {item.state='waiting-parent';item.childError=null;item.parentError=null;item.workCompleted=true;item.reportPending=true;item.reportStatus='waiting';item.reportWaitReason='parent-busy';item.recovery=null;item.closure=null;window.renderRecovery()};
 window.deliveringReport = () => {item.state='waking-parent';item.reportStatus='delivering';window.renderRecovery()};
@@ -44,7 +45,7 @@ window.receivedReport = () => {item.state='completed';item.reportPending=false;i
 window.fixtureReady = true;
 `
 
-test('상위 카드 복구 화면은 하위 카드를 제외하고 AI 없이 재개·보고 재시도를 구분한다', { skip: process.env.MNP_BROWSER_TEST !== '1', timeout: 60000 }, async () => {
+test('상위 카드 복구 화면은 하위 카드를 제외하고 AI 없이 재개·보고 재시도를 구분한다', { skip: process.env.MNP_BROWSER_TEST !== '1', timeout: 120000 }, async () => {
   const { createServer } = await import('vite')
   const react = (await import('@vitejs/plugin-react')).default
   const directory = await mkdtemp(path.join(tmpdir(), 'mnp-recovery-browser-'))
@@ -86,7 +87,7 @@ test('상위 카드 복구 화면은 하위 카드를 제외하고 AI 없이 재
       if (message.error) item.reject(Error(message.error.message)); else item.resolve(message.result)
     }
     send = (method, params = {}) => new Promise((resolve, reject) => {
-      const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(Error(method)) }, 10000)
+      const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(Error(method)) }, method === 'Page.navigate' ? 30000 : 10000)
       pending.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ id, method, params }))
     })
     const evaluate = async expression => {
@@ -175,6 +176,18 @@ test('상위 카드 복구 화면은 하위 카드를 제외하고 AI 없이 재
     assert.match(await evaluate('document.querySelector(".ai-delegation-recovery-error-detail")?.textContent'), /로컬 변경으로 cherry-pick 실패/)
     assert.equal(await evaluate('Array.from(document.querySelectorAll("button")).some(b=>["기존 작업 재개","결과 전달 재시도","후속 성공으로 종료","보고하지 않고 종료"].includes(b.textContent))'), false)
     assert.equal(await evaluate('window.audit.calls.filter(c=>c.method==="POST").length'), beforeQuarantinePosts)
+    await evaluate('window.retryIntegration()'); await ready()
+    assert.match(await evaluate('document.body.textContent'), /로컬 변경을 보존·정리한 뒤 통합 재시도/)
+    assert.equal(await evaluate('Array.from(document.querySelectorAll("button")).some(b=>b.textContent==="기존 작업 재개")'), false)
+    assert.match(await evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="통합 재시도").title'), /하위 AI 작업은 다시 실행하지 않습니다/)
+    await evaluate('window.audit.confirm=false'); await click('통합 재시도')
+    assert.equal(await evaluate('window.audit.calls.filter(c=>c.method==="POST").length'), beforeQuarantinePosts)
+    await evaluate('window.audit.confirm=true'); await click('통합 재시도')
+    await waitFor(() => evaluate('document.querySelector("[role=status]")?.textContent.includes("통합 재시도를 접수")')); await ready()
+    const integrationPost = await evaluate('window.audit.calls.filter(c=>c.method==="POST").at(-1)')
+    assert.ok(integrationPost.url.endsWith('/recover'))
+    assert.match(integrationPost.body.instruction, /완료 커밋 통합 재시도/)
+    assert.equal(integrationPost.body.confirmApprovedScope, true)
     for (const state of ['completed', 'superseded', 'closed']) {
       await evaluate(`window.resolvedQuarantine(${JSON.stringify(state)})`)
       await waitFor(() => evaluate('!document.querySelector(".ai-delegation-recovery") && !document.querySelector(".ai-delegation-status-badge")'))

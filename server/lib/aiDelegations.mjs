@@ -437,9 +437,23 @@ export function retryableExternalLimitCategory(error) {
   return null
 }
 
+export function localChangesIntegrationCommits(result) {
+  if (result?.status !== 'quarantined' || result.childStatus !== 'completed'
+    || result.integratedCommit || !result.integrationBranch || !result.integrationBaseCommit
+    || result.conflictRound || result.unmergedFiles?.length) return null
+  const error = String(result.error ?? '')
+  const command = error.match(/^Command failed: git cherry-pick((?: [a-f0-9]{40})+)\r?\n/iu)
+  if (!command || !/local changes[^\n]*would be overwritten by (?:cherry-pick|merge)/iu.test(error)) return null
+  return command[1].trim().split(/\s+/)
+}
+
 export function aiDelegationRecoveryAvailability(delegation) {
   if (delegation?.pendingRecovery) return { failurePhase: 'dispatch', failureCategory: 'unknown', recoveryAvailable: false, recommendedAction: 'refresh-status', recoveryTool: 'mindnprogress_refresh_ai_delegation' }
   if (!['parent-wake-failed', 'failed', 'waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity', 'recovery-required', 'integration-recovery-required', 'waiting-child-resume'].includes(delegation?.state)) return null
+  if (delegation.state === 'failed' && delegation.workspaceLease?.leaseId
+    && localChangesIntegrationCommits(delegation.workspaceResult)) {
+    return { failurePhase: 'integration', failureCategory: 'workspace-local-changes', recoveryAvailable: true, recommendedAction: 'retry-integration', recoveryTool: 'mindnprogress_recover_ai_delegation' }
+  }
   if (['recovery-required', 'integration-recovery-required', 'waiting-child-resume'].includes(delegation.state)) {
     return { failurePhase: 'child', failureCategory: delegation.state === 'waiting-child-resume' ? 'user-stop' : 'restart', recoveryAvailable: true, recommendedAction: 'resume-existing', recoveryTool: 'mindnprogress_recover_ai_delegation' }
   }

@@ -7,9 +7,9 @@
   "serverInstructionsChars": 922,
   "serverInstructionsSha256": "8b9f506f7079ef160331fdfecdc0cd3ab77d9a4814c087c97389c43a6da74844",
   "toolNameChars": 1996,
-  "toolDescriptionChars": 12546,
+  "toolDescriptionChars": 12727,
   "inputSchemaJsonChars": 46313,
-  "rawRegisteredSurfaceChars": 61777,
+  "rawRegisteredSurfaceChars": 61958,
   "rawRegisteredSurfaceMeaning": "initialize instructions와 도구 이름·설명·inputSchema JSON 문자열 길이의 합계입니다. 전송 JSON이나 호스트 총주입량이 아닙니다.",
   "hostMetadata": {
     "measured": false,

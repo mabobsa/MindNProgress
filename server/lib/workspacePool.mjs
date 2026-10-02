@@ -4,7 +4,7 @@ import { copyFile, lstat, mkdir, readFile, readlink, rename, rm, stat, writeFile
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
-import { aiDelegationWorkspaceLeaseMatches, retryableExternalLimitCategory } from './aiDelegations.mjs'
+import { aiDelegationWorkspaceLeaseMatches, localChangesIntegrationCommits, retryableExternalLimitCategory } from './aiDelegations.mjs'
 import { replaceFileWithRetry } from './replaceFileWithRetry.mjs'
 
 const execFileAsync = promisify(execFile)
@@ -1662,6 +1662,100 @@ export class WorkspacePoolManager {
     return [...blocked].sort()
   }
 
+  async recoverLocalChangesIntegrationFailure(leaseId, scope) {
+    return this.runExclusive(async () => {
+      const lease = this.state?.leases?.[leaseId]
+      const workspace = this.registry?.workers.find((item) => item.id === lease?.workspaceId)
+      const current = this.state?.workspaces?.[lease?.workspaceId]
+      const integration = this.registry?.integration
+      const reject = (message) => { throw new WorkspacePoolUnavailableError(message, [], 'INTEGRATION_RECOVERY_UNSAFE') }
+      if (!lease || !scope || lease.mapId !== scope.mapId || lease.cardId !== scope.cardId
+        || lease.conversationId !== scope.conversationId) reject('복구할 위임과 작업공간 lease의 소유권이 일치하지 않습니다.')
+      if (lease.status === 'waiting-integration' && current?.status === 'waiting-integration'
+        && current.leaseId === leaseId && lease.result?.recoveredFromQuarantine
+        && lease.integrationRecoveryHistory?.at(-1)?.type === 'local-changes') return lease.result
+      const result = lease.result
+      const expectedCommits = localChangesIntegrationCommits(result)
+      if (!expectedCommits || !workspace || !integration || lease.status !== 'quarantined'
+        || lease.executionUnconfirmed || current?.status !== 'quarantined'
+        || current.leaseId !== leaseId || current.jobId !== lease.jobId
+        || lease.integrationBranch !== result.integrationBranch
+        || lease.integrationBranch !== `mnp/integrate/${lease.jobId}`
+        || lease.integrationBaseCommit !== result.integrationBaseCommit
+        || normalizedPath(lease.projectRoot) !== normalizedPath(workspace.root)
+        || lease.integrationWorkspaceId !== integration.id) reject('로컬 변경으로 중단된 통합과 현재 작업공간 배정을 확인할 수 없습니다.')
+      const [metadata, session] = await Promise.all([
+        readJson(path.join(workspace.root, '.ai-workspace.json'), null),
+        readJson(path.join(workspace.root, '.ai-session.json'), null),
+      ])
+      if (metadata?.workspaceId !== workspace.id || normalizedPath(metadata?.projectRoot) !== normalizedPath(workspace.root)
+        || session?.workspaceId !== lease.workspaceId || session?.jobId !== lease.jobId
+        || session?.leaseId !== leaseId || session?.conversationId !== lease.conversationId
+        || session?.branch !== lease.branch || session?.baseCommit !== lease.baseCommit
+        || normalizedPath(session?.projectRoot) !== normalizedPath(workspace.root)) reject('작업공간 메타데이터 또는 AI 세션이 변경되었습니다. 기존 배정을 먼저 확인하세요.')
+      const [dirty, branch, head, workHead, mainBranch, unmerged] = await Promise.all([
+        this.git(workspace.root, ['status', '--porcelain', '--untracked-files=all']),
+        this.git(workspace.root, ['branch', '--show-current']),
+        this.git(workspace.root, ['rev-parse', 'HEAD']),
+        this.git(workspace.root, ['rev-parse', `refs/heads/${lease.branch}`]),
+        this.git(integration.root, ['branch', '--show-current']),
+        this.git(workspace.root, ['diff', '--name-only', '--diff-filter=U']),
+      ])
+      if (dirty) reject('fork 작업공간에 로컬 변경이 남아 있습니다. 추적 파일 변경과 미추적 파일을 보존·정리한 뒤 통합 재시도를 요청하세요.')
+      if (branch !== lease.integrationBranch || workHead !== lease.headCommit
+        || result.headCommit !== lease.headCommit || mainBranch !== lease.baseBranch
+        || (result.integrationFailureHeadCommit && result.integrationFailureHeadCommit !== head)) reject('보존된 작업 브랜치 또는 중단된 통합 HEAD가 변경되었습니다.')
+      if (unmerged || await this.gitPathExists(workspace.root, 'CHERRY_PICK_HEAD')
+        || await this.gitPathExists(workspace.root, 'MERGE_HEAD')
+        || await this.gitPathExists(workspace.root, 'REBASE_HEAD')
+        || await this.gitPathExists(workspace.root, 'rebase-merge')
+        || await this.gitPathExists(workspace.root, 'rebase-apply')) reject('진행 중인 충돌·병합·리베이스를 먼저 해결하세요.')
+      const commits = (await this.git(workspace.root, ['rev-list', '--reverse', `${lease.baseCommit}..${lease.headCommit}`])).split(/\r?\n/).filter(Boolean)
+      const checkpoints = new Set((lease.checkpoints ?? []).map((item) => item.commit))
+      if (JSON.stringify(commits) !== JSON.stringify(expectedCommits)
+        || JSON.stringify(commits) !== JSON.stringify(lease.commits)
+        || lease.checkpoints?.at(-1)?.commit !== lease.headCommit
+        || commits.some((commit) => !checkpoints.has(commit))) reject('완료 커밋과 명시적 체크포인트가 일치하지 않습니다.')
+      await this.git(workspace.root, ['merge-base', '--is-ancestor', lease.baseCommit, lease.headCommit])
+      await this.git(workspace.root, ['merge-base', '--is-ancestor', lease.integrationBaseCommit, head])
+      const applied = (await this.git(workspace.root, ['rev-list', '--reverse', `${lease.integrationBaseCommit}..${head}`])).split(/\r?\n/).filter(Boolean)
+      if (applied.length > commits.length) reject('중단된 통합 브랜치에 확인되지 않은 커밋이 있습니다.')
+      const sourceHead = applied.length ? commits[applied.length - 1] : lease.baseCommit
+      const [sourceDiff, appliedDiff] = await Promise.all([
+        this.git(workspace.root, ['diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', lease.baseCommit, sourceHead, '--']),
+        this.git(workspace.root, ['diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', lease.integrationBaseCommit, head, '--']),
+      ])
+      if (sourceDiff !== appliedDiff) reject('중단된 통합 브랜치의 변경이 완료 커밋의 적용 결과와 다릅니다.')
+      const sequencer = await this.gitPathExists(workspace.root, 'sequencer')
+      if (sequencer) {
+        const sequencerPath = path.resolve(workspace.root, await this.git(workspace.root, ['rev-parse', '--git-path', 'sequencer']))
+        const [start, todo] = await Promise.all([
+          readFile(path.join(sequencerPath, 'head'), 'utf8'), readFile(path.join(sequencerPath, 'todo'), 'utf8'),
+        ])
+        const pending = todo.trim().split(/\r?\n/)
+        const remaining = commits.slice(applied.length)
+        if (start.trim() !== lease.integrationBaseCommit || pending.length !== remaining.length
+          || pending.some((line, index) => {
+            const match = line.match(/^pick ([a-f0-9]+) /)
+            return !match || !remaining[index].startsWith(match[1])
+          })) reject('진행 중인 Git 작업이 원래 통합 요청과 일치하지 않습니다.')
+      }
+      // 재구성 전에 부분 적용 결과도 참조로 보존한다. 사용자 변경은 삭제하거나 되돌리지 않는다.
+      const backupRef = `refs/mnp/integration-recovery/${lease.jobId}/${Number(lease.integrationAttempt ?? 1)}`
+      await this.git(workspace.root, ['update-ref', backupRef, head])
+      if (sequencer) await this.git(workspace.root, ['cherry-pick', '--quit'])
+      lease.integrationHeadCommit = null
+      lease.integrationRecoveryHistory = [...(lease.integrationRecoveryHistory ?? []), {
+        type: 'local-changes', recoveredAt: new Date().toISOString(), previousResult: result,
+        preservedHead: head, backupRef,
+      }]
+      return this.waitForIntegration(lease, workspace, {
+        childStatus: 'completed', childError: result.childError, headCommit: lease.headCommit,
+        recoveredFromQuarantine: true,
+      })
+    })
+  }
+
   async recoverUntrackedIntegrationFailure(leaseId) {
     return this.runExclusive(async () => {
       const lease = this.state?.leases?.[leaseId]
@@ -2430,11 +2524,20 @@ export class WorkspacePoolManager {
   async quarantineIntegrationFailure(lease, workspace, error, resultFields = {}) {
     const reason = error?.message ?? String(error)
     const completedAt = new Date().toISOString()
+    let integrationFailureHeadCommit = null
+    if (localChangesIntegrationCommits({
+      status: 'quarantined', integrationBranch: lease.integrationBranch,
+      integrationBaseCommit: lease.integrationBaseCommit, conflictRound: lease.conflictRound,
+      unmergedFiles: lease.result?.unmergedFiles, ...resultFields, error: reason,
+    })) {
+      try { integrationFailureHeadCommit = await this.git(workspace.root, ['rev-parse', 'HEAD']) } catch { /* 기존 오류를 보존한다. */ }
+    }
     const result = await this.writeResult(lease, {
       status: 'quarantined',
       headCommit: lease.headCommit ?? lease.result?.headCommit ?? null,
       integrationBaseCommit: lease.integrationBaseCommit ?? lease.result?.integrationBaseCommit ?? null,
       integrationBranch: lease.integrationBranch ?? lease.result?.integrationBranch ?? null,
+      ...(integrationFailureHeadCommit ? { integrationFailureHeadCommit } : {}),
       conflictRound: lease.conflictRound ?? lease.result?.conflictRound ?? null,
       unmergedFiles: lease.result?.unmergedFiles ?? [],
       ...resultFields,

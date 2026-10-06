@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { aiDelegationWorkspaceLeaseMatches, localChangesIntegrationCommits, retryableExternalLimitCategory } from './aiDelegations.mjs'
 import { replaceFileWithRetry } from './replaceFileWithRetry.mjs'
+import { assertAiDelegationSourceCompletionLease } from './aiDelegationSourceCompletion.mjs'
 
 const execFileAsync = promisify(execFile)
 const idleDriftReason = '작업공간에 소유자를 확정할 수 없는 변경이 있습니다.'
@@ -2034,13 +2035,14 @@ export class WorkspacePoolManager {
   }
 
   async prepareIntegrationResultCorrection(leaseId, { mapId, cardId, conversationId, expectedLease,
-    operationId, instructionHash } = {}) {
+    operationId, instructionHash, expectedCompletionProof } = {}) {
     return this.runExclusive(async () => {
       const reject = (message) => { throw new WorkspacePoolUnavailableError(message, [], 'RESULT_CORRECTION_UNSAFE') }
       const lease = this.state?.leases?.[leaseId]
       const workspace = this.registry?.workers.find((item) => item.id === lease?.workspaceId && item.enabled !== false)
       const integration = this.registry?.integration
       const current = this.state?.workspaces?.[lease?.workspaceId]
+      if (expectedCompletionProof) assertAiDelegationSourceCompletionLease(lease, expectedCompletionProof, { mapId, cardId, conversationId })
       if (!lease || !workspace || !integration || !operationId || !instructionHash
         || !aiDelegationWorkspaceLeaseMatches(lease, expectedLease)
         || lease.mapId !== mapId || lease.cardId !== cardId || !conversationId || lease.conversationId !== conversationId

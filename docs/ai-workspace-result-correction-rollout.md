@@ -40,6 +40,36 @@
 
 ## 사용자 파일과 실패 처리
 
+### 최초 원 dispatch 만료의 완료 관측 증거
+
+원 dispatch 조회가 `AI_DELEGATION_STATUS_NOT_FOUND`인 첫 결과 정정에는 별도의 source 완료 증거 경로를 사용한다. 최초 `strategy=new`, 원 operation과 위임 ID의 일치, 이전 복구 이력 없음, 기존 completed 관측·turn·캡처 해시·통합 대기 provenance가 모두 필요하다. live 조회의 완료 응답을 합성하지 않으며, 403·503이나 중단된 정정 실행의 dispatch 만료에는 이 경로를 적용하지 않는다.
+
+정상 최초 dispatch가 `pendingInstruction`을 소거하므로 완료 관측 경로에서만 최초 지시의 durable `instructionHash`를 사용한다. pending 원문이 남아 있으면 원문 exact 대사도 필요하며, 기존 누락 대화 복구의 pending exact 계약은 유지한다. 원 owner·origin·카드·사용자·시각·최초 전문에 기록된 6개 lease 필드·현재 작업공간이 일치해야 한다. 원문은 메모리에서만 처리하고 proof에는 ID·해시·시각·별개의 external turn/backend UUID·terminal tool error 개수만 보존한다.
+
+원 owner의 raw 메시지를 최신부터 페이지당 100개, 최대 20페이지로 완결 조회하고 같은 커서의 원문 범위를 다시 읽는다. 유일한 최초 사용자 요청, 단일 backend 실행, 마지막 finished assistant text와 저장 캡처의 정확 일치 및 `final <= capturedAt <= childCompletedAt`, fresh idle owner를 확인한다. 첫 backend 이전의 완료된 unbound tips 한 개만 제외할 수 있다. 과거 terminal tool error는 실패 이력으로 개수를 보존하며 완료 실행 증거와 기능 PASS를 구분한다. 진행 중·알 수 없는 상태·불완전 페이지·원문 변화는 쓰기 전 HOLD다.
+
+Root의 실제 원 자료 사전 대사에서는 최초 지시 해시, 최종 캡처 해시, 원 external turn, 단일 backend UUID와 7개 terminal tool error의 predicates가 통과했다. 완결 184개 메시지의 진단 결과와 최신 raw 100개를 비교하고 older 84개의 검증필드를 메모리에서 구성한 조건부 순수 대사다. 실제 older 페이지 loader·fresh 재조회·운영 정정 접수 또는 품질 PASS로 기록하지 않는다. 첫 preparing 재시도는 증거를 다시 확인하고, pending 응답 유실은 기존 요청을 이어가며, 정정 dispatch 이후 재개는 기존 live 이전 실행 검증만 사용한다.
+
+완료 proof의 scope·lease·source·candidate/base는 pool의 보존된 원 결과와 intent 저장 전에 대사하고, exclusive prepare 내부에서도 optional proof CAS로 다시 확인한다. 저장 전 증거 거부는 전체 위임·풀을 보존한다. intent 저장 후 CAS가 실패하면 preparing intent와 원 proof를 유지하며 응답의 `storedStatePreserved:false`·`preparationIntentPreserved:true`로 이번 변경을 구분한다.
+
+| dispatch 만료 보완의 최종 검증 | 결과 |
+| --- | --- |
+| 순수 완료 proof negative matrix·pool 원 결과 CAS·fresh owner·기존 original-message/lookup 회귀 | 78 PASS / 0 FAIL / 0 SKIP, 실제 운영 조회가 아닌 순수·fixture 검증 |
+| 직렬 실제 임시 Git/HTTP의 기존 response-loss·before-dispatch-restart·dispatch-mismatch | 각각 64168ms·74693ms·54243ms, 3 PASS |
+| 같은 임시 Git/HTTP의 새 source-proof | 85743ms, 1 PASS. 잘못된 증거·403/503의 전체 위임/풀 불변·POST 0, valid404 접수·동일 owner/lease·이전 후보·243 bytes 보존, 첫 preparing 재시작·응답 유실·proof 유무별 live 재개 |
+| 위 HTTP/Git 한 명령의 최종 통계 | 4 PASS / 0 FAIL / 0 CANCELLED / 0 SKIP, 279388ms, exit 0 |
+| 변경된 8개 JS 파일 문법·lint와 diff 검사 | exit 0. 이번 보완은 UI/build/dist를 변경하지 않음 |
+
+최종 순수 명령은 `node --test --test-concurrency=1 tests/ai-delegation-source-completion.test.mjs tests/ai-delegation-dispatch-recovery.test.mjs tests/ai-delegation-status-lookup.test.mjs`다. 실제 Git/HTTP는 다음 한정 명령으로 검수했다. 서로 겹치는 기존 검수와 합산하지 않는다.
+
+```powershell
+$env:MNP_REAL_GIT_TEST='1'
+$env:MNP_REAL_GIT_TEST_TIMEOUT_MS='300000'
+node --test --test-concurrency=1 --test-name-pattern='API는 명시 모드' tests/ai-integration-result-correction.test.mjs
+```
+
+새 HTTP fixture의 첫 실행은 dispatch 403 응답을 409로 예상했으나 기존 경로가 503을 반환해 59812ms에 실패했다. 이때 기존 `fetchAionUi`가 명시한 fixture URL 외 discovery/default 서버 후보도 조회하는 것을 발견했다. 실제 Core 후보 GET의 시도·도달 가능성을 배제할 수 없으며 원인·운영 영향은 확정하지 않는다. 이 실행은 정정 dispatch POST 전 실패했고 POST 수는 0이다. 이후 모든 HTTP scenario의 child에 test-only fetch origin allowlist와 자체 discovery/usage 경로를 지정했다. 두 번째 실행은 87627ms에 기능 검증을 모두 마친 뒤 Windows child 종료가 JS exit hook 영수증을 남기지 않아 마지막 테스트 assertion만 실패했다. 제품 변경 없이 거절 순간의 marker로 보완했다. 최종 새 case는 fake upstream GET 138회·POST 3회(최초 정정 1회와 live 재개 2회)의 동일 origin을 확인했고 default 서버 후보는 실제 fetch 전에 차단했다. 운영 MnP recover·runtime 재시작·위임/lease/refs/worker 쓰기는 이 보완 담당이 실행하지 않았다.
+
 Holdem integration의 `Assets/QHoldem/Editor/Scripts/JapanServiceDirectTmpGuard_JP.cs.meta`는 기존 미추적 243 bytes, SHA256 `f5d616f90fa05654fb8c6f2f9ca15ff24e03f35820ac25f34c9befb5a83f0a2c`를 보존한다. worker의 우발 추가를 정정하는 절차는 이 integration 파일의 삭제·이동·덮어쓰기를 허용하지 않는다.
 
 소유권·HEAD·세션·후보·Git 작업·원문 무결성이 불일치하면 자동으로 정리하지 않는다. 정정 준비나 전달 응답 유실은 같은 지시·operation으로만 이어간다. 실행 대상 불일치와 알 수 없는 Git 실패의 `held`는 자료와 통합 잠금을 유지하며 증거 검토를 요구한다.

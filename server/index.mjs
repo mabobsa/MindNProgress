@@ -164,6 +164,7 @@ import {
   aiDelegationStateReason,
 } from './lib/aiDelegations.mjs'
 import { verifyAiDelegationOriginalMessage } from './lib/aiDelegationDispatchRecovery.mjs'
+import { AiDelegationSourceCompletionError, assertAiDelegationSourceCompletionLease, readAiDelegationSourceCompletionProof } from './lib/aiDelegationSourceCompletion.mjs'
 import { buildSharedKnowledgeAudit } from './lib/sharedKnowledgeAudit.mjs'
 import {
   GlobalSearchInputError,
@@ -9060,25 +9061,58 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           : delegation.resultCorrection?.operationId ?? boundedAionOperationId(delegation.id, `correct-${recoveryAttempt}`)
         : boundedAionOperationId(delegation.id, `${integrationRecovery ? 'integrate-' : ''}recover-${recoveryAttempt}`)
       if (workspaceLease?.leaseId) {
+        let correctionIntentSaved = false
         try {
           const scope = { mapId, cardId: targetCard.id, conversationId: delegation.targetConversationId }
           if (resultCorrection) {
             const previousOperationId = delegation.childOperationId
-            const previousDispatch = await readAiDelegationDispatchStatus(fetchAionUiOn, {
-              machineId: delegationTargetMachineId(delegation), operationId: previousOperationId, phase: 'child',
-            })
             const resumingCorrection = continuingCorrection || Boolean(delegation.resultCorrection?.previousOperationId)
+            let previousDispatch, completionProof = null
+            const verifyHistoricalCompletion = async () => {
+              if (resumingCorrection) throw new AiDelegationSourceCompletionError('first-completed-source-required')
+              try {
+                return await readAiDelegationSourceCompletionProof(fetchAionUiOn, {
+                  machineId: delegationTargetMachineId(delegation), delegation,
+                  origin: aiConversationOrigins.get(delegation.targetConversationId),
+                })
+              } catch (error) {
+                if (error instanceof AiDelegationSourceCompletionError) throw error
+                throw new AiDelegationSourceCompletionError(`history-read-unavailable-${Number.isInteger(error?.status) ? error.status : 'unknown'}`)
+              }
+            }
+            try {
+              previousDispatch = await readAiDelegationDispatchStatus(fetchAionUiOn, {
+                machineId: delegationTargetMachineId(delegation), operationId: previousOperationId, phase: 'child',
+              })
+            } catch (error) {
+              if (error.code !== 'AI_DELEGATION_STATUS_NOT_FOUND' || resumingCorrection) throw error
+              completionProof = await verifyHistoricalCompletion()
+            }
+            // 첫 prepare 중단의 재요청도 원문 증거를 다시 대사한다. pending POST 재전달은 기존 경로다.
+            if (!resumingCorrection && delegation.resultCorrection?.phase === 'preparing'
+              && delegation.resultCorrection.originalCompletionProof) {
+              completionProof ??= await verifyHistoricalCompletion()
+              if (JSON.stringify(completionProof) !== JSON.stringify(delegation.resultCorrection.originalCompletionProof)) {
+                throw new AiDelegationSourceCompletionError('historical-proof-changed')
+              }
+            }
             const terminalStates = resumingCorrection ? ['completed', 'failed', 'recovery_required', 'waiting_resume'] : ['completed']
-            if (!terminalStates.includes(previousDispatch.state) || previousDispatch.operationId !== previousOperationId || previousDispatch.conversationId !== delegation.targetConversationId
+            if (!previousDispatch && !completionProof) throw new AiDelegationSourceCompletionError('original-completion-missing')
+            if (completionProof) assertAiDelegationSourceCompletionLease(workspacePoolManager.state?.leases?.[workspaceLease.leaseId], completionProof, scope)
+            if (previousDispatch && (!terminalStates.includes(previousDispatch.state) || previousDispatch.operationId !== previousOperationId || previousDispatch.conversationId !== delegation.targetConversationId
               || !aiDelegationWorkspaceLeaseMatches(workspaceLease, previousDispatch.workspaceLease)
               || (!resumingCorrection && previousDispatch.turnId !== delegation.childTurnId)
-              || aiDelegationReportResult(delegation).availability === 'integrity-failed') throw new Error('기존 실행 종료·담당자·lease·캡처 무결성을 확인하지 못했습니다.')
+              || aiDelegationReportResult(delegation).availability === 'integrity-failed')) throw new Error('기존 실행 종료·담당자·lease·캡처 무결성을 확인하지 못했습니다.')
             if (!delegation.resultCorrection) {
+              const attemptHistory = aiDelegationAttemptHistory(delegation, '승인된 통합 대기 결과 정정의 원문과 후보 보존')
+              if (completionProof) attemptHistory.at(-1).originalCompletionProof = structuredClone(completionProof)
               delegation = await updateAiDelegation(delegation.id, {
                 resultCorrection: { operationId, attempt: recoveryAttempt, phase: 'preparing',
+                  ...(completionProof ? { originalCompletionProof: completionProof } : {}),
                   instructionHash: createHash('sha256').update(instruction).digest('hex'), requestedAt: new Date().toISOString() },
-                attemptHistory: aiDelegationAttemptHistory(delegation, '승인된 통합 대기 결과 정정의 원문과 후보 보존'),
+                attemptHistory,
               })
+              correctionIntentSaved = true
             }
             if (continuingCorrection) {
               delegation = await updateAiDelegation(delegation.id, {
@@ -9094,6 +9128,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
                 })
               : workspacePoolManager.prepareIntegrationResultCorrection(workspaceLease.leaseId, {
                   ...scope, expectedLease: workspaceLease, operationId, instructionHash: delegation.resultCorrection.instructionHash,
+                  ...(completionProof ? { expectedCompletionProof: completionProof } : {}),
                 }))
           } else if (retryableParentWakeFailure && delegation.workspaceResult?.status === 'failed-clean' && !delegation.recoveryWorkspaceLease) {
             const replacement = await workspacePoolManager.acquire({
@@ -9122,6 +9157,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           return sendJson(response, 409, {
             error: `기존 작업공간 lease를 복구하지 못했습니다: ${error?.message ?? String(error)}`,
             code: error?.code ?? 'AI_DELEGATION_WORKSPACE_RECOVERY_FAILED',
+            ...(error instanceof AiDelegationSourceCompletionError ? { proofHoldReason: error.proofHoldReason, executionRequested: false,
+              storedStatePreserved: !correctionIntentSaved, ...(correctionIntentSaved ? { preparationIntentPreserved: true } : {}) } : {}),
           })
         }
       }

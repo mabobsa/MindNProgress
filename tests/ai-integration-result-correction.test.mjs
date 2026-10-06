@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 import test from 'node:test'
 import { WorkspacePoolManager } from '../server/lib/workspacePool.mjs'
 import { aiDelegationAttemptHistory, aiDelegationRecoveryAvailability } from '../server/lib/aiDelegations.mjs'
+import { sourceCompletionFixture, sourceCompletionPages, sourceBackendTurnId } from './helpers/aiDelegationSourceCompletion.mjs'
 
 const exec = promisify(execFile)
 const realGit = { skip: process.env.MNP_REAL_GIT_TEST !== '1' && 'MNP_REAL_GIT_TEST=1일 때 실행', timeout: Number(process.env.MNP_REAL_GIT_TEST_TIMEOUT_MS) || 180_000 }
@@ -269,7 +270,7 @@ test('새 후보 재구성의 실제 Git 실패는 이전 후보·사용자 파�
   assert.equal(restarted.state.integrationLeaseId, f.lease.leaseId)
 })
 
-for (const scenario of ['response-loss', 'before-dispatch-restart', 'dispatch-mismatch']) test(`API는 명시 모드·원 owner·lease와 캡처 이력을 보존한다 (${scenario})`, realGit, async t => {
+for (const scenario of ['response-loss', 'before-dispatch-restart', 'dispatch-mismatch', 'source-proof']) test(`API는 명시 모드·원 owner·lease와 캡처 이력을 보존한다 (${scenario})`, realGit, async t => {
   const f = await fixture(t)
   const dataDirectory = path.join(f.root, 'api-data'); await mkdir(dataDirectory)
   await writeFile(path.join(dataDirectory, '_workspace-pool.json'), JSON.stringify(f.manager.state))
@@ -279,6 +280,15 @@ for (const scenario of ['response-loss', 'before-dispatch-restart', 'dispatch-mi
     childStatus: 'completed', childTurnId: 'original-turn', childOperationId: 'original:icons',
     childResultSnapshot: resultText, childResultHash: createHash('sha256').update(resultText).digest('hex'), childResultTurnId: 'original-turn',
     workspaceLease: f.lease, workspaceResult: f.result, startedBy: 'user-admin', createdAt: now, updatedAt: now }
+  const source = sourceCompletionFixture({ lease: f.lease, result: f.result, snapshot: resultText })
+  // 두 페이지의 실제 HTTP 조회와 완결 범위를 검증한다. 실제 업무 본문은 쓰지 않는다.
+  for (let index = 0; index < 100; index++) source.rows.push({ ...source.rows[2], id: `history-tool-${index}`,
+    created_at: source.rows[2].created_at + index + 100 })
+  const originFile = path.join(dataDirectory, '_ai-conversation-origins.json')
+  if (scenario === 'source-proof') {
+    Object.assign(delegation, source.delegation)
+    await writeFile(originFile, JSON.stringify([{ ...source.origin, cardId: 'wrong-origin' }]))
+  }
   await writeFile(path.join(dataDirectory, '_ai-delegations.json'), JSON.stringify([delegation]))
   await writeFile(path.join(dataDirectory, 'map-test.json'), JSON.stringify({ id: scope.mapId, title: '결과 정정 검증', version: 1,
     nodes: [{ id: 'parent', position: { x: 0, y: 0 }, data: { kind: 'root', label: '상위', status: 'planned', progress: 0, aiConversationId: 'parent-conversation' } },
@@ -286,13 +296,29 @@ for (const scenario of ['response-loss', 'before-dispatch-restart', 'dispatch-mi
         aiConversationId: scope.conversationId, aiConversations: [{ conversationId: scope.conversationId, agent: { id: 'test-agent', label: '검증 AI' }, model: { id: 'test-model', label: '검증 모델' }, workspace: f.worker }] } }],
     edges: [{ id: 'edge', source: 'parent', target: scope.cardId }] }))
   let posts = [], dispatches = new Map(), dropResponse = true, unavailable = true, ownerMismatch = false
+  let evidenceMutation = null, historyStatus = 200, originalStatus = 404, historyReads = 0
+  const upstreamRequests = []
   const upstream = createServer(async (request, response) => {
     const chunks = []; for await (const chunk of request) chunks.push(chunk)
     const input = chunks.length ? JSON.parse(Buffer.concat(chunks)) : null
-    const url = new URL(request.url, 'http://localhost')
+    const url = new URL(request.url, `http://${request.headers.host}`)
+    upstreamRequests.push({ method: request.method, origin: url.origin })
     const send = (data, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ success: status < 400, data })) }
     if (url.pathname.endsWith('/capabilities')) return send({ schemaVersion: 3, workspaceLeaseVersion: 2, explicitCompletionAfterInterruption: true })
-    if (url.pathname === `/api/conversations/${scope.conversationId}`) return send({ id: scope.conversationId, runtime: { state: 'idle', isProcessing: false, pendingConfirmations: 0 }, extra: { workspace: f.worker } })
+    if (url.pathname === `/api/conversations/${scope.conversationId}`) return send(scenario === 'source-proof' ? source.conversation
+      : { id: scope.conversationId, runtime: { state: 'idle', isProcessing: false, pendingConfirmations: 0 }, extra: { workspace: f.worker } })
+    if (scenario === 'source-proof' && url.pathname === `/api/conversations/${scope.conversationId}/messages`) {
+      historyReads++
+      if (historyStatus !== 200) return send({}, historyStatus)
+      const rows = structuredClone(source.rows)
+      evidenceMutation?.(rows)
+      const pages = sourceCompletionPages(rows), cursor = url.searchParams.get('before')
+      const index = cursor ? pages.findIndex(page => page.oldest_cursor === cursor) + 1 : 0
+      const page = pages[index]
+      if (!page) return send({}, 404)
+      if (ownerMismatch) page.has_more_after = true
+      return send(page)
+    }
     if (url.pathname === '/api/internal/conversation-runtimes/active') return send({ items: [] })
     if (url.pathname === '/api/internal/external-conversation-dispatches' && request.method === 'POST') {
       posts.push(input)
@@ -306,7 +332,8 @@ for (const scenario of ['response-loss', 'before-dispatch-restart', 'dispatch-mi
     const operation = url.pathname.match(/^\/api\/internal\/external-conversation-dispatches\/(.+)$/)
     if (operation) {
       const id = decodeURIComponent(operation[1])
-      if (id === delegation.childOperationId) return send({ operationId: id, conversationId: ownerMismatch ? 'wrong-owner' : scope.conversationId, state: 'completed', turnId: 'original-turn', workspaceLease: f.lease })
+      if (id === delegation.childOperationId) return scenario === 'source-proof' ? send({}, originalStatus)
+        : send({ operationId: id, conversationId: ownerMismatch ? 'wrong-owner' : scope.conversationId, state: 'completed', turnId: 'original-turn', workspaceLease: f.lease })
       if (unavailable) return send({}, 503)
       return dispatches.has(id) ? send(dispatches.get(id)) : send({}, 404)
     }
@@ -323,10 +350,12 @@ for (const scenario of ['response-loss', 'before-dispatch-restart', 'dispatch-mi
     }
   }
   async function start() {
-    server = spawn(process.execPath, ['server/index.mjs'], { cwd: path.resolve(import.meta.dirname, '..'), windowsHide: true,
+    server = spawn(process.execPath, ['--import', './tests/helpers/isolatedAionUiFetch.mjs', 'server/index.mjs'], { cwd: path.resolve(import.meta.dirname, '..'), windowsHide: true,
       stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, MNP_DATA_DIR: dataDirectory, MNP_API_HOST: '127.0.0.1', MNP_API_PORT: String(port), MNP_WEB_PORT: String(port),
         MNP_WORKSPACE_POOL_REGISTRY: f.registryFile, MNP_AIONUI_URL: `http://127.0.0.1:${upstream.address().port}`,
-        MNP_AI_DELEGATION_POLL_INTERVAL_MS: '60000', MNP_ADMIN_PASSWORD: 'test-correction-password' } })
+        MNP_AIONUI_DISCOVERY_FILE: path.join(dataDirectory, 'test-discovery.json'), MNP_AIONUI_USAGE_FILE: path.join(dataDirectory, 'test-usage.json'),
+        MNP_TEST_ALLOWED_FETCH_ORIGINS: JSON.stringify([baseUrl, `http://127.0.0.1:${upstream.address().port}`]),
+        MNP_AI_DELEGATION_POLL_INTERVAL_MS: scenario === 'source-proof' ? '600000' : '60000', MNP_ADMIN_PASSWORD: 'test-correction-password' } })
     server.stderr.on('data', chunk => { errors += chunk })
     for (let attempt = 0; attempt < 150; attempt++) {
       try { if ((await fetch(baseUrl + '/api/health')).ok) return } catch { /* 준비 대기 */ }
@@ -349,6 +378,58 @@ for (const scenario of ['response-loss', 'before-dispatch-restart', 'dispatch-mi
     const input = { instruction, expectedUpdatedAt: now, sourceRevision: 1, targetRevision: 1, confirmApprovedScope: true }
     const post = input => fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(input) })
     assert.equal((await post(input)).status, 409)
+    const readStored = async () => ({ delegation: JSON.parse(await readFile(path.join(dataDirectory, '_ai-delegations.json'), 'utf8')),
+      pool: JSON.parse(await readFile(path.join(dataDirectory, '_workspace-pool.json'), 'utf8')) })
+    const unchangedHold = async (label, expectedUpdatedAt = now) => {
+      const before = await readStored(), count = posts.length
+      const rejected = await post({ ...input, expectedUpdatedAt, recoveryMode: 'correct-integration-result' })
+      const body = await rejected.json()
+      assert.ok((label.startsWith('dispatch ') ? [409, 503] : [409]).includes(rejected.status), `${label}: ${rejected.status}`)
+      assert.deepEqual(await readStored(), before, `${label}: 위임/풀 전체 불변`)
+      assert.equal(posts.length, count, `${label}: 실행 POST 없음`)
+      return body
+    }
+    if (scenario === 'source-proof') {
+      const stage = value => process.stderr.write(`# source-proof: ${value}\n`)
+      stage('invalid origin')
+      assert.equal((await unchangedHold('origin')).proofHoldReason, 'original-request-unconfirmed')
+      await stop(); await writeFile(originFile, JSON.stringify([source.origin])); await start(); await loginAfterRestart()
+      for (const [label, mutate] of [
+        ['header', rows => { rows[0].content.content = rows[0].content.content.replace(f.lease.leaseId, 'wrong-lease') }],
+        ['result drift', rows => { rows.find(row => row.id === 'final-result').content.content += '변경' }],
+        ['extra user', rows => { rows.push({ ...rows[0], id: 'extra-user', created_at: rows.at(-1).created_at + 1 }) }],
+        ['extra backend', rows => { rows[2].backend_turn_id = sourceBackendTurnId.slice(0, -1) + '9' }],
+        ['unfinished', rows => { rows.find(row => row.id === 'final-result').status = 'pending' }],
+        ['wrong timestamp', rows => { rows.find(row => row.id === 'final-result').created_at = Date.parse(delegation.childResultCapturedAt) + 1 }],
+      ]) { evidenceMutation = mutate; await unchangedHold(label) }
+      evidenceMutation = null; ownerMismatch = true; await unchangedHold('partial page'); ownerMismatch = false
+      for (const status of [403, 503]) {
+        historyStatus = status; await unchangedHold(`history ${status}`); historyStatus = 200
+        originalStatus = status; await unchangedHold(`dispatch ${status}`); originalStatus = 404
+      }
+      stage('valid proof / prepare interruption')
+      await put(f.main, 'base.txt', '격리 사용자 추적 변경\n')
+      const poolBefore = (await readStored()).pool
+      const notPrepared = await post({ ...input, recoveryMode: 'correct-integration-result' })
+      assert.equal(notPrepared.status, 409)
+      const intent = (await readStored()).delegation[0]
+      assert.equal(intent.resultCorrection.phase, 'preparing')
+      assert.equal(intent.resultCorrection.originalCompletionProof.kind, 'source-bound-completed-observation-after-operation-expiry-v1')
+      assert.equal(intent.resultCorrection.originalCompletionProof.backendTurnId, sourceBackendTurnId)
+      assert.equal(intent.resultCorrection.originalCompletionProof.observedOriginalTurnId, 'original-turn')
+      assert.deepEqual(intent.attemptHistory[0].originalCompletionProof, intent.resultCorrection.originalCompletionProof)
+      assert.deepEqual((await readStored()).pool, poolBefore)
+      assert.equal(posts.length, 0)
+      const managerBefore = structuredClone(f.manager.state)
+      await assert.rejects(f.prepare({ expectedCompletionProof: { ...intent.resultCorrection.originalCompletionProof,
+        candidateHead: 'd'.repeat(40) } }), { proofHoldReason: 'pool-original-source-mismatch' })
+      assert.deepEqual(f.manager.state, managerBefore, 'exclusive prepare의 proof CAS 실패도 변경하지 않습니다.')
+      await stop(); await git(f.main, 'restore', 'base.txt'); await start(); await loginAfterRestart()
+      evidenceMutation = rows => { rows.find(row => row.id === 'final-result').content.content += '재시작 뒤 변경' }
+      await unchangedHold('preparing restart revalidation', intent.updatedAt); evidenceMutation = null
+      input.expectedUpdatedAt = intent.updatedAt
+      stage('valid proof / dispatch response loss')
+    }
     ownerMismatch = true
     assert.equal((await post({ ...input, recoveryMode: 'correct-integration-result' })).status, 409)
     assert.equal(posts.length, 0)
@@ -379,6 +460,12 @@ for (const scenario of ['response-loss', 'before-dispatch-restart', 'dispatch-mi
     assert.equal(saved.attemptHistory[0].result, resultText)
     assert.equal(saved.attemptHistory[0].resultHash, delegation.childResultHash)
     assert.equal(saved.attemptHistory[0].resultTurnId, 'original-turn')
+    if (scenario === 'source-proof') {
+      const correction = (await readStored()).pool.leases[f.lease.leaseId].resultCorrection
+      assert.equal(await git(f.worker, 'rev-parse', correction.candidateBackupRef), f.result.integrationHeadCommit)
+      assert.equal(await git(f.worker, 'rev-parse', f.result.integrationBranch), f.result.integrationHeadCommit)
+      assert.equal(saved.resultCorrection.originalCompletionProof.messageCount, source.rows.length)
+    }
     assert.equal(JSON.parse(await readFile(path.join(dataDirectory, '_workspace-pool.json'), 'utf8')).integrationLeaseId, f.lease.leaseId)
     await stop(); unavailable = false; dropResponse = false; await start(); await loginAfterRestart()
     const pending = JSON.parse(await readFile(path.join(dataDirectory, '_ai-delegations.json'), 'utf8'))[0]
@@ -402,6 +489,35 @@ for (const scenario of ['response-loss', 'before-dispatch-restart', 'dispatch-mi
     assert.equal((await post({ ...input, expectedUpdatedAt: body.delegation.updatedAt, recoveryMode: 'correct-integration-result' })).status, 202)
     assert.equal(posts.length, scenario === 'before-dispatch-restart' ? 2 : 1)
     assert.deepEqual(await readFile(path.join(f.main, accidental)), userBytes)
+    if (scenario === 'source-proof') {
+      const historyReadCount = historyReads
+      for (const retainProof of [true, false]) {
+        process.stderr.write(`# source-proof: live interrupted correction resume (proof=${retainProof})\n`)
+        await stop()
+        const stored = (await readStored()).delegation[0]
+        dispatches.get(stored.childOperationId).state = 'failed'
+        const interrupted = { ...stored, state: 'recovery-required', childStatus: 'failed' }
+        if (!retainProof) delete interrupted.resultCorrection.originalCompletionProof
+        await writeFile(path.join(dataDirectory, '_ai-delegations.json'), JSON.stringify([interrupted]))
+        historyStatus = 503
+        await start(); await loginAfterRestart()
+        const next = await post({ ...input, expectedUpdatedAt: interrupted.updatedAt, recoveryMode: 'correct-integration-result' })
+        const nextBody = await next.json()
+        assert.equal(next.status, 202, JSON.stringify(nextBody))
+        assert.equal(nextBody.delegation.workspaceLease.leaseId, f.lease.leaseId)
+        assert.equal(historyReads, historyReadCount, '실행 뒤 재개는 원 history를 다시 읽지 않습니다.')
+        assert.equal(Boolean(nextBody.delegation.resultCorrection.originalCompletionProof), retainProof)
+      }
+      assert.equal(posts.length, 3)
+      assert.equal((await readStored()).pool.integrationLeaseId, f.lease.leaseId)
+      assert.deepEqual(await readFile(path.join(f.main, accidental)), userBytes)
+      const upstreamOrigin = `http://127.0.0.1:${upstream.address().port}`
+      assert.ok(errors.includes(`# isolated-fetch: allowed origin=${upstreamOrigin}`)
+        && errors.includes('# isolated-fetch: rejected before fetch'), '실제 서비스 fallback은 실행 전에 차단했습니다.')
+      assert.ok(upstreamRequests.every(receipt => receipt.origin === upstreamOrigin))
+      assert.equal(upstreamRequests.filter(receipt => receipt.method === 'POST').length, posts.length)
+      process.stderr.write(`# source-proof: isolated upstream GET=${upstreamRequests.filter(receipt => receipt.method === 'GET').length} POST=${posts.length}; fallback fetch rejected\n`)
+    }
     if (scenario === 'response-loss') {
       await stop()
       const retained = JSON.parse(await readFile(path.join(dataDirectory, '_ai-delegations.json'), 'utf8'))[0]

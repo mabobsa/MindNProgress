@@ -3,7 +3,7 @@ import { sameExecutionWorkspace } from './doorayExecutionWorkspace.mjs'
 
 const fail = () => Object.assign(new Error('원본 실행 기록이 만료됐고 대화의 최초 위임 전문·시작 카드·작업공간을 확증하지 못했습니다.'), { status: 409, code: 'AI_DELEGATION_ORIGINAL_MESSAGE_UNCONFIRMED' })
 
-export function verifyAiDelegationOriginalMessage(delegation, origin, conversation, message) {
+function verifyOriginalMessage(delegation, origin, conversation, message, completedObservation) {
   const lease = delegation.workspaceLease
   const content = typeof message?.content === 'string' ? message.content : message?.content?.content
   if (!lease || delegation.strategy !== 'new' || !origin || origin.conversationId !== conversation?.id
@@ -22,8 +22,11 @@ export function verifyAiDelegationOriginalMessage(delegation, origin, conversati
   if (!text.startsWith('# MindNProgress 하위 카드 위임 작업 요청\n') || split < 0 || text.indexOf(marker, split + 1) >= 0) throw fail()
   const instruction = text.slice(split + marker.length).trim()
   const instructionHash = createHash('sha256').update(instruction).digest('hex')
+  const pending = delegation.pendingInstruction
+  const instructionEvidence = completedObservation && (pending === undefined || pending === null)
+    ? 'durable-instruction-hash' : 'pending-instruction-exact'
   if (!delegation.instructionHash || instructionHash !== delegation.instructionHash
-    || instruction !== delegation.pendingInstruction?.trim()) throw fail()
+    || (instructionEvidence === 'pending-instruction-exact' && instruction !== pending?.trim())) throw fail()
   const header = text.slice(0, split).split('\n')
   const field = (key) => {
     const prefix = `- ${key}: \``
@@ -40,6 +43,18 @@ export function verifyAiDelegationOriginalMessage(delegation, origin, conversati
   }
   if (!sameExecutionWorkspace(conversation.extra?.workspace, lease.projectRoot)) throw fail()
   return { conversationId: conversation.id, workspaceLease,
-    recoveryProof: { kind: 'original-message-after-operation-expiry', messageId: message.id, instructionHash,
+    recoveryProof: { kind: completedObservation ? 'completed-original-message-after-operation-expiry' : 'original-message-after-operation-expiry',
+      ...(completedObservation ? { instructionEvidence } : {}), messageId: message.id, instructionHash,
       conversationCreatedAt: createdAt, originLinkedAt: origin.linkedAt } }
+}
+
+export function verifyAiDelegationOriginalMessage(delegation, origin, conversation, message) {
+  return verifyOriginalMessage(delegation, origin, conversation, message, false)
+}
+
+// 정상 dispatch는 pendingInstruction을 소거한다. 완료 관측 경로에서만 내구 hash로
+// 원 지시를 대사하며, 기존 누락 대화 복구의 pending exact 계약은 유지한다.
+export function verifyAiDelegationCompletedOriginalMessage(delegation, origin, conversation, message) {
+  if (delegation.childStatus !== 'completed' || !Number.isFinite(Date.parse(delegation.childCompletedAt))) throw fail()
+  return verifyOriginalMessage(delegation, origin, conversation, message, true)
 }

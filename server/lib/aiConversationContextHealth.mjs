@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { aiModelPolicy, aiModelPolicyRevision, blockedAiModelLabels, isAiModelBlocked } from './aiModelPolicy.mjs'
 
 export const AI_CONVERSATION_CONTEXT_THRESHOLDS = Object.freeze({
   cautionUsageRatio: 0.65,
@@ -150,22 +151,21 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
   }
 }
 
-export function isAiDelegationModelBlocked(modelId) {
-  return /^gpt-(?:5\.6|6(?:\.0)?)-sol(?:\[.*\])?$/.test(String(modelId ?? '').trim().toLowerCase())
-}
+export { isAiModelBlocked as isAiDelegationModelBlocked } from './aiModelPolicy.mjs'
 
-export function applyAiConversationDelegationModelPolicy(contextHealth, { linkedModelId, runtimeModelId } = {}) {
+export function applyAiConversationDelegationModelPolicy(contextHealth, { linkedModelId, runtimeModelId } = {}, policy = aiModelPolicy) {
   const linked = String(linkedModelId ?? '').trim().toLowerCase()
   const runtime = String(runtimeModelId ?? '').trim().toLowerCase()
-  const blocked = [linked, runtime].some(isAiDelegationModelBlocked)
+  const blocked = [linked, runtime].some((id) => isAiModelBlocked(id, policy))
   const assessmentId = createHash('sha256').update(JSON.stringify({
     contextAssessmentId: contextHealth.assessmentId,
     linkedModelId: linked,
     runtimeModelId: runtime,
+    modelPolicyRevision: aiModelPolicyRevision(policy),
   })).digest('hex')
   if (!blocked) return { ...contextHealth, assessmentId }
   const code = 'CONVERSATION_MODEL_REUSE_BLOCKED'
-  const message = 'GPT-5.6-Sol 또는 GPT-6-Sol로 진행된 대화는 새 AI 위임에 이어 쓰지 않습니다. 다른 모델을 명시해 새 대화를 만드세요.'
+  const message = `${blockedAiModelLabels(policy)}로 진행된 대화는 새 AI 위임에 이어 쓰지 않습니다. 다른 모델을 명시해 새 대화를 만드세요.`
   return {
     ...contextHealth,
     assessmentId,

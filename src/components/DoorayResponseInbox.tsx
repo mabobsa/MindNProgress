@@ -18,6 +18,7 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
   useEffect(() => { savedSettings.current = response.settings }, [response.settings])
   const [options, setOptions] = useState<Options | null>(null)
   const [optionsError, setOptionsError] = useState('')
+  const [settingsNotice, setSettingsNotice] = useState('')
   const [optionsLoading, setOptionsLoading] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [machine, setMachine] = useState(response.settings.machineId ?? '')
@@ -40,14 +41,17 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
     let mounted = true
     setOptionsLoading(true)
     setOptionsError('')
-    void requestJson<Options>(`/api/integrations/aionui/options${machine ? `?machineId=${encodeURIComponent(machine)}` : ''}`)
+    void requestJson<Options>(`/api/integrations/aionui/options?purpose=dooray-response${machine ? `&machineId=${encodeURIComponent(machine)}` : ''}`)
       .then((result) => {
         if (!mounted) return
         setOptions(result)
         const saved = savedSettings.current
         const initial = result.agents.find((entry) => entry.id === saved.agentId && entry.models.length > 0) ?? result.agents.find((entry) => entry.models.length > 0)
+        const modelId = initial ? availableAiRuntimeOptionId(initial.models, saved.modelId, initial.defaultModelId) : ''
+        setSettingsNotice(!initial ? '자동 요청에 사용할 허용 모델이 없습니다. AionUi 모델 목록과 공통 모델 정책을 확인해 주세요.'
+          : saved.modelId && saved.modelId !== modelId ? `저장된 모델 대신 공통 모델 정책의 허용 모델 ${modelId}을 선택했습니다.` : '')
         if (initial) saveSettings({ machineId: result.machineId, agentId: initial.id, proposalWorkspace: saved.proposalWorkspace,
-          modelId: availableAiRuntimeOptionId(initial.models, saved.modelId, initial.defaultModelId),
+          modelId,
           mode: availableAiRuntimeOptionId(initial.modes, saved.mode, initial.defaultMode),
           thoughtLevel: availableAiRuntimeOptionId(initial.thoughtLevels, saved.thoughtLevel, initial.defaultThoughtLevel) })
       })
@@ -79,6 +83,7 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
       {settingsOpen && <div className="dooray-response-settings">
         {optionsLoading && <span role="status">AI 설정을 불러오는 중…</span>}
         {optionsError && <p role="alert">{optionsError}</p>}
+        {settingsNotice && <p role="status">{settingsNotice}</p>}
         {options && !optionsLoading && <>
           <label>실행 머신<select value={machine || options.machineId} onChange={(event) => {
             setMachine(event.target.value); response.saveSettings({ machineId: event.target.value }); setOptions(null)
@@ -109,6 +114,7 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
             {visibleJobs.map((entry) => <option key={entry.id} value={entry.id}>{doorayResponseStatusLabel(entry)} · {entry.subject}</option>)}
           </select></label>
           {job && <article aria-live="polite">
+            {job.modelPolicy?.message && <p role="status">{job.modelPolicy.message}</p>}
             <div className="dooray-response-heading"><strong>{doorayResponseStatusLabel(job)}</strong><a href={job.sourceUrl} target="_blank" rel="noopener noreferrer">Dooray 원문</a></div>
             {job.route && <>
               <p><strong>{job.route.requestSummary}</strong></p>

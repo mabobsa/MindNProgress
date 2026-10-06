@@ -1,10 +1,33 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { archiveDoorayResponseConversation, doorayResponseWorkspace, doorayResponseMcpNames, prepareDoorayResponseMcps, selectDoorayResponseMcps } from '../server/lib/doorayResponseIntegration.mjs'
+import { archiveDoorayResponseConversation, dispatchDoorayResponseRequest, doorayResponseWorkspace, doorayResponseMcpNames, prepareDoorayResponseMcps, selectDoorayResponseMcps } from '../server/lib/doorayResponseIntegration.mjs'
 
 const catalog = doorayResponseMcpNames.map((name, index) => ({ id: `mcp-${index}`, name, enabled: true }))
 const operation = { machineId: 'selected-machine', conversationId: 'test-chat' }
 const idle = () => ({ state: 'idle' })
+
+test('실제 전송 직전의 모델 변경·미확인과 제한된 기록을 차단하고 허용 요청만 보낸다', async () => {
+  const calls = []
+  let modelId = 'gpt-6.1-sol'
+  const call = async (machineId, pathname, options) => { calls.push({ machineId, pathname, options }); return { state: 'starting' } }
+  const read = async (machineId, conversationId) => { assert.equal(machineId, operation.machineId); return { id: conversationId, extra: { current_model_id: modelId } } }
+  const op = { ...operation, id: 'request-1', settings: { modelId: 'gpt-6.1-sol' }, recordedModelId: 'gpt-6.1-sol', prompt: '제안 작성' }
+  for (const blocked of ['gpt-5.6-sol', 'gpt-6-sol', 'gpt-6.0-sol[1m]', undefined]) {
+    modelId = blocked
+    await assert.rejects(dispatchDoorayResponseRequest(call, read, op), { code: 'AI_AUTOMATION_MODEL_BLOCKED' })
+  }
+  modelId = 'opus'
+  await assert.rejects(dispatchDoorayResponseRequest(call, read, op), /모델이 변경/)
+  modelId = 'gpt-6.1-sol'
+  await assert.rejects(dispatchDoorayResponseRequest(call, read, { ...op, recordedModelId: 'gpt-5.6-sol' }), { code: 'AI_AUTOMATION_MODEL_BLOCKED' })
+  await assert.rejects(dispatchDoorayResponseRequest(call, read, { ...op, settings: { modelId: 'gpt-6-sol' } }), { code: 'AI_AUTOMATION_MODEL_BLOCKED' })
+  assert.equal(calls.length, 0)
+  await dispatchDoorayResponseRequest(call, read, op)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].options.body.targetConversationId, operation.conversationId)
+  await assert.rejects(dispatchDoorayResponseRequest(call, read, { ...operation, modelId: 'gpt-5.6-sol', kind: 'handoff' }), { code: 'AI_AUTOMATION_MODEL_BLOCKED' })
+  assert.equal(calls.length, 1, '담당 카드 전달도 제한 대화를 재개하지 않는다')
+})
 
 test('필수 MCP 네 종류의 실제 ID만 선택하며 누락·비활성·중복을 허용하지 않는다', () => {
   assert.deepEqual(selectDoorayResponseMcps([...catalog, { id: 'unused', name: 'other', enabled: true }]), catalog.map((server) => ({ id: server.id, label: server.name })))

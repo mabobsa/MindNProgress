@@ -192,6 +192,10 @@ export function publicDoorayResponse(job) {
   return { id: job.id, itemKey: job.source.item.key, postId: job.source.item.postId, sourceUrl: job.source.item.url,
     subject: job.source.subject, status: job.status, route: job.route ?? null, proposal: job.proposal ?? '', error: job.error ?? '',
     routingWarning: job.routingWarning ?? null, proposalSource: job.proposalSource ?? null,
+    settings: { machineId: job.settings.machineId, agentId: job.settings.agentId, modelId: job.settings.modelId,
+      mode: job.settings.mode, thoughtLevel: job.settings.thoughtLevel, proposalWorkspace: job.settings.proposalWorkspace },
+    modelPolicy: job.modelReplacementNotice ? { ...job.settings.modelPolicy, changed: true,
+      previousModelId: job.settings.modelPolicy?.previousModelId ?? null, message: job.modelReplacementNotice } : job.settings.modelPolicy ?? null,
     createdAt: job.createdAt, updatedAt: job.updatedAt, conversationId: handoff?.conversationId ?? job.review?.conversationId ?? job.router?.conversationId ?? null,
     homeMachineId: handoff?.machineId ?? job.review?.machineId ?? job.settings.machineId,
     homeMachineRole: handoff?.homeMachineRole ?? job.operation?.settings?.machineRole ?? job.settings.machineRole ?? 'main',
@@ -350,11 +354,20 @@ export function createDoorayResponseService(deps) {
         sessions: [...(job.sessions ?? []), ...conversations(job)] })
       return
     }
+    if (!operation?.dispatchAttempted && !(operation?.createAttempted && !operation.conversationId)) {
+      // 저장된 작업·추가 요청도 최신 정책으로 해석한다. 이미 전송한 실행은 결과만 회수한다.
+      const settings = await deps.resolveSettings(user, job.settings)
+      const sessions = (job.sessions ?? []).map((session) => ({ ...session, modelId: session.modelId ?? job.settings.modelId }))
+      const router = job.router ? { ...job.router, modelId: job.router.modelId ?? job.settings.modelId } : null
+      operation = operation ? { ...operation, recordedModelId: operation.recordedModelId ?? operation.settings?.modelId, settings } : null
+      job = await patch(user.id, job.id, { settings, sessions, router, operation })
+    }
     if (!operation) {
       const maps = await deps.loadMaps()
       if (job.status === 'routing') {
         const id = `${job.id}-route-${job.attempt ?? 0}-${job.round}`
         operation = { id, kind: 'router', machineId: job.settings.machineId, conversationId: job.router?.conversationId ?? null,
+          recordedModelId: job.router?.modelId,
           prompt: buildDoorayRoutingPrompt(job, id, buildDoorayRoutingCatalog(maps, job.source, job.inspectedMapIds)), settings: job.settings }
       } else {
         const route = validateDoorayRoute(job.route, maps)
@@ -365,6 +378,7 @@ export function createDoorayResponseService(deps) {
         if (prepared.conversationId && prepared.conversationId !== reusable?.conversationId) throw error('이 요청의 제안 전용 대화만 이어갈 수 있습니다.', 409)
         const id = `${job.id}-review-${job.attempt ?? 0}`
         operation = { id, kind: 'review', machineId: prepared.settings.machineId, conversationId: prepared.conversationId,
+          recordedModelId: prepared.conversationId ? reusable?.modelId : null,
           settings: prepared.settings, prompt: buildDoorayReviewPrompt(job, id, prepared.context) }
       }
       operation.prompt += `\n현재 위치는 여러 제안 대화의 공통 폴더입니다. 임시 렌더링 파일은 requests/${operation.id}/ 아래에만 만들고 다른 요청의 파일을 읽거나 변경하지 마세요.`
@@ -372,14 +386,25 @@ export function createDoorayResponseService(deps) {
       job = await patch(user.id, job.id, { operation, error: '' })
     }
     await deps.authorize?.(user, operation.machineId)
+    if (operation.conversationId && !operation.dispatchAttempted && deps.prepareModel) {
+      const prepared = await deps.prepareModel(user, operation, job)
+      if (!prepared.reuseAllowed) {
+        // 확인된 기존 대화는 보존하고 새 전용 대화를 만든다. 생성 응답 미확인은 이 경로에 들어오지 않는다.
+        const settings = { ...operation.settings, modelPolicy: { ...operation.settings.modelPolicy, changed: true,
+          previousModelId: operation.recordedModelId ?? prepared.modelId ?? null,
+          message: `기존 제안 대화의 모델이 제한되거나 선택 모델과 달라 ${operation.settings.modelId} 모델의 새 전용 대화로 요청합니다. 이전 제안과 대화 기록은 보존합니다.` } }
+        operation = { ...operation, settings, conversationId: null, recordedModelId: null, createAttempted: false, mcpPrepared: false, linked: false }
+        job = await patch(user.id, job.id, { settings, operation, modelReplacementNotice: settings.modelPolicy.message })
+      }
+    }
     if (!operation.conversationId) {
       if (operation.createAttempted) throw error('AI 대화 생성 응답을 확인하지 못했습니다. AionUi 대화 목록을 확인해 주세요. 중복 생성을 막기 위해 자동 재생성하지 않습니다.', 409)
       operation = { ...operation, createAttempted: true }
       await patch(user.id, job.id, { operation })
       const conversation = await deps.createConversation(operation.settings, `[${operation.kind === 'router' ? '접수' : '제안'}] ${job.source.subject}`, operation.id, { id: job.id, userId: user.id })
-      operation = { ...operation, conversationId: conversation.id }
+      operation = { ...operation, conversationId: conversation.id, recordedModelId: operation.settings.modelId }
       const session = { conversationId: conversation.id, machineId: operation.machineId, operationId: operation.id,
-        dedicated: true, workspace: conversation.workspace, kind: operation.kind,
+        dedicated: true, workspace: conversation.workspace, kind: operation.kind, modelId: operation.settings.modelId,
         ...(operation.kind === 'review' ? { mapId: job.route.mapId, cardId: job.route.cardId } : {}) }
       job = await patch(user.id, job.id, { operation, [operation.kind]: session, sessions: [...(job.sessions ?? []), session] })
     }
@@ -696,7 +721,7 @@ export function createDoorayResponseService(deps) {
         if (!handoff) {
           if (!selected.idle) throw error('담당 대화가 실행 중입니다. 끝난 뒤 전달해 주세요.', 409)
           handoff = { id: `${job.id}-handoff-${job.attempt ?? 0}`, kind: 'handoff', attempt: job.attempt,
-            conversationId, machineId: selected.machineId, homeMachineRole: selected.homeMachineRole, prompt }
+            conversationId, machineId: selected.machineId, homeMachineRole: selected.homeMachineRole, modelId: selected.modelId, prompt }
           job = await patch(userId, id, { handoff })
         }
         if (!handoff.sentAt) {
@@ -740,22 +765,28 @@ export function createDoorayResponseService(deps) {
     async refine(userId, id, hint) {
       if (typeof hint !== 'string' || !hint.trim() || hint.length > 4000) throw error('추가 정보를 1~4,000자로 입력해 주세요.')
       await refreshDeleted(userId, (job) => job.id === id, true)
-      const job = await update(userId, (state) => {
+      const user = await deps.user(userId)
+      if (!user) throw error('사용자를 확인할 수 없습니다.', 403)
+      const job = await update(userId, async (state) => {
         const current = state.jobs.find((entry) => entry.id === id)
         if (!current) throw error('AI 대응 요청을 찾을 수 없습니다.', 404)
         if (current.completedAt) throw error('완료된 대응입니다. 완료 내역에서 제안을 확인해 주세요.', 409)
         if (current.approval?.conversation) throw error('이미 시작한 승인 대화에서 변경 사항을 검토해 주세요.', 409)
         if (activeStates.has(current.status)) throw error('현재 검토가 끝난 뒤 추가 정보를 전달해 주세요.', 409)
         if (current.operation?.createAttempted && !current.operation.conversationId) throw error('이전 AI 대화 생성 여부를 먼저 확인해야 합니다.', 409)
+        const settings = await deps.resolveSettings(user, current.settings)
         const history = current.proposal ? [{ request: current.route?.requestSummary ?? current.source.subject, route: current.route,
           proposal: clip(current.proposal, 12_000), decision: current.decision ?? null }, ...(current.history ?? [])].slice(0, 3) : current.history
         // 수정 제안에는 이전 승인을 승계하지 않는다. 확인 당시 전문과 범위는 이력으로 보존한다.
         const approvalHistory = current.approval ? [...(current.approvalHistory ?? []), current.approval] : current.approvalHistory
-        const sessions = current.conversationPolicy === 'dedicated' ? current.sessions : [...(current.sessions ?? []), ...conversations(current)]
-        Object.assign(current, { hint: hint.trim(), history, approvalHistory, approval: null, decision: null, sessions, router: current.conversationPolicy === 'dedicated' ? current.router : null,
+        const sessions = (current.conversationPolicy === 'dedicated' ? current.sessions ?? [] : [...(current.sessions ?? []), ...conversations(current)])
+          .map((session) => ({ ...session, modelId: session.modelId ?? current.settings.modelId }))
+        const router = current.conversationPolicy === 'dedicated' && current.router ? { ...current.router, modelId: current.router.modelId ?? current.settings.modelId } : null
+        Object.assign(current, { settings, hint: hint.trim(), history, approvalHistory, approval: null, decision: null, sessions, router,
           conversationPolicy: 'dedicated', status: 'routing', attempt: (current.attempt ?? 0) + 1,
           round: 0, inspectedMapIds: [], route: null, review: null, operation: null, proposal: '', error: '', restartRecovery: null,
           routingWarning: null, routingResult: null, proposalSource: null, resultRecovery: null,
+          modelReplacementNotice: null,
           updatedAt: new Date().toISOString() })
         return current
       })

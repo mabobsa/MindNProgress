@@ -19,6 +19,7 @@ export type DoorayResponseJob = {
   createdAt: string; updatedAt: string; conversationId: string | null; homeMachineRole: 'main' | 'sub'; canRetry: boolean
   recoveringAfterRestart?: boolean
   canRecoverResult?: boolean; proposalSource?: 'router' | 'review' | null
+  settings?: ResponseSettings; modelPolicy?: { changed: boolean; previousModelId: string | null; message: string } | null
   routingWarning?: { code: string; conversationId: string; message: string } | null
   completedAt?: string | null; archiveStatus?: 'pending' | 'done' | 'warning' | null; archiveError?: string
   decision?: DoorayDecision | null; proposalRevision?: string; approval?: DoorayApproval | null; approvalHistory?: DoorayApproval[]
@@ -111,6 +112,7 @@ export function useDoorayResponses(clientId: string, userId: string) {
       setJobs((current) => [job, ...current.filter((entry) => entry.id !== job.id)])
       setSelectedId(job.id)
       setShowCompleted(Boolean(job.completedAt))
+      if (job.settings) saveSettings(job.settings)
       setNotice('')
     } catch (failure) {
       if (!signal?.aborted) setError(failure instanceof Error ? failure.message : 'AI 대응 요청에 실패했습니다.')
@@ -137,6 +139,7 @@ export function useDoorayResponses(clientId: string, userId: string) {
       sequence.current++
       setJobs((current) => current.map((entry) => entry.id === id ? job : entry))
       setError('')
+      if (job.settings) saveSettings(job.settings)
       setNotice('')
       return true
     } catch (failure) { setError(failure instanceof Error ? failure.message : '추가 정보 전달에 실패했습니다.'); return false }

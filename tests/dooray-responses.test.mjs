@@ -5,6 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { buildDoorayHandoffPrompt, buildDoorayRoutingCatalog, createDoorayResponseService, parseDoorayAiResult, publicDoorayResponse, readDoorayResponseSource, resolveDoorayRoutingResult, validateDoorayRoute } from '../server/lib/doorayResponses.mjs'
 import { redactDoorayTranscript } from '../server/lib/doorayExecutionHandoff.mjs'
+import { aiModelPolicy, canReuseAutomatedAiConversation, resolveAutomatedAiModel } from '../server/lib/aiModelPolicy.mjs'
 
 const item = { key: 'comment:post1:comment1', kind: 'mention-comment', projectId: 'p1', postId: 'post1', commentId: 'comment1',
   subject: '베팅 표시 수정', excerpt: '금액 표시를 확인해 주세요.', url: 'https://nhnent.dooray.com/project/posts/post1#comment-comment1' }
@@ -97,6 +98,82 @@ async function fixture(t, overrides = {}) {
   }
   return { directory, deps, counts, operations, service: createDoorayResponseService(deps) }
 }
+
+test('제한 정책 변경 뒤 추가 정보는 새 허용 모델로 요청하고 이전 제안·전용 대화는 보존한다', async (t) => {
+  let policy = { ...aiModelPolicy, blockedModels: [] }
+  const agent = { defaultModelId: 'gpt-5.6-sol', models: [{ id: 'gpt-5.6-sol' }, { id: 'gpt-6.1-sol' }] }
+  const runtimeModels = new Map()
+  const { service, deps, counts, operations } = await fixture(t, {
+    resolveSettings: async (_user, requested = {}) => {
+      const resolved = resolveAutomatedAiModel(agent, requested.modelId, policy)
+      return { machineId: 'main', agentId: 'test-ai', modelId: resolved.model.id, modelPolicy: resolved.modelPolicy }
+    },
+    createConversation: async (settings) => {
+      const id = `new-chat-${++counts.create}`
+      runtimeModels.set(id, settings.modelId)
+      return { id }
+    },
+    prepareModel: async (_user, op) => ({ reuseAllowed: canReuseAutomatedAiConversation(op.recordedModelId, runtimeModels.get(op.conversationId), op.settings.modelId, policy) }),
+  })
+  await service.start({ id: 'user1' }, item)
+  const [original] = await until(service, 'user1', 'proposal')
+  assert.equal(original.settings.modelId, 'gpt-5.6-sol')
+  const legacy = await deps.read(path.join(deps.directory, 'user1.json'))
+  legacy.jobs[0].sessions.forEach((session) => { delete session.modelId })
+  delete legacy.jobs[0].router.modelId
+  delete legacy.jobs[0].operation.recordedModelId
+  await deps.write(path.join(deps.directory, 'user1.json'), legacy)
+  policy = aiModelPolicy
+  const refined = await service.refine('user1', original.id, '새 모델로 추가 조건을 검토해 주세요.')
+  assert.equal(refined.settings.modelId, 'gpt-6.1-sol')
+  const [proposal] = await until(service, 'user1', 'proposal')
+  assert.equal(proposal.settings.modelId, 'gpt-6.1-sol')
+  assert.equal(counts.create, 4, '접수와 검토 전용 대화를 각각 새로 만든다')
+  assert.equal(counts.dispatch, 4)
+  assert.deepEqual([...operations.values()].slice(-2).map((op) => op.settings.modelId), ['gpt-6.1-sol', 'gpt-6.1-sol'])
+  const stored = (await deps.read(path.join(deps.directory, 'user1.json'))).jobs[0]
+  assert.equal(stored.history[0].proposal, original.proposal)
+  assert.deepEqual(stored.sessions.map((session) => session.modelId), ['gpt-5.6-sol', 'gpt-5.6-sol', 'gpt-6.1-sol', 'gpt-6.1-sol'])
+  assert.notEqual(proposal.conversationId, original.conversationId)
+  assert.ok(proposal.modelPolicy.message.includes('이전 제안과 대화 기록은 보존'))
+})
+
+test('MCP 적용을 기다리는 동안 제한 모델로 바뀐 접수 대화는 전달 전에 교체한다', async (t) => {
+  const runtimeModels = new Map()
+  let waited = false
+  const { service, counts, operations } = await fixture(t, {
+    resolveSettings: async () => ({ machineId: 'main', agentId: 'test-ai', modelId: 'gpt-6.1-sol' }),
+    createConversation: async (settings) => {
+      const id = `new-chat-${++counts.create}`
+      runtimeModels.set(id, settings.modelId)
+      return { id }
+    },
+    prepareModel: async (_user, op) => ({ reuseAllowed: canReuseAutomatedAiConversation(op.recordedModelId, runtimeModels.get(op.conversationId), op.settings.modelId) }),
+    prepareConversation: async (_user, op) => {
+      if (!waited) { waited = true; runtimeModels.set(op.conversationId, 'gpt-6-sol'); return { waiting: true, reason: 'MCP 준비 대기' } }
+      return { mcpServers: [] }
+    },
+  })
+  await service.start({ id: 'user1' }, item)
+  await until(service, 'user1', 'proposal')
+  assert.equal(counts.create, 3)
+  assert.equal(counts.dispatch, 2)
+  assert.ok([...operations.values()].every((op) => op.conversationId !== 'new-chat-1'))
+})
+
+test('정책이 변경되어도 이미 전송한 제한 모델의 완료 결과는 재실행 없이 회수한다', async (t) => {
+  const { service, deps, counts } = await fixture(t, {
+    messages: async (op) => [assistant({ requestId: op.id, action: 'clarify', proposal: '이미 완성한 제안' })],
+  })
+  await service.start({ id: 'user1' }, item)
+  for (let i = 0; i < 100 && counts.dispatch === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5))
+  assert.equal(counts.dispatch, 1)
+  deps.resolveSettings = async () => { throw new Error('새 실행용 허용 모델 없음') }
+  const [proposal] = await until(service, 'user1', 'needs-input')
+  assert.equal(proposal.proposal, '이미 완성한 제안')
+  assert.equal(counts.create, 1)
+  assert.equal(counts.dispatch, 1)
+})
 test('선택적 대화만 제외하고 담당 카드·계층 검증은 유지한다', () => {
   const resolved = resolveDoorayRoutingResult({ ...route, conversationId: 'other-card-chat' }, maps)
   assert.equal(resolved.route.conversationId, null)

@@ -41,6 +41,7 @@ import { resolveAttributionWithoutToken, resolveScopedAttribution } from './lib/
 import { readAionUiSubscriptionUsage } from './lib/aionUiSubscriptionUsage.mjs'
 import { resolveConversationDisplay } from './lib/aiConversationDisplay.mjs'
 import { applyAiConversationDelegationModelPolicy, assessAiConversationContextHealth, isAiDelegationModelBlocked } from './lib/aiConversationContextHealth.mjs'
+import { blockedAiModelLabels, filterAutomatedAiAgents } from './lib/aiModelPolicy.mjs'
 import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
 import { aiDelegationReportArchived, aiDelegationReportArchivePending, createAiDelegationReportArchiver } from './lib/aiDelegationReportArchive.mjs'
@@ -2570,6 +2571,10 @@ async function runGroupDocumentInstructionDispatch(instruction, user) {
       state: 'failed', reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_SELECTION_INVALID',
       message: '대상 문서 루트 AI의 실행 환경을 복원할 수 없어 지시 전문을 전달하지 못했습니다.',
     })
+    if (instruction.strategy === 'new' && isAiDelegationModelBlocked(selection.model.id)) return updateGroupDocumentInstruction(instruction.id, {
+      state: 'expired', reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_MODEL_BLOCKED',
+      message: `공통 모델 정책에서 ${selection.model.id} 모델이 제한되어 대기 중인 지시를 전달하지 않았습니다. 허용 모델로 다시 요청하세요.`,
+    })
     const { token: attributionToken, attribution } = issueDelegatedAttribution({
       mapId: targetMap.id,
       cardId: targetCard.id,
@@ -2982,6 +2987,9 @@ async function dispatchPreparedAiDelegation({
   parentHomeMachineId = conversationHomeMachineId(parentAttribution?.conversationId),
   targetHomeMachineId = machineRegistry.mainMachineId,
 }) {
+  if (strategy === 'new' && isAiDelegationModelBlocked(selection?.model?.id)) {
+    throw aiDelegationDispatchError('공통 모델 정책에서 선택한 모델이 제한되어 대기 중인 위임을 전달하지 않았습니다. 허용 모델로 다시 요청하세요.', 409, 'AI_DELEGATION_MODEL_BLOCKED')
+  }
   if (!await aionCoreSupportsExplicitCompletionAfterInterruption(targetHomeMachineId)) {
     throw aiDelegationDispatchError(
       '현재 AionCore가 중단 후 명시적 완료 신호를 지원하지 않습니다. AionCore를 최신 빌드로 재기동해 주세요.',
@@ -4563,6 +4571,15 @@ async function drainWaitingWorkspaceDelegations() {
     }
 
     const selection = structuredClone(queued.pendingSelection)
+    if (queued.strategy === 'new' && isAiDelegationModelBlocked(selection?.model?.id)) {
+      await updateAiDelegation(queued.id, {
+        state: 'failed', childStatus: 'rejected', resource: null,
+        workspaceWaitReasonCode: 'AI_DELEGATION_MODEL_BLOCKED',
+        childError: '공통 모델 정책에서 선택한 모델이 제한되어 대기 중인 위임을 전달하지 않았습니다. 허용 모델로 다시 요청하세요.',
+      })
+      clearAiDelegationWaitPoll(queued.id)
+      continue
+    }
     let workspaceLease
     try {
       workspaceLease = resumedDelegation?.workspaceLease?.leaseId
@@ -9349,7 +9366,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         )
         if (strategy === 'new' && isAiDelegationModelBlocked(selection.model.id)) return sendGroupDocumentInstructionResponse(
           response, 409, 'GROUP_DOCUMENT_INSTRUCTION_MODEL_BLOCKED',
-          'GPT-5.6-Sol 또는 GPT-6-Sol 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.',
+          `${blockedAiModelLabels()} 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.`,
         )
 
         const now = new Date().toISOString()
@@ -9739,7 +9756,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         '위임 대화의 AI 종류와 모델 정보를 확인하지 못했습니다.')
       if (strategy === 'new' && isAiDelegationModelBlocked(selection.model.id)) return sendAiDelegationResponse(
         response, 409, 'AI_DELEGATION_MODEL_BLOCKED',
-        'GPT-5.6-Sol 또는 GPT-6-Sol 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.',
+        `${blockedAiModelLabels()} 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.`,
       )
 
       let resumedDelegation = null
@@ -11091,7 +11108,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           protocol: 'aionui://conversation/new',
           ...workspaceOptions,
           workspaceBrowseAvailable: machine.role === 'main' && isLocalLoopbackRequest(request),
-          agents: normalizedAgents,
+          agents: url.searchParams.get('purpose') === 'dooray-response' ? filterAutomatedAiAgents(normalizedAgents) : normalizedAgents,
           skills: normalizedSkills,
           mcpServers: normalizedMcpServers,
         })

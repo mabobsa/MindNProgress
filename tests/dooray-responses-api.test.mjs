@@ -69,14 +69,17 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     }
     if (url.pathname === '/project/v1/projects') return send([], 200, true)
     if (url.pathname === '/api/agents/management') return send([{ id: 'test-agent', name: '검증 AI', installed: true, enabled: true,
-      available_models: { current_model_id: 'test-model', available_models: [{ id: 'test-model', name: '검증 모델' }] } }])
+      available_models: { current_model_id: 'gpt-5.6-sol', available_models: [
+        { id: 'test-model', name: '검증 모델' }, { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol' },
+        { id: 'gpt-6-sol', name: 'GPT-6.0-Sol' }, { id: 'gpt-6.1-sol', name: 'GPT-6.1-Sol' },
+      ] } }])
     if (url.pathname === '/api/mcp/servers') return send([...requiredMcps, { id: 'kept-mcp', name: 'existing-mcp', enabled: true }])
     if (url.pathname === '/api/providers' || url.pathname === '/api/skills') return send([])
     if (url.pathname === '/api/conversations' && request.method === 'POST') {
       created.push(body)
       assert.deepEqual(body.assistant.conversation_overrides.mcp_ids, requiredMcpIds)
       assert.deepEqual(body.extra.selected_mcp_server_ids, requiredMcpIds)
-      extraByConversation.set(`created-${created.length}`, { ...body.extra, mcp_server_ids: requiredMcpIds, mcp_servers: mcpNames })
+      extraByConversation.set(`created-${created.length}`, { ...body.extra, current_model_id: body.assistant.conversation_overrides.model, mcp_server_ids: requiredMcpIds, mcp_servers: mcpNames })
       return send({ id: `created-${created.length}`, name: body.name }, 201)
     }
     const mcpReload = url.pathname.match(/^\/api\/conversations\/([^/]+)\/mcp-servers$/)
@@ -170,6 +173,8 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   assert.equal(login.status, 200)
   const headers = { Cookie: login.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' }
   const executionOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options?purpose=dooray-response`, { headers })).json()
+  assert.deepEqual(executionOptions.agents[0].models.map((model) => model.id), ['test-model', 'gpt-6.1-sol'])
+  assert.equal(executionOptions.agents[0].defaultModelId, 'gpt-6.1-sol')
   assert.equal(executionOptions.defaultWorkspace, '', '담당 미지정 시 MnP나 Holdem으로 임의 귀속하지 않는다')
   assert.deepEqual(executionOptions.workspaceContext.choices, [])
   const cardWorkspaceOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options?purpose=dooray-response&mapId=map-test&cardId=task1`, { headers })).json()
@@ -182,12 +187,16 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   assert.ok(maintenanceOptions.workspaceContext.choices.some((item) => item.workspace === projectDirectory))
   extraByConversation.set('existing-chat', originalExtra)
   const normalOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options`, { headers })).json()
+  assert.ok(normalOptions.agents[0].models.some((model) => model.id === 'gpt-5.6-sol'), '수동 대화의 모델 목록은 자동 요청 정책으로 바꾸지 않는다')
   assert.equal(normalOptions.defaultWorkspace, '', '일반 카드도 MnP 기본 경로로 대체하지 않는다')
   assert.deepEqual((await (await fetch(endpoint, { headers })).json()).jobs, [])
   assert.equal((await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: 'foreign' }) })).status, 404)
-  const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: item.key, settings: { agentId: 'test-agent', modelId: 'test-model' }, url: 'http://untrusted.invalid' }) })
+  const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: item.key, settings: { agentId: 'test-agent', modelId: 'gpt-5.6-sol' }, url: 'http://untrusted.invalid' }) })
   const accepted = await response.json()
   assert.equal(response.status, 202, JSON.stringify(accepted))
+  assert.equal(accepted.job.settings.modelId, 'gpt-6.1-sol')
+  assert.equal(accepted.job.modelPolicy.previousModelId, 'gpt-5.6-sol')
+  assert.ok(accepted.job.modelPolicy.message.includes('gpt-6.1-sol'))
   const duplicate = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ itemKey: item.key }) })
   assert.equal((await duplicate.json()).job.id, accepted.job.id)
   let latest
@@ -204,7 +213,7 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   assert.match(created[0].extra.workspace, /user-admin[\\/]Dooray AI 대응$/)
   assert.notEqual(created[0].extra.mnpDoorayOperationId, created[1].extra.mnpDoorayOperationId)
   assert.equal(created[0].assistant.id, 'bare:test-agent')
-  assert.equal(created[0].assistant.conversation_overrides.model, 'test-model')
+  assert.equal(created[0].assistant.conversation_overrides.model, 'gpt-6.1-sol')
   assert.equal(operations.size, 2)
   assert.deepEqual(mcpReloads, [], '기존 업무 대화의 MCP를 변경하지 않는다')
   assert.ok(extraByConversation.get('existing-chat').mcp_server_ids.includes('kept-mcp'))

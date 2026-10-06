@@ -57,6 +57,7 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
     await send('Page.navigate', { url: baseUrl })
     await waitFor(() => evaluate('document.readyState === "complete"'))
     assert.equal(await evaluate(`fetch('/api/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({email:'admin@mind.local',password:${JSON.stringify(password)}}) }).then(r => r.status)`), 200)
+    await evaluate(`localStorage.setItem('mindnprogress-dooray-response-ai:user-admin', JSON.stringify({agentId:'test-agent',modelId:'gpt-5.6-sol'}))`)
     await send('Page.reload')
     await waitFor(() => evaluate(`Boolean(document.querySelector('button[aria-label="Dooray 참조"]'))`))
     await evaluate('document.querySelector(\'button[aria-label="Dooray 참조"]\').click()')
@@ -259,6 +260,11 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
     }
     await evaluate('Array.from(document.querySelectorAll(".dooray-response-toolbar button")).find(b => b.textContent === "AI 설정").click()')
     await waitFor(() => evaluate('document.querySelector(".dooray-response-settings")?.textContent.includes("검증 모델")'))
+    const modelSelection = await evaluate(`(() => {
+      const select = Array.from(document.querySelectorAll('.dooray-response-settings label')).find(label => label.textContent.startsWith('모델')).querySelector('select');
+      return {model:select.value,models:Array.from(select.options).map(option => option.value),stored:JSON.parse(localStorage.getItem('mindnprogress-dooray-response-ai:user-admin')).modelId};
+    })()`)
+    assert.deepEqual(modelSelection, { model: 'gpt-6.1-sol', models: ['test-model', 'gpt-6.1-sol'], stored: 'gpt-6.1-sol' })
     const screenshot = await send('Page.captureScreenshot', { format: 'png' })
     const screenshotPath = path.join(tmpdir(), `mnp-dooray-response-ui-${Date.now()}.png`)
     await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))

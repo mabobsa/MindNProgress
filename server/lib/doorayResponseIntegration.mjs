@@ -5,6 +5,7 @@ import { aiConversationLinksFromData } from '../../src/utils/aiConversations.mjs
 import { createDoorayResponseService, readDoorayResponseSource, validateDoorayRoute } from './doorayResponses.mjs'
 import { createDoorayRateLimiter } from './doorayMentions.mjs'
 import { redactDoorayTranscript } from './doorayExecutionHandoff.mjs'
+import { aiModelPolicy, assertAutomatedAiModelAllowed, canReuseAutomatedAiConversation, isAiModelBlocked, resolveAutomatedAiModel } from './aiModelPolicy.mjs'
 
 const fail = (message, status = 409) => Object.assign(new Error(message), { status, doorayResponseError: true })
 const excerpt = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : ''
@@ -74,7 +75,23 @@ export async function prepareDoorayResponseMcps(call, normalizeRuntime, operatio
   return { mcpServers: required }
 }
 
+export async function dispatchDoorayResponseRequest(call, readConversation, op, policy = aiModelPolicy) {
+  // MCP 준비 뒤나 대기 중에도 모델이 바뀔 수 있으므로 실제 전송 직전에 다시 확인한다.
+  if (op.settings) assertAutomatedAiModelAllowed(op.settings.modelId, policy)
+  for (const modelId of [op.recordedModelId, op.modelId].filter(Boolean)) assertAutomatedAiModelAllowed(modelId, policy)
+  const conversation = await readConversation(op.machineId, op.conversationId)
+  assertAutomatedAiModelAllowed(conversation?.extra?.current_model_id, policy)
+  if (!canReuseAutomatedAiConversation(op.recordedModelId || op.modelId, conversation.extra.current_model_id, op.settings?.modelId, policy)) {
+    throw fail('전송 대기 중 AI 대화의 모델이 변경되어 요청을 전달하지 않았습니다. 허용 모델로 새 제안을 요청해 주세요.')
+  }
+  return call(op.machineId, '/api/internal/external-conversation-dispatches', { method: 'POST', timeoutMs: 30_000, body: {
+    operationId: op.id, actorConversationId: op.conversationId, targetConversationId: op.conversationId,
+    strategy: 'resume', instruction: op.prompt, explicitCompletionAfterInterruption: false,
+  } })
+}
+
 export function createDoorayResponseIntegration(d) {
+  const policy = d.aiModelPolicy ?? aiModelPolicy
   const acquire = createDoorayRateLimiter()
   // 일반 대화 생성은 멱등 API가 아니므로 응답이 불확실한 POST를 다른 주소에 재전송하지 않는다.
   const safeMainCall = createAionUiCaller({ candidateBaseUrls: d.aionUiCandidateBaseUrls })
@@ -103,15 +120,21 @@ export function createDoorayResponseIntegration(d) {
     const mcpServers = selectDoorayResponseMcps(servers)
     const agents = (Array.isArray(rawAgents) ? rawAgents : []).filter((agent) => agent.enabled !== false && agent.installed === true)
       .map((agent) => d.normalizeAionUiAgent(agent, Array.isArray(providers) ? providers.filter((provider) => provider.enabled !== false) : []))
-    const agent = requested.agentId ? agents.find((entry) => entry.id === requested.agentId) : agents.find((entry) => entry.models.length)
-    const model = requested.modelId ? agent?.models.find((entry) => entry.id === requested.modelId)
-      : agent?.models.find((entry) => entry.id === agent.defaultModelId) ?? agent?.models[0]
-    if (!agent || !model) throw fail('사용할 AI와 모델을 AionUi에서 확인할 수 없습니다. AI 설정을 다시 선택해 주세요.', 400)
+    const agent = requested.agentId ? agents.find((entry) => entry.id === requested.agentId)
+      : agents.find((entry) => entry.models.some((model) => !isAiModelBlocked(model.id, policy)))
+    if (!agent) throw fail('사용할 AI와 허용 모델을 AionUi에서 확인할 수 없습니다. AI 설정을 다시 선택해 주세요.', 400)
+    const resolved = resolveAutomatedAiModel(agent, requested.modelId, policy)
+    const { model } = resolved
+    // 첫 보정 사유를 다음 단계에서도 보여 주되 새 보정이 생기면 최신 사유로 바꾼다.
+    const previousModelId = requested.modelPolicy?.previousModelId
+    const previousCorrection = isAiModelBlocked(previousModelId, policy) ? resolveAutomatedAiModel(agent, previousModelId, policy) : null
+    const modelPolicy = !resolved.modelPolicy.changed && previousCorrection?.model.id === model.id
+      ? previousCorrection.modelPolicy : resolved.modelPolicy
     const option = (list, requestedId, defaultId) => {
       if (requestedId && !list.some((entry) => entry.id === requestedId)) throw fail('선택한 AI 실행 옵션을 사용할 수 없습니다.', 400)
       return requestedId || (list.some((entry) => entry.id === defaultId) ? defaultId : list[0]?.id) || null
     }
-    return { machineId, proposalWorkspace, machineRole: machineId === d.mainMachineId ? 'main' : 'sub', agentId: agent.id, agentName: agent.name, modelId: model.id, modelName: model.label, mcpServers,
+    return { machineId, proposalWorkspace, machineRole: machineId === d.mainMachineId ? 'main' : 'sub', agentId: agent.id, agentName: agent.name, modelId: model.id, modelName: model.label, modelPolicy, mcpServers,
       mode: option(agent.modes, requested.mode, agent.defaultMode),
       thoughtLevel: option(agent.thoughtLevels, requested.thoughtLevel, agent.defaultThoughtLevel) }
   }
@@ -165,6 +188,7 @@ export function createDoorayResponseIntegration(d) {
     },
     loadSource: async (item) => readDoorayResponseSource(item, await d.getDoorayApiConfig(), { acquire }),
     async createConversation(settings, title, operationId, owner) {
+      assertAutomatedAiModelAllowed(settings.modelId, policy)
       const mcpServers = selectDoorayResponseMcps(await call(settings.machineId, '/api/mcp/servers'))
       const mcpIds = mcpServers.map((server) => server.id)
       const workspace = doorayResponseWorkspace(d.dataDirectory, d.mainMachineId, settings, owner.userId)
@@ -182,6 +206,14 @@ export function createDoorayResponseIntegration(d) {
       if (!/^[a-zA-Z0-9_-]{1,120}$/.test(conversation?.id ?? '')) throw fail('AionUi가 생성한 대화 ID를 확인할 수 없습니다.', 502)
       return { ...conversation, workspace }
     },
+    async prepareModel(user, operation, job) {
+      const conversation = await readConversation(operation.machineId, operation.conversationId)
+      if (!conversation) return { reuseAllowed: false }
+      const extra = conversation.extra ?? {}
+      if (!extra.mnpDoorayOperationId?.startsWith(`${job.id}-`) || extra.mnpDoorayUserId !== user.id
+        || extra.workspace !== operation.settings.proposalWorkspace) throw fail('이 요청의 제안 전용 대화와 작업 위치를 확인할 수 없습니다.')
+      return { reuseAllowed: canReuseAutomatedAiConversation(operation.recordedModelId, extra.current_model_id, operation.settings.modelId, policy), modelId: extra.current_model_id }
+    },
     prepareConversation: (_user, operation) => prepareDoorayResponseMcps(call, d.normalizeAiConversationRuntime, operation),
     async prepareReview(user, route, settings, reusable) {
       const map = await d.readMap(route.mapId)
@@ -197,7 +229,9 @@ export function createDoorayResponseIntegration(d) {
         const conversation = await readConversation(settings.machineId, reusable.conversationId)
         if (conversation?.extra?.mnpDoorayOperationId === reusable.operationId
           && conversation.extra.mnpDoorayUserId === user.id && conversation.extra.workspace === reusable.workspace) {
-          if (d.normalizeAiConversationRuntime(reusable.conversationId, conversation).state !== 'idle') return { waiting: true, reason: '이 요청의 제안 대화가 실행 중입니다.' }
+          if (canReuseAutomatedAiConversation(reusable.modelId, conversation.extra.current_model_id, settings.modelId, policy)) {
+            if (d.normalizeAiConversationRuntime(reusable.conversationId, conversation).state !== 'idle') return { waiting: true, reason: '이 요청의 제안 대화가 실행 중입니다.' }
+          }
           conversationId = reusable.conversationId
         }
       }
@@ -266,16 +300,15 @@ export function createDoorayResponseIntegration(d) {
         if (!d.machineAccessibleByUser(user, machineId)) continue
         const conversation = await readConversation(machineId, link.conversationId)
         if (!conversation || conversation.extra?.mnpDoorayOperationId) continue
+        const modelAllowed = canReuseAutomatedAiConversation(link.model?.id, conversation.extra?.current_model_id, null, policy)
         conversations.push({ conversationId: link.conversationId, machineId, homeMachineRole: machineId === d.mainMachineId ? 'main' : 'sub',
-          name: conversation.name || link.requestPreview || '담당 카드 대화', available: true,
-          idle: !d.activeDelegations(route.mapId, route.cardId) && d.normalizeAiConversationRuntime(link.conversationId, conversation).state === 'idle' })
+          name: conversation.name || link.requestPreview || '담당 카드 대화', available: modelAllowed, modelId: link.model?.id ?? conversation.extra?.current_model_id,
+          unavailableReason: modelAllowed ? null : '공통 모델 정책에서 제한된 모델이거나 현재 모델을 확인할 수 없어 자동 요청을 전달하지 않습니다. 허용 모델의 새 업무 대화를 사용해 주세요.',
+          idle: modelAllowed && !d.activeDelegations(route.mapId, route.cardId) && d.normalizeAiConversationRuntime(link.conversationId, conversation).state === 'idle' })
       }
       return { route, conversations }
     },
-    dispatch: (op) => call(op.machineId, '/api/internal/external-conversation-dispatches', { method: 'POST', timeoutMs: 30_000, body: {
-      operationId: op.id, actorConversationId: op.conversationId, targetConversationId: op.conversationId,
-      strategy: 'resume', instruction: op.prompt, explicitCompletionAfterInterruption: false,
-    } }),
+    dispatch: (op) => dispatchDoorayResponseRequest(call, readConversation, op, policy),
     getDispatch: (op) => call(op.machineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(op.id)}`),
     async messages(op) {
       const response = await call(op.machineId, `/api/conversations/${encodeURIComponent(op.conversationId)}/messages?limit=200&content_mode=full`)

@@ -122,7 +122,7 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
       })()`))
       assert.equal(initialWorkspace.value, '', '미지정 담당의 기본값을 MnP로 넣지 않는다')
       assert.equal(initialWorkspace.readOnly, false, '사용자 작업공간 변경을 허용한다')
-      const request = await evaluate('document.querySelector(".ai-auto-request textarea").value')
+      const request = await waitFor(() => evaluate('document.querySelector(".ai-auto-request textarea")?.value'))
       assert.ok(request.length > 4000)
       for (const text of ['승인에서 제외한 작업', '#comment-comment1', '마지막 검증 조건', '담당 경로: 미지정', 'mindnprogress_get_dooray_response_approval']) assert.ok(request.includes(text), text)
       assert.equal(await evaluate('document.querySelector(".dooray-mentions-panel") === window.approvalDoorayPanel'), true)
@@ -258,13 +258,36 @@ export async function checkDoorayResponseBrowser({ directory, baseUrl, password,
       assert.deepEqual(await evaluate(`({ scrollTop: document.querySelector('.dooray-mentions-content').scrollTop,
         conversation: document.querySelector('.dooray-response-handoff select').value })`), handoffState, '스크롤 위치와 담당 대화 선택을 유지한다')
     }
-    await evaluate('Array.from(document.querySelectorAll(".dooray-response-toolbar button")).find(b => b.textContent === "AI 설정").click()')
+    assert.equal(await evaluate('document.querySelector(".dooray-mentions-panel").textContent.includes("저장된 모델")'), false, '보정 안내 문구는 기존 제안 기록에서도 노출하지 않는다')
+    await evaluate('document.querySelector(".dooray-mentions-header .dooray-mentions-ai-settings").click()')
+    await waitFor(() => evaluate('document.querySelector(".dooray-response-settings")?.textContent.includes("검증 모델")'))
+    assert.deepEqual(await evaluate('Array.from(document.querySelectorAll(".dooray-response-settings label")).map(label => label.firstChild.textContent.trim())'), ['AI 종류', 'AI 모델', '사고 레벨'])
+    const selectSetting = async (label, value) => evaluate(`(() => {
+      const select = Array.from(document.querySelectorAll('.dooray-response-settings label')).find(label => label.firstChild.textContent.trim() === ${JSON.stringify(label)}).querySelector('select');
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, ${JSON.stringify(value)});
+      select.dispatchEvent(new Event('change', {bubbles:true}));
+    })()`)
+    await selectSetting('AI 종류', 'other-agent')
+    await waitFor(() => evaluate('document.querySelector(".dooray-response-settings")?.textContent.includes("다른 모델")'))
+    assert.equal(await evaluate('Array.from(document.querySelectorAll(".dooray-response-settings label")).find(label => label.firstChild.textContent.trim() === "사고 레벨").querySelector("select").disabled'), true)
+    await selectSetting('AI 종류', 'test-agent')
+    await selectSetting('AI 모델', 'test-model')
+    await selectSetting('AI 모델', 'gpt-6.1-sol')
+    await selectSetting('사고 레벨', 'high')
+    await evaluate('document.querySelector(".dooray-response-settings button[type=submit]").click()')
+    await waitFor(() => evaluate('!document.querySelector(".dooray-response-settings")'))
+    const savedSettings = await evaluate('fetch("/api/integrations/dooray/mentions/response-settings").then(r => r.json()).then(body => body.settings)')
+    assert.equal(savedSettings.agentId, 'test-agent')
+    assert.equal(savedSettings.modelId, 'gpt-6.1-sol')
+    assert.equal(savedSettings.thoughtLevel, 'high')
+    await evaluate('document.querySelector(".dooray-mentions-header .dooray-mentions-ai-settings").click()')
     await waitFor(() => evaluate('document.querySelector(".dooray-response-settings")?.textContent.includes("검증 모델")'))
     const modelSelection = await evaluate(`(() => {
-      const select = Array.from(document.querySelectorAll('.dooray-response-settings label')).find(label => label.textContent.startsWith('모델')).querySelector('select');
-      return {model:select.value,models:Array.from(select.options).map(option => option.value),stored:JSON.parse(localStorage.getItem('mindnprogress-dooray-response-ai:user-admin')).modelId};
+      const select = Array.from(document.querySelectorAll('.dooray-response-settings label')).find(label => label.firstChild.textContent.trim() === 'AI 모델').querySelector('select');
+      const thought = Array.from(document.querySelectorAll('.dooray-response-settings label')).find(label => label.firstChild.textContent.trim() === '사고 레벨').querySelector('select');
+      return {model:select.value,models:Array.from(select.options).map(option => option.value),thought:thought.value,stored:JSON.parse(localStorage.getItem('mindnprogress-dooray-response-ai:user-admin')).modelId};
     })()`)
-    assert.deepEqual(modelSelection, { model: 'gpt-6.1-sol', models: ['test-model', 'gpt-6.1-sol'], stored: 'gpt-6.1-sol' })
+    assert.deepEqual(modelSelection, { model: 'gpt-6.1-sol', models: ['test-model', 'gpt-6.1-sol'], thought: 'high', stored: 'gpt-6.1-sol' })
     const screenshot = await send('Page.captureScreenshot', { format: 'png' })
     const screenshotPath = path.join(tmpdir(), `mnp-dooray-response-ui-${Date.now()}.png`)
     await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))

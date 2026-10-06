@@ -6,6 +6,7 @@ import { createDoorayResponseService, readDoorayResponseSource, validateDoorayRo
 import { createDoorayRateLimiter } from './doorayMentions.mjs'
 import { redactDoorayTranscript } from './doorayExecutionHandoff.mjs'
 import { aiModelPolicy, assertAutomatedAiModelAllowed, canReuseAutomatedAiConversation, isAiModelBlocked, resolveAutomatedAiModel } from './aiModelPolicy.mjs'
+import { doorayResponseSettingsFromResolved, validateDoorayResponseSettings } from './doorayResponsePreferences.mjs'
 
 const fail = (message, status = 409) => Object.assign(new Error(message), { status, doorayResponseError: true })
 const excerpt = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : ''
@@ -125,7 +126,7 @@ export function createDoorayResponseIntegration(d) {
     if (!agent) throw fail('사용할 AI와 허용 모델을 AionUi에서 확인할 수 없습니다. AI 설정을 다시 선택해 주세요.', 400)
     const resolved = resolveAutomatedAiModel(agent, requested.modelId, policy)
     const { model } = resolved
-    // 첫 보정 사유를 다음 단계에서도 보여 주되 새 보정이 생기면 최신 사유로 바꾼다.
+    // 첫 보정 사유를 이력에 보존하되 새 보정이 생기면 최신 사유로 바꾼다.
     const previousModelId = requested.modelPolicy?.previousModelId
     const previousCorrection = isAiModelBlocked(previousModelId, policy) ? resolveAutomatedAiModel(agent, previousModelId, policy) : null
     const modelPolicy = !resolved.modelPolicy.changed && previousCorrection?.model.id === model.id
@@ -152,9 +153,11 @@ export function createDoorayResponseIntegration(d) {
     }
     return maps
   }
-  return createDoorayResponseService({
+  const service = createDoorayResponseService({
     directory: path.join(d.dataDirectory, '_dooray-responses'), read: d.readStoredRecord, write: d.writeStoredRecord,
     user: d.user, resolveSettings, loadMaps,
+    getSettings: (user) => d.responsePreferences.get(user.id),
+    rememberSettings: (user, settings, saved) => d.responsePreferences.put(user.id, doorayResponseSettingsFromResolved(settings), { expectedSettings: saved ?? null }),
     async executionTranscript(user, source) {
       const machineId = d.conversationHomeMachineId(source.conversationId, source)
       if (!d.machineAccessibleByUser(user, machineId)) throw fail('기존 실행 머신에 접근할 수 없습니다.', 403)
@@ -316,4 +319,11 @@ export function createDoorayResponseIntegration(d) {
         .map((message) => ({ ...message, content: d.readAionUiMessageContent(message) }))
     },
   })
+  return { ...service,
+    settings: (user) => d.responsePreferences.get(user.id),
+    async saveSettings(user, requested, options) {
+      const settings = await resolveSettings(user, validateDoorayResponseSettings(requested))
+      return d.responsePreferences.put(user.id, doorayResponseSettingsFromResolved(settings), options)
+    },
+  }
 }

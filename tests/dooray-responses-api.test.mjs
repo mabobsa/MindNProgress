@@ -69,10 +69,12 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
     }
     if (url.pathname === '/project/v1/projects') return send([], 200, true)
     if (url.pathname === '/api/agents/management') return send([{ id: 'test-agent', name: '검증 AI', installed: true, enabled: true,
+      config_options: [{ category: 'thought_level', currentValue: 'medium', options: [{ value: 'medium', name: '보통' }, { value: 'high', name: '높음' }] }],
       available_models: { current_model_id: 'gpt-5.6-sol', available_models: [
         { id: 'test-model', name: '검증 모델' }, { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol' },
         { id: 'gpt-6-sol', name: 'GPT-6.0-Sol' }, { id: 'gpt-6.1-sol', name: 'GPT-6.1-Sol' },
-      ] } }])
+      ] } }, { id: 'other-agent', name: '다른 검증 AI', installed: true, enabled: true,
+        available_models: { current_model_id: 'other-model', available_models: [{ id: 'other-model', name: '다른 모델' }] } }])
     if (url.pathname === '/api/mcp/servers') return send([...requiredMcps, { id: 'kept-mcp', name: 'existing-mcp', enabled: true }])
     if (url.pathname === '/api/providers' || url.pathname === '/api/skills') return send([])
     if (url.pathname === '/api/conversations' && request.method === 'POST') {
@@ -172,6 +174,23 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   const login = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@mind.local', password }) })
   assert.equal(login.status, 200)
   const headers = { Cookie: login.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' }
+  const settingsEndpoint = `${baseUrl}/api/integrations/dooray/mentions/response-settings`
+  const settingsApi = async (body, extraHeaders = headers) => {
+    const response = await fetch(settingsEndpoint, { method: body ? 'PUT' : 'GET', headers: extraHeaders, ...(body ? { body: JSON.stringify(body) } : {}) })
+    return { status: response.status, body: await response.json() }
+  }
+  assert.equal((await fetch(settingsEndpoint)).status, 401)
+  const integrationToken = (await readFile(path.join(directory, '_integration-token'), 'utf8')).trim()
+  assert.equal((await fetch(settingsEndpoint, { headers: { Authorization: `Bearer ${integrationToken}`, 'X-MNP-Editor-Id': 'user-admin' } })).status, 401)
+  const viewer = await fetch(`${baseUrl}/api/auth/viewer-access`, { method: 'POST' })
+  assert.equal((await settingsApi(undefined, { Cookie: viewer.headers.get('set-cookie').split(';')[0] })).status, 403)
+  assert.equal((await settingsApi()).body.settings, null)
+  for (const settings of [null, {}, [], { agentId: 'test-agent', modelId: 'invented' }, { agentId: 'test-agent', modelId: 'test-model', thoughtLevel: 'invented' }]) {
+    assert.equal((await settingsApi({ expectedUserId: 'user-admin', settings })).status, 400)
+  }
+  assert.equal((await settingsApi({ expectedUserId: 'different-user', settings: { agentId: 'test-agent', modelId: 'test-model' } })).status, 409)
+  assert.equal((await settingsApi({ expectedUserId: 'user-admin', userId: 'different-user', settings: {} })).status, 400)
+  assert.equal((await fetch(settingsEndpoint, { method: 'DELETE', headers })).status, 405)
   const executionOptions = await (await fetch(`${baseUrl}/api/integrations/aionui/options?purpose=dooray-response`, { headers })).json()
   assert.deepEqual(executionOptions.agents[0].models.map((model) => model.id), ['test-model', 'gpt-6.1-sol'])
   assert.equal(executionOptions.agents[0].defaultModelId, 'gpt-6.1-sol')
@@ -218,6 +237,25 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   assert.deepEqual(mcpReloads, [], '기존 업무 대화의 MCP를 변경하지 않는다')
   assert.ok(extraByConversation.get('existing-chat').mcp_server_ids.includes('kept-mcp'))
   assert.deepEqual(extraByConversation.get('existing-chat').session_mcp_servers, [{ name: 'session-tool', command: 'test-only' }])
+  assert.equal((await settingsApi()).body.settings.modelId, 'gpt-6.1-sol', '첫 제안의 실제 선택도 계정별로 저장한다')
+  const configured = await settingsApi({ expectedUserId: 'user-admin', settings: { agentId: 'test-agent', modelId: 'gpt-6.1-sol', thoughtLevel: 'high' } })
+  assert.equal(configured.status, 200)
+  const secondLogin = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@mind.local', password }) })
+  const secondHeaders = { Cookie: secondLogin.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' }
+  assert.deepEqual((await settingsApi(undefined, secondHeaders)).body.settings, configured.body.settings, '다른 브라우저 세션도 같은 계정 설정을 읽는다')
+  const migrated = await settingsApi({ expectedUserId: 'user-admin', settings: { agentId: 'test-agent', modelId: 'gpt-5.6-sol' }, onlyIfUnset: true })
+  assert.deepEqual(migrated.body.settings, configured.body.settings, '예전 브라우저 값이 새 선택을 덮어쓰지 않는다')
+  const editorResponse = await fetch(`${baseUrl}/api/admin/editors`, { method: 'POST', headers,
+    body: JSON.stringify({ name: '설정 분리 검증', email: 'response-settings@mind.local', password }) })
+  assert.equal(editorResponse.status, 201)
+  const editorLogin = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'response-settings@mind.local', password }) })
+  assert.equal(editorLogin.status, 200)
+  const editorHeaders = { Cookie: editorLogin.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' }
+  const separateAccount = (await settingsApi(undefined, editorHeaders)).body
+  assert.equal(separateAccount.settings, null)
+  assert.equal((await settingsApi({ expectedUserId: separateAccount.userId, settings: { agentId: 'other-agent', modelId: 'other-model' } }, editorHeaders)).status, 200)
+  assert.deepEqual((await settingsApi()).body.settings, configured.body.settings, '다른 계정의 AI 선택은 기존 계정을 변경하지 않는다')
   const originalComment = selectedComment
   selectedComment += ' 편집된 원문입니다.'
   const sourceReads = paths.filter((entry) => entry.startsWith('GET /project/')).length
@@ -265,6 +303,11 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   assert.equal(latest.status, 'proposal', JSON.stringify(latest))
   assert.equal(latest.conversationId, 'created-4', '업무 대화 대신 새로운 전용 검토 대화를 만든다')
   assert.equal(created.length, 4)
+  for (const conversation of created.slice(2, 4)) {
+    assert.equal(conversation.assistant.id, 'bare:test-agent')
+    assert.equal(conversation.assistant.conversation_overrides.model, 'gpt-6.1-sol')
+    assert.equal(conversation.assistant.conversation_overrides.thought_level, 'high', '새 접수·검토 대화에 계정이 선택한 사고 레벨을 전달한다')
+  }
   assert.equal(operations.size, 6)
   assert.equal(new Set(created.map((conversation) => conversation.extra.workspace)).size, 1, '서로 다른 요청도 같은 전용 프로젝트에 모인다')
   const handoffEndpoint = `${endpoint}/${latest.id}/handoff`

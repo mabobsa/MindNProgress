@@ -28,6 +28,7 @@ import {
   normalizeGroupDocumentReplyTarget,
 } from './lib/groupDocumentInstructions.mjs'
 import { createDoorayResponseIntegration } from './lib/doorayResponseIntegration.mjs'
+import { createDoorayResponsePreferences } from './lib/doorayResponsePreferences.mjs'
 import { AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_REPORT_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 import { MNP_CONTEXT_BOOTSTRAP_INSTRUCTION } from '../src/utils/aiContextInstructions.mjs'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
@@ -7212,12 +7213,13 @@ const aiWorkspaceSettings = await createAiWorkspaceSettings({
   candidates: aiWorkspaceCandidates, replaceFile: replaceFileWithRetry,
 })
 
+const doorayResponsePreferences = await createDoorayResponsePreferences({ dataDirectory, replaceFile: replaceFileWithRetry })
 const doorayResponses = createDoorayResponseIntegration({
   dataDirectory, readStoredRecord, writeStoredRecord, getDoorayApiConfig, listMaps, readMap, readDocumentLayout, groupProjects,
   aionUiCandidateBaseUrls, fetchAionUiOn, resolveTargetMachineForUser, normalizeAionUiAgent, normalizeAiConversationRuntime,
   conversationHomeMachineId, machineAccessibleByUser, listComments, saveMap, broadcastEvent, publicUser,
   rememberAiConversationOrigin, persistAiConversationOrigins, readAionUiMessageContent,
-  mainMachineId: machineRegistry.mainMachineId,
+  mainMachineId: machineRegistry.mainMachineId, responsePreferences: doorayResponsePreferences,
   user: (id) => users.find((user) => user.id === id && user.active !== false && canEdit(user)),
   activeDelegations: (mapId, cardId) => [...aiDelegations.values()].some((delegation) => delegation.mapId === mapId
     && delegation.targetCardId === cardId && !aiDelegationIsTerminal(delegation)),
@@ -7884,6 +7886,25 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         })
         return sendJson(response, 200, result)
       } catch (error) { return sendJson(response, error.status ?? 500, { error: error.message }) }
+    }
+
+    if (url.pathname === '/api/integrations/dooray/mentions/response-settings') {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (!canEdit(user) || isPublicViewer(user)) return sendJson(response, 403, { error: '편집자만 제안 AI를 설정할 수 있습니다.' })
+      try {
+        if (request.method === 'GET') return sendJson(response, 200, { userId: user.id, settings: doorayResponses.settings(user) })
+        if (request.method === 'PUT') {
+          const body = await readJsonBody(request)
+          if (!body || typeof body !== 'object' || Array.isArray(body)
+            || Object.keys(body).some((key) => !['expectedUserId', 'settings', 'onlyIfUnset'].includes(key))
+            || (body.onlyIfUnset != null && typeof body.onlyIfUnset !== 'boolean')) return sendJson(response, 400, { error: '제안 AI 설정 요청의 형식을 확인해 주세요.' })
+          if (body.expectedUserId !== user.id) return sendJson(response, 409, { error: '로그인 계정이 변경되었습니다. 다시 열어 설정해 주세요.' })
+          const settings = await doorayResponses.saveSettings(user, body.settings, { onlyIfUnset: body.onlyIfUnset === true })
+          return sendJson(response, 200, { userId: user.id, settings })
+        }
+        return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
+      } catch (error) { return sendJson(response, error.status ?? 502, { error: error.message ?? '제안 AI 설정을 저장하지 못했습니다.' }) }
     }
 
     const doorayResponseRoute = url.pathname.match(/^\/api\/integrations\/dooray\/mentions\/responses(?:\/([a-zA-Z0-9_-]+)\/(retry|refine|complete|handoff|execution-handoff|approve|recover-result))?$/)

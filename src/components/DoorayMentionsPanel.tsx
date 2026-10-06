@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './DoorayMentionsPanel.css'
 import { DoorayResponseInbox } from './DoorayResponseInbox'
+import { DoorayResponseSettings } from './DoorayResponseSettings'
 import type { DoorayHandoffLaunch } from './DoorayResponseHandoff'
 import { doorayResponseStatusLabel, useDoorayResponses, type DoorayResponseJob } from './useDoorayResponses'
 import { doorayMentionQuickRangeDates, doorayMentionQuickRanges, doorayMentionRequestRange, toLocalDateInputValue } from '../utils/doorayMentionRange.mjs'
@@ -172,6 +173,7 @@ export function DoorayMentionsPanel({ clientId, userId, aiRequestOpen = false, o
   onLaunchCard: (launch: DoorayHandoffLaunch) => void
 }) {
   const responses = useDoorayResponses(clientId, userId)
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false)
   const today = useMemo(() => toLocalDateInputValue(new Date()), [])
   const [since, setSince] = useState(() => {
     const start = new Date()
@@ -548,8 +550,13 @@ export function DoorayMentionsPanel({ clientId, userId, aiRequestOpen = false, o
             <h2>Dooray 참조</h2>
             <p>기간 안에 나를 멘션했거나 내가 담당·참조로 걸린 업무 활동을 모읍니다.</p>
           </div>
-          <button type="button" className="dooray-mentions-close" onClick={onClose} aria-label="닫기">✕</button>
+          <div className="dooray-mentions-header-actions">
+            <button type="button" className="dooray-mentions-ai-settings" aria-expanded={aiSettingsOpen} aria-controls="dooray-response-settings"
+              onClick={() => setAiSettingsOpen(!aiSettingsOpen)}>제안 AI 설정</button>
+            <button type="button" className="dooray-mentions-close" onClick={onClose} aria-label="닫기">✕</button>
+          </div>
         </header>
+        {aiSettingsOpen && <DoorayResponseSettings response={responses} onClose={() => setAiSettingsOpen(false)} />}
 
         {loading && (
           <div className="dooray-mentions-initial-loading" role="status" aria-live="polite">

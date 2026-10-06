@@ -80,6 +80,14 @@
 
 .dooray-mentions-close:hover { background: var(--theme-surface-hover, #efecf5); }
 
+.dooray-mentions-header-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.dooray-mentions-ai-settings {
+  padding: 6px 9px; border: 1px solid var(--theme-border, #e0dbe8); border-radius: 7px;
+  color: inherit; background: var(--theme-surface-soft, #f7f5fa); font-size: 12px; cursor: pointer;
+}
+.dooray-mentions-ai-settings:hover { background: var(--theme-surface-hover, #efecf5); }
+@media (max-width: 600px) { .dooray-mentions-header { flex-wrap: wrap; gap: 10px; } .dooray-mentions-header-actions { margin-left: auto; } }
+
 .dooray-mentions-controls {
   display: flex;
   flex-wrap: wrap;

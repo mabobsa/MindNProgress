@@ -138,6 +138,27 @@ test('제한 정책 변경 뒤 추가 정보는 새 허용 모델로 요청하�
   assert.ok(proposal.modelPolicy.message.includes('이전 제안과 대화 기록은 보존'))
 })
 
+test('새 제안과 다시 제안받기는 계정 설정을 사용하고 이미 실행 중인 회차는 변경하지 않는다', async (t) => {
+  let saved = { machineId: 'main', agentId: 'account-ai', modelId: 'gpt-6.1-sol', thoughtLevel: 'high' }
+  const { service, counts, operations } = await fixture(t, {
+    getSettings: async () => ({ ...saved }),
+    resolveSettings: async (_user, requested) => ({ ...requested }),
+    prepareModel: async (_user, op) => ({ reuseAllowed: canReuseAutomatedAiConversation(op.recordedModelId, op.recordedModelId, op.settings.modelId) }),
+  })
+  const accepted = await service.start({ id: 'user1' }, item, { machineId: 'main', agentId: 'old-browser-ai', modelId: 'gpt-5.6-sol' })
+  assert.equal(accepted.job.settings.modelId, 'gpt-6.1-sol', '계정 설정이 브라우저의 예전 값을 우선한다')
+  for (let i = 0; i < 100 && counts.dispatch === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5))
+  saved = { ...saved, modelId: 'other-model', thoughtLevel: 'medium' }
+  const [original] = await until(service, 'user1', 'proposal')
+  assert.ok([...operations.values()].every((op) => op.settings.modelId === 'gpt-6.1-sol'))
+  assert.equal(counts.create, 2)
+  const refined = await service.refine('user1', original.id, '새 계정 설정으로 추가 정보를 검토하세요.')
+  assert.equal(refined.settings.modelId, 'other-model')
+  await until(service, 'user1', 'proposal')
+  assert.deepEqual([...operations.values()].slice(-2).map((op) => [op.settings.modelId, op.settings.thoughtLevel]), [['other-model', 'medium'], ['other-model', 'medium']])
+  assert.equal(counts.create, 4)
+})
+
 test('MCP 적용을 기다리는 동안 제한 모델로 바뀐 접수 대화는 전달 전에 교체한다', async (t) => {
   const runtimeModels = new Map()
   let waited = false

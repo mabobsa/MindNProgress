@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getAiRuntimeSelection, normalizeAiRuntimeSelections } from '../utils/aiRuntimeSelections.mjs'
 import type { DoorayHandoffLaunch } from './DoorayResponseHandoff'
 
 export type DoorayDecision = { kind: 'input' | 'approval' | 'proposal'; reason: string; questions: string[];
@@ -10,7 +9,7 @@ type DoorayApproval = { revision: string; approvedAt: string; approvedBy: { id: 
   handoffs?: { id: string; target: { mapId: string; cardId: string; documentTitle: string; cardTitle: string };
     conversation?: { conversationId: string; homeMachineRole: 'main' | 'sub'; linkedAt: string } }[] }
 
-type ResponseSettings = { agentId?: string; modelId?: string; mode?: string; thoughtLevel?: string; machineId?: string; proposalWorkspace?: string }
+export type ResponseSettings = { agentId?: string; modelId?: string; mode?: string; thoughtLevel?: string; machineId?: string; proposalWorkspace?: string }
 type Option = { id: string; label: string }
 type Agent = { id: string; name: string; models: Option[]; modes: Option[]; thoughtLevels: Option[]; defaultModelId: string; defaultMode: string; defaultThoughtLevel: string }
 export type Options = { machineId: string; machineRole?: 'main' | 'sub'; machines: { machineId: string; label: string }[]; agents: Agent[] }
@@ -32,14 +31,14 @@ export const doorayResponseStatus: Record<string, string> = {
 }
 const active = new Set(['routing', 'reviewing', 'waiting-target'])
 const base = '/api/integrations/dooray/mentions/responses'
+const settingsEndpoint = '/api/integrations/dooray/mentions/response-settings'
 
-function initialSettings(userId: string): ResponseSettings {
+function legacySettings(userId: string): ResponseSettings {
   try {
     const stored = JSON.parse(localStorage.getItem(`mindnprogress-dooray-response-ai:${userId}`) ?? 'null')
     if (stored && typeof stored === 'object') return stored
-    const recent = normalizeAiRuntimeSelections(JSON.parse(localStorage.getItem('mindnprogress-ai-runtime-selections') ?? '{}'))
-    return { agentId: recent.lastAgentId || undefined, ...getAiRuntimeSelection(recent, recent.lastAgentId) }
   } catch { return {} }
+  return {}
 }
 
 export function useDoorayResponses(clientId: string, userId: string) {
@@ -50,10 +49,14 @@ export function useDoorayResponses(clientId: string, userId: string) {
   const [showCompleted, setShowCompleted] = useState(false)
   const [notice, setNotice] = useState('')
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
-  const [settings, setSettings] = useState<ResponseSettings>(() => initialSettings(userId))
+  const [settings, setSettings] = useState<ResponseSettings>({})
+  const [settingsLoading, setSettingsLoading] = useState(true)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState('')
   const controllerRef = useRef<AbortController | null>(null)
   const sequence = useRef(0)
   const pending = useRef(new Set<string>())
+  const settingsSequence = useRef(0)
   const requestJson = useCallback(async <T,>(url: string, init: RequestInit = {}): Promise<T> => {
     const response = await fetch(url, { ...init, credentials: 'include', signal: controllerRef.current?.signal,
       headers: { 'Content-Type': 'application/json', 'X-MindNProgress-Client': clientId, ...init.headers } })
@@ -71,12 +74,50 @@ export function useDoorayResponses(clientId: string, userId: string) {
       if (!signal?.aborted && current === sequence.current) setError(failure instanceof Error ? failure.message : 'AI 대응 조회에 실패했습니다.')
     }
   }, [requestJson])
+  const cacheSettings = useCallback((next: ResponseSettings) => {
+    setSettings(next)
+    try { localStorage.setItem(`mindnprogress-dooray-response-ai:${userId}`, JSON.stringify(next)) } catch { /* 서버의 계정 설정이 원본이다. */ }
+  }, [userId])
+  const loadSettings = useCallback(async (): Promise<ResponseSettings> => {
+    const signal = controllerRef.current?.signal
+    const current = ++settingsSequence.current
+    setSettingsLoading(true)
+    try {
+      let migrationError = ''
+      let result = await requestJson<{ userId: string; settings: ResponseSettings | null }>(settingsEndpoint)
+      if (result.userId !== userId) throw new Error('로그인 계정이 변경되었습니다. 다시 열어 설정해 주세요.')
+      if (!result.settings) {
+        const legacy = legacySettings(userId)
+        if (legacy.agentId && legacy.modelId) {
+          try {
+            result = await requestJson<{ userId: string; settings: ResponseSettings }>(settingsEndpoint, {
+              method: 'PUT', body: JSON.stringify({ expectedUserId: userId, settings: legacy, onlyIfUnset: true }),
+            })
+          } catch {
+            // 삭제된 AI 등 오래된 브라우저 설정 때문에 새 종류·모델 선택까지 막지 않는다.
+            migrationError = '이전 설정을 가져오지 못했습니다. 제안 AI 설정에서 다시 선택해 주세요.'
+          }
+        }
+      }
+      if (result.userId !== userId) throw new Error('로그인 계정이 변경되었습니다. 다시 열어 설정해 주세요.')
+      const next = result.settings ?? {}
+      if (!signal?.aborted && current === settingsSequence.current) { cacheSettings(next); setSettingsError(migrationError) }
+      return next
+    } catch (failure) {
+      if (!signal?.aborted && current === settingsSequence.current) setSettingsError(failure instanceof Error ? failure.message : '제안 AI 설정을 불러오지 못했습니다.')
+      throw failure
+    } finally { if (!signal?.aborted && current === settingsSequence.current) setSettingsLoading(false) }
+  }, [cacheSettings, requestJson, userId])
   useEffect(() => {
     const controller = new AbortController()
     controllerRef.current = controller
+    setSettings({})
+    setJobs([])
+    setSelectedId('')
     void load()
+    void loadSettings().catch(() => {})
     return () => { controller.abort(); if (controllerRef.current === controller) controllerRef.current = null }
-  }, [load])
+  }, [load, loadSettings])
   const needsRefresh = jobs.some((job) => (!job.completedAt && (active.has(job.status) || job.conversationId))
     || job.approval?.handoffs?.some((entry) => !entry.conversation))
   useEffect(() => {
@@ -84,10 +125,24 @@ export function useDoorayResponses(clientId: string, userId: string) {
     const timer = window.setInterval(() => void load(), 3000)
     return () => window.clearInterval(timer)
   }, [needsRefresh, load])
-  const saveSettings = useCallback((next: ResponseSettings) => {
-    setSettings(next)
-    try { localStorage.setItem(`mindnprogress-dooray-response-ai:${userId}`, JSON.stringify(next)) } catch { /* 현재 창의 선택은 유지한다. */ }
-  }, [userId])
+  const saveSettings = useCallback(async (next: ResponseSettings): Promise<boolean> => {
+    const signal = controllerRef.current?.signal
+    const current = ++settingsSequence.current
+    setSettingsSaving(true)
+    try {
+      const result = await requestJson<{ userId: string; settings: ResponseSettings }>(settingsEndpoint, {
+        method: 'PUT', body: JSON.stringify({ expectedUserId: userId, settings: next }),
+      })
+      if (result.userId !== userId) throw new Error('로그인 계정이 변경되었습니다. 다시 열어 설정해 주세요.')
+      if (signal?.aborted || current !== settingsSequence.current) return false
+      cacheSettings(result.settings)
+      setSettingsError('')
+      return true
+    } catch (failure) {
+      if (!signal?.aborted && current === settingsSequence.current) setSettingsError(failure instanceof Error ? failure.message : '제안 AI 설정을 저장하지 못했습니다.')
+      return false
+    } finally { if (!signal?.aborted) { setSettingsSaving(false); if (current === settingsSequence.current) setSettingsLoading(false) } }
+  }, [cacheSettings, requestJson, userId])
   const request = async (itemKey: string) => {
     if (pending.current.has(itemKey)) return
     // 상태가 표시된 버튼은 기록을 여는 동작이다. 재제안은 refine에서만 요청한다.
@@ -106,13 +161,13 @@ export function useDoorayResponses(clientId: string, userId: string) {
     setError('')
     const signal = controllerRef.current?.signal
     try {
-      const { job } = await requestJson<{ job: DoorayResponseJob }>(base, { method: 'POST', body: JSON.stringify({ itemKey, settings }) })
+      const { job } = await requestJson<{ job: DoorayResponseJob }>(base, { method: 'POST', body: JSON.stringify({ itemKey }) })
       if (signal?.aborted) return
       sequence.current++
       setJobs((current) => [job, ...current.filter((entry) => entry.id !== job.id)])
       setSelectedId(job.id)
       setShowCompleted(Boolean(job.completedAt))
-      if (job.settings) saveSettings(job.settings)
+      void loadSettings().catch(() => {})
       setNotice('')
     } catch (failure) {
       if (!signal?.aborted) setError(failure instanceof Error ? failure.message : 'AI 대응 요청에 실패했습니다.')
@@ -139,7 +194,7 @@ export function useDoorayResponses(clientId: string, userId: string) {
       sequence.current++
       setJobs((current) => current.map((entry) => entry.id === id ? job : entry))
       setError('')
-      if (job.settings) saveSettings(job.settings)
+      void loadSettings().catch(() => {})
       setNotice('')
       return true
     } catch (failure) { setError(failure instanceof Error ? failure.message : '추가 정보 전달에 실패했습니다.'); return false }
@@ -172,7 +227,8 @@ export function useDoorayResponses(clientId: string, userId: string) {
       return launch
     } catch (failure) { if (!signal?.aborted) setError(failure instanceof Error ? failure.message : '승인 정보를 확인하지 못했습니다.'); return null }
   }
-  return { jobs, error, notice, selectedId, setSelectedId, open, setOpen, showCompleted, setShowCompleted, pendingKeys, settings, saveSettings, request, retry, recoverResult, refine, complete, approve, load, requestJson }
+  return { jobs, error, notice, selectedId, setSelectedId, open, setOpen, showCompleted, setShowCompleted, pendingKeys,
+    settings, settingsLoading, settingsSaving, settingsError, loadSettings, saveSettings, request, retry, recoverResult, refine, complete, approve, load, requestJson }
 }
 export const doorayResponseStatusLabel = (job: Pick<DoorayResponseJob, 'status' | 'recoveringAfterRestart'>) =>
   job.recoveringAfterRestart ? '재시작 후 제안 복구 중' : doorayResponseStatus[job.status] ?? job.status

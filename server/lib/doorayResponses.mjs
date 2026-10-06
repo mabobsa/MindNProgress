@@ -333,7 +333,9 @@ export function createDoorayResponseService(deps) {
       const previous = state.jobs.find(outstanding) ?? state.jobs.find((job) => job.source.fingerprint === source.fingerprint)
       if (previous) return { job: previous, repeated: true }
       if (state.jobs.filter((job) => activeStates.has(job.status)).length >= 10) throw error('진행 중인 AI 대응이 많습니다. 기존 요청이 끝난 뒤 다시 시도해 주세요.', 409)
-      const resolved = await deps.resolveSettings(user, settings)
+      const saved = await deps.getSettings?.(user)
+      const resolved = await deps.resolveSettings(user, saved ?? settings ?? {})
+      await deps.rememberSettings?.(user, resolved, saved)
       const now = new Date().toISOString()
       const job = { id: `dooray-${randomBytes(12).toString('hex')}`, userId: user.id, source, settings: resolved,
         status: 'routing', createdAt: now, updatedAt: now, attempt: 0, round: 0, inspectedMapIds: [], conversationPolicy: 'dedicated', sessions: [],
@@ -774,7 +776,9 @@ export function createDoorayResponseService(deps) {
         if (current.approval?.conversation) throw error('이미 시작한 승인 대화에서 변경 사항을 검토해 주세요.', 409)
         if (activeStates.has(current.status)) throw error('현재 검토가 끝난 뒤 추가 정보를 전달해 주세요.', 409)
         if (current.operation?.createAttempted && !current.operation.conversationId) throw error('이전 AI 대화 생성 여부를 먼저 확인해야 합니다.', 409)
-        const settings = await deps.resolveSettings(user, current.settings)
+        const saved = await deps.getSettings?.(user)
+        const settings = await deps.resolveSettings(user, saved ?? current.settings)
+        await deps.rememberSettings?.(user, settings, saved)
         const history = current.proposal ? [{ request: current.route?.requestSummary ?? current.source.subject, route: current.route,
           proposal: clip(current.proposal, 12_000), decision: current.decision ?? null }, ...(current.history ?? [])].slice(0, 3) : current.history
         // 수정 제안에는 이전 승인을 승계하지 않는다. 확인 당시 전문과 범위는 이력으로 보존한다.

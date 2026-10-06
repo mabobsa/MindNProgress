@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { availableAiRuntimeOptionId } from '../utils/aiRuntimeSelections.mjs'
-import { doorayResponseStatusLabel, type Options, type DoorayResponseJob, type useDoorayResponses } from './useDoorayResponses'
+import { useEffect, useState } from 'react'
+import { doorayResponseStatusLabel, type DoorayResponseJob, type useDoorayResponses } from './useDoorayResponses'
 import './DoorayResponseInbox.css'
 import { DoorayResponseHandoff, type DoorayHandoffLaunch } from './DoorayResponseHandoff'
 import { DoorayResponseDecision } from './DoorayResponseDecision'
@@ -12,16 +11,6 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
   onOpenCard: (mapId: string, cardId: string) => void
   onLaunchCard: (launch: DoorayHandoffLaunch) => void
 }) {
-  const requestJson = response.requestJson
-  const saveSettings = response.saveSettings
-  const savedSettings = useRef(response.settings)
-  useEffect(() => { savedSettings.current = response.settings }, [response.settings])
-  const [options, setOptions] = useState<Options | null>(null)
-  const [optionsError, setOptionsError] = useState('')
-  const [settingsNotice, setSettingsNotice] = useState('')
-  const [optionsLoading, setOptionsLoading] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [machine, setMachine] = useState(response.settings.machineId ?? '')
   const [hint, setHint] = useState('')
   const [refining, setRefining] = useState(false)
   const [completing, setCompleting] = useState(false)
@@ -36,38 +25,6 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
   const executionHandoffs = job?.approval?.handoffs?.filter((entry) => entry.conversation) ?? []
   useEffect(() => { setHint('') }, [job?.id])
   const running = response.jobs.filter((entry) => ['routing', 'reviewing', 'waiting-target'].includes(entry.status)).length
-  useEffect(() => {
-    if (!settingsOpen) return
-    let mounted = true
-    setOptionsLoading(true)
-    setOptionsError('')
-    void requestJson<Options>(`/api/integrations/aionui/options?purpose=dooray-response${machine ? `&machineId=${encodeURIComponent(machine)}` : ''}`)
-      .then((result) => {
-        if (!mounted) return
-        setOptions(result)
-        const saved = savedSettings.current
-        const initial = result.agents.find((entry) => entry.id === saved.agentId && entry.models.length > 0) ?? result.agents.find((entry) => entry.models.length > 0)
-        const modelId = initial ? availableAiRuntimeOptionId(initial.models, saved.modelId, initial.defaultModelId) : ''
-        setSettingsNotice(!initial ? '자동 요청에 사용할 허용 모델이 없습니다. AionUi 모델 목록과 공통 모델 정책을 확인해 주세요.'
-          : saved.modelId && saved.modelId !== modelId ? `저장된 모델 대신 공통 모델 정책의 허용 모델 ${modelId}을 선택했습니다.` : '')
-        if (initial) saveSettings({ machineId: result.machineId, agentId: initial.id, proposalWorkspace: saved.proposalWorkspace,
-          modelId,
-          mode: availableAiRuntimeOptionId(initial.modes, saved.mode, initial.defaultMode),
-          thoughtLevel: availableAiRuntimeOptionId(initial.thoughtLevels, saved.thoughtLevel, initial.defaultThoughtLevel) })
-      })
-      .catch((failure: unknown) => { if (mounted) setOptionsError(failure instanceof Error ? failure.message : 'AI 설정을 불러오지 못했습니다.') })
-      .finally(() => { if (mounted) setOptionsLoading(false) })
-    return () => { mounted = false }
-  }, [machine, requestJson, saveSettings, settingsOpen])
-  const agent = options?.agents.find((entry) => entry.id === response.settings.agentId) ?? options?.agents[0]
-  const chooseAgent = (id: string) => {
-    const next = options?.agents.find((entry) => entry.id === id)
-    if (!next || !options) return
-    response.saveSettings({ machineId: options.machineId, agentId: next.id, proposalWorkspace: response.settings.proposalWorkspace,
-      modelId: availableAiRuntimeOptionId(next.models, '', next.defaultModelId),
-      mode: availableAiRuntimeOptionId(next.modes, '', next.defaultMode),
-      thoughtLevel: availableAiRuntimeOptionId(next.thoughtLevels, '', next.defaultThoughtLevel) })
-  }
   return (
     <section className="dooray-response-inbox" aria-label="AI 대응">
       <div className="dooray-response-toolbar">
@@ -78,33 +35,7 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
         <button type="button" aria-pressed={response.showCompleted} onClick={() => {
           response.setShowCompleted(!response.showCompleted); response.setSelectedId(''); response.setOpen(true)
         }}>{response.showCompleted ? '미완료 보기' : `완료 내역 ${completed.length}건`}</button>
-        <button type="button" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}>AI 설정</button>
       </div>
-      {settingsOpen && <div className="dooray-response-settings">
-        {optionsLoading && <span role="status">AI 설정을 불러오는 중…</span>}
-        {optionsError && <p role="alert">{optionsError}</p>}
-        {settingsNotice && <p role="status">{settingsNotice}</p>}
-        {options && !optionsLoading && <>
-          <label>실행 머신<select value={machine || options.machineId} onChange={(event) => {
-            setMachine(event.target.value); response.saveSettings({ machineId: event.target.value }); setOptions(null)
-          }}>{options.machines.map((entry) => <option key={entry.machineId} value={entry.machineId}>{entry.label}</option>)}</select></label>
-          <label>AI<select value={agent?.id ?? ''} onChange={(event) => chooseAgent(event.target.value)}>
-            {options.agents.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-          </select></label>
-          {agent && <>
-            <label>모델<select value={availableAiRuntimeOptionId(agent.models, response.settings.modelId, agent.defaultModelId)} onChange={(event) => response.saveSettings({ ...response.settings, machineId: options.machineId, agentId: agent.id, modelId: event.target.value })}>
-              {agent.models.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
-            </select></label>
-            {agent.thoughtLevels.length > 0 && <label>사고 강도<select value={availableAiRuntimeOptionId(agent.thoughtLevels, response.settings.thoughtLevel, agent.defaultThoughtLevel)} onChange={(event) => response.saveSettings({ ...response.settings, machineId: options.machineId, agentId: agent.id, thoughtLevel: event.target.value })}>
-              {agent.thoughtLevels.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
-            </select></label>}
-          </>}
-          {options.machineRole === 'sub' && <label className="dooray-response-workspace">서브 머신의 제안 전용 폴더
-            <input value={response.settings.proposalWorkspace ?? ''} onChange={(event) => response.saveSettings({ ...response.settings, proposalWorkspace: event.target.value })}
-              placeholder="해당 머신에 만든 공통 폴더의 절대 경로" />
-          </label>}
-        </>}
-      </div>}
       {response.error && <p className="dooray-response-error" role="alert">{response.error} <button type="button" onClick={() => void response.load()}>새로고침</button></p>}
       {response.notice && <p className="dooray-response-notice" role="status">{response.notice}</p>}
       {response.open && <div className="dooray-response-detail">
@@ -114,7 +45,6 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
             {visibleJobs.map((entry) => <option key={entry.id} value={entry.id}>{doorayResponseStatusLabel(entry)} · {entry.subject}</option>)}
           </select></label>
           {job && <article aria-live="polite">
-            {job.modelPolicy?.message && <p role="status">{job.modelPolicy.message}</p>}
             <div className="dooray-response-heading"><strong>{doorayResponseStatusLabel(job)}</strong><a href={job.sourceUrl} target="_blank" rel="noopener noreferrer">Dooray 원문</a></div>
             {job.route && <>
               <p><strong>{job.route.requestSummary}</strong></p>

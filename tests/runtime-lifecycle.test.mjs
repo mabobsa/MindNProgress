@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
+import { connect } from 'node:net'
 import test from 'node:test'
 import { createRuntimeLifecycle } from '../server/lib/runtimeLifecycle.mjs'
 
@@ -55,4 +57,38 @@ test('종료 후 요청은 503이며 SSE를 닫아 종료를 지연시키지 않
   runtime.request(() => assert.fail('must not run'))({}, { writeHead: (value) => { status = value }, end: (value) => { body = value } })
   assert.equal(status, 503)
   assert.match(body, /종료/)
+})
+
+test('응답을 끝내지 않는 연결은 추적 작업을 마친 뒤 유예 시간이 지나면 정리한다', { timeout: 20_000 }, async () => {
+  const runtime = createRuntimeLifecycle()
+  const server = createServer(runtime.request((_request, response) => { response.end('ok') }))
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  let backgroundDone = false
+  void runtime.track(async () => { await new Promise((resolve) => setTimeout(resolve, 80)); backgroundDone = true })
+  // 요청 줄만 보낸 연결은 유휴로 판정되지 않아 server.close()가 끝나지 않는다.
+  const socket = connect(server.address().port, '127.0.0.1')
+  socket.on('error', () => {})
+  await new Promise((resolve) => socket.once('connect', resolve))
+  socket.write('GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n')
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const started = Date.now()
+  await runtime.stop(server, () => {}, { connectionGraceMs: 50 })
+  const elapsed = Date.now() - started
+  socket.destroy()
+  assert.equal(backgroundDone, true)
+  assert.ok(elapsed >= 50, `유예 전에는 연결을 끊지 않는다: ${elapsed}ms`)
+  assert.ok(elapsed < 10_000, `유예 뒤에는 남은 연결을 정리하고 종료한다: ${elapsed}ms`)
+})
+
+test('드레인이 실패하면 프로세스를 종료해 감시자가 무한 대기하지 않는다', { timeout: 20_000 }, async () => {
+  const moduleUrl = new URL('../server/lib/runtimeLifecycle.mjs', import.meta.url).href
+  const source = `const { installRuntimeShutdown } = await import(${JSON.stringify(moduleUrl)})\n`
+    + `installRuntimeShutdown(async () => { throw new Error('drain failed') })\n`
+    + `setInterval(() => {}, 1000)\n`
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+  try {
+    await new Promise((resolve) => child.on('message', (message) => { if (message?.type === 'mnp:shutdown-ready') resolve() }))
+    child.send({ type: 'mnp:shutdown' })
+    assert.equal(await new Promise((resolve) => child.once('exit', resolve)), 1)
+  } finally { if (child.exitCode === null) child.kill('SIGKILL') }
 })

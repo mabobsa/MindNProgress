@@ -1,6 +1,6 @@
 @echo off
 rem AI MAINTENANCE: This BAT owns shared startup settings for both BAT and VBS.
-rem No arguments: console output and pause. --hidden: hidden execution without pause.
+rem No arguments: console output, pausing only when the run fails. --hidden: hidden execution without pause.
 rem MindNProgress_Start.vbs only invokes this BAT with --hidden and reports failure.
 rem Edit controller options here; keep lifecycle logic in MindNProgress\scripts\mnp-runtime.ps1.
 rem When changing the hidden option or exit-code contract, update BOTH BAT and VBS.
@@ -59,15 +59,18 @@ goto done
 echo [MindNProgress] Usage: MindNProgress_Start.bat [--hidden]
 
 :done
-rem Pause only for a visible run with console input. Under --hidden the console
-rem exists but nobody can answer, and without console input (scheduled task,
-rem pipe) pause would block forever. timeout.exe is called by full path because
-rem PATH may resolve timeout to the Git Bash coreutils build.
-if not defined MNP_HIDDEN (
-  "%SystemRoot%\System32\timeout.exe" /t 0 /nobreak >nul 2>&1 && (
-    echo.
-    echo Press any key to close this window.
-    pause >nul
+rem Keep the window open only when the run failed, so a successful start closes
+rem by itself. Under --hidden the console exists but nobody sees it, and without
+rem console input (scheduled task, pipe) pause would block forever. timeout.exe
+rem is called by full path because PATH may resolve timeout to the Git Bash
+rem coreutils build. This covers every failure path, including usage errors.
+if not "%MNP_EXIT_CODE%"=="0" (
+  if not defined MNP_HIDDEN (
+    "%SystemRoot%\System32\timeout.exe" /t 0 /nobreak >nul 2>&1 && (
+      echo.
+      echo Press any key to close this window.
+      pause >nul
+    )
   )
 )
 exit /b %MNP_EXIT_CODE%

@@ -12,6 +12,12 @@ if not exist "%SCRIPT%" (
   exit /b 1
 )
 
+rem %~dp0 ends with a backslash and PowerShell -File reads the trailing \" as an
+rem escaped quote, which made every run fail with "Illegal characters in path".
+rem Pass the project directory without the trailing separator.
+set "PROJECT_DIR=%~dp0"
+if "%PROJECT_DIR:~-1%"=="\" set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
+
 rem The restore script prints Korean text. On the default CP949 console that
 rem output is mojibake for callers reading it as UTF-8 (scheduled tasks, pipes),
 rem so run under UTF-8 and restore the previous code page afterwards.
@@ -21,7 +27,7 @@ set "PREV_CP=%PREV_CP: =%"
 set "PREV_CP=%PREV_CP:.=%"
 chcp 65001 >nul 2>&1
 
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" -ArchivePath "%~1" -ProjectPath "%~dp0"
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" -ArchivePath "%~1" -ProjectPath "%PROJECT_DIR%"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if defined PREV_CP chcp %PREV_CP% >nul 2>&1

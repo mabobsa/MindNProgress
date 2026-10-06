@@ -664,6 +664,10 @@ async function resolveAiConversationNavigation(conversationId) {
   if (!map || map.trashedAt) return null
   const card = map.nodes.find((node) => node.id === origin.cardId)
   if (!card || !isAiConversationLinked(card.data, normalizedConversationId)) return null
+  const groupProject = await groupProjects.forDocument(map.id)
+  const coordinatorGroup = groupProject?.role === 'coordinator' && documentRoot(map)?.id === card.id
+    ? { id: groupProject.groupId, title: groupProject.name, role: 'coordinator' }
+    : null
   const conversationLink = aiConversationLinksFromData(card.data)
     .find((link) => link.conversationId === normalizedConversationId)
   const persistentAttribution = aiConversationAttributions.get(conversationAttributionKey(map.id, card.id))
@@ -681,6 +685,7 @@ async function resolveAiConversationNavigation(conversationId) {
       cardId: card.id,
       cardTitle: String(card.data?.label ?? '').trim() || '제목 없는 카드',
       archived: Boolean(map.archivedAt),
+      ...(coordinatorGroup ? { group: coordinatorGroup } : {}),
     },
     recordedStartedBy,
   }

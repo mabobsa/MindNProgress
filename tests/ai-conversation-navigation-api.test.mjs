@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -190,6 +190,7 @@ test('AionUi 대화 조회와 화면 선택은 연결된 카드 및 같은 계�
   const attributionConversationId = 'conversation-attribution-owner'
   const viewerConversationId = 'conversation-viewer-owner'
   const inactiveConversationId = 'conversation-inactive-owner'
+  const groupId = 'group-conversation-navigation'
   const linkedAt = '2026-09-15T00:00:00.000Z'
   const linkedCard = (id, label, linkedConversationId, startedBy = null) => ({
     id,
@@ -222,6 +223,18 @@ test('AionUi 대화 조회와 화면 선택은 연결된 카드 및 같은 계�
     edges: [],
     version: 1,
     updatedAt: linkedAt,
+  }))
+  await writeFile(path.join(dataDirectory, '_map-order.json'), JSON.stringify({
+    version: 1,
+    items: [{ type: 'group', id: groupId }],
+    groups: [{ id: groupId, name: '변경된 그룹 이름', mapIds: [mapId] }],
+  }))
+  await mkdir(path.join(dataDirectory, '_group-projects'))
+  await writeFile(path.join(dataDirectory, '_group-projects', `${groupId}.json`), JSON.stringify({
+    version: 1,
+    coordinatorMapId: mapId,
+    objective: '',
+    instructions: '',
   }))
   await writeFile(path.join(dataDirectory, '_ai-conversation-origins.json'), JSON.stringify([
     { conversationId, mapId, cardId, startedBy: 'user-admin', linkedAt },
@@ -306,6 +319,11 @@ test('AionUi 대화 조회와 화면 선택은 연결된 카드 및 같은 계�
         cardId,
         cardTitle: '대화 탐색 카드',
         archived: false,
+        group: {
+          id: groupId,
+          title: '변경된 그룹 이름',
+          role: 'coordinator',
+        },
       },
       selectionAvailable: false,
       matchingViewCount: 0,
@@ -383,6 +401,7 @@ test('AionUi 대화 조회와 화면 선택은 연결된 카드 및 같은 계�
       const fallbackLookup = await (await fetch(endpointFor(serverOwnedConversationId), { headers })).json()
       assert.equal(fallbackLookup.selectionAvailable, true)
       assert.equal(fallbackLookup.matchingViewCount, 1)
+      assert.equal(fallbackLookup.target.group, undefined)
     }
 
     const remoteLookup = await (await fetch(endpoint, { headers: remoteHeaders })).json()

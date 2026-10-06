@@ -116,6 +116,8 @@ export function aiDelegationResponseBody(statusCode, reasonCode, message, payloa
 }
 
 export function aiDelegationStateReason(delegation) {
+  if (delegation?.resultCorrection?.phase === 'held') return requiredAiDelegationReason('AI_DELEGATION_RESULT_CORRECTION_HELD',
+    '결과 정정 실행 또는 Git 상태를 확인할 수 없어 기존 작업공간과 통합 잠금을 보존합니다. 별도 증거 검토가 필요합니다.')
   const displayState = aiDelegationDisplayState(delegation)
   if (displayState === 'waiting-workspace') {
     return requiredAiDelegationReason(
@@ -151,7 +153,9 @@ export function aiDelegationStateReason(delegation) {
       ? '작업 완료 · 통합 정리 대기' : '작업 완료 · 통합 대기'
     return requiredAiDelegationReason(
       result.reasonCode ?? 'AI_DELEGATION_WAITING_INTEGRATION',
-      `${label}. ${result.waitingReason}${paths.length ? `\n충돌/변경 파일:\n${paths.join('\n')}` : ''}`,
+      `${label}. ${aiDelegationRecoveryAvailability(delegation)?.recommendedAction === 'correct-integration-result'
+        ? '사용자 통합 파일은 보존합니다. 승인된 기존 결과의 우발 변경은 원 담당자에게 명시적 통합 대기 결과 정정을 요청할 수 있습니다.'
+        : result.waitingReason}${paths.length ? `\n충돌/변경 파일:\n${paths.join('\n')}` : ''}`,
     )
   }
   const configured = AI_DELEGATION_STATE_REASONS[displayState]
@@ -448,7 +452,26 @@ export function localChangesIntegrationCommits(result) {
 }
 
 export function aiDelegationRecoveryAvailability(delegation) {
+  if (delegation?.resultCorrection && (['completed', 'superseded', 'closed'].includes(delegation.state)
+    || aiDelegationSucceeded(delegation))) return null
+  if (delegation?.resultCorrection?.phase === 'held') return { failurePhase: 'integration', failureCategory: 'integration-result-correction',
+    recoveryAvailable: false, recommendedAction: 'inspect-failure' }
   if (delegation?.pendingRecovery) return { failurePhase: 'dispatch', failureCategory: 'unknown', recoveryAvailable: false, recommendedAction: 'refresh-status', recoveryTool: 'mindnprogress_refresh_ai_delegation' }
+  if (delegation?.resultCorrection && (delegation.resultCorrection.phase === 'preparing'
+    || ['recovery-required', 'waiting-child-resume'].includes(delegation.state))) {
+    return { failurePhase: 'integration', failureCategory: 'integration-result-correction', recoveryAvailable: true,
+      recommendedAction: 'correct-integration-result', recoveryTool: 'mindnprogress_recover_ai_delegation' }
+  }
+  if (delegation?.state === 'waiting-integration') {
+    const result = delegation.workspaceResult
+    if (!delegation.resultCorrection && delegation.workspaceLease?.leaseId && result?.status === 'waiting-integration'
+      && result.childStatus === 'completed' && !result.integratedCommit && result.integrationHeadCommit
+      && result.reasonCode === 'integration-untracked-collision') {
+      return { failurePhase: 'integration', failureCategory: 'integration-result-correction', recoveryAvailable: true,
+        recommendedAction: 'correct-integration-result', recoveryTool: 'mindnprogress_recover_ai_delegation' }
+    }
+    return null
+  }
   if (!['parent-wake-failed', 'failed', 'waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity', 'recovery-required', 'integration-recovery-required', 'waiting-child-resume'].includes(delegation?.state)) return null
   if (delegation.state === 'failed' && delegation.workspaceLease?.leaseId
     && localChangesIntegrationCommits(delegation.workspaceResult)) {
@@ -508,6 +531,7 @@ export function aiDelegationAttemptHistory(delegation, reason, at = new Date().t
     workspaceLease: delegation.workspaceLease ?? null, workspaceResult: delegation.workspaceResult ?? null,
     parentDispatchState: delegation.parentDispatchState, wakeOperationId: delegation.wakeOperationId,
     result: delegation.childResultSnapshot ?? '', resultCapturedAt: delegation.childResultCapturedAt ?? null,
+    resultHash: delegation.childResultHash ?? null, resultTurnId: delegation.childResultTurnId ?? null,
     reportPayloadHash: delegation.reportPayloadHash ?? null,
     reportResultAvailability: delegation.reportResultAvailability ?? null,
     reportResultHash: delegation.reportResultHash ?? null,

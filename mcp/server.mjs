@@ -2140,7 +2140,8 @@ async function main() {
     delegationId: z.string().regex(AI_DELEGATION_ID_PATTERN).describe('mindnprogress_list_ai_delegations에서 확인한 복구 대상 위임 ID'),
     instruction: z.string().min(1).max(100000).describe('현재 상태를 확인한 뒤 이어서 수행할 범위와 완료 조건. 커밋 전 변경은 보존하고 완료된 작업은 반복하지 않습니다. 구버전 failed-clean 작업은 MindNProgress가 새 lease를 배정할 수 있으므로 이번 전문의 할당 경로·브랜치·세션을 확인하도록 지시하세요.'),
     sourceRevision: z.number().int().positive().describe('get_context 또는 get_document에서 확인한 현재 문서 version'),
-  }, async ({ mapId, delegationId, instruction, sourceRevision }) => {
+    recoveryMode: z.enum(['correct-integration-result']).optional().describe('승인된 기존 작업의 통합 대기 결과 정정 범위를 명시할 때 지정합니다. 원 owner·lease·source·후보·HEAD를 검증한 뒤 같은 worker에서 새 체크포인트로 정정합니다. integration 사용자 파일 삭제·이동·덮어쓰기는 허용하지 않습니다. 재시도는 동일 지시와 모드를 사용합니다.'),
+  }, async ({ mapId, delegationId, instruction, sourceRevision, recoveryMode }) => {
     const origin = delegationOriginForMap(mapId)
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/ai-delegations/${encodeURIComponent(delegationId)}/recover`, {
       method: 'POST',
@@ -2151,7 +2152,7 @@ async function main() {
       aiType: origin.aiType,
       aiModel: origin.aiModel,
       timeoutMs: 60_000,
-      body: JSON.stringify({ instruction, sourceRevision }),
+      body: JSON.stringify({ instruction, sourceRevision, ...(recoveryMode ? { recoveryMode } : {}) }),
     })
   })
 

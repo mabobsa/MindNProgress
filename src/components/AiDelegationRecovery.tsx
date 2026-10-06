@@ -20,6 +20,7 @@ const actionHints = {
   refresh: '기존 실행 기록의 상태만 조회해 화면과 저장 상태를 동기화합니다. 새 AI 실행은 요청하지 않습니다.',
   recover: '중단된 작업을 같은 AI 대화와 작업공간에서 이어갑니다. 확인창에서 승인하면 해당 AI가 다시 실행됩니다.',
   retryIntegration: '로컬 변경을 보존·정리한 뒤 완료된 커밋의 통합을 다시 요청합니다. 하위 AI 작업은 다시 실행하지 않습니다.',
+  correctResult: '원 담당 AI가 같은 worker에서 자기 결과를 정정하고 새 체크포인트를 만듭니다. 통합 사용자 파일은 보존하며 결과 정정은 품질 승인이나 삭제 권한이 아닙니다.',
   retryReport: '완료된 하위 작업은 다시 실행하지 않고 저장된 결과만 상위 AI에 전달합니다. 상위 AI는 결과 검토를 위해 실행됩니다.',
   supersede: '이 위임을 완료 처리하지 않고 선택한 후속 성공 위임으로 대체되었다는 이력을 남겨 닫습니다. 카드·코드·작업공간은 변경하지 않으며 UI에서 되돌릴 수 없습니다.',
   openClose: '결과 전달과 완료 처리를 포기하고 위임 기록만 닫는 절차를 엽니다. 바로 종료되지 않으며 사유·감사 메모 입력과 최종 확인이 필요합니다.',
@@ -94,8 +95,9 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
     const replacementId = replacementIds[item.id] ?? candidates[0]?.id
     if (kind === 'supersede' && !replacementId) return
     const retryIntegration = item.recovery?.recommendedAction === 'retry-integration'
+    const correctResult = item.recovery?.recommendedAction === 'correct-integration-result'
     const confirmation = kind === 'recover'
-      ? retryIntegration
+      ? correctResult ? '통합 대기 결과 정정을 승인할까요? 원 담당 AI가 같은 worker에서 요구사항과 증거를 대사하고 자기 우발 변경을 새 체크포인트로 정정합니다. 통합 사용자 파일은 보존합니다. 이 요청은 업무 완료·품질 승인이나 사용자 파일 삭제 권한을 부여하지 않습니다.' : retryIntegration
         ? 'fork 작업공간의 로컬 변경을 보존·정리했나요? 완료된 커밋을 검증한 뒤 통합을 다시 시도합니다. 하위 AI 작업은 다시 실행하지 않습니다.'
         : '중단 원인이 해소되었고 기존 승인 범위에서 작업을 이어갈까요? 현재 변경을 확인하고 남은 작업만 같은 AI 대화에서 진행합니다.'
       : kind === 'retry-report'
@@ -118,14 +120,16 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
           expectedUpdatedAt: item.updatedAt, sourceRevision: parent.map.version, targetRevision: target.map.version,
           ...(group ? { groupVersion: group.project.version } : {}),
           confirmApprovedScope: kind === 'recover' || kind === 'retry-report',
-          ...(kind === 'recover' ? { instruction: retryIntegration
+          ...(kind === 'recover' && correctResult ? { recoveryMode: 'correct-integration-result' } : {}),
+          ...(kind === 'recover' ? { instruction: correctResult
+            ? '사용자가 통합 대기 결과 정정을 승인했습니다. 원 요구사항과 source 체크포인트 증거를 대사하고 본인의 우발 변경만 같은 worker에서 정정하세요. integration 사용자 파일은 보존하세요. 정상 변경 체크포인트 후 정정 검증 결과를 보고하세요.' : retryIntegration
             ? '사용자가 로컬 변경 해소 후 기존 승인 범위의 완료 커밋 통합 재시도를 요청했습니다.'
             : '사용자가 카드에서 기존 승인 범위의 작업 재개를 요청했습니다. 현재 카드, 최근 대화, 할당된 작업공간과 변경을 확인하세요. 완료된 작업이나 외부 처리는 반복하지 말고 미완료 부분만 이어가세요. 기준이나 범위가 바뀌었다면 변경안을 제안하세요.' } : {}),
           ...(kind === 'supersede' ? { replacementDelegationId: replacementId, confirmSupersededByCompletedDelegation: true } : {}),
         }),
       })
       if (mounted.current) setNotice(kind === 'refresh' ? '기존 실행 상태를 확인했습니다.'
-        : kind === 'recover' ? retryIntegration ? '완료된 커밋의 통합 재시도를 접수했습니다.' : '기존 작업의 재개를 접수했습니다.'
+        : kind === 'recover' ? correctResult ? '원 담당자의 통합 대기 결과 정정을 접수했습니다.' : retryIntegration ? '완료된 커밋의 통합 재시도를 접수했습니다.' : '기존 작업의 재개를 접수했습니다.'
           : kind === 'retry-report' ? '완료 결과의 재전달을 접수했습니다.'
             : '후속 성공 위임과 연결해 종료했습니다.')
     } catch (reason) {
@@ -213,6 +217,7 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
       const selectedReplacementId = replacementIds[item.id] ?? candidates[0]?.id ?? ''
       const closing = closeDraft?.id === item.id
       const retryIntegration = item.recovery?.recommendedAction === 'retry-integration'
+      const correctResult = item.recovery?.recommendedAction === 'correct-integration-result'
       const errorDetail = item.recoveryDispatchError || item.childError || item.workspaceError || item.workspaceResult?.error || item.integrationError || item.parentError
       return <div
         className="ai-delegation-recovery-item"
@@ -261,7 +266,7 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
           </div>
         </div> : <div className="ai-delegation-recovery-actions">
           <button type="button" {...actionAccessibility('상태 다시 확인', actionHints.refresh)} disabled={busy} onClick={() => void action(item, 'refresh')}>상태 다시 확인</button>
-          {item.recovery?.recoveryAvailable && <button type="button" {...actionAccessibility(retryIntegration ? '통합 재시도' : '기존 작업 재개', retryIntegration ? actionHints.retryIntegration : actionHints.recover)} disabled={busy} onClick={() => void action(item, 'recover')}>{retryIntegration ? '통합 재시도' : '기존 작업 재개'}</button>}
+          {item.recovery?.recoveryAvailable && <button type="button" {...actionAccessibility(correctResult ? '통합 대기 결과 정정' : retryIntegration ? '통합 재시도' : '기존 작업 재개', correctResult ? actionHints.correctResult : retryIntegration ? actionHints.retryIntegration : actionHints.recover)} disabled={busy} onClick={() => void action(item, 'recover')}>{correctResult ? '통합 대기 결과 정정' : retryIntegration ? '통합 재시도' : '기존 작업 재개'}</button>}
           {item.recovery?.reportRetryAvailable && <button type="button" {...actionAccessibility('결과 전달 재시도', actionHints.retryReport)} disabled={busy} onClick={() => void action(item, 'retry-report')}>결과 전달 재시도</button>}
           {candidates.length > 0 && <button type="button" {...actionAccessibility('후속 성공으로 종료', actionHints.supersede)} disabled={busy} onClick={() => void action(item, 'supersede')}>후속 성공으로 종료</button>}
           {item.closure?.closeAvailable && <button type="button" {...actionAccessibility('보고하지 않고 종료', actionHints.openClose)} className="danger" disabled={busy} onClick={() => setCloseDraft({ id: item.id, reason: item.workCompleted ? 'result-invalidated' : 'no-longer-needed', note: '' })}>보고하지 않고 종료</button>}

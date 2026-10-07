@@ -13,6 +13,7 @@ import { MCP_TOOL_USAGE_DIRECTORY_NAME, readToolUsageTotals } from '../server/li
 import { sharedKnowledgeMaxLength } from '../src/utils/sharedKnowledgePolicy.mjs'
 import { AI_EXECUTION_APPROVAL_INSTRUCTION, DOCUMENT_COORDINATOR_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 import { expectedMcpToolNames } from '../tests/helpers/mcpToolNames.mjs'
+import { AI_CONVERSATION_SELECTION_INSTRUCTION, aiConversationSelectionRules } from '../mcp/aiConversationSelectionPolicy.mjs'
 
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const testDataDirectory = path.resolve(projectDirectory, '.mcp-test-data')
@@ -631,6 +632,8 @@ async function main() {
     }
 
     const guide = await invoke('mindnprogress_read_me_first')
+    assert.ok(guide.important.includes(AI_CONVERSATION_SELECTION_INSTRUCTION))
+    assert.ok(guide.guide.operationRules.includes(AI_CONVERSATION_SELECTION_INSTRUCTION))
     assert.equal(guide.guide.product.name, 'MindNProgress')
     assert.equal(guide.guide.version, '4.24')
     assert.equal(guide.guide.contextLifecycle.bootstrap.tool, 'mindnprogress_get_context')
@@ -1179,6 +1182,11 @@ async function main() {
     assert.match(conversationCandidates.selectionRule.preferResume, /workspaceBinding=pool-rebindable.*workspacePoolId/)
     assert.match(conversationCandidates.selectionRule.preferResume, /unverified.*포화 여부를 판정할 수 없는 상태/)
     assert.match(conversationCandidates.selectionRule.chooseNew, /같은 workspacePoolId 안의 Fork 경로 차이만으로 새 대화를 만들지 마세요/)
+    assert.deepEqual(conversationCandidates.selectionRule, aiConversationSelectionRules())
+    assert.match(conversationCandidates.selectionRule.candidateSelection, /선택한 conversationId의 contextHealth와 assessmentId/)
+    assert.match(conversationCandidates.selectionRule.preferResume, /입력 파일·구현 담당자·검수 단계가 바뀌었다는 사실만으로 새 대화를 선택하지/)
+    assert.match(conversationCandidates.selectionRule.reviewIndependence, /독립 검수는 구현자와 검수자의 분리이며 매번 새 대화를 뜻하지 않습니다/)
+    assert.match(conversationCandidates.selectionRule.chooseNew, /한 후보의 포화·금지 모델을 다른 관련 후보에 적용하지/)
     const emptyDelegations = await invoke('mindnprogress_list_ai_delegations', { mapId, parentCardId: 'task-a' })
     assert.deepEqual(emptyDelegations.delegations, [])
     await invokeExpectError('mindnprogress_delegate_ai_work', {

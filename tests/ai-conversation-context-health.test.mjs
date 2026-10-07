@@ -143,6 +143,35 @@ test('평가 ID는 관측 시각이 아니라 대화 변경과 객관적 지표�
   assert.notEqual(first.assessmentId, changed.assessmentId)
 })
 
+test('첫 대화가 포화여도 별도 대화의 문맥 평가와 이어가기 허용에는 영향을 주지 않는다', () => {
+  const first = assessAiConversationContextHealth({ ...base, conversationId: 'first-review', usage: { used: 160_000, size: 200_000 } })
+  const next = assessAiConversationContextHealth({
+    ...base,
+    conversationId: 'next-review',
+    usage: { used: 32_788, size: null },
+    conversationTurnCount: 1,
+    conversationTurnCountExact: false,
+    historyComplete: true,
+    delegationCount: 1,
+    consecutiveResumeCount: 0,
+  })
+  assert.equal(first.resumeAllowed, false)
+  assert.equal(first.state, 'saturated')
+  assert.equal(next.resumeAllowed, true)
+  assert.equal(next.state, 'unverified')
+  assert.equal(next.recommendation, 'resume')
+  assert.equal(next.metrics.contextUsed, 32_788)
+  assert.equal(next.metrics.consecutiveResumeCount, 0)
+  assert.notEqual(first.assessmentId, next.assessmentId)
+})
+
+test('객관적 지표가 같아도 다른 대화의 평가 ID를 재사용할 수 없다', () => {
+  const first = assessAiConversationContextHealth({ ...base, conversationId: 'first-review' })
+  const next = assessAiConversationContextHealth({ ...base, conversationId: 'next-review' })
+  assert.deepEqual(first.metrics, next.metrics)
+  assert.notEqual(first.assessmentId, next.assessmentId)
+})
+
 test('GPT-5.6-Sol과 GPT-6-Sol로 기록되었거나 현재 사용하는 대화는 새 위임에 이어 쓰지 않는다', () => {
   const healthy = assessAiConversationContextHealth(base)
   const recorded = applyAiConversationDelegationModelPolicy(healthy, { linkedModelId: 'gpt-5.6-sol', runtimeModelId: 'gpt-6.1-sol' })

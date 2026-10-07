@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { buildDoorayHandoffPrompt, buildDoorayRoutingCatalog, createDoorayResponseService, parseDoorayAiResult, publicDoorayResponse, readDoorayResponseSource, resolveDoorayRoutingResult, validateDoorayRoute } from '../server/lib/doorayResponses.mjs'
+import { buildDoorayHandoffPrompt, buildDoorayRoutingCatalog, buildDoorayRoutingDispatchPrompt, buildDoorayRoutingPrompt, createDoorayResponseService, parseDoorayAiResult, publicDoorayResponse, readDoorayResponseSource, resolveDoorayRoutingResult, validateDoorayRoute } from '../server/lib/doorayResponses.mjs'
 import { redactDoorayTranscript } from '../server/lib/doorayExecutionHandoff.mjs'
 import { aiModelPolicy, canReuseAutomatedAiConversation, resolveAutomatedAiModel } from '../server/lib/aiModelPolicy.mjs'
 
@@ -27,6 +27,65 @@ test('Dooray 원문 연결과 지식 소비 카드를 우선하고 지식·Ref �
   assert.equal(catalog.candidates[0].knowledgeMatch, true)
   assert.deepEqual(catalog.candidates.map((card) => card.cardId).sort(), ['root1', 'task1'])
   assert.equal(catalog.documents.length, 1)
+})
+
+function routingCatalogFromPrompt(prompt) {
+  const marker = 'MnP 탐색 자료(omittedCards가 있으면 전체 카드를 확인한 것으로 간주하지 마세요):\n'
+  const start = prompt.lastIndexOf(marker) + marker.length
+  const end = prompt.lastIndexOf('\n현재 위치는 여러 제안 대화의 공통 폴더입니다.')
+  assert.ok(start >= marker.length && end > start)
+  return JSON.parse(prompt.slice(start, end))
+}
+
+test('재제안 이력이 늘어나도 완성된 접수 전문을 측정해 후순위 후보만 줄인다', () => {
+  const longSource = { ...source, body: '본문'.repeat(6000),
+    selected: { ...source.selected, body: '선택'.repeat(10129) },
+    comments: [{ id: 'nearby', body: '맥락'.repeat(750) }] }
+  const longMaps = [{ id: 'map1', title: '홀덤 UI', nodes: Array.from({ length: 40 }, (_, index) => ({
+    id: `task${index + 1}`, data: { kind: 'task', label: `베팅 ${index + 1}`,
+      description: '설명'.repeat(900), taskUrl: index === 0 ? item.url : '' },
+  })), edges: [] }]
+  const history = [{ request: '베팅 표시 수정', proposal: '제안'.repeat(3700) }]
+  const job = { source: longSource, history, hint: '새 조건도 검토해 주세요.', userId: 'user1', inspectedMapIds: [] }
+  const operationId = 'request-route-1-0'
+  const originalCatalog = buildDoorayRoutingCatalog(longMaps, longSource)
+  assert.ok(buildDoorayRoutingPrompt(job, operationId, originalCatalog).length > 100_000)
+
+  const prompt = buildDoorayRoutingDispatchPrompt(job, operationId, longMaps)
+  const packed = routingCatalogFromPrompt(prompt)
+  assert.ok(prompt.length <= 100_000)
+  assert.ok(Buffer.byteLength(prompt, 'utf8') <= 250_000)
+  assert.ok(prompt.includes(JSON.stringify(longSource)), 'Dooray 원문을 줄이지 않는다')
+  assert.ok(prompt.includes(JSON.stringify(history)), '이전 제안 이력을 줄이지 않는다')
+  assert.equal(packed.candidates[0].cardId, 'task1', '직접 연결된 카드를 우선 보존한다')
+  assert.ok(packed.candidates.length < originalCatalog.candidates.length)
+  assert.equal(packed.omittedCards, originalCatalog.omittedCards + originalCatalog.candidates.length - packed.candidates.length)
+  assert.equal(originalCatalog.candidates.length, buildDoorayRoutingCatalog(longMaps, longSource).candidates.length,
+    '원본 탐색 자료를 변경하지 않는다')
+})
+
+test('한글 비중이 큰 접수 전문은 문자 제한 전에도 바이트 제한으로 후보를 줄인다', () => {
+  const longSource = { ...source, body: '나'.repeat(15_000), selected: { ...source.selected, body: '가'.repeat(25_000) } }
+  const longMaps = [{ id: 'map1', title: '홀덤 UI', nodes: Array.from({ length: 40 }, (_, index) => ({
+    id: `task${index + 1}`, data: { kind: 'task', label: `베팅 ${index + 1}`,
+      description: '설명'.repeat(900), taskUrl: index === 0 ? item.url : '' },
+  })), edges: [] }]
+  const job = { source: longSource, history: [], userId: 'user1', inspectedMapIds: [] }
+  const catalog = buildDoorayRoutingCatalog(longMaps, longSource)
+  const original = buildDoorayRoutingPrompt(job, 'request-route-0-0', catalog)
+  assert.ok(original.length < 100_000)
+  assert.ok(Buffer.byteLength(original, 'utf8') > 250_000)
+
+  const prompt = buildDoorayRoutingDispatchPrompt(job, 'request-route-0-0', longMaps)
+  assert.ok(prompt.length <= 100_000)
+  assert.ok(Buffer.byteLength(prompt, 'utf8') <= 250_000)
+  assert.ok(routingCatalogFromPrompt(prompt).candidates.length < catalog.candidates.length)
+})
+
+test('필수 분석 자료만으로 한도를 넘으면 원문을 자르지 않고 전달을 막는다', () => {
+  const job = { source: { ...source, selected: { ...source.selected, body: '가'.repeat(101_000) } },
+    history: [], userId: 'user1', inspectedMapIds: [] }
+  assert.throws(() => buildDoorayRoutingDispatchPrompt(job, 'request-route-0-0', maps), /필수 분석 자료만으로 한 번에 전달할 수 있는 범위를 넘었습니다/)
 })
 
 test('잘못된 담당 카드, 대화 연결과 총괄 경로는 실행 전에 차단한다', () => {

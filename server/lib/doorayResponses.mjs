@@ -9,11 +9,16 @@ import { buildDoorayExecutionHandoff, currentDoorayExecution, doorayExecutionTar
 const activeStates = new Set(['routing', 'reviewing', 'waiting-target'])
 const finishableStates = new Set(['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'])
 const maxAutomaticRestartRecoveries = 3
+const maxAnalysisPromptChars = 100_000
+const maxAnalysisPromptBytes = 250_000
 const unlinkedConversationError = 'AI가 선택한 대화가 담당 카드에 연결되어 있지 않습니다.'
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const text = (value) => typeof value === 'string' ? value : ''
 const clip = (value, limit = 3000) => text(value).length > limit ? `${value.slice(0, limit)}\n[이후 내용 생략]` : text(value)
 const error = (message, status = 400) => Object.assign(new Error(message), { status, doorayResponseError: true })
+const analysisPromptFits = (prompt) => prompt.length <= maxAnalysisPromptChars
+  && Buffer.byteLength(prompt, 'utf8') <= maxAnalysisPromptBytes
+const proposalWorkspaceInstruction = (operationId) => `\n현재 위치는 여러 제안 대화의 공통 폴더입니다. 임시 렌더링 파일은 requests/${operationId}/ 아래에만 만들고 다른 요청의 파일을 읽거나 변경하지 마세요.`
 const restartInterruptedDispatch = (dispatch) => dispatch?.state === 'recovery_required'
   || (dispatch?.state === 'failed' && text(dispatch.errorMessage).trim() === 'interrupted_by_restart')
 const storedRestartInterruption = (job) => job?.status === 'failed' && job.operation?.dispatchAttempted === true
@@ -127,6 +132,20 @@ ${JSON.stringify(job.source)}
 이전 동일 업무 대응: ${JSON.stringify(job.history ?? [])}
 MnP 탐색 자료(omittedCards가 있으면 전체 카드를 확인한 것으로 간주하지 마세요):
 ${JSON.stringify(catalog)}`
+}
+
+export function buildDoorayRoutingDispatchPrompt(job, operationId, maps) {
+  const catalog = buildDoorayRoutingCatalog(maps, job.source, job.inspectedMapIds)
+  for (;;) {
+    const prompt = buildDoorayRoutingPrompt(job, operationId, catalog) + proposalWorkspaceInstruction(operationId)
+    if (analysisPromptFits(prompt)) return prompt
+    if (catalog.candidates.length === 0) {
+      throw error('필수 분석 자료만으로 한 번에 전달할 수 있는 범위를 넘었습니다. 원문과 이전 제안은 생략하지 않았으니 담당 대화에서 직접 검토해 주세요.', 409)
+    }
+    // 직접 연결·지식선·검색 점수가 높은 후보는 유지하고 마지막 후보부터 줄입니다.
+    catalog.candidates.pop()
+    catalog.omittedCards += 1
+  }
 }
 
 export function parseDoorayAiResult(messages, operationId) {
@@ -370,7 +389,7 @@ export function createDoorayResponseService(deps) {
         const id = `${job.id}-route-${job.attempt ?? 0}-${job.round}`
         operation = { id, kind: 'router', machineId: job.settings.machineId, conversationId: job.router?.conversationId ?? null,
           recordedModelId: job.router?.modelId,
-          prompt: buildDoorayRoutingPrompt(job, id, buildDoorayRoutingCatalog(maps, job.source, job.inspectedMapIds)), settings: job.settings }
+          prompt: buildDoorayRoutingDispatchPrompt(job, id, maps), settings: job.settings }
       } else {
         const route = validateDoorayRoute(job.route, maps)
         const reusable = (job.sessions ?? []).findLast((session) => session.dedicated && session.kind === 'review'
@@ -383,8 +402,8 @@ export function createDoorayResponseService(deps) {
           recordedModelId: prepared.conversationId ? reusable?.modelId : null,
           settings: prepared.settings, prompt: buildDoorayReviewPrompt(job, id, prepared.context) }
       }
-      operation.prompt += `\n현재 위치는 여러 제안 대화의 공통 폴더입니다. 임시 렌더링 파일은 requests/${operation.id}/ 아래에만 만들고 다른 요청의 파일을 읽거나 변경하지 마세요.`
-      if (operation.prompt.length > 100_000 || Buffer.byteLength(operation.prompt, 'utf8') > 250_000) throw error('분석 자료가 한 번에 전달할 수 있는 범위를 넘었습니다. 담당 대화에서 원문을 직접 검토해 주세요.', 409)
+      if (operation.kind === 'review') operation.prompt += proposalWorkspaceInstruction(operation.id)
+      if (!analysisPromptFits(operation.prompt)) throw error('분석 자료가 한 번에 전달할 수 있는 범위를 넘었습니다. 담당 대화에서 원문을 직접 검토해 주세요.', 409)
       job = await patch(user.id, job.id, { operation, error: '' })
     }
     await deps.authorize?.(user, operation.machineId)

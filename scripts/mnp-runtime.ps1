@@ -2,6 +2,7 @@ param(
     [ValidateSet('status', 'start', 'stop', 'restart')][string]$Action = 'status',
     [ValidateRange(1, 300)][int]$StopTimeoutSeconds = 60,
     [ValidateRange(1, 300)][int]$StartTimeoutSeconds = 120,
+    [ValidateRange(1, 60)][int]$ForceStopTimeoutSeconds = 10,
     [switch]$OpenBrowser,
     [switch]$AllowLegacyStop,
     [switch]$UseGuiTaskHost
@@ -105,10 +106,10 @@ function Test-MnpSameRecord($Before, $After) {
         $Before.ExecutablePath -ieq $After.ExecutablePath -and $Before.CommandLine -ceq $After.CommandLine
 }
 
-function Get-MnpTcpListeners([int[]]$Ports) {
+function Get-MnpTcpListeners([int[]]$Ports, [int]$TimeoutSeconds = 15) {
     # 사전 검사와 최종 검사를 같은 숨김 조회로 수행한다. NetTCPIP 공급자의 빈 결과에 의존하지 않는다.
     # -p tcp는 IPv6 수신 포트를 제외하므로 전체 결과에서 TCP LISTENING만 선택한다.
-    $netstat = Invoke-MnpHiddenCommand (Join-Path $env:SystemRoot 'System32\netstat.exe') '-ano'
+    $netstat = Invoke-MnpHiddenCommand (Join-Path $env:SystemRoot 'System32\netstat.exe') '-ano' $TimeoutSeconds
     if ($netstat.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($netstat.Output) -or -not [string]::IsNullOrWhiteSpace($netstat.Error)) {
         throw 'Could not verify TCP port ownership.'
     }
@@ -208,9 +209,10 @@ function Wait-MnpCondition([scriptblock]$Condition, [int]$Seconds, [string]$Fail
             & $OnWaiting
             $nextReport = $watch.ElapsedMilliseconds + 2000
         }
+        if ($watch.Elapsed.TotalSeconds -ge $Seconds) { break }
         Start-Sleep -Milliseconds 150
     } while ($watch.Elapsed.TotalSeconds -lt $Seconds)
-    throw $Failure
+    throw (New-Object TimeoutException $Failure)
 }
 
 function Write-MnpStopProgress($Context, $Snapshot) {
@@ -260,7 +262,11 @@ function Send-MnpShutdown($Descriptor) {
         $pipe.Flush()
         $reader = New-Object IO.StreamReader($pipe)
         $read = $reader.ReadLineAsync()
-        if (-not $read.Wait(2000) -or $read.Result -ne 'accepted') { throw 'Runtime did not accept the graceful shutdown request.' }
+        try {
+            if (-not $read.Wait(2000)) { throw (New-Object TimeoutException 'Runtime shutdown acknowledgement timed out.') }
+            if ([string]::IsNullOrWhiteSpace($read.Result)) { throw (New-Object IO.IOException 'Runtime control closed without an acknowledgement.') }
+            if ($read.Result -ne 'accepted') { throw 'Runtime rejected the graceful shutdown request.' }
+        } catch [AggregateException] { throw $_.Exception.GetBaseException() }
     } finally { $pipe.Dispose() }
 }
 
@@ -276,6 +282,45 @@ function Stop-MnpLegacy($Snapshot) {
             try { $live.Kill(); $null = $live.WaitForExit(500) } finally { $live.Dispose() }
         }
     }
+}
+
+function Get-MnpForceRemaining($Watch, [int]$Seconds) {
+    $remaining = $Seconds - $Watch.Elapsed.TotalSeconds
+    if ($remaining -le 0) { throw (New-Object TimeoutException 'Forced shutdown verification timed out. No new instance was started.') }
+    return [int][math]::Ceiling($remaining)
+}
+
+function Stop-MnpVerifiedProcesses($Context, $Snapshot, $Recovery, $Watch, [int]$Seconds) {
+    # 부모가 먼저 사라져도 최초에 검증한 대상만 사용한다. 새 프로세스 트리는 추가하지 않는다.
+    $fresh = @(Get-CimInstance Win32_Process -Filter "Name='node.exe' OR Name='powershell.exe' OR Name='wscript.exe'" -OperationTimeoutSec (Get-MnpForceRemaining $Watch $Seconds))
+    $handles = @()
+    try {
+        foreach ($record in @($Snapshot.Records | Sort-Object { switch ($_.Role) { 'api' { 0 } 'web' { 1 } 'supervisor' { 2 } 'launcher' { 3 } default { 4 } } })) {
+            $null = Get-MnpForceRemaining $Watch $Seconds
+            $current = @($fresh | Where-Object ProcessId -eq $record.Process.ProcessId)
+            if ($current.Count -eq 0) { continue }
+            if ($current.Count -ne 1 -or -not (Test-MnpSameRecord $record.Process $current[0])) { throw 'Process identity changed. Forced shutdown aborted.' }
+            $live = Get-MnpLiveProcess $record.Process
+            if ($null -eq $live) { continue }
+            $handles += [pscustomobject]@{ Record = $record; Live = $live }
+            if ((Get-MnpProcessOwnerSid $record.Process.ProcessId) -ne $Context.OwnerSid) { throw 'Process owner changed. Forced shutdown aborted.' }
+        }
+        # 포트가 다른 프로세스로 넘어갔다면 그 프로세스도 기존 서버도 임의로 종료하지 않는다.
+        foreach ($listener in @(Get-MnpTcpListeners $Context.Ports (Get-MnpForceRemaining $Watch $Seconds))) {
+            $role = if ($listener.LocalPort -eq $Context.Config.apiPort) { 'api' } else { 'web' }
+            if (-not @($handles | Where-Object { $_.Record.Role -eq $role -and $_.Record.Process.ProcessId -eq $listener.OwningProcess -and -not $_.Live.HasExited }).Count) {
+                throw 'Port owner changed. Forced shutdown aborted.'
+            }
+        }
+        foreach ($entry in $handles) {
+            $null = Get-MnpForceRemaining $Watch $Seconds
+            if ($entry.Live.HasExited) { continue }
+            try { $entry.Live.Kill() }
+            catch { if (-not $entry.Live.HasExited) { throw }; continue }
+            $Recovery.forcedProcesses += [pscustomobject]@{ role = $entry.Record.Role; pid = [int]$entry.Record.Process.ProcessId }
+            Write-Warning ("[force-stop] terminated {0} PID={1}" -f $entry.Record.Role, $entry.Record.Process.ProcessId)
+        }
+    } finally { foreach ($entry in $handles) { $entry.Live.Dispose() } }
 }
 
 function Test-MnpHttp($Context, [int]$TimeoutMilliseconds = 900) {
@@ -358,13 +403,14 @@ function Set-MnpGuiTaskHost($Context) {
 }
 
 function Invoke-MnpRuntime {
-    param([string]$Operation, [int]$StopSeconds, [int]$StartSeconds, [bool]$Browser, [bool]$Legacy, [bool]$GuiTaskHost = $false)
+    param([string]$Operation, [int]$StopSeconds, [int]$StartSeconds, [bool]$Browser, [bool]$Legacy, [bool]$GuiTaskHost = $false, [int]$ForceSeconds = 10)
     if ($GuiTaskHost -and $Operation -ne 'restart') { throw 'GUI task host migration requires an explicit restart.' }
     $total = [Diagnostics.Stopwatch]::StartNew()
     $phases = [ordered]@{}
     $phaseName = 'preflight'
     $phase = [Diagnostics.Stopwatch]::StartNew()
     $lock = $null; $context = $null; $succeeded = $false
+    $recovery = [ordered]@{ shutdownMode = $null; forceReason = $null; gracefulRequest = $null; forcedProcesses = @() }
     $script:MnpLastHttpCheck = $null
     try {
         $context = Get-MnpContext
@@ -393,16 +439,38 @@ function Invoke-MnpRuntime {
             Write-Host ('[stop-targets] verified PIDs: ' + (($before.Records | ForEach-Object { "$($_.Role)=$($_.Process.ProcessId)" }) -join ', '))
             $phaseName = 'stop'
             $phase = [Diagnostics.Stopwatch]::StartNew()
+            $recovery.shutdownMode = 'graceful'
             Stop-ScheduledTask -TaskName $context.Task.TaskName -TaskPath $context.Task.TaskPath
             if (-not (Test-MnpStopped $context $before)) {
                 if ($descriptor) {
-                    Send-MnpShutdown $descriptor
-                    Write-Host '[stop] graceful request accepted; waiting for the verified child PIDs and ports.'
+                    try {
+                        Send-MnpShutdown $descriptor
+                        $recovery.gracefulRequest = 'accepted'
+                        Write-Host '[stop] graceful request accepted; waiting for the verified child PIDs and ports.'
+                    } catch [TimeoutException], [IO.IOException] {
+                        if ($Operation -ne 'restart') { throw }
+                        $recovery.gracefulRequest = 'unresponsive'
+                        Write-Warning '[stop] graceful control is unresponsive; waiting within the original stop deadline.'
+                    }
                 }
-                elseif ($Legacy) { Stop-MnpLegacy $before }
+                elseif ($Legacy) { $recovery.shutdownMode = 'legacy'; Stop-MnpLegacy $before }
             }
-            Wait-MnpCondition { Test-MnpStopped $context $before } $StopSeconds 'Stop timed out. No forced shutdown or new instance was attempted. Check dev.out.log / dev.err.log, then retry status.' { Write-MnpStopProgress $context $before }
-            $phases.stopMs = $phase.ElapsedMilliseconds
+            try {
+                $remainingStop = [int][math]::Max(0, [math]::Ceiling($StopSeconds - $phase.Elapsed.TotalSeconds))
+                Wait-MnpCondition { Test-MnpStopped $context $before } $remainingStop 'Stop timed out.' { Write-MnpStopProgress $context $before }
+            } catch [TimeoutException] {
+                if ($Operation -ne 'restart') { throw }
+                $phases.stopMs = $phase.ElapsedMilliseconds
+                $phaseName = 'forceStop'
+                $phase = [Diagnostics.Stopwatch]::StartNew()
+                $recovery.shutdownMode = 'forced'
+                $recovery.forceReason = 'stop-timeout'
+                Write-Warning '[force-stop] graceful shutdown timed out; revalidating only the original MnP processes.'
+                Stop-MnpVerifiedProcesses $context $before $recovery $phase $ForceSeconds
+                Wait-MnpCondition { Test-MnpStopped $context $before } (Get-MnpForceRemaining $phase $ForceSeconds) 'Forced shutdown timed out. No new instance was started.' { Write-MnpStopProgress $context $before }
+                $phases.forceStopMs = $phase.ElapsedMilliseconds
+            }
+            if (-not $phases.Contains('stopMs')) { $phases.stopMs = $phase.ElapsedMilliseconds }
             # PID hints are cleared only after verified processes and ports have disappeared.
             $pidFile = Join-Path $context.StateDirectory 'dev.pids'
             if (Test-Path -LiteralPath $pidFile) { Remove-Item -LiteralPath $pidFile }
@@ -459,7 +527,8 @@ function Invoke-MnpRuntime {
         if ($lock) {
             try {
                 $entry = @{ at = [datetime]::UtcNow.ToString('o'); action = $Operation; succeeded = $succeeded;
-                    failedPhase = $(if ($succeeded) { $null } else { $phaseName }); phases = $phases; http = $script:MnpLastHttpCheck } | ConvertTo-Json -Depth 4 -Compress
+                    failedPhase = $(if ($succeeded) { $null } else { $phaseName }); phases = $phases; http = $script:MnpLastHttpCheck;
+                    shutdownMode = $recovery.shutdownMode; forceReason = $recovery.forceReason; gracefulRequest = $recovery.gracefulRequest; forcedProcesses = @($recovery.forcedProcesses) } | ConvertTo-Json -Depth 5 -Compress
                 [IO.File]::AppendAllText((Join-Path $context.StateDirectory 'runtime-operations.jsonl'), $entry + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
             } finally { $lock.Dispose() }
         }
@@ -468,6 +537,6 @@ function Invoke-MnpRuntime {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    try { Invoke-MnpRuntime $Action $StopTimeoutSeconds $StartTimeoutSeconds ([bool]$OpenBrowser) ([bool]$AllowLegacyStop) ([bool]$UseGuiTaskHost) }
+    try { Invoke-MnpRuntime $Action $StopTimeoutSeconds $StartTimeoutSeconds ([bool]$OpenBrowser) ([bool]$AllowLegacyStop) ([bool]$UseGuiTaskHost) $ForceStopTimeoutSeconds }
     catch { Write-Error $_ -ErrorAction Continue; exit 1 }
 }

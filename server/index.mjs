@@ -1,5 +1,6 @@
 import { createServer } from 'node:http'
 import { createRuntimeLifecycle, installRuntimeShutdown } from './lib/runtimeLifecycle.mjs'
+import { retryDispatchStatus, throwIfRuntimeStopping } from './lib/runtimeStopping.mjs'
 import { createAiWorkspaceSettings } from './lib/aiWorkspaceSettings.mjs'
 import { createAiDialogPreferences } from './lib/aiDialogPreferences.mjs'
 import { replaceFileWithRetry } from './lib/replaceFileWithRetry.mjs'
@@ -481,6 +482,10 @@ const machineOperationQueue = new MachineOperationQueue({
   resultTimeoutMs: Math.max(10_000, Number(process.env.MNP_MACHINE_RESULT_TIMEOUT_MS) || 180_000),
   createOperationId: () => randomBytes(12).toString('base64url'),
 })
+runtimeLifecycle.signal.addEventListener('abort', () => {
+  const interrupted = machineOperationQueue.shutdown()
+  if (interrupted.length) console.warn('[Runtime] machine operation waits interrupted', JSON.stringify(interrupted))
+}, { once: true })
 const machinePairingStore = new MachinePairingStore()
 const runnerCallbackBaseUrls = new Map()
 const runnerObservedAddresses = new Map()
@@ -995,17 +1000,7 @@ function getCurrentUser(request) {
 }
 
 async function readJsonBody(request) {
-  const chunks = []
-  let size = 0
-
-  for await (const chunk of request) {
-    size += chunk.length
-    if (size > 2_000_000) throw new Error('PAYLOAD_TOO_LARGE')
-    chunks.push(chunk)
-  }
-
-  if (chunks.length === 0) return {}
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  return runtimeLifecycle.readJsonBody(request)
 }
 
 function getDoorayApiConfig() {
@@ -2053,10 +2048,12 @@ async function aionUiCandidateBaseUrls() {
 }
 
 async function fetchAionUi(pathname, { timeoutMs = 8_000, method = 'GET', body } = {}) {
+  runtimeLifecycle.throwIfStopping()
   let lastError = null
   let lastResponseError = null
   const candidates = await aionUiCandidateBaseUrls()
   for (const baseUrl of candidates) {
+    runtimeLifecycle.throwIfStopping()
     try {
       const response = await fetch(`${baseUrl}${pathname}`, {
         method,
@@ -2065,9 +2062,12 @@ async function fetchAionUi(pathname, { timeoutMs = 8_000, method = 'GET', body }
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.any([runtimeLifecycle.signal, AbortSignal.timeout(timeoutMs)]),
       })
-      const responseBody = await response.json().catch(() => ({}))
+      const responseBody = await response.json().catch((error) => {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+        return {}
+      })
       if (!response.ok || responseBody?.success === false) {
         const requestError = new Error(`AIONUI_REQUEST_FAILED:${response.status}`)
         requestError.status = response.status
@@ -2077,6 +2077,7 @@ async function fetchAionUi(pathname, { timeoutMs = 8_000, method = 'GET', body }
       activeAionUiBaseUrl = baseUrl
       return responseBody?.data ?? responseBody
     } catch (error) {
+      throwIfRuntimeStopping(error, runtimeLifecycle.signal)
       lastError = error
       if (Number.isInteger(error?.status)) lastResponseError = error
     }
@@ -2088,6 +2089,7 @@ async function fetchAionUi(pathname, { timeoutMs = 8_000, method = 'GET', body }
 // 메인은 기존과 같이 루프백으로 직접 호출하고, 서브는 Runner가 가져갈 오퍼레이션 큐에 넣는다.
 // 서브 머신의 AionUi는 inbound 주소를 열지 않으므로 메인에서 직접 호출할 수 없다.
 function fetchAionUiOn(machineId, pathname, options = {}) {
+  if (runtimeLifecycle.signal.aborted) return Promise.reject(runtimeLifecycle.signal.reason)
   const targetMachineId = normalizeMachineId(machineId)
   if (!targetMachineId || targetMachineId === machineRegistry.mainMachineId) {
     return fetchAionUi(pathname, options)
@@ -2444,7 +2446,8 @@ async function targetReadyForGroupDocumentInstruction(instruction, targetCard) {
     try {
       const conversation = await fetchAiConversationRuntime(instruction.requestedConversationId)
       return normalizeAiConversationRuntime(instruction.requestedConversationId, conversation).state === 'idle'
-    } catch {
+    } catch (shutdownError) {
+      throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
       return false
     }
   }
@@ -2564,7 +2567,8 @@ async function runGroupDocumentInstructionDispatch(instruction, user) {
             conversationContextHealth: contextHealth,
           })
         }
-      } catch {
+      } catch (shutdownError) {
+        throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
         return updateGroupDocumentInstruction(instruction.id, {
           state: 'queued',
           reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_ASSESSMENT_UNAVAILABLE',
@@ -2636,9 +2640,11 @@ async function runGroupDocumentInstructionDispatch(instruction, user) {
         },
       })
     } catch (error) {
+      throwIfRuntimeStopping(error, runtimeLifecycle.signal)
       try {
         dispatch = await fetchAionUiOn(instruction.targetHomeMachineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
-      } catch {
+      } catch (shutdownError) {
+        throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
         // 요청이 도착하지 않았거나 대상 대화가 아직 바쁘면 아래에서 대기 또는 실패로 기록합니다.
       }
       if (!dispatch) {
@@ -2749,6 +2755,7 @@ async function pollGroupDocumentInstructions() {
           turnId: status.turnId ?? instruction.turnId ?? null,
         })
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         if (error?.status !== 404) continue
         await updateGroupDocumentInstruction(instruction.id, {
           state: 'failed',
@@ -2924,7 +2931,8 @@ async function resolveAiDelegationWorkspacePool({ selection, targetCard, parentA
         if (pool) return { known: true, workspaceHint: liveWorkspace, expectsWorkspacePool: true }
         return { known: true, workspaceHint: null, expectsWorkspacePool: false }
       }
-    } catch {
+    } catch (shutdownError) {
+      throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
       // 명시적으로 저장된 workspace 후보가 있으면 해당 경로를 기준으로 비-pool 여부를 판단합니다.
     }
   }
@@ -3078,14 +3086,8 @@ async function dispatchPreparedAiDelegation({
       },
     })
   } catch (error) {
-    for (let attempt = 0; attempt < 10 && !dispatch; attempt += 1) {
-      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
-      try {
-        dispatch = await fetchAionUiOn(targetHomeMachineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`)
-      } catch {
-        // The POST may have reached AionCore even if its response was lost.
-      }
-    }
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    dispatch = await retryDispatchStatus(() => fetchAionUiOn(targetHomeMachineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`), runtimeLifecycle.signal)
     if (!dispatch) {
       aiAttributions.delete(sessionTokenKey(attributionToken))
       const definitelyRejected = Number.isInteger(error?.status)
@@ -3405,6 +3407,7 @@ async function reconcileAiDelegationWorkspaceLeases() {
         )
         await reconcileAiDelegationWorkspaceLeaseStatus(delegation, status, 'startup')
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         console.warn('[AI delegation workspace conversation recovery]', JSON.stringify({
           delegationId: delegation.id,
           leaseId: delegation.workspaceLease?.leaseId ?? null,
@@ -3550,7 +3553,8 @@ async function latestAssistantResult(conversationId) {
       && (candidate.type === 'text' || candidate.type === 'tips')
       && readAionUiMessageContent(candidate).trim())
     return readAionUiMessageContent(message).trim().slice(0, 12_000)
-  } catch {
+  } catch (shutdownError) {
+    throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
     return ''
   }
 }
@@ -3586,7 +3590,12 @@ async function aiWorkspaceCandidates({ map, group, machineId }) {
   return (await Promise.all(unique.map(async (link) => {
     let workspace = link.workspace || aiConversationOrigins.get(link.conversationId)?.workspace
     if (!workspace && lookups++ < 5) {
-      try { workspace = aiConversationLinkFromAionUiConversation(await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(link.conversationId)}`))?.workspace } catch { /* 추천 조회 실패는 기본값으로 대체하지 않는다. */ }
+      try {
+        workspace = aiConversationLinkFromAionUiConversation(await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(link.conversationId)}`))?.workspace
+      } catch (shutdownError) {
+        throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
+        // 추천 조회 실패는 기본값으로 대체하지 않는다.
+      }
     }
     return workspace ? { workspace, reason: link.reason } : null
   }))).filter(Boolean)
@@ -3785,6 +3794,7 @@ async function restoreConfirmedAiDelegationDispatch(delegation, map, parentMap, 
   let dispatch
   try { dispatch = await readAiDelegationDispatchStatus(fetchAionUiOn, { machineId, operationId: delegation.childOperationId }) }
   catch (error) {
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
     if (error.code !== 'AI_DELEGATION_STATUS_NOT_FOUND') throw error
     dispatch = await recoverExpiredAiDelegationDispatch(delegation, machineId)
   }
@@ -3853,6 +3863,7 @@ async function ensureAiDelegationTerminalResolutionIdle(delegation) {
   try {
     dispatch = await fetchAionUiOn(machineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
   } catch (error) {
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
     if (error?.status === 404) return
     throw Object.assign(new Error('실행 상태를 확인할 수 없어 위임을 종료하지 않았습니다. 연결을 확인한 뒤 다시 시도하세요.'), { status: 409, groupProjectError: true })
   }
@@ -3871,6 +3882,7 @@ async function settlePendingAiRecovery(delegation, { allowDispatch = false } = {
   try {
     dispatch = await readAiDelegationDispatchStatus(fetchAionUiOn, { machineId: delegationTargetMachineId(delegation), operationId: pending.operationId, phase: 'recovery' })
   } catch (error) {
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
     const missingOperation = error?.status === 404 || (error instanceof AiDelegationStatusLookupError && error.cause?.status === 404)
     if (!missingOperation || !allowDispatch || !pending.resultCorrection || !pending.dispatchBody) throw error
     await workspacePoolManager.prepareIntegrationResultCorrection(pending.workspaceLease.leaseId, {
@@ -4084,6 +4096,7 @@ async function processAiDelegationIntegrationCleanWaitNotice(originalDelegation)
         integrationCleanWakeFailedAt: status.state === 'completed' ? null : new Date().toISOString(),
       })
     } catch (error) {
+      throwIfRuntimeStopping(error, runtimeLifecycle.signal)
       await updateAiDelegation(delegation.id, {
         integrationCleanWakeState: 'unavailable',
         integrationCleanWakeError: error?.message ?? String(error),
@@ -4167,6 +4180,7 @@ async function processAiDelegationRecoveryNotice(originalDelegation) {
         recoveryWakeFailedAt: status.state === 'completed' ? null : new Date().toISOString(),
       })
     } catch (error) {
+      throwIfRuntimeStopping(error, runtimeLifecycle.signal)
       await updateAiDelegation(delegation.id, {
         recoveryWakeState: 'unavailable',
         recoveryWakeError: error?.message ?? String(error),
@@ -4328,14 +4342,8 @@ async function startWorkspaceCheckpointResolution(delegation, workspaceResult) {
       },
     })
   } catch (error) {
-    for (let attempt = 0; attempt < 10 && !dispatch; attempt += 1) {
-      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
-      try {
-        dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
-      } catch {
-        // The checkpoint dispatch may have started even when its POST response was lost.
-      }
-    }
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    dispatch = await retryDispatchStatus(() => fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`), runtimeLifecycle.signal)
     if (!dispatch) {
       const reason = `체크포인트 보완 요청을 AionUi에 전달하지 못했습니다: ${error?.message ?? String(error)}`
       return updateAiDelegation(delegation.id, {
@@ -4377,14 +4385,8 @@ async function startWorkspaceConflictResolution(delegation, workspaceResult) {
       },
     })
   } catch (error) {
-    for (let attempt = 0; attempt < 10 && !dispatch; attempt += 1) {
-      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
-      try {
-        dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
-      } catch {
-        // The conflict-resolution dispatch may have started even when its POST response was lost.
-      }
-    }
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    dispatch = await retryDispatchStatus(() => fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`), runtimeLifecycle.signal)
     if (!dispatch) {
       const reason = `통합 충돌 해결 요청을 AionUi에 전달하지 못했습니다: ${error?.message ?? String(error)}`
       return updateAiDelegation(delegation.id, {
@@ -4612,6 +4614,7 @@ async function drainWaitingWorkspaceDelegations() {
           }
         }
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         const workspaceWaitMessage = `대상 AionUi 대화 상태를 확인하지 못했습니다: ${error?.message ?? String(error)}`
         const blocked = await updateAiDelegation(queued.id, {
           workspaceWaitError: workspaceWaitMessage,
@@ -4760,6 +4763,7 @@ async function drainWaitingWorkspaceDelegations() {
         targetHomeMachineId: delegationTargetMachineId(queued),
       })
     } catch (error) {
+      throwIfRuntimeStopping(error, runtimeLifecycle.signal)
       const needsRecovery = ['AI_WORKSPACE_LEASE_MISMATCH', 'AI_WORKSPACE_CONVERSATION_CONFLICT'].includes(error?.code)
       await updateAiDelegation(queued.id, {
         state: needsRecovery ? 'recovery-required' : 'failed',
@@ -4812,13 +4816,19 @@ async function pollAiDelegations() {
       }
       if (delegation.pendingRecovery) {
         if (!aiDelegationWaitPollDue(aiDelegationWaitPolls.get(delegation.id), delegation)) continue
-        try { await settlePendingAiRecovery(delegation) } catch { /* 같은 operation의 확인 전에는 새 실행을 만들지 않는다. */ }
+        try { await settlePendingAiRecovery(delegation) } catch (shutdownError) {
+          throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
+          // 같은 operation의 확인 전에는 새 실행을 만들지 않는다.
+        }
         scheduleAiDelegationWaitPoll(delegation)
         continue
       }
       if (['waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity'].includes(delegation.state)) {
         if (!aiDelegationWaitPollDue(aiDelegationWaitPolls.get(delegation.id), delegation)) continue
-        try { await refreshSuspendedAiDelegation(delegation) } catch { /* 확인 실패 시 보존하고 다음 조회를 기다린다. */ }
+        try { await refreshSuspendedAiDelegation(delegation) } catch (shutdownError) {
+          throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
+          // 확인 실패 시 보존하고 다음 조회를 기다린다.
+        }
         try {
           const current = aiDelegations.get(delegation.id)
           if (['waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity'].includes(current?.state)) await ensureAiDelegationNotification(current, {
@@ -4935,6 +4945,7 @@ async function pollAiDelegations() {
             state: 'waiting-parent',
           })
         } catch (error) {
+          throwIfRuntimeStopping(error, runtimeLifecycle.signal)
           if (error?.status !== 404) continue
           if (delegation.coordinationOnly && delegation.state === 'waiting-document-work') {
             // 이 상태는 같은 child operation의 completed 응답을 이미 관측한 내구 증거다.
@@ -5021,6 +5032,7 @@ async function pollAiDelegations() {
           if (await advanceWorkspaceIntegration(updated, workspace)) continue
           await updateAiDelegation(delegation.id, { state: 'waiting-parent' })
         } catch (error) {
+          throwIfRuntimeStopping(error, runtimeLifecycle.signal)
           if (error?.status !== 404) continue
           await updateAiDelegation(delegation.id, {
             state: 'integration-recovery-required',
@@ -5108,6 +5120,7 @@ async function pollAiDelegations() {
             ...received,
           })
         } catch (error) {
+          throwIfRuntimeStopping(error, runtimeLifecycle.signal)
           await updateAiDelegation(delegation.id, { state: 'parent-wake-failed', parentDispatchState: 'unknown', parentError: error?.message ?? '결과 전달 상태를 확인하지 못했습니다. 상태 확인 후 재시도하세요.' })
           continue
         }
@@ -5150,6 +5163,7 @@ async function pollAiDelegations() {
           completedAt: new Date().toISOString(),
         })
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         if (error?.status === 404) {
           await updateAiDelegation(delegation.id, {
             state: 'parent-wake-failed',
@@ -5376,7 +5390,8 @@ async function fetchAiConversationMessageStatistics(conversationId, machineId) {
       if (!nextBefore || nextBefore === before) break
       before = nextBefore
     }
-  } catch {
+  } catch (shutdownError) {
+    throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
     if (pageCount === 0) return { conversationTurnCount: null, conversationTurnCountExact: false }
   }
   return summarizeAiConversationMessages(items, { historyComplete, pageCount })
@@ -7549,7 +7564,10 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         if (delegation.wakeOperationId) {
           let previous
           try { previous = await fetchAionUiOn(delegationParentMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.wakeOperationId)}`) }
-          catch (error) { if (error?.status !== 404) throw error }
+          catch (error) {
+            throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+            if (error?.status !== 404) throw error
+          }
           if (previous?.conversationId && previous.conversationId !== delegation.parentConversationId) return sendJson(response, 409, { error: '기존 결과 전달 대화가 일치하지 않습니다.' })
           if (previous?.state === 'completed') return sendJson(response, 200, { delegation: delegationPublicView(await refreshSuspendedAiDelegation(delegation)), repeated: true })
           if (['starting', 'running', 'waiting_resource', 'waiting_resume'].includes(previous?.state)) {
@@ -8327,6 +8345,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           expiresAt,
         })
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
         console.error('[AionUi attribution]', error)
         return sendJson(response, 503, { error: 'AionUi에서 선택한 AI 정보를 확인할 수 없습니다.' })
@@ -8396,6 +8415,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         })
         return sendJson(response, 201, ticket)
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         if (error instanceof AionUiExternalLaunchPayloadError) {
           return sendJson(response, 400, { error: error.message })
         }
@@ -8589,6 +8609,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         })
         return sendLaunchResult(200, { conversationId, homeMachineId: launch.homeMachineId })
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         console.error('[AionUi conversation completion]', error)
         return sendLaunchResult(error.status ?? 503, { error: error.status ? error.message : '생성된 AionUi 대화를 확인하지 못했습니다.' })
       }
@@ -8850,6 +8871,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           instruction: '현재 턴의 최종 답변을 마치면 AionCore가 위임 완료를 확정하고 상위 AI 재개 절차를 진행합니다.',
         })
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         const code = error?.code ?? 'AI_DELEGATION_EXPLICIT_COMPLETION_FAILED'
         const turnNotActive = code === 'EXTERNAL_DISPATCH_COMPLETION_TURN_NOT_ACTIVE'
         return sendJson(response, error?.status === 404 ? 404 : 409, {
@@ -8941,7 +8963,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         try {
           const updated = await settlePendingAiRecovery(delegation, { allowDispatch: resultCorrection })
           return sendJson(response, 202, { delegation: delegationPublicView(updated), repeated: true, recovery: { operationId: updated.recoveryOperationId, attempt: updated.recoveryAttempt, reusedConversation: true, reusedWorkspace: Boolean(updated.workspaceLease) } })
-        } catch {
+        } catch (shutdownError) {
+          throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
           return sendJson(response, 409, { error: '이전 복구 요청의 전달 여부를 확인하지 못했습니다. 중복 실행을 막기 위해 새 요청을 만들지 않았습니다. 상태 다시 확인이 필요합니다.', code: 'AI_DELEGATION_RECOVERY_DISPATCH_UNCERTAIN' })
         }
       }
@@ -9009,6 +9032,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
             recovery: { kind: 'retry-integration', reusedWorkspace: true, reusedConversation: true, childReexecuted: false },
           })
         } catch (error) {
+          throwIfRuntimeStopping(error, runtimeLifecycle.signal)
           return sendJson(response, error.status ?? 409, {
             error: `통합을 재시도하지 못했습니다: ${error?.message ?? String(error)}`,
             code: error?.code ?? 'AI_DELEGATION_INTEGRATION_RECOVERY_FAILED',
@@ -9045,6 +9069,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           workspace: delegation.workspaceLease?.projectRoot ?? linked?.workspace ?? recovered?.workspace,
         })
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         return sendJson(response, 503, { error: `이어갈 AionUi 대화 상태를 확인하지 못했습니다: ${error?.message ?? String(error)}` })
       }
       if (!selection) return sendJson(response, 409, { error: '복구할 AI 대화의 실행 환경을 확인하지 못했습니다.' })
@@ -9076,6 +9101,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
                   origin: aiConversationOrigins.get(delegation.targetConversationId),
                 })
               } catch (error) {
+                throwIfRuntimeStopping(error, runtimeLifecycle.signal)
                 if (error instanceof AiDelegationSourceCompletionError) throw error
                 throw new AiDelegationSourceCompletionError(`history-read-unavailable-${Number.isInteger(error?.status) ? error.status : 'unknown'}`)
               }
@@ -9085,6 +9111,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
                 machineId: delegationTargetMachineId(delegation), operationId: previousOperationId, phase: 'child',
               })
             } catch (error) {
+              throwIfRuntimeStopping(error, runtimeLifecycle.signal)
               if (error.code !== 'AI_DELEGATION_STATUS_NOT_FOUND' || resumingCorrection) throw error
               completionProof = await verifyHistoricalCompletion()
             }
@@ -9154,6 +9181,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           selection.workspace = workspaceLease.projectRoot
           await updateAiDelegation(delegation.id, { recoveryWorkspaceLease: workspaceLease })
         } catch (error) {
+          throwIfRuntimeStopping(error, runtimeLifecycle.signal)
           return sendJson(response, 409, {
             error: `기존 작업공간 lease를 복구하지 못했습니다: ${error?.message ?? String(error)}`,
             code: error?.code ?? 'AI_DELEGATION_WORKSPACE_RECOVERY_FAILED',
@@ -9228,14 +9256,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           body: dispatchBody,
         })
       } catch (error) {
-        for (let attempt = 0; attempt < 10 && !dispatch; attempt += 1) {
-          if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
-          try {
-            dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`)
-          } catch {
-            // The recovery dispatch may have started even when its POST response was lost.
-          }
-        }
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+        dispatch = await retryDispatchStatus(() => fetchAionUiOn(delegationTargetMachineId(delegation), `/api/internal/external-conversation-dispatches/${encodeURIComponent(operationId)}`), runtimeLifecycle.signal)
         if (!dispatch) {
           // 접수 여부가 불명확하면 대화 귀속과 lease를 보존한다. 토큰 삭제나 새 실행으로
           // 진행 중일 수 있는 작업을 손상시키지 않고, 저장된 operation의 조회만 허용한다.
@@ -9536,7 +9558,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
               skills: linked.skills?.length ? linked.skills : recovered?.skills,
               workspace: recovered?.workspace ?? linked.workspace,
             })
-          } catch {
+          } catch (shutdownError) {
+            throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
             return sendGroupDocumentInstructionResponse(
               response, 503, 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_UNAVAILABLE',
               '이어갈 대상 문서 AI 대화의 실행 환경을 확인하지 못했습니다.',
@@ -9797,7 +9820,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           if (linkedToTarget && (strategy === 'new' || recoveredConversationId === conversationId)) {
             recoveredDispatch = candidate
           }
-        } catch {
+        } catch (shutdownError) {
+          throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
           // AionCore에도 실행 기록이 없으면 일반적인 문서 버전 충돌로 처리합니다.
         }
         if (recoveredDispatch) {
@@ -9932,7 +9956,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
             mcpServers: linked?.mcpServers?.length ? linked.mcpServers : recovered?.mcpServers,
             workspace: recovered?.workspace ?? linked?.workspace,
           })
-        } catch {
+        } catch (shutdownError) {
+          throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
           return sendAiDelegationResponse(response, 503, 'AI_DELEGATION_CONVERSATION_RUNTIME_UNAVAILABLE',
             '이어갈 AionUi 대화 상태를 확인하지 못했습니다.')
         }
@@ -9976,7 +10001,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
             const parentConversation = await fetchAiConversationRuntime(parentAttribution.conversationId)
             const parentRuntime = normalizeAiConversationRuntime(parentAttribution.conversationId, parentConversation)
             if (parentRuntime.state === 'running') parentTurnId = parentRuntime.turnId
-          } catch {
+          } catch (shutdownError) {
+            throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
             // 상위 대화의 현재 turn을 확증하지 못하면 기존 위임을 그대로 활성 상태로 취급합니다.
           }
         }
@@ -10252,14 +10278,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           },
         })
       } catch (error) {
-        for (let attempt = 0; attempt < 10 && !dispatch; attempt += 1) {
-          if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
-          try {
-            dispatch = await fetchAionUiOn(targetHomeMachineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`)
-          } catch {
-            // The POST may have reached AionCore even if its response was lost.
-          }
-        }
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+        dispatch = await retryDispatchStatus(() => fetchAionUiOn(targetHomeMachineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`), runtimeLifecycle.signal)
         if (!dispatch) {
           aiAttributions.delete(sessionTokenKey(attributionToken))
           const definitelyRejected = Number.isInteger(error?.status)
@@ -10662,7 +10682,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
             runtime: normalizeAiConversationRuntime(recordedLink.conversationId, conversation, observedAt),
             contextHealth,
           }
-        } catch {
+        } catch (shutdownError) {
+          throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
           return {
             ...recordedLink,
             workspaceBinding,
@@ -10769,6 +10790,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           transcript: exported.transcript,
         })
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         console.error('[AionUi conversation transcript]', error)
         return sendJson(response, 503, { error: 'AionUi 대화 전체 내용을 가져오지 못했습니다.' })
       }
@@ -10988,6 +11010,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           conversationCount: Array.isArray(snapshot?.items) ? snapshot.items.length : null,
         })
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         return sendJson(response, 200, {
           machineId,
           reachable: false,
@@ -11304,6 +11327,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
           mcpServers: normalizedMcpServers,
         })
       } catch (error) {
+        throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         if (error instanceof SubMachinePayloadError) return sendJson(response, 400, { error: error.message })
         console.error('[AionUi integration]', error)
         return sendJson(response, error.status ?? 503, {
@@ -12520,6 +12544,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
 
     return sendJson(response, 404, { error: '요청한 경로를 찾을 수 없습니다.' })
   } catch (error) {
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
     if (error instanceof AiDelegationStatusLookupError) return sendJson(response, error.status, error.responseBody())
     if (error instanceof CrossDocumentCardMoveError) return sendJson(response, error.status, {
       error: error.message,

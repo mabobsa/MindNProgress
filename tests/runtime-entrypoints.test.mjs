@@ -26,7 +26,7 @@ test('공통 배치는 같은 재시작 명령에서 숨김 옵션만 분기하�
   assert.match(script, /-NonInteractive %MNP_WINDOW_OPTION% -ExecutionPolicy/)
   assert.doesNotMatch(script, /wscript\.exe|cscript\.exe|\bstart\s+"/i)
   assert.match(script, /set "MNP_EXIT_CODE=%errorlevel%"/)
-  assert.match(script, /if not defined MNP_HIDDEN \(\s+"%SystemRoot%\\System32\\timeout\.exe" \/t 0 \/nobreak >nul 2>&1 && \(\s+echo\.\s+echo Press any key to close this window\.\s+pause >nul\s+\)\s+\)\s+exit \/b %MNP_EXIT_CODE%/)
+  assert.match(script, /if not "%MNP_EXIT_CODE%"=="0" \(\s+if not defined MNP_HIDDEN \(\s+"%SystemRoot%\\System32\\timeout\.exe" \/t 0 \/nobreak >nul 2>&1 && \(\s+echo\.\s+echo Press any key to close this window\.\s+pause >nul\s+\)\s+\)\s+\)\s+exit \/b %MNP_EXIT_CODE%/)
   assert.equal([...script.matchAll(/^\s*pause >nul\s*$/gm)].length, 1)
 })
 

@@ -57,7 +57,11 @@ export async function supervise({ projectDirectory, stateDirectory, entries }) {
           if (error) console.error(`[Runtime ${entry.name}]`, error.message)
         })
         // API의 저장이 끝난 후 웹을 종료한다. 자동 강제 종료 제한 시간은 두지 않는다.
-        await entry.exited
+        const childCode = await entry.exited
+        if (childCode !== 0) {
+          console.error(`[Runtime] ${entry.name} shutdown exit code ${childCode ?? 'signal'}`)
+          if (code === 0) code = childCode || 1
+        }
         console.log(`[Runtime] ${entry.name} process exit ${Math.round(performance.now() - childStarted)}ms`)
       }
       await new Promise((resolve) => control.close(resolve))

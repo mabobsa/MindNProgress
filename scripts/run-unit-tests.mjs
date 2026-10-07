@@ -10,6 +10,7 @@ export const UNIT_TEST_CONCURRENCY_ENV = 'MNP_UNIT_TEST_CONCURRENCY'
 export const DEFAULT_UNIT_TEST_CONCURRENCY = 4
 const isolatedTestNames = new Set([
   'runtime-entrypoints.test.mjs',
+  'runtime-force-recovery.test.mjs',
   'runtime-supervisor.test.mjs',
   'runtime-task-host.test.mjs',
 ])

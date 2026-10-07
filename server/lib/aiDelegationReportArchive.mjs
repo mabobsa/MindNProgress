@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { aiDelegationReportResult, aiDelegationSucceeded } from './aiDelegations.mjs'
+import { throwIfRuntimeStopping } from './runtimeStopping.mjs'
 
 const hash = (value) => createHash('sha256').update(value).digest('hex')
 
@@ -61,6 +62,7 @@ export function createAiDelegationReportArchiver({ update, fetchOn, capabilities
       return await update(delegation.id, { reportArchive: { ...archive, status: 'recorded', attempt,
         messageId: result.messageId, recordedAt: new Date(now()).toISOString(), nextAttemptAt: null, errorCode: null } })
     } catch (error) {
+      throwIfRuntimeStopping(error)
       const errorCode = error?.code ?? (error?.status ? `HTTP_${error.status}` : 'REPORT_ARCHIVE_UNAVAILABLE')
       if (archive.errorCode !== errorCode) warn('[AI delegation report archive]', { delegationId: delegation.id, operationId, errorCode })
       return await update(delegation.id, { reportArchive: { ...archive, status: 'pending', attempt, errorCode,

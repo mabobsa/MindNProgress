@@ -108,11 +108,25 @@ exit 7
     function Stop-ScheduledTask { $script:calls += 'stop-task' }
     function Start-ScheduledTask { $script:calls += 'start-task' }
     function Set-MnpGuiTaskHost { $script:calls += 'migrate-task'; return $script:context }
-    function Send-MnpShutdown { $script:calls += 'graceful' }
+    function Send-MnpShutdown {
+        $script:calls += 'graceful'
+        if ($script:controlFailure -eq 'unresponsive') { throw (New-Object TimeoutException 'Control unresponsive') }
+        if ($script:controlFailure -eq 'rejected') { throw 'Runtime rejected the graceful shutdown request.' }
+    }
+    $script:forceCompletes = $false; $script:forceFails = $true; $script:controlFailure = $null; $script:queryFails = $false
+    function Stop-MnpVerifiedProcesses($Context, $Snapshot, $Recovery) {
+        $script:calls += 'force-stop'
+        if ($script:forceFails) { throw 'Forced target verification failed' }
+        $Recovery.forcedProcesses += [pscustomobject]@{ role = 'api'; pid = 100 }
+        $script:stopped = $script:forceCompletes
+    }
     function Stop-MnpLegacy { $script:calls += 'legacy'; $script:stopped = $true }
     function Test-MnpStopped { return $script:stopped }
     function Test-MnpHttp { return $script:healthy }
-    function Wait-MnpCondition([scriptblock]$Condition, [int]$Seconds, [string]$Failure) { if (-not (& $Condition)) { throw $Failure } }
+    function Wait-MnpCondition([scriptblock]$Condition, [int]$Seconds, [string]$Failure) {
+        if ($script:queryFails) { throw 'Process query failed' }
+        if (-not (& $Condition)) { throw (New-Object TimeoutException $Failure) }
+    }
 
     Assert-MnpThrows { Invoke-MnpRuntime restart 1 1 $false $false } 'Legacy runtime'
     Assert-MnpTest ($script:calls.Count -eq 0) 'Legacy guard stopped a task before consent'
@@ -123,11 +137,24 @@ exit 7
     Assert-MnpTest ($script:calls.Count -eq 0) 'Start replaced an unhealthy existing server'
     $script:healthy = $true
     $script:descriptor = [pscustomobject]@{ instanceId = 'fixture' }
-    Assert-MnpThrows { Invoke-MnpRuntime restart 1 1 $false $false } 'Stop timed out'
-    Assert-MnpTest (($script:calls -join ',') -eq 'stop-task,graceful') 'Stop timeout forced termination or started another server'
+    Assert-MnpThrows { Invoke-MnpRuntime restart 1 1 $false $false } 'Forced target verification failed'
+    Assert-MnpTest (($script:calls -join ',') -eq 'stop-task,graceful,force-stop') 'Restart did not attempt the bounded fallback exactly once'
     $script:calls = @()
-    Assert-MnpThrows { Invoke-MnpRuntime restart 1 1 $false $false $true } 'Stop timed out'
-    Assert-MnpTest (($script:calls -join ',') -eq 'stop-task,graceful') 'Stop timeout changed the task action'
+    Assert-MnpThrows { Invoke-MnpRuntime restart 1 1 $false $false $true } 'Forced target verification failed'
+    Assert-MnpTest (($script:calls -join ',') -eq 'stop-task,graceful,force-stop') 'Failed forced verification changed the task action'
+    $script:calls = @()
+    Assert-MnpThrows { Invoke-MnpRuntime stop 1 1 $false $false } 'Stop timed out'
+    Assert-MnpTest (($script:calls -join ',') -eq 'stop-task,graceful') 'Stop-only unexpectedly forced termination'
+    $script:calls = @(); $script:controlFailure = 'rejected'
+    Assert-MnpThrows { Invoke-MnpRuntime restart 1 1 $false $false } 'rejected'
+    Assert-MnpTest (($script:calls -join ',') -eq 'stop-task,graceful') 'Rejected instance identity triggered kill'
+    $script:calls = @(); $script:controlFailure = $null; $script:queryFails = $true
+    Assert-MnpThrows { Invoke-MnpRuntime restart 1 1 $false $false } 'Process query failed'
+    Assert-MnpTest (($script:calls -join ',') -eq 'stop-task,graceful') 'A query error triggered kill'
+    $script:calls = @(); $script:queryFails = $false; $script:forceFails = $false
+    Assert-MnpThrows { Invoke-MnpRuntime restart 1 1 $false $false } 'Forced shutdown timed out'
+    Assert-MnpTest (($script:calls -join ',') -eq 'stop-task,graceful,force-stop') 'Failed kill confirmation allowed startup or another kill'
+    $script:forceFails = $true
     $script:calls = @(); $script:descriptor = $null
     Invoke-MnpRuntime stop 1 1 $false $true
     Assert-MnpTest (($script:calls -join ',') -eq 'stop-task,legacy') 'Explicit legacy stop did not use ordered stop-only flow'
@@ -160,8 +187,16 @@ exit 7
     }
     function Wait-MnpCondition([scriptblock]$Condition, [int]$Seconds, [string]$Failure) {
         for ($attempt = 0; $attempt -lt 2; $attempt++) { if (& $Condition) { return } }
-        throw $Failure
+        throw (New-Object TimeoutException $Failure)
     }
+    $script:httpDeadlines = @()
+    $script:calls = @(); $script:forceFails = $false; $script:forceCompletes = $true
+    $script:descriptor = [pscustomobject]@{ instanceId = 'fixture' }; $script:controlFailure = 'unresponsive'
+    Invoke-MnpRuntime restart 1 1 $false $false
+    Assert-MnpTest (($script:calls -join ',') -eq 'stop-task,graceful,force-stop,start-task') 'Unresponsive shutdown did not use kill, verification, then one start'
+    $forcedLog = (Get-Content -LiteralPath (Join-Path $mnpTestDirectory 'runtime-operations.jsonl') -Tail 1) | ConvertFrom-Json
+    Assert-MnpTest ($forcedLog.succeeded -and $forcedLog.shutdownMode -eq 'forced' -and $forcedLog.forceReason -eq 'stop-timeout' -and $forcedLog.gracefulRequest -eq 'unresponsive' -and $forcedLog.forcedProcesses.Count -eq 1) 'Forced recovery success was not distinguished in the log'
+    $script:calls = @(); $script:httpChecks = 0; $script:stopped = $false; $script:descriptor = $null; $script:controlFailure = $null
     $script:httpDeadlines = @()
     Invoke-MnpRuntime restart 1 1 $false $true
     Assert-MnpTest ($script:httpChecks -eq 3) 'Final readiness did not retry a transient failure'

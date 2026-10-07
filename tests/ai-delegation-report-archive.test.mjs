@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { aiDelegationReportArchived, aiDelegationReportArchivePending, createAiDelegationReportArchiver } from '../server/lib/aiDelegationReportArchive.mjs'
+import { RuntimeStoppingError } from '../server/lib/runtimeStopping.mjs'
 
 const hash = (value) => createHash('sha256').update(value).digest('hex')
 const result = '완료 결과 원문\n마지막 줄까지 보존'
@@ -32,6 +33,20 @@ function harness(initial = fixture()) {
   return { options, get stored() { return stored }, messages, requests, warnings,
     advance: () => { time += 120_000 }, supported: (value) => { supported = value }, fail: (value) => { fail = value } }
 }
+
+test('종료로 응답 대기를 중단하면 기존 저장 의도를 보존하고 일반 실패 재시도를 기록하지 않는다', async () => {
+  const h = harness()
+  const archive = createAiDelegationReportArchiver({ ...h.options, fetchOn: async () => { throw new RuntimeStoppingError() } })
+  await assert.rejects(archive(h.stored), RuntimeStoppingError)
+  assert.equal(h.stored.state, 'waiting-parent')
+  assert.equal(h.stored.reportArchive.status, 'pending')
+  assert.equal(h.stored.reportArchive.attempt, 0)
+  assert.equal(h.stored.reportArchive.errorCode, undefined)
+  assert.equal(h.stored.reportArchive.nextAttemptAt, undefined)
+  assert.equal(h.warnings.length, 0)
+  await createAiDelegationReportArchiver(h.options)(h.stored)
+  assert.equal(aiDelegationReportArchived(h.stored), true)
+})
 
 test('원문을 먼저 저장하고, 응답 유실·서버 재생성 후에도 같은 전문을 한 번만 보존한다', async () => {
   const h = harness()

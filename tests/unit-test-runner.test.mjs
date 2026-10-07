@@ -82,6 +82,7 @@ test('전역 창 관찰과 Windows 기동 fixture는 다른 파일과 병렬 실
     'runtime-supervisor.test.mjs',
     'alpha.test.mjs',
     'runtime-entrypoints.test.mjs',
+    'runtime-force-recovery.test.mjs',
   ]
   const calls = []
   const exitCode = await runUnitTests({
@@ -100,11 +101,13 @@ test('전역 창 관찰과 Windows 기동 fixture는 다른 파일과 병렬 실
     ['--test', '--test-concurrency=1'],
     ['--test', '--test-concurrency=1'],
     ['--test', '--test-concurrency=1'],
+    ['--test', '--test-concurrency=1'],
   ])
   assert.deepEqual(calls.flatMap((args) => args.slice(2).map((file) => path.basename(file))), [
     'alpha.test.mjs',
     'beta.test.mjs',
     'runtime-entrypoints.test.mjs',
+    'runtime-force-recovery.test.mjs',
     'runtime-supervisor.test.mjs',
     'runtime-task-host.test.mjs',
   ])

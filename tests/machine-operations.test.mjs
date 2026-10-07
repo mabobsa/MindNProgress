@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { isRuntimeStoppingError } from '../server/lib/runtimeStopping.mjs'
 import {
   MachineOperationError,
   MachineOperationQueue,
@@ -372,4 +373,28 @@ test('큐를 닫으면 남은 요청을 모두 실패로 확정하고 새 요청
   assert.equal(result.ok, false)
   assert.equal(result.error.reasonCode, 'QUEUE_CLOSED')
   assert.throws(() => queue.enqueue('macbook', { pathname: '/api/2' }), MachineOperationError)
+})
+
+test('종료는 미전달·전달된 요청의 대기를 구분해 중단하고 롱폴과 새 요청을 해제한다', async () => {
+  const queue = new MachineOperationQueue()
+  const dispatched = queue.enqueue('busy', { pathname: '/dispatch', method: 'POST' })
+  queue.claim('busy')
+  const pending = queue.enqueue('offline', { pathname: '/query' })
+  const polling = queue.waitForClaim('idle', { waitMs: 25_000 })
+  const checks = [
+    assert.rejects(dispatched.completion, error => isRuntimeStoppingError(error) && error.deliveryState === 'dispatched' && error.operationId === dispatched.operationId),
+    assert.rejects(pending.completion, error => isRuntimeStoppingError(error) && error.deliveryState === 'pending'),
+    assert.rejects(polling, isRuntimeStoppingError),
+  ]
+  assert.deepEqual(queue.shutdown(), [
+    { machineId: 'busy', operationId: dispatched.operationId, deliveryState: 'dispatched' },
+    { machineId: 'offline', operationId: pending.operationId, deliveryState: 'pending' },
+  ])
+  assert.deepEqual(queue.shutdown(), [])
+  await Promise.all(checks)
+  assert.equal(queue.operations.size, 0)
+  assert.equal(queue.waiters.size, 0)
+  assert.equal(queue.completedOperations.get(dispatched.operationId).state, 'interrupted')
+  assert.throws(() => queue.enqueue('new', { pathname: '/query' }), isRuntimeStoppingError)
+  await assert.rejects(queue.waitForClaim('new'), isRuntimeStoppingError)
 })

@@ -31,3 +31,7 @@ export function initialCollapsedDocumentGroupIds(storedGroupIds, availableGroupI
   const availableSet = new Set(available)
   return stored.filter((groupId) => availableSet.has(groupId))
 }
+
+export function activeDocumentCountInGroup(mapIds, activeCounts) {
+  return [...new Set(mapIds)].filter((mapId) => (activeCounts[mapId] ?? 0) > 0).length
+}

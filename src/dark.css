@@ -382,6 +382,10 @@
   background: var(--theme-accent-soft);
 }
 
+[data-theme="dark"] .document-group-label .ai-conversation-activity-indicator {
+  color: #b2a9ff;
+}
+
 [data-theme="dark"] .search-box,
 [data-theme="dark"] .new-map-form,
 [data-theme="dark"] .trash-toolbar,

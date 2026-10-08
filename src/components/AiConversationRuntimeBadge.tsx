@@ -11,11 +11,11 @@ function AiConversationTypingDots() {
   )
 }
 
-export function AiConversationActivityIndicator({ activeCount }: { activeCount: number }) {
+export function AiConversationActivityIndicator({ activeCount, label }: { activeCount: number; label?: string }) {
   if (activeCount <= 0) return null
-  const label = `AI 작업 중인 카드 ${activeCount}개`
+  const indicatorLabel = label ?? `AI 작업 중인 카드 ${activeCount}개`
   return (
-    <span className="ai-conversation-activity-indicator" title={label} aria-label={label}>
+    <span className="ai-conversation-activity-indicator" title={indicatorLabel} aria-label={indicatorLabel}>
       <AiConversationTypingDots />
     </span>
   )

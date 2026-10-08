@@ -55,7 +55,7 @@ import { copyTextToClipboard } from './utils/clipboardText.mjs'
 import { parseGroupDeepLink } from './utils/groupDeepLink.mjs'
 import { collectDragDescendantOwners, dragRootIds, hierarchyReparentPairs } from './utils/hierarchyDrag.mjs'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
-import { collapsedDocumentGroupsStorageKey, initialCollapsedDocumentGroupIds, normalizeCollapsedDocumentGroupIds } from './utils/documentGroupCollapse.mjs'
+import { activeDocumentCountInGroup, collapsedDocumentGroupsStorageKey, initialCollapsedDocumentGroupIds, normalizeCollapsedDocumentGroupIds } from './utils/documentGroupCollapse.mjs'
 import { hierarchyAncestorNodeIds, isPhoneViewport, PHONE_VIEWPORT_QUERY, resolveDocumentNodeSelection, synchronizeNodeSelection } from './utils/documentSelection.mjs'
 import { createsKnowledgeCycle, isHierarchyEdge, isKnowledgeEdge, knowledgePolicyOf } from './utils/knowledgeEdges'
 import { isSameDoorayKnowledgeUrl, normalizedDoorayKnowledgeUrl, taskUrlProvider } from './utils/externalLinks'
@@ -7379,6 +7379,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                     : groupDocuments
                   if (normalizedDocumentSearch && !groupNameMatches && visibleGroupDocuments.length === 0) return null
                   const collapsed = !normalizedDocumentSearch && collapsedDocumentGroupIds.has(group.id)
+                  const activeGroupDocumentCount = collapsed
+                    ? activeDocumentCountInGroup(groupDocuments.map((document) => document.id), aiConversationActiveCounts)
+                    : 0
                   const groupDropKey = `group:${group.id}`
                   return (
                     <section
@@ -7460,6 +7463,10 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                           <span className="document-group-label">
                             <strong>{group.name}</strong>
                             <span className="document-group-count">{group.mapIds.length}</span>
+                            <AiConversationActivityIndicator
+                              activeCount={activeGroupDocumentCount}
+                              label={`AI 작업 중인 문서 ${activeGroupDocumentCount}개`}
+                            />
                           </span>
                         </button>
                         {mode === 'editor' && (

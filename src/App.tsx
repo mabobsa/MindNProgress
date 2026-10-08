@@ -66,6 +66,7 @@ import { shouldReconnectEventStream } from './utils/eventStreamHealth.mjs'
 import { aiConversationLinksFromData } from './utils/aiConversations.mjs'
 import { revisionReasonLabel, shouldRefreshMapContentForAction } from './utils/mapChangeMetadata.mjs'
 import { mapContentsEqual, reconcileRemoteMapContent } from './utils/mapDocumentSync.mjs'
+import { mapCacheKey, reclaimSynchronizedMapCaches, tryWriteMapCache } from './utils/mapLocalCache.mjs'
 import { mergeMapContent } from './utils/mergeMapContent.mjs'
 import { nextOverlappingNodeId, nodeOverlapPresentation } from './utils/nodeOverlap.mjs'
 import { viewportForNodeVisibility } from './utils/nodeViewportVisibility.mjs'
@@ -1170,7 +1171,6 @@ function useMapHistory(
   return { ...availability, undo, redo, resetHistory, rebaseline, beginTransaction, endTransaction, cancelTransaction }
 }
 
-const MAP_CACHE_KEY = 'mindnprogress-map-cache-v1'
 const ASSIGNEE_COLORS: TeamMember['color'][] = ['violet', 'blue', 'mint', 'orange']
 
 function assigneeInitials(name: string) {
@@ -1598,13 +1598,9 @@ function CommentCard({ comment, isReply, mode, user, collaborators, readOnly = f
   )
 }
 
-function storageKeyForMap(mapId: string) {
-  return `${MAP_CACHE_KEY}:${mapId}`
-}
-
 function readSavedMap(mapId: string) {
   try {
-    const saved = localStorage.getItem(storageKeyForMap(mapId))
+    const saved = localStorage.getItem(mapCacheKey(mapId))
     if (!saved) return null
     return JSON.parse(saved) as { nodes: MindMapNode[]; edges: MindMapEdge[] }
   } catch {
@@ -1767,7 +1763,11 @@ function LoginScreen({ onAuthenticated, theme, onToggleTheme }: { onAuthenticate
         method: 'POST',
         body: JSON.stringify({ email: loginEmail, password: loginPassword, rememberMe }),
       })
-      localStorage.setItem(LAST_LOGIN_EMAIL_KEY, loginEmail.trim())
+      try {
+        localStorage.setItem(LAST_LOGIN_EMAIL_KEY, loginEmail.trim())
+      } catch {
+        // 마지막 로그인 이메일은 편의 정보이므로 저장 실패가 로그인을 막지 않는다.
+      }
       onAuthenticated(result.user)
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : '로그인하지 못했습니다.')
@@ -2564,6 +2564,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [savedAt, setSavedAt] = useState('서버에서 불러오는 중…')
   const [saveError, setSaveError] = useState('')
+  const [localBackupWarningMapId, setLocalBackupWarningMapId] = useState<string | null>(null)
   const [serverBaselineRevision, setServerBaselineRevision] = useState(0)
   const dragSnapshot = useRef<DragSnapshot | null>(null)
   const rightPanGesture = useRef<RightPanGesture | null>(null)
@@ -2581,6 +2582,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const suppressTouchContextMenu = useRef<{ nodeId: string; until: number } | null>(null)
   const suppressMobileInspectorSelection = useRef<string | null>(null)
   const serverBaseline = useRef<MapDocument | null>(null)
+  const pendingMapCacheWrite = useRef<{ mapId: string; content: Pick<MapDocument, 'nodes' | 'edges'> } | null>(null)
+  const mapCacheRecovery = useRef<Promise<void> | null>(null)
   const pastedNodeNotificationSuppressions = useRef<Map<string, Set<string>>>(new Map())
   const cursorSendAt = useRef(0)
   const nodeLinkCopyTimer = useRef<number | null>(null)
@@ -2606,6 +2609,54 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   loadedMapIdRef.current = loadedMapId
   nodesRef.current = nodes
   edgesRef.current = edges
+
+  const saveMapCache = useCallback((mapId: string, content: Pick<MapDocument, 'nodes' | 'edges'>) => {
+    let storage: Storage
+    try {
+      storage = window.localStorage
+    } catch {
+      if (activeMapIdRef.current === mapId) setLocalBackupWarningMapId(mapId)
+      return false
+    }
+    pendingMapCacheWrite.current = { mapId, content }
+    const result = tryWriteMapCache(storage, mapId, content)
+    if (result.saved) {
+      pendingMapCacheWrite.current = null
+      if (activeMapIdRef.current === mapId) setLocalBackupWarningMapId(null)
+      return true
+    }
+    if (activeMapIdRef.current === mapId) setLocalBackupWarningMapId(mapId)
+    if (!result.quotaExceeded) {
+      pendingMapCacheWrite.current = null
+      return false
+    }
+    if (!mapCacheRecovery.current) {
+      const retryWrite = () => {
+        const pending = pendingMapCacheWrite.current
+        if (!pending) return true
+        const retry = tryWriteMapCache(storage, pending.mapId, pending.content)
+        if (retry.saved) {
+          pendingMapCacheWrite.current = null
+          if (activeMapIdRef.current === pending.mapId) {
+            setLocalBackupWarningMapId(null)
+            if (!serverBaseline.current) setSavedAt('로컬 백업만 저장됨 · 서버 재연결 필요')
+          }
+          return true
+        }
+        if (!retry.quotaExceeded) pendingMapCacheWrite.current = null
+        return false
+      }
+      mapCacheRecovery.current = reclaimSynchronizedMapCaches({
+        storage,
+        loadRemoteMap: async (candidateMapId: string) => {
+          const { map } = await apiRequest<MapDocumentResponse>(`/api/maps/${encodeURIComponent(candidateMapId)}`)
+          return map
+        },
+        retryWrite,
+      }).then(() => {}).catch(() => {}).finally(() => { mapCacheRecovery.current = null })
+    }
+    return false
+  }, [])
 
   useEffect(() => {
     const mobileViewport = window.matchMedia(PHONE_VIEWPORT_QUERY)
@@ -2671,10 +2722,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           updatedBy: remoteMap.updatedBy,
         }
       : document))
-    localStorage.setItem(storageKeyForMap(remoteMap.id), JSON.stringify({
-      nodes: nextNodes,
-      edges: reconciliation.edges,
-    }))
+    saveMapCache(remoteMap.id, createPersistedMapContent(nextNodes, reconciliation.edges))
     setExternalChange(null)
 
     if (reconciliation.needsSave) {
@@ -2686,7 +2734,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     } else {
       setSavedAt('서버와 동기화됨')
     }
-  }, [resetHistory, setEdges, setNodes])
+  }, [resetHistory, saveMapCache, setEdges, setNodes])
   const handleSharedKnowledgeReviewApplied = useCallback((applied: SharedKnowledgeReviewApplied) => {
     setDocuments((current) => current.map((document) => document.id === applied.document.id
       ? {
@@ -2724,13 +2772,10 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       setEdges(reconciliation.edges)
       setSelectedId(nextSelectedId)
       rebaselineHistory(nextNodes, reconciliation.edges)
-      localStorage.setItem(storageKeyForMap(savedMap.id), JSON.stringify({
-        nodes: nextNodes,
-        edges: reconciliation.edges,
-      }))
+      saveMapCache(savedMap.id, createPersistedMapContent(nextNodes, reconciliation.edges))
     }
     setServerBaselineRevision((current) => current + 1)
-  }, [rebaselineHistory, setEdges, setNodes])
+  }, [rebaselineHistory, saveMapCache, setEdges, setNodes])
   const { fitView, screenToFlowPosition, setCenter, setViewport } = useReactFlow<MindMapNode, MindMapEdge>()
   const reactFlowStore = useStoreApi<MindMapNode, MindMapEdge>()
   const showFullMindMap = useCallback((duration = 500) => {
@@ -3423,10 +3468,11 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     if (!collapsedDocumentGroupsInitialized.current) return
     const storageKey = collapsedDocumentGroupsStorageKey(user.id)
     if (!storageKey) return
-    localStorage.setItem(
-      storageKey,
-      JSON.stringify([...collapsedDocumentGroupIds]),
-    )
+    try {
+      localStorage.setItem(storageKey, JSON.stringify([...collapsedDocumentGroupIds]))
+    } catch {
+      // 접기 상태 저장 실패가 문서 사용을 막지 않는다.
+    }
   }, [collapsedDocumentGroupIds, user.id])
 
   useEffect(() => {
@@ -4132,7 +4178,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         }
         pendingSelection.current = null
         lastLoadedMapId.current = map.id
-        localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify(createPersistedMapContent(loadedNodes, map.edges)))
+        saveMapCache(activeMapId, createPersistedMapContent(loadedNodes, map.edges))
         setDocuments((current) => current.map((document) => document.id === map.id
           ? { ...document, title: map.title, color: map.color, nodeCount: map.nodes.length }
           : document))
@@ -4167,19 +4213,19 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         setSaveError(error instanceof Error ? error.message : '마인드맵을 불러오지 못했습니다.')
       })
     return () => { active = false }
-  }, [activeMapId, mapReloadToken, mode, resetHistory, setEdges, setNodes])
+  }, [activeMapId, mapReloadToken, mode, resetHistory, saveMapCache, setEdges, setNodes])
 
   useEffect(() => {
     if (!activeMapId || loadedMapId !== activeMapId) return
     const localContent = createPersistedMapContent(nodes, edges)
-    localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify(localContent))
+    const localBackupSaved = saveMapCache(activeMapId, localContent)
     if (mode === 'viewer') {
       setSavedAt('읽기 전용')
       return
     }
     const saveBase = serverBaseline.current
     if (!saveBase || saveBase.id !== activeMapId) {
-      setSavedAt('로컬 백업만 저장됨 · 서버 재연결 필요')
+      setSavedAt(localBackupSaved ? '로컬 백업만 저장됨 · 서버 재연결 필요' : '로컬 백업 저장 실패 · 서버 재연결 필요')
       return
     }
     if (mapContentsEqual(localContent, saveBase)) {
@@ -4268,7 +4314,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         })
     }, 600)
     return () => window.clearTimeout(timer)
-  }, [acceptSavedMap, activeMapId, edges, loadedMapId, mode, nodes, reconcileRemoteMap, serverBaselineRevision])
+  }, [acceptSavedMap, activeMapId, edges, loadedMapId, mode, nodes, reconcileRemoteMap, saveMapCache, serverBaselineRevision])
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -4601,7 +4647,11 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   }, [selectedId])
 
   useEffect(() => {
-    localStorage.setItem('mindnprogress-sidebar-width', String(sidebarWidth))
+    try {
+      localStorage.setItem('mindnprogress-sidebar-width', String(sidebarWidth))
+    } catch {
+      // 저장 공간 부족이어도 현재 세션의 사이드바 크기는 유지한다.
+    }
   }, [sidebarWidth])
 
   useEffect(() => {
@@ -4609,7 +4659,11 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   }, [sidebarMinWidth])
 
   useEffect(() => {
-    localStorage.setItem('mindnprogress-inspector-width', String(inspectorWidth))
+    try {
+      localStorage.setItem('mindnprogress-inspector-width', String(inspectorWidth))
+    } catch {
+      // 저장 공간 부족이어도 현재 세션의 세부 정보 크기는 유지한다.
+    }
   }, [inspectorWidth])
 
   const rememberInspectorTextareaHeight = useCallback((field: InspectorTextareaField, height: number) => {
@@ -5660,7 +5714,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       setHistoryNextOffset(result.historyNextOffset)
       setHistoryPaginationError('')
       setExternalChange(null)
-      localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify(createPersistedMapContent(restoredNodes, result.map.edges)))
+      saveMapCache(activeMapId, createPersistedMapContent(restoredNodes, result.map.edges))
       setSavedAt('이전 버전 복원됨')
       window.setTimeout(() => showFullMindMap(400), 0)
     } catch (error) {
@@ -5695,7 +5749,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       setHistoryNextOffset(result.historyNextOffset)
       setHistoryPaginationError('')
       setExternalChange(null)
-      localStorage.setItem(storageKeyForMap(activeMapId), JSON.stringify(createPersistedMapContent(restoredNodes, result.map.edges)))
+      saveMapCache(activeMapId, createPersistedMapContent(restoredNodes, result.map.edges))
       setSavedAt(`${backup.date} 일일 백업 복원됨`)
       window.setTimeout(() => showFullMindMap(400), 0)
     } catch (error) {
@@ -7160,6 +7214,13 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         <div className="merge-notice" role="status">
           <Icon name="check" size={15} /><span>{mergeNotice}</span>
           <button onClick={() => setMergeNotice('')} aria-label="병합 알림 닫기"><Icon name="close" size={12} /></button>
+        </div>
+      )}
+      {localBackupWarningMapId === activeMapId && !selectedGroupId && (
+        <div className="local-backup-warning" role="alert">
+          {serverBaseline.current
+            ? '이 기기의 로컬 백업을 저장하지 못했습니다. 서버 저장은 계속됩니다. 오프라인에서는 변경 내용이 보존되지 않을 수 있습니다.'
+            : '서버에 연결되지 않았고 이 기기의 로컬 백업도 저장하지 못했습니다. 연결을 복구하기 전에는 변경 내용을 보존할 수 없습니다.'}
         </div>
       )}
 

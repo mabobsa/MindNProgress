@@ -48,6 +48,7 @@
 .document-title span { font-size: 14px; font-weight: 650; color: #282530; }
 .document-title small { margin-top: 2px; color: #9691a2; font-size: 10px; }
 .document-title small.save-error { color: #c45555; }
+.local-backup-warning { flex: 0 0 auto; padding: 8px 20px; color: #8d4b17; border-bottom: 1px solid #f1d6ad; background: #fff5e7; font-size: 11px; line-height: 1.4; }
 .document-title-row { display: flex; align-items: center; gap: 5px; }
 .document-title-row > span { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .document-title-row button,

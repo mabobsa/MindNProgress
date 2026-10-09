@@ -111,7 +111,7 @@ window.renderWorkspaceModifierFocusHarness=()=>root.render(React.createElement(W
 window.fixtureReady = true;
 `
 
-test('작업공간 확인·문서/그룹 저장·공통 메뉴·이름 편집·계정별 접힘 상태를 검증한다', { skip: process.env.MNP_BROWSER_TEST !== '1', timeout: 60_000 }, async (t) => {
+test('작업공간 확인·문서/그룹 저장·공통 메뉴·이름 편집·계정별 접힘 상태를 검증한다', { skip: process.env.MNP_BROWSER_TEST !== '1', timeout: 120_000 }, async (t) => {
   const { createServer } = await import('vite')
   const react = (await import('@vitejs/plugin-react')).default
   const directory = await mkdtemp(path.join(tmpdir(), 'mnp-workspace-browser-'))
@@ -181,6 +181,29 @@ test('작업공간 확인·문서/그룹 저장·공통 메뉴·이름 편집·�
 
     const configured={mapId:'map-coordinator',groupId:'group-manager',groupName:'테스트 그룹',machineId:'fixture',machineRole:'main',documentSetting:{version:1,workspace:'/document'},groupSetting:{version:1,workspace:'/group'},source:'document',workspace:'/document',error:'',choices:[],token:'configured',needsSelection:false};
     const mixed={...configured,documentSetting:{version:0,workspace:''},groupSetting:{version:0,workspace:''},source:'none',workspace:'',needsSelection:true,token:'mixed',choices:[{workspace:'/project',reasons:['문서 루트 대화']},{workspace:'/mnp',reasons:['과거 대화']}]};
+    await t.test('session-message는 제공될 때만 기본 선택하고 사용자 해제를 시작 요청에 반영한다', async () => {
+      const flags={workspaceContext:configured,optionOverrides:{skills:[
+        {id:'session-message',name:'session-message',description:'세션 메시지 전달',autoInject:false},
+        {id:'other-skill',name:'다른 스킬',description:'선택하지 않음',autoInject:false},
+      ]}};
+      const checked=()=>evaluate('[...document.querySelectorAll(".ai-skills-section input")].map(el=>el.checked)');
+      await open({userId:'skill-default'},flags);
+      assert.deepEqual(await checked(),[true,false],'현재 머신에서 제공하는 session-message만 기본 선택');
+      await evaluate('document.querySelector(".ai-skills-section input").click()');
+      assert.deepEqual(await checked(),[false,false],'사용자가 기본 선택을 해제할 수 있다');
+      await evaluate('document.querySelector(".ai-dialog footer .primary").click()');
+      await waitFor(()=>evaluate('window.audit.closed===1'));
+      assert.deepEqual(await evaluate('window.audit.calls.find(c=>c.url.endsWith("/external-conversation-launches")).body.enabledSkillIds'),[]);
+
+      await open({userId:'skill-default'},flags);
+      assert.deepEqual(await checked(),[true,false],'새 대화 시작 창을 열면 기본 선택을 다시 적용');
+      await evaluate('document.querySelector(".ai-dialog footer .primary").click()');
+      await waitFor(()=>evaluate('window.audit.closed===1'));
+      assert.deepEqual(await evaluate('window.audit.calls.find(c=>c.url.endsWith("/external-conversation-launches")).body.enabledSkillIds'),['session-message']);
+
+      await open({userId:'skill-default'},{workspaceContext:configured,optionOverrides:{skills:[{id:'other-skill',name:'다른 스킬',description:'',autoInject:false}]}});
+      assert.deepEqual(await checked(),[false],'현재 머신에 없는 스킬을 선택하지 않는다');
+    });
     await t.test('작업공간 경로 입력 중 Ctrl 상태의 부모 재렌더링에도 포커스와 입력 대상을 유지한다', async () => {
       await evaluate('window.audit.workspaceContext='+JSON.stringify(mixed)+';window.renderWorkspaceModifierFocusHarness()');
       await waitFor(()=>evaluate('Boolean(document.querySelector(".workspace-settings-path input"))'));

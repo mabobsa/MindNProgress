@@ -16,6 +16,7 @@ import {
   type DoorayApprovalLaunch,
 } from '../utils/aiConversationLaunch.mjs'
 import { loadAiConversationRole, type AiConversationRole } from '../utils/aiConversationRole.mjs'
+import { defaultAiSkillIds } from '../utils/aiSkillSelection.mjs'
 import './AiConversationDialog.css'
 import { WorkspaceSettingsDialog } from './WorkspaceSettingsDialog'
 import { WorkspaceHistoryList } from './WorkspaceHistoryList'
@@ -231,7 +232,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
           setMode(availableAiRuntimeOptionId(initialAgent.modes, savedAgentSelection.mode, initialAgent.defaultMode))
           setThoughtLevel(availableAiRuntimeOptionId(initialAgent.thoughtLevels, savedAgentSelection.thoughtLevel, initialAgent.defaultThoughtLevel))
         }
-        setSelectedSkillIds(new Set())
+        setSelectedSkillIds(defaultAiSkillIds(body.skills))
         // 현재 머신에 없는 ID도 보존한다. 표시와 실행 대상은 해당 머신의 목록에서만 고른다.
         setSelectedMcpIds(savedMcpIds)
       })

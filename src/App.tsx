@@ -29,6 +29,8 @@ import './App.css'
 import { MindNode } from './components/MindNode'
 import { GroupOverview, type GroupAiTarget } from './components/GroupOverview'
 import { DocumentLifecycle } from './components/DocumentLifecycle'
+import { DocumentTrashReview } from './components/DocumentTrashReview'
+import { trashPreviewFromError, type DocumentTrashPreview } from './utils/documentTrashReview'
 import { CardLayoutDialog } from './components/CardLayoutDialog'
 import { useLibraryTouchMenu } from './components/useLibraryTouchMenu'
 import { KnowledgeEdge } from './components/KnowledgeEdge'
@@ -2399,6 +2401,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const documentArchived = activeDocumentRecord?.id === activeMapId && Boolean(activeDocumentRecord.archivedAt)
   const mode: AccessMode = documentArchived ? 'viewer' : accountMode
   const [lifecycleOpen, setLifecycleOpen] = useState(false)
+  const [trashReview, setTrashReview] = useState<{ preview: DocumentTrashPreview; message?: string } | null>(null)
+  const trashRequestPending = useRef(false)
   const [lifecycleEntry, setLifecycleEntry] = useState<{ scope?: { type: 'map' | 'group'; id: string }; initialTab: 'archive' | 'reconstruction' }>({ initialTab: 'archive' })
   const [archivedDocuments, setArchivedDocuments] = useState<MapSummary[]>([])
   const [adminOpen, setAdminOpen] = useState(false)
@@ -6008,16 +6012,17 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     }
   }
 
-  const refreshLifecycleLibrary = async () => {
+  const refreshLifecycleLibrary = async (reloadActiveMap = true) => {
     const [library, archive, trash] = await Promise.all([apiRequest<DocumentLibraryResponse>('/api/maps'), apiRequest<{ maps: MapSummary[] }>('/api/maps/archive'),
       accountMode === 'editor' ? apiRequest<{ maps: MapSummary[] }>('/api/maps/trash') : Promise.resolve({ maps: [] as MapSummary[] })])
     setDocuments(library.maps); setDocumentLayout(library.documentLayout); setArchivedDocuments(archive.maps)
     if (library.lifecycleCounts) setLifecycleCounts(library.lifecycleCounts)
     setTrashedDocuments(trash.maps)
-    if (activeMapId && ![...library.maps, ...archive.maps].some((document) => document.id === activeMapId)) {
+    const currentMapId = activeMapIdRef.current
+    if (currentMapId && ![...library.maps, ...archive.maps].some((document) => document.id === currentMapId)) {
       setLoadedMapId(null); setActiveMapId(library.maps[0]?.id ?? '')
     }
-    setMapReloadToken((current) => current + 1)
+    if (reloadActiveMap) setMapReloadToken((current) => current + 1)
   }
   const archiveDocument = async (mapId: string) => {
     const document = documents.find((item) => item.id === mapId)
@@ -6032,26 +6037,52 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     } catch (error) { setSaveError(error instanceof Error ? error.message : '문서를 보관하지 못했습니다.') }
   }
 
-  const trashDocument = async (mapId: string) => {
-    if (mode !== 'editor') return
-    const document = documents.find((item) => item.id === mapId)
-    if (!document || !window.confirm(`“${document.title}” 문서를 휴지통으로 이동할까요? 휴지통에서 복원할 수 있습니다.`)) return
-    setDocumentContextMenu(null)
-    setSaveError('')
-
-    try {
-      const result = await apiRequest<{ trashedId: string; maps: MapSummary[]; documentLayout: DocumentLayout; trash: MapSummary[] }>(`/api/maps/${encodeURIComponent(mapId)}`, { method: 'DELETE' })
-      setDocuments(result.maps)
-      setDocumentLayout(result.documentLayout)
-      setTrashedDocuments(result.trash)
-      if (mapId === activeMapId) {
-        setLoadedMapId(null)
-        setActiveMapId(result.maps[0]?.id ?? '')
-      }
-      setSavedAt('휴지통으로 이동됨')
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : '문서를 휴지통으로 이동하지 못했습니다.')
+  const performDocumentTrash = async (preview: DocumentTrashPreview) => {
+    if (accountMode !== 'editor') throw new Error('편집자만 문서를 휴지통으로 이동할 수 있습니다.')
+    const { target } = preview
+    if (target.id === activeMapIdRef.current && serverBaseline.current
+      && !mapContentsEqual(createPersistedMapContent(nodesRef.current, edgesRef.current), serverBaseline.current)) {
+      throw new Error('대상 문서의 변경이 저장된 뒤 휴지통으로 이동해 주세요.')
     }
+    await apiRequest(`/api/maps/${encodeURIComponent(target.id)}${target.archived ? '/archive' : ''}`, {
+      method: 'DELETE', body: JSON.stringify({ referenceVersion: preview.referenceVersion,
+        baseVersion: target.version, baseLifecycleVersion: target.lifecycleVersion }),
+    })
+    // 이동은 이미 완료됐다. 목록 재조회 실패를 이동 실패로 오인해 재요청하지 않는다.
+    // 탐색 중인 다른 문서의 편집은 유지한다. Ref 상태는 기존 변경 알림으로 갱신된다.
+    try { await refreshLifecycleLibrary(false) }
+    catch { setSaveError('문서는 휴지통으로 이동했지만 목록을 갱신하지 못했습니다. 새로고침해 주세요.') }
+    setSavedAt('휴지통으로 이동됨')
+  }
+  const requestDocumentTrash = async (document: { id: string; title: string }) => {
+    if (accountMode !== 'editor' || trashRequestPending.current) return false
+    trashRequestPending.current = true
+    setDocumentContextMenu(null); setSaveError('')
+    const showReview = (preview: DocumentTrashPreview, message?: string) => {
+      setTrashReview({ preview, message }); setLifecycleOpen(false); setMobileSidebarOpen(false)
+    }
+    try {
+      const preview = await apiRequest<DocumentTrashPreview>(`/api/maps/${encodeURIComponent(document.id)}/trash-preview`)
+      if (preview.references.length) { showReview(preview); return false }
+      const archiveNotice = preview.target.archived ? '보관 문서를 휴지통으로 이동할까요? 원문·댓글·이미지는 유지되며, 휴지통에서 복원하면 보관함으로 돌아옵니다.\n\n기존 링크는 휴지통에서 복원하기 전까지 사용할 수 없습니다. 보관 상태가 변경되므로 기존 문서 재구성의 일괄 되돌리기도 차단됩니다.'
+        : '문서를 휴지통으로 이동할까요? 휴지통에서 복원할 수 있습니다.'
+      if (!window.confirm(`“${preview.target.title}” ${archiveNotice}\n다른 문서의 Ref 참조는 없습니다.`)) return false
+      await performDocumentTrash(preview)
+      return true
+    } catch (error) {
+      const preview = trashPreviewFromError(error)
+      if (preview?.target.id === document.id) {
+        showReview(preview, error instanceof Error ? error.message : undefined)
+        return false
+      }
+      throw error
+    } finally { trashRequestPending.current = false }
+  }
+  const trashDocument = async (mapId: string) => {
+    const document = documents.find((item) => item.id === mapId)
+    if (!document) return
+    try { await requestDocumentTrash(document) }
+    catch (error) { setSaveError(error instanceof Error ? error.message : '문서를 휴지통으로 이동하지 못했습니다.') }
   }
 
   const restoreDocument = async (mapId: string) => {
@@ -9463,7 +9494,10 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           </button>
         </div>
       )}
-      {lifecycleOpen && <DocumentLifecycle api={apiRequest} editable={accountMode === 'editor'} documents={documents} initialIds={selectedGroup?.mapIds ?? (activeMapId ? [activeMapId] : [])} scope={lifecycleEntry.scope} initialTab={lifecycleEntry.initialTab} userId={user.id} members={teamMembers} launchInWebUi={aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)} onClose={() => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }) }} onChanged={refreshLifecycleLibrary} onNavigate={(id, cardId) => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }); selectCardAndReveal(id, cardId ?? null) }} />}
+      {lifecycleOpen && <DocumentLifecycle api={apiRequest} editable={accountMode === 'editor'} documents={documents} initialIds={selectedGroup?.mapIds ?? (activeMapId ? [activeMapId] : [])} scope={lifecycleEntry.scope} initialTab={lifecycleEntry.initialTab} userId={user.id} members={teamMembers} launchInWebUi={aionUiWebNavigation.configured || !isLoopbackHostname(window.location.hostname)} onClose={() => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }) }} onChanged={refreshLifecycleLibrary} onTrashRequested={requestDocumentTrash} onNavigate={(id, cardId) => { setLifecycleOpen(false); setLifecycleEntry({ initialTab: 'archive' }); selectCardAndReveal(id, cardId ?? null) }} />}
+      {trashReview && <DocumentTrashReview key={`${trashReview.preview.target.id}:${trashReview.preview.referenceVersion}`} initialPreview={trashReview.preview} initialMessage={trashReview.message}
+        api={apiRequest} onNavigate={(id, cardId) => { setLifecycleOpen(false); setMobileSidebarOpen(false); selectCardAndReveal(id, cardId) }}
+        onTrash={performDocumentTrash} onClose={() => setTrashReview(null)} />}
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import { createAiConversationRemoval, conversationRemovalError } from './lib/aiConversationRemoval.mjs'
 import { createDocumentReadStore } from './lib/documentReadStore.mjs'
+import { createDocumentTrashReview, DocumentTrashReviewError } from './lib/documentTrashReview.mjs'
 import { completedDelegationIds, completedRequestReceipt, completedWorkspaceLeaseIds, referencedHistoryIds } from './lib/completedAiHistory.mjs'
 import { saveHistoryCleanupBackup, pruneHistoryCleanupBackups, readCompletedJobResults } from './lib/historyCleanupBackup.mjs'
 import { startRequestTiming } from './lib/requestTiming.mjs'
@@ -1415,6 +1416,17 @@ async function readMapProjection(mapId, options = {}, select = (value) => value.
 async function readMap(mapId, options = {}) {
   return readMapProjection(mapId, options)
 }
+
+const documentTrashReview = createDocumentTrashReview({
+  listDocumentIds: async () => (await readdir(dataDirectory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && isValidMapId(entry.name.slice(0, -5)))
+    .map((entry) => entry.name.slice(0, -5)),
+  readDocument: (mapId) => readMapProjection(mapId, {}, ({ map }) => ({
+    id: map.id, title: map.title, version: map.version, lifecycleVersion: map.lifecycleVersion,
+    archivedAt: map.archivedAt, trashedAt: map.trashedAt, reconstructionPending: map.reconstructionPending,
+    nodes: map.nodes.map((node) => ({ id: node.id, label: node.data.label, reference: node.data.reference })),
+  })),
+})
 
 async function listActiveMapIds() {
   const lifecycle = documentReconstruction?.metadataSnapshot() ?? {}
@@ -7930,7 +7942,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
     const isConversationRemoval = request.method === 'DELETE' && /^\/api\/maps\/[^/]+\/cards\/[^/]+\/ai-conversations\/[^/]+$/.test(url.pathname)
     if (!isConversationRemoval && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && /^\/api\/(maps|groups|document-reconstructions|card-layouts|integrations\/aionui)(\/|$)/.test(url.pathname)) {
       const isTransition = /^\/api\/maps\/[^/]+\/(archive|restore)$/.test(url.pathname)
-        || (request.method === 'DELETE' && url.pathname === '/api/maps/trash')
+        || (request.method === 'DELETE' && /^\/api\/maps\/[^/]+$/.test(url.pathname))
         || /^\/api\/maps\/[^/]+\/cards\/[^/]+\/move$/.test(url.pathname)
         || /^\/api\/maps\/[^/]+\/content-patch$/.test(url.pathname)
         || /^\/api\/document-reconstructions\/(apply|[^/]+\/rollback)$/.test(url.pathname)
@@ -7947,6 +7959,13 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         if (!requireUser(request, response)) return
         documentReconstruction.assertWritable(mapId)
       }
+    }
+    const trashPreviewRoute = url.pathname.match(/^\/api\/maps\/(map-[a-zA-Z0-9_-]+)\/trash-preview$/)
+    if (trashPreviewRoute && request.method === 'GET') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 휴지통 이동 전 참조를 확인할 수 있습니다.' })
+      return sendJson(response, 200, await documentTrashReview.inspect(trashPreviewRoute[1]))
     }
     const archiveRoute = url.pathname.match(/^\/api\/maps\/(map-[a-zA-Z0-9_-]+)\/archive$/)
     if (url.pathname === '/api/maps/archive' && request.method === 'GET') {
@@ -7969,6 +7988,7 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       const body = await readJsonBody(request)
       return await groupProjects.exclusive(async () => {
         groupProjects.assertCanTrash(archiveRoute[1])
+        await documentTrashReview.assertReviewed(archiveRoute[1], body?.referenceVersion)
         const map = await documentReconstruction.setArchivedTrash(archiveRoute[1], { ...body, trashed: true }, publicUser(user))
         broadcastMapChange(request, map.id, 'trashed', user)
         return sendJson(response, 200, { trashedId: map.id, map })
@@ -13347,10 +13367,12 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
 
       if (request.method === 'DELETE') {
         if (!canEdit(user)) return sendJson(response, 403, { error: '뷰어는 문서를 휴지통으로 이동할 수 없습니다.' })
+        const body = await readJsonBody(request)
         return await groupProjects.exclusive(async () => {
         groupProjects.assertCanTrash(mapId)
         const maps = await listMaps()
         if (maps.length <= 1) return sendJson(response, 409, { error: '마지막 문서는 휴지통으로 이동할 수 없습니다.' })
+        await documentTrashReview.assertReviewed(mapId, body?.referenceVersion)
         const map = await trashMap(mapId, user)
         if (!map) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
         const remainingMaps = maps.filter((item) => item.id !== mapId)
@@ -13373,6 +13395,9 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
     return sendJson(response, 404, { error: '요청한 경로를 찾을 수 없습니다.' })
   } catch (error) {
     throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    if (error instanceof DocumentTrashReviewError) return sendJson(response, error.status, {
+      error: error.message, code: error.code, ...(error.preview ? { preview: error.preview } : {}),
+    })
     if (error instanceof AiDelegationStatusLookupError) return sendJson(response, error.status, error.responseBody())
     if (error instanceof CrossDocumentCardMoveError) return sendJson(response, error.status, {
       error: error.message,

@@ -17,10 +17,11 @@ type ReconstructionRequest = { id: string; mode: 'compact' | 'spec-update'; base
 type AiDelegationBlocker = { id: string; state: string; mapId: string; cardId: string; cardLabel?: string }
 type Api = <T>(path: string, init?: RequestInit) => Promise<T>
 
-export function DocumentLifecycle({ api, editable, documents, initialIds, scope, initialTab = 'archive', userId, members, launchInWebUi, onClose, onChanged, onNavigate }: {
+export function DocumentLifecycle({ api, editable, documents, initialIds, scope, initialTab = 'archive', userId, members, launchInWebUi, onClose, onChanged, onNavigate, onTrashRequested }: {
   api: Api; editable: boolean; documents: Document[]; initialIds: string[]
   scope?: Scope; initialTab?: 'archive' | 'reconstruction'; userId: string; members: TeamMember[]; launchInWebUi: boolean
   onClose: () => void; onChanged: () => Promise<void>; onNavigate: (id: string, cardId?: string) => void
+  onTrashRequested: (document: Document) => Promise<boolean>
 }) {
   const [tab, setTab] = useState<'archive' | 'reconstruction' | 'history'>(initialTab)
   const [archived, setArchived] = useState<Document[]>([])
@@ -125,9 +126,8 @@ export function DocumentLifecycle({ api, editable, documents, initialIds, scope,
     await refresh(); await onChanged(); setNotice('문서를 복원했습니다. 후속 문서와 함께 활성 상태입니다.')
   })
   const trash = (doc: Document) => run(async () => {
-    if (!editable || !window.confirm(`“${doc.title}” 보관 문서를 휴지통으로 이동할까요? 원문·댓글·이미지는 유지되며, 휴지통에서 복원하면 보관함으로 돌아옵니다.\n\n기존 링크·Ref는 휴지통에서 복원하기 전까지 사용할 수 없습니다. 보관 상태가 변경되므로 기존 문서 재구성의 일괄 되돌리기도 차단됩니다.`)) return
-    await api(`/api/maps/${encodeURIComponent(doc.id)}/archive`, { method: 'DELETE', body: JSON.stringify({ baseVersion: doc.version, baseLifecycleVersion: doc.lifecycleVersion ?? 0 }) })
-    await refresh(); await onChanged(); setNotice('휴지통으로 이동했습니다. 휴지통에서 보관함으로 복원할 수 있습니다.')
+    if (!editable || !await onTrashRequested(doc)) return
+    await refresh(); setNotice('휴지통으로 이동했습니다. 휴지통에서 보관함으로 복원할 수 있습니다.')
   })
   const inspect = () => run(async () => {
     setPreview(null); setApproved(false); setLayoutError(''); lastMeasurement.current = ''

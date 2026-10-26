@@ -93,6 +93,10 @@ async function requestWithRunner(baseUrl, token, pendingRequest, resolver) {
 }
 
 function subMachineResponse(request, conversationId = 'conversation-on-mac') {
+  // 하위 대화를 이어갈 때도 출처 표시에 쓰는 상위 대화 제목을 조회한다.
+  if (conversationId !== 'conversation-on-mac' && request.pathname === '/api/conversations/conversation-on-mac') {
+    return subMachineResponse(request, 'conversation-on-mac')
+  }
   if (request.pathname === '/api/agents/management') {
     return [{
       id: 'claude',
@@ -288,6 +292,23 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
     assert.equal(linked.body.conversations[0].accessible, true)
     assert.equal(linked.body.conversations[0].liveStatusChecked, false)
     assert.equal(linked.body.conversations[0].linkMissing, false)
+
+    const documentLinked = await request(baseUrl, cookie, `/api/maps/${mapId}/ai-conversations`)
+    assert.equal(documentLinked.response.status, 200)
+    const rootGroup = documentLinked.body.cards.find((card) => card.cardId === 'root-card')
+    assert.equal(rootGroup.conversations[0].conversationId, conversationId)
+    assert.equal(rootGroup.conversations[0].homeMachineId, 'macbook')
+    assert.equal(rootGroup.conversations[0].accessible, true)
+    const compactList = await requestWithRunner(baseUrl, runnerToken,
+      request(baseUrl, cookie, `/api/maps/${mapId}/cards/root-card/ai-conversations?view=compact`),
+      (operation) => {
+        assert.equal(operation.pathname.includes('/messages'), false, '문서 간략 목록은 이력을 읽지 않는다')
+        return subMachineResponse(operation, conversationId)
+      })
+    assert.equal(compactList.response.status, 200)
+    assert.equal(compactList.body.conversations[0].name, '맥북 대화')
+    assert.equal(compactList.body.conversations[0].homeMachineLabel, '개발 맥북')
+    assert.equal(compactList.body.conversations[0].contextHealth, undefined)
 
     assert.equal((await request(baseUrl, cookie, '/api/machines', 'POST', {
       machineId: 'offline-mac', label: '오프라인 맥북', platform: 'darwin',

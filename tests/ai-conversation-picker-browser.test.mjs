@@ -27,6 +27,8 @@ const conversations = ['running','waiting-confirmation','idle','unknown','unavai
   startedBy:{label:'테스트 편집자'},startedAt:'2026-09-13T01:30:00Z',
 }));
 window.audit={selected:null,started:0,closed:0};
+window.deletion={calls:[],confirm:false,fail:false,pending:false,release:null};
+window.confirm=()=>window.deletion.confirm;
 window.pickerFetch={requests:[],releaseDetails:null};
 window.fetch = (url,init) => {
   if (!String(url).startsWith('/api/maps/')) return originalFetch(url,init);
@@ -42,7 +44,12 @@ window.fetch = (url,init) => {
 createRoot(document.getElementById('root')).render(React.createElement(AiConversationPickerDialog,{
   mapId:'test-map',cardId:'root',cardTitle:'문서 작업공간 개선',onClose:()=>window.audit.closed++,
   onSelect:c=>window.audit.selected=c.conversationId,onStartNew:()=>window.audit.started++,
-  onDeleteUnavailable:async()=>({latestConversationId:'conversation-0'}),
+  onDeleteConversation:async(id)=>{
+    window.deletion.calls.push(id);
+    if(window.deletion.fail) throw Error('보관 확인 실패: 연결을 유지합니다.');
+    if(window.deletion.pending) await new Promise(resolve=>window.deletion.release=resolve);
+    return {latestConversationId:'conversation-0'};
+  },
 }));
 // 텍스트 자신의 배경뿐 아니라 투명한 부모를 통과한 실제 배경과 대비를 계산한다.
 window.textContrast = () => {
@@ -69,7 +76,9 @@ test('대화 선택 목록의 보조 정보는 다크모드·호버·비활성 �
     await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 })
   }
   const server = await createServer({ configFile: false, root: path.resolve(import.meta.dirname, '..'), logLevel: 'error',
-    server: { host: '127.0.0.1', port: 0, hmr: false }, plugins: [react(), {
+    cacheDir: path.join(directory, 'vite-cache'),
+    optimizeDeps: { entries: [], include: ['react', 'react-dom/client', 'react/jsx-dev-runtime'] },
+    server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, plugins: [react(), {
       name: 'picker-fixture', resolveId: id => id === '/picker-fixture.js' ? '\0picker-fixture' : null,
       load: id => id === '\0picker-fixture' ? fixture : null,
       configureServer(vite) { vite.middlewares.use('/picker-check', async (_req, res) => {
@@ -169,6 +178,41 @@ test('대화 선택 목록의 보조 정보는 다크모드·호버·비활성 �
     assert.deepEqual(await evaluate('window.textContrast().map(item=>item.color)'), lightColors, '라이트모드 색상 유지')
     await evaluate('document.querySelector(".ai-conversation-choice-open").click();document.querySelector(".ai-conversation-picker-actions .primary").click()')
     assert.deepEqual(await evaluate('window.audit'), { selected: 'conversation-0', started: 1, closed: 0 })
+    assert.equal(await evaluate('document.querySelectorAll(".ai-conversation-choice-delete").length'), 1, '기존 행 옆 삭제 버튼 유지')
+    const openMenu = async () => {
+      await evaluate('document.querySelectorAll(".ai-conversation-choice")[2].scrollIntoView({block:"center"})')
+      await delay(100)
+      const point = await evaluate('(()=>{const r=document.querySelectorAll(".ai-conversation-choice")[2].getBoundingClientRect();return {x:r.x+24,y:r.y+28}})()')
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'right', buttons: 2, clickCount: 1, ...point })
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'right', buttons: 0, clickCount: 1, ...point })
+      await waitFor(() => evaluate('!!document.querySelector("[role=menuitem]")'))
+    }
+    await openMenu()
+    assert.deepEqual(await evaluate('window.deletion.calls'), [], '우클릭만으로 삭제하지 않는다')
+    assert.equal(await evaluate('window.audit.selected'), 'conversation-0', '우클릭으로 대화를 열지 않는다')
+    assert.equal(await evaluate('(()=>{const r=document.querySelector("[role=menu]").getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.bottom<=innerHeight})()'), true)
+    await screenshot('context-menu-mobile.png')
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+    await waitFor(() => evaluate('!document.querySelector("[role=menu]")'))
+    assert.equal(await evaluate('window.audit.closed'), 0, 'Escape는 메뉴를 먼저 닫는다')
+    await openMenu()
+    await evaluate('document.querySelector("[role=menuitem]").click()')
+    assert.deepEqual(await evaluate('window.deletion.calls'), [], '확인 취소 시 삭제 요청 없음')
+    await evaluate('window.deletion.confirm=true;window.deletion.fail=true')
+    await openMenu()
+    await evaluate('document.querySelector("[role=menuitem]").click()')
+    await waitFor(() => evaluate('document.querySelector("[role=alert]")?.textContent.includes("보관 확인 실패")'))
+    assert.equal(await evaluate('document.querySelectorAll(".ai-conversation-choice").length'), 6, '실패한 항목을 유지한다')
+    await evaluate('window.deletion.fail=false;window.deletion.pending=true')
+    await openMenu()
+    await evaluate('document.querySelector("[role=menuitem]").click()')
+    await waitFor(() => evaluate('typeof window.deletion.release==="function"'))
+    assert.equal(await evaluate('document.querySelectorAll(".ai-conversation-choice-open")[2].disabled'), true)
+    await evaluate('window.deletion.release();window.deletion.pending=false')
+    await waitFor(() => evaluate('document.querySelectorAll(".ai-conversation-choice").length===5'))
+    await evaluate('document.querySelector(".ai-conversation-choice-delete").click()')
+    await waitFor(() => evaluate('document.querySelectorAll(".ai-conversation-choice").length===4'))
+    assert.deepEqual(await evaluate('window.deletion.calls'), ['conversation-2', 'conversation-2', 'conversation-4'], '우클릭과 행 옆 버튼은 같은 삭제 경로를 사용한다')
     t.diagnostic(`다크모드 최소 대비 ${minimum.toFixed(2)}:1, 호버 최소 대비 ${hoverMinimum.toFixed(2)}:1`)
   } finally {
     if (send && socket?.readyState === WebSocket.OPEN) await send('Browser.close').catch(() => {})

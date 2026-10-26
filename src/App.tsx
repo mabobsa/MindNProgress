@@ -2424,6 +2424,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const [aiDialogOpen, setAiDialogOpen] = useState(false)
   const [aiConversationLaunch, setAiConversationLaunch] = useState<AiConversationExplicitTarget & { initialRequest: string } | null>(null)
   const [aiConversationPicker, setAiConversationPicker] = useState<{ mapId: string; cardId: string; cardTitle: string; launch?: GroupAiTarget } | null>(null)
+  const [documentAiConversations, setDocumentAiConversations] = useState<{ mapId: string; title: string } | null>(null)
   const [aionUiWebNavigation, setAionUiWebNavigation] = useState(() => ({
     baseUrl: defaultAionUiWebBaseUrl(),
     configured: false,
@@ -4523,7 +4524,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     if (conversationId) void openAiConversation(conversationId, cardId, mapId)
   }
 
-  const deleteUnavailableAiConversation = async (mapId: string, cardId: string, conversationId: string) => {
+  const deleteAiConversation = async (mapId: string, cardId: string, conversationId: string) => {
     const result = await apiRequest<{
       map: MapDocument
       card: MindMapNode
@@ -6112,7 +6113,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     setAiConversationContextMenu(null)
     setDocumentContextMenu({
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 465)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 510)),
       mapId,
     })
   }
@@ -6125,7 +6126,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   }
   const libraryTouchMenu = useLibraryTouchMenu(accountMode === 'editor' && !trashOpen, ({ kind, id, x, y }) => {
     setNodeContextMenu(null); setAiConversationContextMenu(null); setCanvasPasteMenu(null)
-    setDocumentContextMenu({ x: Math.max(8, Math.min(x, window.innerWidth - 230)), y: Math.max(8, Math.min(y, window.innerHeight - (kind === 'map' ? 465 : 140))), mapId: kind === 'map' ? id : '', ...(kind === 'group' ? { groupId: id } : {}) })
+    setDocumentContextMenu({ x: Math.max(8, Math.min(x, window.innerWidth - 230)), y: Math.max(8, Math.min(y, window.innerHeight - (kind === 'map' ? 510 : 140))), mapId: kind === 'map' ? id : '', ...(kind === 'group' ? { groupId: id } : {}) })
   })
   const openDocumentCleanup = (scope: { type: 'map' | 'group'; id: string }) => {
     setDocumentContextMenu(null)
@@ -9204,12 +9205,24 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
               initialRequest: '',
             })
           }}
-          onDeleteUnavailable={(conversationId) => deleteUnavailableAiConversation(
+          onDeleteConversation={(conversationId) => deleteAiConversation(
             aiConversationPicker.mapId,
             aiConversationPicker.cardId,
             conversationId,
           )}
           onClose={() => setAiConversationPicker(null)}
+        />
+      )}
+      {documentAiConversations && (
+        <AiConversationPickerDialog
+          key={`document:${documentAiConversations.mapId}`}
+          mapId={documentAiConversations.mapId}
+          documentTitle={documentAiConversations.title}
+          onSelect={(conversation, cardId) => {
+            void openAiConversation(conversation.conversationId, cardId, documentAiConversations.mapId, conversation.homeMachineRole)
+          }}
+          onDeleteConversation={(conversationId, cardId) => deleteAiConversation(documentAiConversations.mapId, cardId, conversationId)}
+          onClose={() => setDocumentAiConversations(null)}
         />
       )}
       {previewImageNode?.data.image && (
@@ -9414,6 +9427,14 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
             </div>
           </div>
           <div className="context-divider" />
+          <button role="menuitem" onClick={() => {
+            const target = documents.find((item) => item.id === documentContextMenu.mapId)
+            setDocumentContextMenu(null)
+            if (target) setDocumentAiConversations({ mapId: target.id, title: target.title })
+          }}>
+            <span className="context-icon"><Icon name="sparkles" size={15} /></span>
+            <span><strong>AI 대화 목록</strong><small>전체 카드의 연결 대화 확인·삭제</small></span>
+          </button>
           <button role="menuitem" onClick={() => openDocumentCleanup({ type: 'map', id: documentContextMenu.mapId })}>
             <span className="context-icon"><Icon name="sparkles" size={15} /></span><span><strong>문서 정리</strong><small>규모 정리 또는 새 기획 반영 · AI 정리안 요청</small></span>
           </button>

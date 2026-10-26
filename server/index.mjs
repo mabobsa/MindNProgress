@@ -1,4 +1,5 @@
 import { createServer } from 'node:http'
+import { createAiConversationRemoval, conversationRemovalError } from './lib/aiConversationRemoval.mjs'
 import { createDocumentReadStore } from './lib/documentReadStore.mjs'
 import { completedDelegationIds, completedRequestReceipt, completedWorkspaceLeaseIds, referencedHistoryIds } from './lib/completedAiHistory.mjs'
 import { saveHistoryCleanupBackup, pruneHistoryCleanupBackups, readCompletedJobResults } from './lib/historyCleanupBackup.mjs'
@@ -2277,6 +2278,10 @@ async function fetchAionUi(pathname, { timeoutMs = 8_000, method = 'GET', body, 
 // 서브 머신의 AionUi는 inbound 주소를 열지 않으므로 메인에서 직접 호출할 수 없다.
 function fetchAionUiOn(machineId, pathname, options = {}) {
   if (runtimeLifecycle.signal.aborted) return Promise.reject(runtimeLifecycle.signal.reason)
+  if (options.method === 'POST' && pathname === '/api/internal/external-conversation-dispatches'
+    && [options.body?.targetConversationId, options.body?.actorConversationId].some((id) => aiConversationRemoval.isRemoving(id))) {
+    return Promise.reject(conversationRemovalError('삭제를 확인 중인 대화에는 새 작업을 전달할 수 없습니다.'))
+  }
   const targetMachineId = normalizeMachineId(machineId)
   if (!targetMachineId || targetMachineId === machineRegistry.mainMachineId) {
     return fetchAionUi(pathname, options)
@@ -5617,6 +5622,227 @@ function fetchAiConversationRuntimeSnapshot(machineId = machineRegistry.mainMach
   return request
 }
 
+const aiConversationRemoval = createAiConversationRemoval({
+  async readContext(user, mapId, cardId, conversationId) {
+    documentReconstruction.assertWritable(mapId)
+    const map = await readMap(mapId)
+    const card = map?.nodes.find((node) => node.id === cardId)
+    if (!map || map.trashedAt || !card) throw conversationRemovalError('카드를 찾을 수 없습니다.', 404)
+    const link = aiConversationLinksFromData(card.data).find((item) => item.conversationId === conversationId)
+    const machineId = link ? conversationHomeMachineId(conversationId, link) : null
+    if (link && !machineAccessibleByUser(user, machineId)) {
+      throw conversationRemovalError('대화가 속한 머신을 사용할 권한이 없습니다.', 403)
+    }
+    if (link && machineId !== machineRegistry.mainMachineId) {
+      const machine = findMachine(machineRegistry, machineId)
+      const lastSeenAt = Date.parse(machine?.lastSeenAt ?? '')
+      if (!Number.isFinite(lastSeenAt) || Date.now() - lastSeenAt > runnerOnlineWithinMs) {
+        throw conversationRemovalError('대화가 속한 머신이 연결되어 있지 않습니다. 연결 후 다시 시도해 주세요.', 503)
+      }
+    }
+    return { map, card, link, machineId }
+  },
+  async assertSafe({ map, card, machineId }, conversationId) {
+    const references = (item) => ['conversationId', 'parentConversationId', 'targetConversationId', 'requestedConversationId', 'sourceConversationId', 'replyConversationId']
+      .some((key) => item?.[key] === conversationId)
+    const busyDelegation = [...aiDelegations.values()].some((item) => references(item)
+      && (!['completed', 'cancelled', 'closed'].includes(item.state)
+        || item.reportPending || item.pendingRecovery || aiDelegationActions.has(item.id) || integrationRecoveryQueue.running.has(item.id)))
+    // 만료된 지시는 자동 전달 대상이 아니다. 남은 과거 전달 정보만으로 삭제를 막지 않는다.
+    const busyInstruction = [...groupDocumentInstructions.values()].some((item) => references(item)
+      && (!['replied', 'cancelled', 'closed', 'expired'].includes(item.state) || groupDocumentInstructionActions.has(item.id)))
+    const busyLease = [...Object.values(localWorkspacePoolManager.state?.leases ?? {}), ...Object.values(remoteWorkspacePool.state?.leases ?? {})]
+      .some((item) => references(item) && !['completed', 'cancelled'].includes(item.status))
+    if (busyDelegation || busyInstruction || busyLease) {
+      throw conversationRemovalError('진행 중이거나 복구·보고가 남은 위임 또는 작업공간이 연결되어 있습니다. 해당 처리를 마친 뒤 삭제해 주세요.')
+    }
+    const linkedElsewhere = (await Promise.all((await listActiveMapIds()).map((id) => readMapProjection(id, {}, (value) => value.runtime))))
+      .some((other) => other?.nodes.some((node) => (other.id !== map.id || node.id !== card.id)
+        && aiConversationLinksFromData(node.data).some((link) => link.conversationId === conversationId
+          && conversationHomeMachineId(conversationId, link) === machineId)))
+    if (linkedElsewhere) throw conversationRemovalError('다른 카드에서도 사용 중인 대화입니다. 공용 대화는 이 카드에서 보관·삭제할 수 없습니다.')
+  },
+  call: fetchAionUiOn,
+  async assertIdle(machineId, conversationId) {
+    const conversation = await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(conversationId)}`, { strictJson: true, singleTarget: true })
+    if (conversation?.id !== conversationId || conversation.runtime?.state !== 'idle'
+      || conversation.runtime?.is_processing !== false
+      || normalizeAiConversationRuntime(conversationId, conversation).state !== 'idle') {
+      throw conversationRemovalError('실행 중이거나 승인 대기 중인 대화, 또는 실행 상태를 확인하지 못한 대화는 삭제할 수 없습니다.')
+    }
+  },
+  acquireMutation: () => acquireDocumentMutation(true),
+  async unlink({ map, card, link }, conversationId, user) {
+    const remainingLinks = removeAiConversationLink(card.data, conversationId)
+    const latestConversationId = remainingLinks.at(-1)?.conversationId ?? null
+    const nextData = { ...card.data }
+    if (remainingLinks.length > 0) nextData.aiConversations = remainingLinks
+    else delete nextData.aiConversations
+    if (latestConversationId) nextData.aiConversationId = latestConversationId
+    else delete nextData.aiConversationId
+    const updatedMap = link ? await saveMap(map.id, {
+      nodes: map.nodes.map((node) => node.id === card.id ? { ...node, data: nextData } : node), edges: map.edges,
+    }, user, map.title, map.color, 'content') : map
+    const attributionKey = conversationAttributionKey(map.id, card.id)
+    if (aiConversationAttributions.get(attributionKey)?.conversationId === conversationId) aiConversationAttributions.delete(attributionKey)
+    for (const [tokenHash, attribution] of aiAttributions.entries()) {
+      if (attribution.mapId === map.id && attribution.cardId === card.id && attribution.conversationId === conversationId) aiAttributions.delete(tokenHash)
+    }
+    const origin = aiConversationOrigins.get(conversationId)
+    if (origin?.mapId === map.id && origin.cardId === card.id) aiConversationOrigins.delete(conversationId)
+    await Promise.all([persistAiAttributions(), persistAiConversationAttributions(), persistAiConversationOrigins()])
+    return { map: updatedMap, card: updatedMap.nodes.find((node) => node.id === card.id), removedConversationId: conversationId, latestConversationId }
+  },
+})
+
+async function listCardAiConversations(user, mapId, card, { linkedOnly = false, compact = false } = {}) {
+  const cardId = card.id
+  const currentAttribution = aiConversationAttributions.get(conversationAttributionKey(mapId, cardId))
+  const cardLinks = aiConversationLinksFromData(card.data)
+  const links = cardLinks.map((link) => {
+    const homeMachineId = conversationHomeMachineId(link.conversationId, link)
+    if (link.conversationId !== currentAttribution?.conversationId) {
+      return normalizeAiConversationLink({ ...link, homeMachineId })
+    }
+    return normalizeAiConversationLink({
+      ...link,
+      homeMachineId,
+      agent: link.agent ?? (currentAttribution.agentId ? {
+        id: currentAttribution.agentId,
+        label: currentAttribution.agentName ?? currentAttribution.agentId,
+      } : null),
+      model: link.model ?? (currentAttribution.modelId ? {
+        id: currentAttribution.modelId,
+        label: currentAttribution.modelName ?? currentAttribution.modelId,
+      } : null),
+      providerId: link.providerId ?? currentAttribution.providerId,
+      startedBy: link.startedBy ?? (currentAttribution.startedBy ? {
+        id: currentAttribution.startedBy,
+        label: users.find((candidate) => candidate.id === currentAttribution.startedBy)?.name ?? currentAttribution.startedBy,
+      } : null),
+      startedAt: link.startedAt ?? currentAttribution.linkedAt,
+      linkedAt: link.linkedAt ?? currentAttribution.linkedAt,
+    })
+  }).filter(Boolean)
+  const observedAt = new Date().toISOString()
+  const conversations = await Promise.all(links.map(async (link) => {
+    const origin = aiConversationOrigins.get(link.conversationId)
+    const recordedWorkspace = origin?.workspace ?? link.workspace
+    const recordedWorkspacePool = workspacePoolManager.poolForWorkspace(recordedWorkspace)
+    const recordedWorkspacePoolId = recordedWorkspacePool?.poolId
+      ?? origin?.workspacePoolId
+      ?? link.workspacePoolId
+      ?? null
+    const recordedLink = normalizeAiConversationLink({
+      ...link,
+      workspace: recordedWorkspace,
+      workspacePoolId: recordedWorkspacePoolId,
+    }) ?? link
+    const workspaceBinding = recordedWorkspacePool ? 'pool-rebindable' : 'fixed'
+    const accessible = machineAccessibleByUser(user, recordedLink.homeMachineId)
+    const homeMachine = findMachine(machineRegistry, recordedLink.homeMachineId)
+    const machineOnline = recordedLink.homeMachineId === machineRegistry.mainMachineId
+      || Boolean(homeMachine?.lastSeenAt
+        && Date.now() - Date.parse(homeMachine.lastSeenAt) <= runnerOnlineWithinMs)
+    // Runner가 끊긴 머신은 상세 조회 요청을 큐에 넣어 목록 전체를 지연시키지 않는다.
+    if (linkedOnly || !accessible || !machineOnline) {
+      return {
+        ...recordedLink,
+        workspaceBinding,
+        homeMachineLabel: machineLabel(recordedLink.homeMachineId),
+        homeMachineRole: recordedLink.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
+        accessible,
+        machineOnline,
+        liveStatusChecked: false,
+        linkMissing: false,
+        available: false,
+        name: '',
+        modifiedAt: null,
+        runtime: normalizeAiConversationRuntime(recordedLink.conversationId, null, observedAt),
+        contextHealth: compact ? undefined : assessAiConversationContextHealth({
+          conversationId: recordedLink.conversationId,
+          runtimeState: 'unknown',
+          conversationTurnCount: null,
+          conversationTurnCountExact: false,
+          ...aiConversationDelegationContextStats(recordedLink.conversationId),
+        }, observedAt),
+      }
+    }
+    try {
+      const conversation = await fetchAiConversationRuntime(recordedLink.conversationId)
+      if (!conversation || String(conversation.id) !== recordedLink.conversationId) throw new Error('AIONUI_CONVERSATION_NOT_FOUND')
+      const recoveredLink = aiConversationLinkFromAionUiConversation(conversation)
+      const currentWorkspace = recoveredLink?.workspace ?? recordedWorkspace
+      const currentWorkspacePool = workspacePoolManager.poolForWorkspace(currentWorkspace)
+      const currentWorkspacePoolId = currentWorkspacePool?.poolId
+        ?? recordedWorkspacePoolId
+      const enrichedLink = normalizeAiConversationLink({
+        ...recordedLink,
+        agent: recordedLink.agent ?? recoveredLink?.agent,
+        model: recordedLink.model ?? recoveredLink?.model,
+        providerId: recordedLink.providerId ?? recoveredLink?.providerId,
+        mode: recordedLink.mode ?? recoveredLink?.mode,
+        thoughtLevel: recordedLink.thoughtLevel ?? recoveredLink?.thoughtLevel,
+        skills: recordedLink.skills.length > 0 ? recordedLink.skills : recoveredLink?.skills,
+        mcpServers: recordedLink.mcpServers.length > 0 ? recordedLink.mcpServers : recoveredLink?.mcpServers,
+        workspace: currentWorkspace,
+        workspacePoolId: currentWorkspacePoolId,
+        claudeAccountId: recordedLink.claudeAccountId ?? recoveredLink?.claudeAccountId,
+        startedAt: recordedLink.startedAt ?? recoveredLink?.startedAt,
+      }) ?? recordedLink
+      const linkedModelId = cardLinks.find((link) => link.conversationId === recordedLink.conversationId)?.model?.id
+      const contextHealth = compact ? undefined : await inspectAiConversationContextHealth(recordedLink.conversationId, conversation, enrichedLink.homeMachineId, {}, linkedModelId)
+      return {
+        ...enrichedLink,
+        workspaceBinding: currentWorkspacePool ? 'pool-rebindable' : 'fixed',
+        homeMachineLabel: machineLabel(enrichedLink.homeMachineId),
+        homeMachineRole: enrichedLink.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
+        accessible: true,
+        machineOnline: true,
+        liveStatusChecked: true,
+        linkMissing: false,
+        available: true,
+        name: String(conversation.name ?? ''),
+        startedAt: enrichedLink.startedAt ?? normalizedIsoDate(conversation.created_at),
+        modifiedAt: normalizedIsoDate(conversation.modified_at, enrichedLink.linkedAt ?? null),
+        runtime: normalizeAiConversationRuntime(recordedLink.conversationId, conversation, observedAt),
+        contextHealth,
+      }
+    } catch (shutdownError) {
+      throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
+      return {
+        ...recordedLink,
+        workspaceBinding,
+        homeMachineLabel: machineLabel(recordedLink.homeMachineId),
+        homeMachineRole: recordedLink.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
+        accessible: true,
+        machineOnline,
+        liveStatusChecked: true,
+        linkMissing: shutdownError?.status === 404 || shutdownError?.message === 'AIONUI_CONVERSATION_NOT_FOUND',
+        available: false,
+        name: '',
+        modifiedAt: null,
+        runtime: normalizeAiConversationRuntime(recordedLink.conversationId, null, observedAt),
+        contextHealth: compact ? undefined : assessAiConversationContextHealth({
+          conversationId: recordedLink.conversationId,
+          runtimeState: 'unknown',
+          conversationTurnCount: null,
+          conversationTurnCountExact: false,
+          ...aiConversationDelegationContextStats(recordedLink.conversationId),
+        }, observedAt),
+      }
+    }
+  }))
+  conversations.sort((first, second) => String(second.startedAt ?? second.linkedAt ?? '')
+    .localeCompare(String(first.startedAt ?? first.linkedAt ?? '')))
+  return {
+    mapId,
+    cardId,
+    latestConversationId: card.data?.aiConversationId ?? null,
+    conversations: compact ? conversations : await attachClaudeAccounts(conversations),
+  }
+}
+
 function fetchAiConversationRuntime(conversationId) {
   const machineId = conversationHomeMachineId(conversationId)
   const requestKey = `${machineId}:${conversationId}`
@@ -7701,7 +7927,8 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
   let releaseDocumentMutation = null
 
   try {
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && /^\/api\/(maps|groups|document-reconstructions|card-layouts|integrations\/aionui)(\/|$)/.test(url.pathname)) {
+    const isConversationRemoval = request.method === 'DELETE' && /^\/api\/maps\/[^/]+\/cards\/[^/]+\/ai-conversations\/[^/]+$/.test(url.pathname)
+    if (!isConversationRemoval && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && /^\/api\/(maps|groups|document-reconstructions|card-layouts|integrations\/aionui)(\/|$)/.test(url.pathname)) {
       const isTransition = /^\/api\/maps\/[^/]+\/(archive|restore)$/.test(url.pathname)
         || (request.method === 'DELETE' && url.pathname === '/api/maps/trash')
         || /^\/api\/maps\/[^/]+\/cards\/[^/]+\/move$/.test(url.pathname)
@@ -11150,44 +11377,38 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
         || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(conversationId)) {
         return sendJson(response, 400, { error: '문서, 카드 또는 대화 ID가 올바르지 않습니다.' })
       }
+      try {
+        const removed = await aiConversationRemoval.remove(user, mapId, cardId, conversationId)
+        broadcastMapChange(request, mapId, 'content', user)
+        console.info('[AI conversation removal]', { mapId, cardId, conversationId, archiveState: removed.archiveState })
+        return sendJson(response, 200, removed)
+      } catch (error) {
+        console.warn('[AI conversation removal failed]', { mapId, cardId, conversationId, code: error.code, status: error.status })
+        return sendJson(response, error.conversationRemovalError ? error.status : 502, {
+          error: error.conversationRemovalError ? error.message
+            : '대화 삭제를 완료하지 못했습니다. Aion 연결과 보관 상태 조회 기능의 적용 여부를 확인한 뒤 다시 시도해 주세요.',
+          code: error.code ?? 'AI_CONVERSATION_REMOVAL_FAILED',
+        })
+      }
+    }
+
+    const documentAiConversationsRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/ai-conversations$/)
+    if (documentAiConversationsRoute && request.method === 'GET') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 AI 대화 목록을 확인할 수 있습니다.' })
+      const mapId = decodeURIComponent(documentAiConversationsRoute[1])
+      if (!isValidMapId(mapId)) return sendJson(response, 400, { error: '문서 ID가 올바르지 않습니다.' })
       const map = await readMap(mapId)
-      const card = map?.nodes.find((node) => node.id === cardId)
-      if (!map || map.trashedAt || !card) return sendJson(response, 404, { error: '카드를 찾을 수 없습니다.' })
-      if (!isAiConversationLinked(card.data, conversationId)) {
-        return sendJson(response, 404, { error: '카드에 연결된 AI 대화를 찾을 수 없습니다.' })
-      }
-
-      const remainingLinks = removeAiConversationLink(card.data, conversationId)
-      const latestConversationId = remainingLinks.at(-1)?.conversationId ?? null
-      const nextData = { ...card.data }
-      if (remainingLinks.length > 0) nextData.aiConversations = remainingLinks
-      else delete nextData.aiConversations
-      if (latestConversationId) nextData.aiConversationId = latestConversationId
-      else delete nextData.aiConversationId
-      const updatedMap = await saveMap(mapId, {
-        nodes: map.nodes.map((node) => node.id === cardId ? { ...node, data: nextData } : node),
-        edges: map.edges,
-      }, user, map.title, map.color, 'content')
-
-      const attributionKey = conversationAttributionKey(mapId, cardId)
-      if (aiConversationAttributions.get(attributionKey)?.conversationId === conversationId) {
-        aiConversationAttributions.delete(attributionKey)
-      }
-      for (const [tokenHash, attribution] of aiAttributions.entries()) {
-        if (attribution.mapId === mapId && attribution.cardId === cardId && attribution.conversationId === conversationId) {
-          aiAttributions.delete(tokenHash)
-        }
-      }
-      const origin = aiConversationOrigins.get(conversationId)
-      if (origin?.mapId === mapId && origin.cardId === cardId) aiConversationOrigins.delete(conversationId)
-      await Promise.all([persistAiAttributions(), persistAiConversationAttributions(), persistAiConversationOrigins()])
-      broadcastMapChange(request, mapId, 'content', user)
-      return sendJson(response, 200, {
-        map: updatedMap,
-        card: updatedMap.nodes.find((node) => node.id === cardId),
-        removedConversationId: conversationId,
-        latestConversationId,
-      })
+      if (!map || map.trashedAt) return sendJson(response, 404, { error: '문서를 찾을 수 없습니다.' })
+      // 전체 카드의 연결 기록부터 반환한다. 제목은 화면에서 카드별로 나눠 조회한다.
+      const cards = await Promise.all(map.nodes
+        .filter((card) => aiConversationLinksFromData(card.data).length > 0)
+        .map(async (card) => ({
+          ...await listCardAiConversations(user, mapId, card, { linkedOnly: true, compact: true }),
+          cardTitle: card.data.label,
+        })))
+      return sendJson(response, 200, { mapId, documentTitle: map.title, cards })
     }
 
     const cardAiConversationsRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/cards\/([^/]+)\/ai-conversations$/)
@@ -11205,150 +11426,9 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
       if (!map || map.trashedAt || !card) return sendJson(response, 404, { error: '카드를 찾을 수 없습니다.' })
       // 대화 선택 화면은 연결 기록을 먼저 보여준다. 원격 머신 조회는 별도 요청에서 수행한다.
       const linkedOnly = url.searchParams.get('view') === 'linked'
-      const currentAttribution = aiConversationAttributions.get(conversationAttributionKey(mapId, cardId))
-      const cardLinks = aiConversationLinksFromData(card.data)
-      const links = cardLinks.map((link) => {
-        const homeMachineId = conversationHomeMachineId(link.conversationId, link)
-        if (link.conversationId !== currentAttribution?.conversationId) {
-          return normalizeAiConversationLink({ ...link, homeMachineId })
-        }
-        return normalizeAiConversationLink({
-          ...link,
-          homeMachineId,
-          agent: link.agent ?? (currentAttribution.agentId ? {
-            id: currentAttribution.agentId,
-            label: currentAttribution.agentName ?? currentAttribution.agentId,
-          } : null),
-          model: link.model ?? (currentAttribution.modelId ? {
-            id: currentAttribution.modelId,
-            label: currentAttribution.modelName ?? currentAttribution.modelId,
-          } : null),
-          providerId: link.providerId ?? currentAttribution.providerId,
-          startedBy: link.startedBy ?? (currentAttribution.startedBy ? {
-            id: currentAttribution.startedBy,
-            label: users.find((candidate) => candidate.id === currentAttribution.startedBy)?.name ?? currentAttribution.startedBy,
-          } : null),
-          startedAt: link.startedAt ?? currentAttribution.linkedAt,
-          linkedAt: link.linkedAt ?? currentAttribution.linkedAt,
-        })
-      }).filter(Boolean)
-      const observedAt = new Date().toISOString()
-      const conversations = await Promise.all(links.map(async (link) => {
-        const origin = aiConversationOrigins.get(link.conversationId)
-        const recordedWorkspace = origin?.workspace ?? link.workspace
-        const recordedWorkspacePool = workspacePoolManager.poolForWorkspace(recordedWorkspace)
-        const recordedWorkspacePoolId = recordedWorkspacePool?.poolId
-          ?? origin?.workspacePoolId
-          ?? link.workspacePoolId
-          ?? null
-        const recordedLink = normalizeAiConversationLink({
-          ...link,
-          workspace: recordedWorkspace,
-          workspacePoolId: recordedWorkspacePoolId,
-        }) ?? link
-        const workspaceBinding = recordedWorkspacePool ? 'pool-rebindable' : 'fixed'
-        const accessible = machineAccessibleByUser(user, recordedLink.homeMachineId)
-        const homeMachine = findMachine(machineRegistry, recordedLink.homeMachineId)
-        const machineOnline = recordedLink.homeMachineId === machineRegistry.mainMachineId
-          || Boolean(homeMachine?.lastSeenAt
-            && Date.now() - Date.parse(homeMachine.lastSeenAt) <= runnerOnlineWithinMs)
-        // Runner가 끊긴 머신은 상세 조회 요청을 큐에 넣어 목록 전체를 지연시키지 않는다.
-        if (linkedOnly || !accessible || !machineOnline) {
-          return {
-            ...recordedLink,
-            workspaceBinding,
-            homeMachineLabel: machineLabel(recordedLink.homeMachineId),
-            homeMachineRole: recordedLink.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
-            accessible,
-            machineOnline,
-            liveStatusChecked: false,
-            linkMissing: false,
-            available: false,
-            name: '',
-            modifiedAt: null,
-            runtime: normalizeAiConversationRuntime(recordedLink.conversationId, null, observedAt),
-            contextHealth: assessAiConversationContextHealth({
-              conversationId: recordedLink.conversationId,
-              runtimeState: 'unknown',
-              conversationTurnCount: null,
-              conversationTurnCountExact: false,
-              ...aiConversationDelegationContextStats(recordedLink.conversationId),
-            }, observedAt),
-          }
-        }
-        try {
-          const conversation = await fetchAiConversationRuntime(recordedLink.conversationId)
-          if (!conversation || String(conversation.id) !== recordedLink.conversationId) throw new Error('AIONUI_CONVERSATION_NOT_FOUND')
-          const recoveredLink = aiConversationLinkFromAionUiConversation(conversation)
-          const currentWorkspace = recoveredLink?.workspace ?? recordedWorkspace
-          const currentWorkspacePool = workspacePoolManager.poolForWorkspace(currentWorkspace)
-          const currentWorkspacePoolId = currentWorkspacePool?.poolId
-            ?? recordedWorkspacePoolId
-          const enrichedLink = normalizeAiConversationLink({
-            ...recordedLink,
-            agent: recordedLink.agent ?? recoveredLink?.agent,
-            model: recordedLink.model ?? recoveredLink?.model,
-            providerId: recordedLink.providerId ?? recoveredLink?.providerId,
-            mode: recordedLink.mode ?? recoveredLink?.mode,
-            thoughtLevel: recordedLink.thoughtLevel ?? recoveredLink?.thoughtLevel,
-            skills: recordedLink.skills.length > 0 ? recordedLink.skills : recoveredLink?.skills,
-            mcpServers: recordedLink.mcpServers.length > 0 ? recordedLink.mcpServers : recoveredLink?.mcpServers,
-            workspace: currentWorkspace,
-            workspacePoolId: currentWorkspacePoolId,
-            claudeAccountId: recordedLink.claudeAccountId ?? recoveredLink?.claudeAccountId,
-            startedAt: recordedLink.startedAt ?? recoveredLink?.startedAt,
-          }) ?? recordedLink
-          const linkedModelId = cardLinks.find((link) => link.conversationId === recordedLink.conversationId)?.model?.id
-          const contextHealth = await inspectAiConversationContextHealth(recordedLink.conversationId, conversation, enrichedLink.homeMachineId, {}, linkedModelId)
-          return {
-            ...enrichedLink,
-            workspaceBinding: currentWorkspacePool ? 'pool-rebindable' : 'fixed',
-            homeMachineLabel: machineLabel(enrichedLink.homeMachineId),
-            homeMachineRole: enrichedLink.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
-            accessible: true,
-            machineOnline: true,
-            liveStatusChecked: true,
-            linkMissing: false,
-            available: true,
-            name: String(conversation.name ?? ''),
-            startedAt: enrichedLink.startedAt ?? normalizedIsoDate(conversation.created_at),
-            modifiedAt: normalizedIsoDate(conversation.modified_at, enrichedLink.linkedAt ?? null),
-            runtime: normalizeAiConversationRuntime(recordedLink.conversationId, conversation, observedAt),
-            contextHealth,
-          }
-        } catch (shutdownError) {
-          throwIfRuntimeStopping(shutdownError, runtimeLifecycle.signal)
-          return {
-            ...recordedLink,
-            workspaceBinding,
-            homeMachineLabel: machineLabel(recordedLink.homeMachineId),
-            homeMachineRole: recordedLink.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub',
-            accessible: true,
-            machineOnline,
-            liveStatusChecked: true,
-            linkMissing: shutdownError?.status === 404 || shutdownError?.message === 'AIONUI_CONVERSATION_NOT_FOUND',
-            available: false,
-            name: '',
-            modifiedAt: null,
-            runtime: normalizeAiConversationRuntime(recordedLink.conversationId, null, observedAt),
-            contextHealth: assessAiConversationContextHealth({
-              conversationId: recordedLink.conversationId,
-              runtimeState: 'unknown',
-              conversationTurnCount: null,
-              conversationTurnCountExact: false,
-              ...aiConversationDelegationContextStats(recordedLink.conversationId),
-            }, observedAt),
-          }
-        }
+      return sendJson(response, 200, await listCardAiConversations(user, mapId, card, {
+        linkedOnly, compact: url.searchParams.get('view') === 'compact',
       }))
-      conversations.sort((first, second) => String(second.startedAt ?? second.linkedAt ?? '')
-        .localeCompare(String(first.startedAt ?? first.linkedAt ?? '')))
-      return sendJson(response, 200, {
-        mapId,
-        cardId,
-        latestConversationId: card.data?.aiConversationId ?? null,
-        conversations: await attachClaudeAccounts(conversations),
-      })
     }
 
     if (aionUiConversationTranscriptRoute && request.method === 'GET') {

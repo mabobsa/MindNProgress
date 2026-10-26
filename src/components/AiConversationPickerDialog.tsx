@@ -94,8 +94,12 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
         setGroups((current) => current?.map((currentGroup) => currentGroup.cardId === group.cardId ? {
           ...currentGroup,
           // 조회 중 삭제한 연결은 늦게 도착한 응답으로 되살리지 않는다.
-          conversations: detailed.conversations.filter((conversation) => currentGroup.conversations
-            .some((linked) => linked.conversationId === conversation.conversationId)),
+          conversations: detailed.conversations.flatMap((conversation) => {
+            const linked = currentGroup.conversations.find((item) => item.conversationId === conversation.conversationId)
+            if (!linked) return []
+            // 문서 목록의 모델·사고 레벨은 MnP 연결 기록만 표시한다.
+            return [documentMode ? { ...conversation, model: linked.model, thoughtLevel: linked.thoughtLevel } : conversation]
+          }),
         } : currentGroup) ?? current)
       } catch { /* 상세 조회 실패 시 연결 기록으로 목록과 삭제 기능을 유지한다. */ }
     }
@@ -204,7 +208,11 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
                     >
                       {documentMode ? <>
                         <strong title={conversation.name || 'AionUi 대화'}>{conversation.name || 'AionUi 대화'}</strong>
-                        <span className="ai-conversation-compact-agent" title={conversation.agent?.label}>{conversation.agent?.label ?? 'AI 종류 미확인'}</span>
+                        <span className="ai-conversation-compact-ai">
+                          <span className="ai-conversation-compact-agent" title={conversation.agent?.label}>{conversation.agent?.label ?? 'AI 종류 미확인'}</span>
+                          <span className="ai-conversation-compact-model" title={`MnP에 저장된 모델: ${conversation.model?.label ?? '정보 없음'}`}>{conversation.model?.label ?? '모델 정보 없음'}</span>
+                          <span className="ai-conversation-compact-thought" title={`MnP에 저장된 사고 레벨: ${conversation.thoughtLevel?.label ?? '정보 없음'}`}>사고 {conversation.thoughtLevel?.label ?? '정보 없음'}</span>
+                        </span>
                         <span className="ai-conversation-compact-machine" title={conversation.homeMachineLabel}>{conversation.homeMachineLabel}</span>
                         <time>{displayDate(conversation.startedAt ?? conversation.linkedAt)}</time>
                       </> : <>

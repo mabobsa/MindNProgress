@@ -17,17 +17,17 @@ import '/src/dark.css';
 window.setTheme=applyUiTheme;
 applyUiTheme('light');
 const conversation=(id,options={})=>({conversationId:id,name:'정리 검토 대화 '+id,
-  agent:{id:'codex',label:'Codex'},model:{id:'hidden',label:'표시하지 않는 모델'},
+  agent:{id:'codex',label:'Codex CLI'},model:{id:'gpt-6-astra',label:'GPT-6-Astra'},thoughtLevel:{id:'high',label:'high'},
   skills:[],mcpServers:[],requestPreview:'표시하지 않는 요청',workspace:'표시하지 않는 작업공간',
   homeMachineLabel:'개발 PC',homeMachineRole:'main',accessible:true,machineOnline:true,available:true,
   startedAt:'2026-10-25T12:30:00Z',runtime:{state:'idle'},...options});
 const groups=[
   {cardId:'a',cardTitle:'카드A · 기준 정리',conversations:[conversation('a-new'),conversation('a-old',{startedAt:'2026-10-24T10:00:00Z'})]},
-  {cardId:'b',cardTitle:'카드B · 화면 개발',conversations:[conversation('b-new'),conversation('b-old',{agent:{id:'claude',label:'Claude'}})]},
+  {cardId:'b',cardTitle:'카드B · 화면 개발',conversations:[conversation('b-new'),conversation('b-old',{agent:{id:'claude',label:'Claude Code'},model:{id:'opus',label:'Opus'},thoughtLevel:{id:'xhigh',label:'xhigh'}})]},
   {cardId:'offline',cardTitle:'연결이 끊긴 머신',conversations:[conversation('offline',{machineOnline:false,homeMachineLabel:'서브 PC'})]},
   {cardId:'locked',cardTitle:'권한 없는 머신',conversations:[conversation('locked',{accessible:false,homeMachineLabel:'권한 없는 PC'})]},
   {cardId:'e',cardTitle:'카드E · 회귀 확인',conversations:[conversation('e')]},
-  {cardId:'f',cardTitle:'카드F · 결과 정리',conversations:[conversation('f')]},
+  {cardId:'f',cardTitle:'카드F · 결과 정리',conversations:[conversation('f',{model:undefined,thoughtLevel:undefined})]},
 ].map(group=>({...group,latestConversationId:group.conversations[0].conversationId}));
 const node=(id,label,extra={})=>({id,type:'mind',position:{x:0,y:0},data:{kind:'task',label,description:'',status:'planned',progress:0,...extra}});
 const map=(id,title,nodes)=>({id,title,nodes,edges:[],version:1,color:'violet',updatedAt:'2026-10-26T00:00:00Z'});
@@ -59,6 +59,7 @@ window.fetch=async(url,init={})=>{
       return json({map:target,latestConversationId:group.latestConversationId});
     }
     const snapshot=structuredClone(group);
+    snapshot.conversations=snapshot.conversations.map(c=>({...c,model:{id:'remote',label:'원격 모델'},thoughtLevel:{id:'remote',label:'원격 레벨'}}));
     return new Promise(resolve=>window.audit.details[group.cardId]=()=>resolve(json(snapshot)));
   }
   if(pathname==='/api/auth/me') return json({user:{id:'fixture',name:'검증 사용자',email:'fixture@example.test',role:'editor'}});
@@ -187,7 +188,10 @@ test('문서 메뉴에서 카드별 AI 대화를 간략히 표시하고 우클�
     ])
     assert.equal(await evaluate('location.pathname'), '/mindmap/map-active', '다른 문서의 목록을 열어도 현재 작업 문서를 변경하지 않는다')
     assert.equal(await evaluate('document.querySelector(".document-conversations header small").textContent'), '정리할 문서')
-    assert.equal(await evaluate('document.querySelectorAll(".compact .ai-conversation-choice-open > *").length'), 32, '대화마다 네 항목만 표시한다')
+    assert.equal(await evaluate('document.querySelectorAll(".compact .ai-conversation-choice-open > *").length'), 32, '제목 아래 AI 정보·머신·시간의 세 열을 표시한다')
+    assert.equal(await evaluate('document.querySelectorAll(".ai-conversation-compact-ai > span").length'), 24, 'AI 정보에는 종류·모델·사고 레벨을 표시한다')
+    assert.equal(await evaluate('document.querySelector("[data-card-id=a] .ai-conversation-compact-model").textContent'), 'GPT-6-Astra', '상세 조회를 기다리지 않고 MnP 저장값을 표시한다')
+    assert.equal(await evaluate('document.querySelector("[data-card-id=a] .ai-conversation-compact-thought").textContent'), '사고 high')
     assert.equal(await evaluate('document.querySelector(".document-conversations").textContent.includes("표시하지 않는")'), false)
     assert.equal(await evaluate('!!document.querySelector(".document-conversations .primary")'), false, '전체 목록은 새 대화 생성을 제공하지 않는다')
     await until(() => evaluate('Object.keys(window.audit.details).length===3'), '상세 조회 시작 실패')
@@ -195,7 +199,20 @@ test('문서 메뉴에서 카드별 AI 대화를 간략히 표시하고 우클�
     await evaluate('window.audit.details.b();window.audit.details.e()')
     await until(() => evaluate('typeof window.audit.details.f==="function"'), '다음 카드 조회 실패')
     await evaluate('window.audit.details.f()')
+    await until(() => evaluate('!document.querySelector("[data-card-id=f] .unavailable")'), '상세 조회 완료 대기 실패')
+    assert.equal(await evaluate('document.querySelector("[data-card-id=b] .ai-conversation-compact-model").textContent'), 'GPT-6-Astra', '원격 응답으로 MnP 저장값을 덮지 않는다')
+    assert.equal(await evaluate('document.querySelector("[data-card-id=f] .ai-conversation-compact-model").textContent'), '모델 정보 없음', 'MnP에 없는 값을 원격 조회 결과로 채우지 않는다')
+    assert.equal(await evaluate('document.querySelector("[data-card-id=f] .ai-conversation-compact-thought").textContent'), '사고 정보 없음')
+    assert.equal(await evaluate('window.audit.requests.filter(r=>r.url.includes("/ai-conversations")).length'), 5, '기존 문서·카드 조회 외에 추가 요청을 보내지 않는다')
+    assert.equal(await evaluate('[...document.querySelectorAll(".ai-conversation-compact-agent")].every(el=>el.scrollWidth<=el.clientWidth)'), true, '일반적인 AI 종류 이름은 잘리지 않는다')
     assert.equal(await evaluate('document.querySelector(".compact").offsetHeight<60'), true, '기존 상세 대화 항목보다 높이를 줄인다')
+    const columnsAligned = () => evaluate(`(() => {
+      const columns = [...document.querySelectorAll('.compact .ai-conversation-choice-open')].map(row =>
+        ['.ai-conversation-compact-ai','.ai-conversation-compact-machine','time'].map(selector => row.querySelector(selector).getBoundingClientRect()));
+      return columns.every(columnsInRow => columnsInRow.every((rect, index) =>
+        Math.abs(rect.left - columns[0][index].left) < 1 && (index === 0 || rect.left >= columnsInRow[index - 1].right)));
+    })()`)
+    assert.equal(await columnsAligned(), true, 'AI 정보·머신·시간의 열을 모든 행에서 맞춘다')
     await screenshot('light')
     await evaluate('window.setTheme("dark");new Promise(resolve=>setTimeout(resolve,200))')
     await screenshot('dark')
@@ -241,6 +258,7 @@ test('문서 메뉴에서 카드별 AI 대화를 간략히 표시하고 우클�
     ])
     await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
     await screenshot('mobile')
+    assert.equal(await columnsAligned(), true, '모바일에서도 세 열의 시작 위치를 맞추고 겹치지 않게 한다')
     assert.equal(await evaluate('(()=>{const el=document.querySelector(".document-conversations"),r=el.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&el.scrollWidth<=el.clientWidth})()'), true)
     await openRowMenu('b-old')
     assert.equal(await evaluate('(()=>{const r=document.querySelector(".ai-conversation-picker-menu").getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.bottom<=innerHeight})()'), true)

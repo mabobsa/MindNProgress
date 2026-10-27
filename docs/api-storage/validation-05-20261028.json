@@ -13,7 +13,8 @@
     "validation": "필수 자동 검증 완료",
     "requiredRemaining": "없음",
     "optionalRemaining": "없음",
-    "acceptance": "상위 인수·07 독립 통합 검수와 구분"
+    "acceptance": "상위 인수·07 독립 통합 검수와 구분",
+    "followup": "상위 검수 필수 결함 보완·자체 검증 완료. 상위 인수는 별도."
   },
   "source": {
     "baseCommit": "62506a6ef2c1075e7329704dedf5101bd0a38bec",
@@ -181,7 +182,8 @@
         "required-final.log",
         "shutdown-reservation-final.log",
         "regression.log",
-        "remote-errors-final.log"
+        "remote-errors-final.log",
+        ".tmp/req-mnp05-fix-20261028/targeted-final.log"
       ]
     },
     {
@@ -204,7 +206,8 @@
         "req-mnp05-remote-final.log",
         "artifact-replay-final.log",
         "remote-errors-final.log",
-        "runner-long-poll-final.log"
+        "runner-long-poll-final.log",
+        ".tmp/req-mnp05-fix-20261028/remote-regression.log"
       ]
     }
   ],
@@ -598,5 +601,475 @@
     "descriptionSha256Before": "06a06b24fcc323a6667973ab08522a47ad72b2dee446027d804f93e2bc4d9e11",
     "originalChecklistPreserved": true,
     "recording": "공유 지식은 현재 소비 계약, 수행·검증·커밋은 결과 댓글. 카드 저장 후 전체 문자열 및 체크리스트 ID·문구를 다시 대조한다."
+  },
+  "followup": {
+    "generatedAt": "2026-10-27T23:19:08.130783+00:00",
+    "scope": "원래 mnp-api-05-2의 외부 명령 접수 후 기한·취소 오류 분류 보완. 나머지 조건·ID·문구 유지.",
+    "cause": "budget.wait가 외부 콜백 시작 후 응답만 중단된 경우도 admission 오류로 만들고 원격 명령이 그대로 전달했다. 영속 pendingOperation과 실제 늦은 효과가 not-applied와 모순됐다.",
+    "changes": [
+      "wait가 자체 기한·취소 오류에 외부 콜백 시작 여부를 붙인다. 공유 AbortSignal.reason은 변경하지 않으며 콜백 실행 직전 기한·취소를 다시 확인한다.",
+      "처음 외부 호출 전 거부된 기한·취소는 not-applied와 새 예약 취소를 유지한다. 호출 후 응답 중단 또는 이미 미확정인 같은 명령의 재확인 중단은 REMOTE_WORKSPACE_RESPONSE_PENDING·503·processing·retryable=false로 반환한다.",
+      "pendingOperation·최초 operationId·본문은 영속 보존하며 기존 예약 재검증·메모리 예약 해제·풀 승인·소유권·순서와 재획득 실패 보호를 유지한다.",
+      "실제 HTTP 오류 전달과 연결 종료 후 진단의 outcome도 processing으로 보존한다. 새 MCP 도구·전역 실행 보장·재시도 상한 변경은 없다."
+    ],
+    "source": {
+      "baseCommit": "91300f0f634f978b7f4b696f7196671731393638",
+      "validatedSourceCommit": "e07954d0ac0859b6f9e30ea4dee60779b471fb41",
+      "sourceTree": "476f2fd82a9342eb9df5214786e20aac71aed796",
+      "candidateDirectory": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\isolated",
+      "files": [
+        {
+          "file": "server/index.mjs",
+          "normalizedLfSha256": "b4b3d263d7913d906bc6052f3e661d48bccfae5cdfcdbb501807700c1a5c43bd",
+          "gitBlob": "3022e49d036e55ebe7210be851700a2a9e26b5c9"
+        },
+        {
+          "file": "server/lib/storageBudget.mjs",
+          "normalizedLfSha256": "58063c9125c9cbb078657361ab52002761522399cfcec241c03c174b7f868763",
+          "gitBlob": "cf3db1dd19735d3082b46f616f5fad0c17825e67"
+        },
+        {
+          "file": "server/lib/remoteWorkspacePool.mjs",
+          "normalizedLfSha256": "843043772f646ace00e54283efa68c23894d98fdd7d95a98452dbdf982e979db",
+          "gitBlob": "094828b78a27124d28f9f2fc459c88ee7ccb8696"
+        },
+        {
+          "file": "tests/storage-remote-outcome.test.mjs",
+          "normalizedLfSha256": "9b590f48e0dea658b1a4f61047b57e0555941272f34fd6a18695f59d3668073d",
+          "gitBlob": "8ad0a9563513c32bd00444733cb61eb95257f180"
+        },
+        {
+          "file": "tests/storage-remote-outcome-api.test.mjs",
+          "normalizedLfSha256": "449541dbff9864bcc8684a0da35eb036bfac602beb9b85ebc49e54f65a8686de",
+          "gitBlob": "c55e2534b7954997df6285112032b9f2c61b60dd"
+        }
+      ],
+      "candidateAudit": {
+        "commit": "e07954d0ac0859b6f9e30ea4dee60779b471fb41",
+        "trackedFilesMatched": 667,
+        "normalizedFiles": 642,
+        "candidateMatchesCommittedTree": true,
+        "otherFilesUnchanged": 13,
+        "indexOtherWorkLines": 109,
+        "indexOtherWorkChunks": 5,
+        "indexOtherWorkSha256": "bf512ada0ae7ccf8fa86197710d7c54546ee327d20566bfeb7f4339e7b96b903"
+      }
+    },
+    "environment": {
+      "os": "Windows-11-10.0.26200-SP0",
+      "node": "v24.13.0",
+      "git": "git version 2.52.0.windows.1",
+      "timezone": "Asia/Seoul",
+      "data": "OS 임시 루트의 mnp-storage-02-*, mnp-05-outcome-*, mnp-budget-05-*, mnp-remote-test-*와 이번 보완의 before/after-data-*",
+      "configuration": {
+        "host": "127.0.0.1",
+        "ports": "격리 서버·모의 서비스별 빈 루프백 포트",
+        "MNP_DATA_DIR": "시험별 임시 data",
+        "MNP_WORKSPACE_POOL_REGISTRY": "시험에서만 만든 임시 registry",
+        "MNP_AIONUI_URL": "모의 서비스 루프백",
+        "MNP_COMPLETED_AI_CLEANUP_DISABLED": "1",
+        "externalDeadlineMs": 1000,
+        "httpDeadlineMs": 1500,
+        "disconnectDeadlineMs": 15000,
+        "priorPendingUnitDeadlineMs": 30,
+        "resourceWaitMs": "계약 기본값 5000 유지",
+        "sharedNodeModules": "C:\\Git\\MindNProgress\\MindNProgress\\node_modules"
+      }
+    },
+    "reproduction": {
+      "parentOriginalScript": {
+        "path": ".tmp/review05-remote-timeout-repro-20261028.mjs",
+        "sha256": "cc5ae26f5dda486571ab446f185e3d9d91ee20231253d8ca37da9621d5aeea34"
+      },
+      "parentOriginalResult": {
+        "path": ".tmp/review05-remote-timeout-result-20261028.json",
+        "sha256": "c7f1f1d91beecd68509fee529f5ce87645cbd65954799aace08fbea09eebf891"
+      },
+      "before": {
+        "command": [
+          "node",
+          "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\review05-remote-timeout-repro-20261028.mjs"
+        ],
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\before",
+        "log": {
+          "path": ".tmp/req-mnp05-fix-20261028/before-replay.log",
+          "sha256": "a650bb7a5111ba7727290b1b448aafc6754e7ad8509b02266c6d59a9d1ba4dd1"
+        },
+        "result": {
+          "candidate": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\before\\.tmp\\req-mnp05-final\\isolated",
+          "fixture": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\before\\.tmp\\review05-remote-timeout-data-k5vbAi",
+          "failure": {
+            "code": "REQUEST_DEADLINE_EXCEEDED",
+            "status": 503,
+            "outcome": "not-applied",
+            "retryable": false,
+            "storageResourceError": true
+          },
+          "pendingBefore": "bind-4f00a41d6c143f8ddcfc225742a518e081a9bca7ed207e35",
+          "persistedBefore": "bind-4f00a41d6c143f8ddcfc225742a518e081a9bca7ed207e35",
+          "appliedAfterTimeout": 1,
+          "operations": [
+            "bind-4f00a41d6c143f8ddcfc225742a518e081a9bca7ed207e35",
+            "bind-4f00a41d6c143f8ddcfc225742a518e081a9bca7ed207e35"
+          ],
+          "totalEffects": 1,
+          "retryConversationId": "conversation-slow",
+          "pendingAfter": null,
+          "conclusion": "외부 명령이 접수되어 영속 pendingOperation이 남고 실제 효과가 발생했지만 기한 오류는 not-applied로 반환된다."
+        }
+      },
+      "afterScript": {
+        "path": ".tmp/req-mnp05-fix-20261028/after-repro.mjs",
+        "sha256": "d1b3514b5c2567ad662b269ec25877f663b6f9cdeee21ba8a7b35c8badbbaeba"
+      },
+      "afterResult": {
+        "path": ".tmp/req-mnp05-fix-20261028/after-result.json",
+        "sha256": "d50800f5c6bf60a2d1155df113deebf867ae468906f8515fec496e726cfaebdb"
+      },
+      "after": {
+        "candidate": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\isolated",
+        "fixture": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\after-data-1ddkIv",
+        "failure": {
+          "code": "REMOTE_WORKSPACE_RESPONSE_PENDING",
+          "status": 503,
+          "outcome": "processing",
+          "retryable": false,
+          "storageResourceError": true
+        },
+        "pendingBefore": "bind-d653be855894122c952365082f4237d1549ea3f1ead28ef0",
+        "persistedBefore": "bind-d653be855894122c952365082f4237d1549ea3f1ead28ef0",
+        "appliedAfterTimeout": 1,
+        "operations": [
+          "bind-d653be855894122c952365082f4237d1549ea3f1ead28ef0",
+          "bind-d653be855894122c952365082f4237d1549ea3f1ead28ef0"
+        ],
+        "totalEffects": 1,
+        "retryConversationId": "conversation-slow",
+        "pendingAfter": null,
+        "conclusion": "외부 명령 접수 후 기한 종료는 processing으로 반환하고 영속 같은 명령의 결과 확인으로 수렴한다. 실제 효과는 한 번이다."
+      },
+      "derivation": "상위 재현 원본은 그대로 보존했다. 수정 후 사본은 대상 경로·산출물 위치·기대한 오류 code/outcome·결론만 바꿨고 1초 기한, 영속 예약 일치, 늦은 효과 1회, 같은 명령 확인 판정은 유지했다."
+    },
+    "retainedParentVerification": {
+      "commit": "91300f0f634f978b7f4b696f7196671731393638",
+      "candidate": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-final\\isolated",
+      "trackedSourceMatched": 663,
+      "normalizedCount": 627,
+      "manifestSourceMatched": 19,
+      "evidenceLogsMatched": 12,
+      "startedAt": "2026-10-27T22:54:11.731Z",
+      "finishedAt": "2026-10-27T22:55:25.462Z",
+      "command": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "--test",
+        "--test-reporter=tap",
+        "--test-concurrency=1",
+        "tests/storage-budgets.test.mjs",
+        "tests/storage-budgets-api.test.mjs",
+        "tests/storage-budgets-mcp.test.mjs"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "log": {
+        "path": ".tmp/review05-parent-core-20261028.log",
+        "sha256": "96b0bc9652dd72f2171d2d7bc6f6b1149b1389cab6ddf0f9f1a9d7e437672b05",
+        "bytes": 6551
+      },
+      "output": "TAP version 13\n# Subtest: 느린 본문도 전체 기한에 포함하며 2,000,000바이트 제한과 독립 문서 저장을 유지한다\nok 1 - 느린 본문도 전체 기한에 포함하며 2,000,000바이트 제한과 독립 문서 저장을 유지한다\n  ---\n  duration_ms: 2279.9389\n  type: 'test'\n  ...\n# {\"independentSaveMs\":112,\"budgetMs\":5000}\n# Subtest: 동일 ID 합류는 큐를 점유하지 않고 실제 HTTP 128개 포화·취소 뒤 같은 ID를 재접수한다\nok 2 - 동일 ID 합류는 큐를 점유하지 않고 실제 HTTP 128개 포화·취소 뒤 같은 ID를 재접수한다\n  ---\n  duration_ms: 2379.5353\n  type: 'test'\n  ...\n# {\"independentSaveMs\":100,\"budgetMs\":5000}\n# Subtest: 실제 5초 잠금 기한은 변경 전 거부이고 대기자 해제 뒤 독립·후속 저장이 가능하다\nok 3 - 실제 5초 잠금 기한은 변경 전 거부이고 대기자 해제 뒤 독립·후속 저장이 가능하다\n  ---\n  duration_ms: 6765.1912\n  type: 'test'\n  ...\n# {\"independentSaveMs\":91,\"budgetMs\":5000}\n# {\"lockWaitMs\":5014,\"budgetMs\":5000}\n# Subtest: 연결 종료 intent: 시작된 저장은 확정·결과 조회로 수렴한다\nok 4 - 연결 종료 intent: 시작된 저장은 확정·결과 조회로 수렴한다\n  ---\n  duration_ms: 2786.8476\n  type: 'test'\n  ...\n# Subtest: 연결 종료 canonical: 시작된 저장은 확정·결과 조회로 수렴한다\nok 5 - 연결 종료 canonical: 시작된 저장은 확정·결과 조회로 수렴한다\n  ---\n  duration_ms: 2667.9571\n  type: 'test'\n  ...\n# Subtest: 영속 준비 후 응답 기한은 202이며 marker 확정 뒤 동일 ID 결과를 보존한다\nok 6 - 영속 준비 후 응답 기한은 202이며 marker 확정 뒤 동일 ID 결과를 보존한다\n  ---\n  duration_ms: 2400.007\n  type: 'test'\n  ...\n# Subtest: 느린 AionUi 표시 조회 중 공용 AI 상태와 무관한 문서 저장은 계속한다\nok 7 - 느린 AionUi 표시 조회 중 공용 AI 상태와 무관한 문서 저장은 계속한다\n  ---\n  duration_ms: 1630.8117\n  type: 'test'\n  ...\n# {\"independentSaveMs\":96,\"budgetMs\":5000}\n# Subtest: 미연결 Runner의 외부 확인과 정상 25초 long-poll 동안 무관한 문서는 5초 안에 저장한다\nok 8 - 미연결 Runner의 외부 확인과 정상 25초 long-poll 동안 무관한 문서는 5초 안에 저장한다\n  ---\n  duration_ms: 26729.6889\n  type: 'test'\n  ...\n# {\"independentSaveMs\":115,\"budgetMs\":5000}\n# {\"runnerLongPollMs\":25006,\"storageWaitBudgetMs\":5000}\n# Subtest: 원격 풀 HTTP의 실행 전 큐 기한은 503 변경 없음이고 다음 요청을 막지 않는다\nok 9 - 원격 풀 HTTP의 실행 전 큐 기한은 503 변경 없음이고 다음 요청을 막지 않는다\n  ---\n  duration_ms: 6692.473\n  type: 'test'\n  ...\n# {\"independentSaveMs\":97,\"budgetMs\":5000}\n# Subtest: launch callback 외부 확인 중 문서 저장을 허용하고 같은 예약·버전 변경을 재검증한다\nok 10 - launch callback 외부 확인 중 문서 저장을 허용하고 같은 예약·버전 변경을 재검증한다\n  ---\n  duration_ms: 2471.8737\n  type: 'test'\n  ...\n# {\"independentSaveMs\":120,\"budgetMs\":5000}\n# Subtest: 완료 이력 백업 파일 대기 중 무관한 저장·AI 상태 조회를 허용하고 재검증 후 정리한다\nok 11 - 완료 이력 백업 파일 대기 중 무관한 저장·AI 상태 조회를 허용하고 재검증 후 정리한다\n  ---\n  duration_ms: 7056.4596\n  type: 'test'\n  ...\n# {\"independentSaveMs\":708,\"budgetMs\":5000}\n# Subtest: 실제 MCP의 유한 재시도는 동일 ID·최초 본문·기한을 유지하고 충돌·인증은 반복하지 않는다\nok 12 - 실제 MCP의 유한 재시도는 동일 ID·최초 본문·기한을 유지하고 충돌·인증은 반복하지 않는다\n  ---\n  duration_ms: 6250.5404\n  type: 'test'\n  ...\n# {\"queueAttempts\":3,\"minimumDelayMs\":250,\"conflictAttempts\":2,\"authAttempts\":1,\"formatAttempts\":1,\"droppedResponseAttempts\":2}\n# Subtest: 05 계약 기본값과 키당 128·프로세스 전체 1024의 대기 상한 및 취소 정리\nok 13 - 05 계약 기본값과 키당 128·프로세스 전체 1024의 대기 상한 및 취소 정리\n  ---\n  duration_ms: 12.5739\n  type: 'test'\n  ...\n# Subtest: 누적 키 대기·재수집은 같은 예산을 사용하고 앞서 잡은 키를 역순 해제한다\nok 14 - 누적 키 대기·재수집은 같은 예산을 사용하고 앞서 잡은 키를 역순 해제한다\n  ---\n  duration_ms: 102.2805\n  type: 'test'\n  ...\n# Subtest: 타이머 실행이 늦어져도 기한이 지난 대기자를 잠금 해제 시 실행하지 않는다\nok 15 - 타이머 실행이 늦어져도 기한이 지난 대기자를 잠금 해제 시 실행하지 않는다\n  ---\n  duration_ms: 19.848\n  type: 'test'\n  ...\n# Subtest: 변경 준비 전 취소는 원문 보존, 영속 준비·marker 뒤 취소는 확정 결과 보존\nok 16 - 변경 준비 전 취소는 원문 보존, 영속 준비·marker 뒤 취소는 확정 결과 보존\n  ---\n  duration_ms: 167.179\n  type: 'test'\n  ...\n# Subtest: 재시도 최초 포함 3회, 100/200ms ±25%, retryAfter 하한과 전체 기한·충돌 비재시도\nok 17 - 재시도 최초 포함 3회, 100/200ms ±25%, retryAfter 하한과 전체 기한·충돌 비재시도\n  ---\n  duration_ms: 0.4357\n  type: 'test'\n  ...\n# Subtest: 느린 Runner는 원격 공용 큐를 놓고 다른 머신 처리·같은 예약 거부·승인 재검증을 유지한다\nok 18 - 느린 Runner는 원격 공용 큐를 놓고 다른 머신 처리·같은 예약 거부·승인 재검증을 유지한다\n  ---\n  duration_ms: 23.3011\n  type: 'test'\n  ...\n# Subtest: 정리 파일 대기 동안 다른 원격 자원을 처리하고 같은 완료 리스를 다시 점유하지 않는다\nok 19 - 정리 파일 대기 동안 다른 원격 자원을 처리하고 같은 완료 리스를 다시 점유하지 않는다\n  ---\n  duration_ms: 19.8421\n  type: 'test'\n  ...\n# Subtest: 외부 수행 뒤 재획득 실패는 메모리 예약을 해제하고 영속 동일 작업으로 재확인한다\nok 20 - 외부 수행 뒤 재획득 실패는 메모리 예약을 해제하고 영속 동일 작업으로 재확인한다\n  ---\n  duration_ms: 18.6793\n  type: 'test'\n  ...\n# Subtest: 최소 진단은 자원·대기 단계·시간·재시도·결과만 포함한다\nok 21 - 최소 진단은 자원·대기 단계·시간·재시도·결과만 포함한다\n  ---\n  duration_ms: 0.2589\n  type: 'test'\n  ...\n1..21\n# tests 21\n# suites 0\n# pass 21\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 73068.832\n"
+    },
+    "runs": [
+      {
+        "command": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "--test-concurrency=1",
+          "tests/storage-remote-outcome.test.mjs",
+          "tests/storage-remote-outcome-api.test.mjs"
+        ],
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\isolated",
+        "startedAt": "2026-10-27T23:12:23.623870+00:00",
+        "elapsedMs": 15534,
+        "exitCode": 0,
+        "log": ".tmp/req-mnp05-fix-20261028/targeted-final.log",
+        "logSha256": "f36b91d3cd580c1cd661250b78a4da6bf5f0e05d6d2d1caa40bdce95851296a2",
+        "totals": {
+          "tests": 8,
+          "pass": 8,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        "metrics": [
+          {
+            "mode": "deadline",
+            "firstResponseMs": 1512,
+            "effects": 1,
+            "sameOperation": true,
+            "preExecution": "not-applied",
+            "postDispatch": "processing"
+          },
+          {
+            "mode": "disconnect",
+            "firstResponseMs": 10,
+            "effects": 1,
+            "sameOperation": true,
+            "preExecution": "not-applied",
+            "postDispatch": "연결 종료 후 같은 명령 확인"
+          },
+          {
+            "mode": "deadline",
+            "outcome": "processing",
+            "sameOperation": true,
+            "effects": 1,
+            "reservations": 0
+          },
+          {
+            "mode": "cancel",
+            "outcome": "processing",
+            "sameOperation": true,
+            "effects": 1,
+            "reservations": 0
+          }
+        ]
+      },
+      {
+        "command": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "--test-concurrency=1",
+          "tests/storage-budgets.test.mjs",
+          "tests/storage-resources.test.mjs",
+          "tests/storage-journal.test.mjs"
+        ],
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\isolated",
+        "startedAt": "2026-10-27T23:12:24.845415+00:00",
+        "elapsedMs": 5857,
+        "exitCode": 0,
+        "log": ".tmp/req-mnp05-fix-20261028/budget-storage-regression.log",
+        "logSha256": "840d5288d06dbce7a3a1a4eccbae893334f3f55373f18f8da030e5fa5bd1722d",
+        "totals": {
+          "tests": 15,
+          "pass": 15,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        "metrics": []
+      },
+      {
+        "command": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=원격 풀 HTTP|launch callback|느린 AionUi",
+          "tests/storage-budgets-api.test.mjs"
+        ],
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\isolated",
+        "startedAt": "2026-10-27T23:12:25.440733+00:00",
+        "elapsedMs": 14964,
+        "exitCode": 0,
+        "log": ".tmp/req-mnp05-fix-20261028/http-regression.log",
+        "logSha256": "b945ff7f0d49c1ba32850f9e018c0bf0ec99b9ca31177bb5b29f1ed4c0c4a0af",
+        "totals": {
+          "tests": 3,
+          "pass": 3,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        "metrics": [
+          {
+            "independentSaveMs": 153,
+            "budgetMs": 5000
+          },
+          {
+            "independentSaveMs": 129,
+            "budgetMs": 5000
+          },
+          {
+            "independentSaveMs": 118,
+            "budgetMs": 5000
+          }
+        ]
+      },
+      {
+        "command": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=실제 Git:|knowledge-inbox|prepare 응답|release 응답|물리 잠금|체크포인트 requestId|등록 승인|runtime 경합",
+          "tests/remote-workspace.test.mjs"
+        ],
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\isolated",
+        "startedAt": "2026-10-27T23:12:25.764340+00:00",
+        "elapsedMs": 322345,
+        "exitCode": 0,
+        "log": ".tmp/req-mnp05-fix-20261028/remote-regression.log",
+        "logSha256": "774809287c9c55c9d5131219971067b09f7252d7f225f8aa7009b9e0490b22c5",
+        "totals": {
+          "tests": 8,
+          "pass": 8,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        "metrics": []
+      },
+      {
+        "command": [
+          "node",
+          "node_modules/oxlint/bin/oxlint",
+          "server/index.mjs",
+          "server/lib/storageBudget.mjs",
+          "server/lib/remoteWorkspacePool.mjs",
+          "tests/storage-remote-outcome.test.mjs",
+          "tests/storage-remote-outcome-api.test.mjs"
+        ],
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\isolated",
+        "startedAt": "2026-10-27T23:12:25.883326+00:00",
+        "elapsedMs": 1687,
+        "exitCode": 0,
+        "log": ".tmp/req-mnp05-fix-20261028/lint.log",
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "totals": {},
+        "metrics": []
+      },
+      {
+        "command": [
+          "node",
+          "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\after-repro.mjs"
+        ],
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\isolated",
+        "startedAt": "2026-10-27T23:12:26.006485+00:00",
+        "elapsedMs": 2706,
+        "exitCode": 0,
+        "log": ".tmp/req-mnp05-fix-20261028/after-replay.log",
+        "logSha256": "d50800f5c6bf60a2d1155df113deebf867ae468906f8515fec496e726cfaebdb",
+        "totals": {},
+        "metrics": []
+      }
+    ],
+    "syntax": {
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\req-mnp05-fix-20261028\\isolated",
+      "checks": [
+        {
+          "command": [
+            "node",
+            "--check",
+            "server/index.mjs"
+          ],
+          "exitCode": 0
+        },
+        {
+          "command": [
+            "node",
+            "--check",
+            "server/lib/storageBudget.mjs"
+          ],
+          "exitCode": 0
+        },
+        {
+          "command": [
+            "node",
+            "--check",
+            "server/lib/remoteWorkspacePool.mjs"
+          ],
+          "exitCode": 0
+        },
+        {
+          "command": [
+            "node",
+            "--check",
+            "tests/storage-remote-outcome.test.mjs"
+          ],
+          "exitCode": 0
+        },
+        {
+          "command": [
+            "node",
+            "--check",
+            "tests/storage-remote-outcome-api.test.mjs"
+          ],
+          "exitCode": 0
+        }
+      ],
+      "log": ".tmp/req-mnp05-fix-20261028/syntax.log",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "attemptHistory": [
+      {
+        "log": {
+          "path": ".tmp/req-mnp05-fix-20261028/targeted-initial.log",
+          "sha256": "607c6ed1e1c54f370232055ea62574b4e494026afcf193a1f276f51d9aed9dd9"
+        },
+        "result": "격리 사본 복사 기준 경로 오류로 신규 시험 파일을 찾지 못해 실행하지 못했다. 복사 경로를 바로잡았다."
+      },
+      {
+        "log": {
+          "path": ".tmp/req-mnp05-fix-20261028/targeted-first.log",
+          "sha256": "2a3f8e3d36b90743c0299430410d767842f8458360a7eaf647d8a3af9c2148a8"
+        },
+        "result": "단위 6개 통과, HTTP 2개 실패. 모의 보고의 machineId·workspaces 누락으로 머신 등록 응답이 500이었다."
+      },
+      {
+        "log": {
+          "path": ".tmp/req-mnp05-fix-20261028/http-fixture-debug.log",
+          "sha256": "29b5600aa49fd833e012ef8a18f965412ffeed8e49e771c7fbcd8539012e1f20"
+        },
+        "result": "HTTP 자료 누락 원인을 확인한 실패 기록. 제품 코드나 기대 판정은 완화하지 않았다."
+      },
+      {
+        "log": {
+          "path": ".tmp/req-mnp05-fix-20261028/http-second.log",
+          "sha256": "421d265f317ddafdbbd0dbbbd6af47427478815b2f083231b6f30ff30cec042b"
+        },
+        "result": "모의 보고 필수 필드를 채운 뒤 HTTP 2개 통과. 이후 연결 취소 진단 관측을 보강한 최종 8/8 기록은 runs에 있다."
+      }
+    ],
+    "preservation": {
+      "backup": ".tmp/req-mnp05-fix-20261028/start-manifest.json",
+      "cardBackup": ".tmp/req-mnp05-fix-20261028/card-before.json",
+      "otherFilesUnchanged": 13,
+      "indexOtherWorkLinesPreserved": 109,
+      "parentOriginalHashesUnchanged": true,
+      "originalValidationSectionsPreserved": true
+    },
+    "notRepeated": [
+      "상위 21/21 중 수정 영향이 없는 MCP·정상 25초 long-poll 등의 기존 근거는 재사용했다.",
+      "02~04 전체 HTTP 장애 조합과 프런트엔드 빌드는 기존 통과를 보존했다. 공통 자원·journal·준비/commit 이후 취소는 15개 영향 회귀로 확인했다.",
+      "06/07 실행, 운영 서버·실제 외부 작업·배포·push·Dooray는 범위 밖이다."
+    ],
+    "status": {
+      "completion": "이번 보완의 구현·필수 검증 완료",
+      "requiredRemaining": "없음",
+      "optionalRemaining": "없음",
+      "acceptance": "상위 인수는 별도"
+    },
+    "cardEvidence": {
+      "backup": ".tmp/req-mnp05-fix-20261028/card-before.json",
+      "statusSnapshot": ".tmp/req-mnp05-fix-20261028/card-done.json",
+      "finalSnapshot": ".tmp/req-mnp05-fix-20261028/card-final.json",
+      "documentVersion": 506,
+      "status": "done",
+      "progress": 100,
+      "descriptionUnchanged": true,
+      "checklistIdsAndTextUnchanged": true,
+      "wholeSharedKnowledgeVerified": true,
+      "sharedKnowledgeBeforeSha256": "877a2af7906e5a148708f3696cd167e07d7a9eff53c44efc547f162156481ebe",
+      "sharedKnowledgeAfterSha256": "54139184d6a1eda9fd50b3ca84ecc5443c9fac8e356d085720cf8d447b472109",
+      "rootProgress": {
+        "before": 74,
+        "reopened": 72,
+        "after": 74,
+        "reason": "원래 05-2만 미완료 후 완료로 복원한 서버 자동 집계"
+      },
+      "progressComments": [
+        "comment-mvrag7d3-b714bcef",
+        "comment-mvraz80s-ac0f8534"
+      ],
+      "resultComment": "담당 산출물 커밋 후 같은 카드에 기록하고 card-final.json에서 원문 전체 대조한다."
+    }
   }
 }

@@ -982,5 +982,247 @@
   "next": {
     "required": "없음",
     "optional": "없음"
+  },
+  "followup": {
+    "requirement": "mnp-api-04-4",
+    "generatedAt": "2026-10-27T13:06:14.801879+00:00",
+    "baseCommit": "b63c5b8a44bd53b684ba68f86ebe41dfea661ca1",
+    "context": "상위 검수에서 확인한 후속 알림 효과의 부모 문서 격리 결함을 원래 승인 범위에서 보완했다. 기존 계약과 체크리스트는 변경하지 않았다.",
+    "status": {
+      "implementation": "보완 완료",
+      "validation": "필수 재현·회귀 검증 통과",
+      "requiredRemaining": "없음",
+      "optionalRemaining": "없음",
+      "acceptance": "상위 인수는 별도"
+    },
+    "cause": "resumeEffects가 부모 자원 잠금을 상속한 채 하위 run을 실행하여 부모 doc 키가 effect scope.keys에 복사됐다. journal은 실제 파일 키와 이를 합쳐 실제 알림 외에 부모 문서도 격리했다.",
+    "change": "후속 효과 handler가 선언한 키를 하위 변경의 keys로 명시한다. 부모 잠금 문맥 재사용, 자원 획득·순서 검사·파일 보호 검사 및 journal의 실제 변경 파일 키 합산은 그대로 유지한다. 일반 변경의 기본 복구 범위는 변경하지 않았다.",
+    "source": {
+      "candidateDirectory": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-fix-20261027\\isolated",
+      "files": [
+        {
+          "file": "server/lib/storageChanges.mjs",
+          "sha256": "e6445d48d0fd9c69f1345a802c8ba48963d5adc909d173547ee1036d5b5a2554",
+          "normalizedLfSha256": "e6445d48d0fd9c69f1345a802c8ba48963d5adc909d173547ee1036d5b5a2554"
+        },
+        {
+          "file": "tests/storage-idempotency-api.test.mjs",
+          "sha256": "92a04d368008a57d4a27254bc230d069d0ca83b7eac6e7386224158f9ea9fb8d",
+          "normalizedLfSha256": "92a04d368008a57d4a27254bc230d069d0ca83b7eac6e7386224158f9ea9fb8d"
+        },
+        {
+          "file": "docs/api-storage/implementation-04.md",
+          "sha256": "efae19be65cb58793c143b1328ee19b936582cd89d2b027ab2dfe5da83671c19",
+          "normalizedLfSha256": "efae19be65cb58793c143b1328ee19b936582cd89d2b027ab2dfe5da83671c19"
+        }
+      ],
+      "trackedSourceCount": 656,
+      "manifest": {
+        "path": ".tmp/api-storage-04-fix-20261027/source-all.json",
+        "sha256": "f9f5bc14b69937c93054a27116901c227eea1e067d2daaf0918966ab9fc220c1",
+        "bytes": 74072
+      },
+      "inheritance": "구현·검증 문서 2개를 제외한 추적 파일은 기준 커밋과 대조했다. 변경된 구현·시험 2개만 작업 트리에서 반영했고 나머지는 기준 커밋과 동일하다.",
+      "otherTrackedFilesPreserved": {
+        "server/index.mjs": "b72d9d5d4dafdde8a04ce350ad79ae30e129f13e953c22a38631e0d3c2d83ed1",
+        "src/App.tsx": "e235bc555ededed17ca5c386912f8ee1e63a05f1e37698939400b805140de8f4",
+        "src/utils/mapLocalCache.d.mts": "f57a83bbb7dfee1efd9c871d1d6b080be1a175e94b822ab0cf25ce3a84e2d4b4",
+        "src/utils/mapLocalCache.mjs": "7dc5d9ab33b0e70a016893018df270aab20ab930c923e47cc36443c6ec644059",
+        "tests/local-backup-notice-browser.test.mjs": "e1fc9c757973f08d20d1ad24df20638eadd88507db01a8a059438af2dc2e0660",
+        "tests/map-local-cache.test.mjs": "6bb34020d7a6d11680af390c552a0f2221a60740626f6f879fa001ff989f7fc2"
+      }
+    },
+    "environment": {
+      "node": "v24.13.0",
+      "platform": "win32",
+      "arch": "x64",
+      "release": "10.0.26200",
+      "cpu": "Intel(R) Core(TM) i7-14700"
+    },
+    "isolation": "새 git archive 사본, os.tmpdir의 시험별 합성 데이터, 루프백 임의 포트·모의 외부 서비스만 사용했다. 재시작은 해당 시험 child에 SIGKILL을 보냈다.",
+    "preservedEvidence": {
+      "initialImplementationValidation": {
+        "gitRef": "b63c5b8a44bd53b684ba68f86ebe41dfea661ca1:docs/api-storage/validation-04-20261027.json",
+        "sha256": "7541b18b9f2b590cc5af93104906e03af24ba11b2c9f8a88bc2ba64859b6c3b5"
+      },
+      "parentRegression": {
+        "pass": 53,
+        "fail": 0,
+        "report": {
+          "path": ".tmp/review04-parent-core-20261027.json",
+          "sha256": "6ad0c5e26f8c859eceb5f279c30ac463a185387638a4ddada20badcd21df1d7f",
+          "bytes": 3060
+        },
+        "log": {
+          "path": ".tmp/review04-parent-core-20261027.log",
+          "sha256": "bee0438a4ab458258ca35562b643bf26427698c9c672cc37f4d0b9fef1ff82c8",
+          "bytes": 10671
+        }
+      },
+      "parentReproduction": {
+        "script": {
+          "path": ".tmp/review04-effect-quarantine.mjs",
+          "sha256": "de556d2ba9c476922326f728c9a225f954e3ac0f44df629bd0e559bc52c64bce",
+          "bytes": 2565
+        },
+        "result": {
+          "path": ".tmp/review04-effect-quarantine-result.json",
+          "sha256": "7e6aea3bff25f0da08778bd391e50e1533e3f2ec323a0393c59c3cba7e6337f5",
+          "bytes": 972
+        }
+      }
+    },
+    "before": [
+      {
+        "phase": "효과 복구 대기",
+        "outcome": "committed",
+        "documentStatus": 503,
+        "commentsStatus": 503,
+        "otherStatus": 200,
+        "resultStatus": 201,
+        "pending": 1,
+        "effectKeys": [
+          "notification:user-second",
+          "doc:map-bench-0"
+        ],
+        "effectFiles": [
+          {
+            "path": "_notifications/user-second.json",
+            "key": "notification:user-second"
+          }
+        ]
+      }
+    ],
+    "after": [
+      {
+        "phase": "효과 복구 대기",
+        "outcome": "committed",
+        "documentStatus": 200,
+        "commentsStatus": 200,
+        "otherStatus": 200,
+        "resultStatus": 201,
+        "pending": 1,
+        "effectKeys": [
+          "notification:user-second"
+        ],
+        "effectFiles": [
+          {
+            "path": "_notifications/user-second.json",
+            "key": "notification:user-second"
+          }
+        ]
+      },
+      {
+        "phase": "재시작 복구 완료",
+        "documentStatus": 200,
+        "notificationStatus": 200,
+        "comments": 1,
+        "notifications": 1,
+        "pending": 0,
+        "transactionId": "request-cb6719d5dbfff4621212a952989e27b6f42c2ab90e886149bcefffc1b9385b91"
+      }
+    ],
+    "assertions": [
+      "알림 첫 반영과 redo에 각각 EIO 주입",
+      "부모 201/committed 및 문서·댓글 조회 200, 무관한 문서 200",
+      "실제 알림 조회는 503/RECOVERY_REQUIRED로 계속 격리",
+      "effect intent.keys는 notification:user-second이고 commit·after-image 보존, applied 없음",
+      "같은 ID 재전송·resultOnly는 같은 댓글·transactionId·resources와 pending 1개 반환",
+      "SIGKILL·재시작에서 알림만 redo, applied 기록, pending 0 및 댓글·알림 각각 1건",
+      "재시작 뒤 동일 ID 재전송·resultOnly에서도 같은 확정 결과·버전·해시 유지"
+    ],
+    "checks": [
+      {
+        "command": "node --test --test-name-pattern='알림 반영과 redo가' tests/storage-idempotency-api.test.mjs",
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-fix-20261027\\isolated",
+        "exitCode": 1,
+        "result": "기존 결함 재현 실패를 확인",
+        "tests": 1,
+        "pass": 0,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "log": {
+          "path": ".tmp/api-storage-04-fix-20261027/reproduction-before.log",
+          "sha256": "b06f3f3ce8ade90ba45af7c470135a8720e058a1bb0b2e0590d8a30507a63f4a",
+          "bytes": 1502
+        }
+      },
+      {
+        "command": "node --test --test-name-pattern='알림 반영과 redo가' tests/storage-idempotency-api.test.mjs",
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-fix-20261027\\isolated",
+        "exitCode": 0,
+        "result": "통과",
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "log": {
+          "path": ".tmp/api-storage-04-fix-20261027/reproduction-after.log",
+          "sha256": "c683d5b59ce9f4e4183825e0258a9913dc415eb0f2d2885a369e8de8ea61d227",
+          "bytes": 769
+        }
+      },
+      {
+        "command": "node --test --test-concurrency=1 tests/storage-journal.test.mjs tests/storage-resources.test.mjs tests/storage-idempotency-api.test.mjs tests/storage-idempotency-mcp.test.mjs tests/storage-journal-lifecycle-api.test.mjs tests/content-preconditions-mcp.test.mjs",
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-fix-20261027\\isolated",
+        "exitCode": 0,
+        "result": "통과",
+        "tests": 59,
+        "pass": 59,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "log": {
+          "path": ".tmp/api-storage-04-fix-20261027/regression.log",
+          "sha256": "e627d9f0428ab5bf0635b93aab73929c1df2a384be45a5c97afcd7d20249e571",
+          "bytes": 6055
+        }
+      },
+      {
+        "command": "npm run lint",
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-fix-20261027\\isolated",
+        "exitCode": 0,
+        "result": "통과. 기존 미사용 변수 3개·finally 경고 1개 유지",
+        "log": {
+          "path": ".tmp/api-storage-04-fix-20261027/lint.log",
+          "sha256": "1eb502069998bc941f02a126e7087f23f917a19b136e99009046f264d8fcc33a",
+          "bytes": 866
+        }
+      },
+      {
+        "command": "npm run build",
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-fix-20261027\\isolated",
+        "exitCode": 0,
+        "result": "통과. 기존 번들 크기 경고 유지",
+        "log": {
+          "path": ".tmp/api-storage-04-fix-20261027/build.log",
+          "sha256": "a9d2f7624fded5aa02516f376c613d242c50a076dc6c8a8362d1b0df6c591a96",
+          "bytes": 794
+        }
+      },
+      {
+        "command": "node --check server/lib/storageChanges.mjs; node --check tests/storage-idempotency-api.test.mjs",
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress",
+        "exitCode": 0,
+        "result": "통과"
+      },
+      {
+        "command": "git diff --check",
+        "cwd": "C:\\Git\\MindNProgress\\MindNProgress",
+        "exitCode": 0,
+        "result": "통과"
+      }
+    ],
+    "limits": [
+      "OS·디스크가 유지되는 단일 콘텐츠 작성 API 프로세스 종료·재시작 범위",
+      "기존 대량 02·03 전체 시험은 이전 통과 근거를 보존하고 변경 영향의 잠금·journal·HTTP·stdio MCP 회귀를 재실행했다.",
+      "운영 서버·데이터·외부 실행·배포·원격 push·Dooray 및 05~07 실행은 수행하지 않았다."
+    ],
+    "next": {
+      "required": "없음",
+      "optional": "없음"
+    }
   }
 }

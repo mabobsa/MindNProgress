@@ -104,8 +104,14 @@ export function createStorageChanges({ root, resources, keyForFile, invalidate =
         const transactionId = journal.effectTransactionId(effect.id)
         const existing = journal.records.get(transactionId)
         if (existing && !existing.terminalAt) throw new Error('EFFECT_RECOVERY_REQUIRED')
-        if (!existing) await resources.withResources(handler.keys(effect.payload), () => run(
-          () => handler.run(effect.payload, effect.id), { transactionId, effectKind: effect.kind, effectId: effect.id }))
+        if (!existing) {
+          const keys = handler.keys(effect.payload)
+          // 잠금 문맥은 재사용하되 부모의 보유 키를 후속 효과의 복구 범위에 넣지 않는다.
+          await resources.withResources(keys, () => run(() => handler.run(effect.payload, effect.id), {
+            transactionId, effectKind: effect.kind, effectId: effect.id,
+            keys: keys.map((item) => typeof item === 'string' ? item : item.key),
+          }))
+        }
         else await resumeEffects(existing)
         if (journal.pending(journal.records.get(transactionId)).length) throw new Error('NESTED_EFFECT_PENDING')
         await journal.effectDone(record, effect.id)

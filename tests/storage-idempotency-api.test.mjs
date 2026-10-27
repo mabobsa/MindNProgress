@@ -61,6 +61,72 @@ test('미완료 알림은 영속 재개하며 표시 목록에서 제거돼도 e
   assert.deepEqual((await query(api, id)).body.sideEffectsPending, [])
 })
 
+test('알림 반영과 redo가 모두 실패해도 확정된 부모 문서는 조회되며 재시작 후 효과만 복구한다', { timeout: 30_000 }, async (t) => {
+  const api = await storageApi(t, { documents: 3 }), id = newStorageRequestId()
+  const notificationFile = '_notifications/user-second.json'
+  const first = await api.barrier(notificationFile, 'rename', { fail: true })
+  const redo = await api.barrier(notificationFile, 'rename', { fail: true })
+  const body = { nodeId: 'card-1', text: '@다른 편집자 후속 효과 복구 실패 검수' }
+  const saving = api.call(`${route}/comments`, 'POST', body, key(id))
+  await first.reached; first.release()
+  await redo.reached; redo.release()
+  const committed = await saving
+  assert.equal(committed.status, 201)
+  assert.equal(committed.body.outcome, 'committed')
+  assert.equal(committed.body.sideEffectsPending.length, 1)
+  const effectId = committed.body.sideEffectsPending[0]
+  const effectDirectory = `_storage-transactions/effect-${storageHash(effectId)}`
+  const intent = await api.read(`${effectDirectory}/intent.json`)
+  const document = await api.call(route)
+  const comments = await api.call(`${route}/comments`)
+  const other = await api.call(`/api/maps/${api.ids[1]}`)
+  const lookup = await query(api, id)
+  t.diagnostic(JSON.stringify({ phase: '효과 복구 대기', outcome: committed.body.outcome,
+    documentStatus: document.status, commentsStatus: comments.status, otherStatus: other.status,
+    resultStatus: lookup.status, pending: committed.body.sideEffectsPending.length,
+    effectKeys: intent.keys, effectFiles: intent.files.map(({ path, key }) => ({ path, key })) }))
+  assert.equal(document.status, 200, JSON.stringify(document))
+  assert.equal(comments.status, 200, JSON.stringify(comments))
+  assert.equal(other.status, 200)
+  assert.deepEqual(intent.keys, ['notification:user-second'])
+  assert.deepEqual(intent.files.map((entry) => entry.path), [notificationFile])
+  assert.ok((await api.read(`${effectDirectory}/commit.json`)).intentSha256)
+  await assert.rejects(readFile(path.join(api.data, effectDirectory, 'applied.json')), { code: 'ENOENT' })
+  const blocked = await api.call('/api/notifications', 'GET', undefined, { 'X-MNP-AI-Editor-Id': 'user-second' })
+  assert.equal(blocked.status, 503)
+  assert.equal(blocked.body.code, 'RECOVERY_REQUIRED')
+  assert.equal(comments.body.comments.filter((item) => item.id === committed.body.comment.id).length, 1)
+  for (const result of [lookup, await api.call(`${route}/comments`, 'POST', body, key(id))]) {
+    assert.equal(result.status, 201)
+    assert.equal(result.body.outcome, 'committed')
+    assert.equal(result.body.transactionId, committed.body.transactionId)
+    assert.deepEqual(result.body.comment, committed.body.comment)
+    assert.deepEqual(result.body.resources, committed.body.resources)
+    assert.deepEqual(result.body.sideEffectsPending, [effectId])
+  }
+  assert.equal((await api.read(`_comments/${mapId}.json`)).length, 1)
+  const exit = await api.restart()
+  assert.equal(exit.signal, 'SIGKILL')
+  assert.equal((await api.call(route)).status, 200)
+  assert.equal((await api.call(`${route}/comments`)).body.comments.length, 1)
+  assert.ok((await api.read(`${effectDirectory}/applied.json`)).terminalAt)
+  const notifications = await api.call('/api/notifications', 'GET', undefined, { 'X-MNP-AI-Editor-Id': 'user-second' })
+  assert.equal(notifications.status, 200)
+  assert.equal(notifications.body.notifications.filter((item) => item.commentId === committed.body.comment.id).length, 1)
+  for (const result of [await query(api, id), await api.call(`${route}/comments`, 'POST', body, key(id))]) {
+    assert.equal(result.status, 201)
+    assert.equal(result.body.outcome, 'committed')
+    assert.equal(result.body.transactionId, committed.body.transactionId)
+    assert.deepEqual(result.body.comment, committed.body.comment)
+    assert.deepEqual(result.body.resources, committed.body.resources)
+    assert.deepEqual(result.body.sideEffectsPending, [])
+  }
+  assert.equal((await api.read(`_comments/${mapId}.json`)).length, 1)
+  assert.equal((await api.read(notificationFile)).filter((item) => item.commentId === committed.body.comment.id).length, 1)
+  t.diagnostic(JSON.stringify({ phase: '재시작 복구 완료', documentStatus: 200, notificationStatus: 200,
+    comments: 1, notifications: 1, pending: 0, transactionId: committed.body.transactionId }))
+})
+
 test('실패한 오래된 일일 backup 후속 처리는 더 최신 버전을 덮지 않는다', { timeout: 30_000 }, async (t) => {
   const api = await storageApi(t, { documents: 3 }), id = newStorageRequestId()
   const barrier = await api.barrier('_storage-transactions/effect-', 'writeFile', { prefix: true, fail: true })

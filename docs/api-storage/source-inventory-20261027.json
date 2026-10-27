@@ -1,0 +1,6642 @@
+{
+  "기준커밋": "10afee7555f3ee9810cd7280da72815c5d599a01",
+  "의미": "정적 검색 후보. 호출 계층 중복과 별도 자원 도구를 포함하며 감사 표와 함께 해석한다.",
+  "sources": [
+    {
+      "file": "mcp/aiConversationSelectionPolicy.mjs",
+      "sha256": "bd7abc771b9c538b129b437f2602409d9afb677f9e224eda659097851066b901"
+    },
+    {
+      "file": "mcp/aiUsage.mjs",
+      "sha256": "2081ce8b074def973fcb612a91113588b58a77969ac94015fdd73d990d70d1ce"
+    },
+    {
+      "file": "mcp/apiConnection.mjs",
+      "sha256": "e292eb65291b34966de8cf75f551cec547b4a63634f812ea28f5cd65e821c3d0"
+    },
+    {
+      "file": "mcp/cardTextPatch.mjs",
+      "sha256": "f166b03d488c1c3ba0d78ec1f8ef805719cde5a8aa057fc623d6a80148d75f0e"
+    },
+    {
+      "file": "mcp/documentGroupMetadata.mjs",
+      "sha256": "d7ec5b3fe264913961263b1083fb6164cce7127bcc1023f9c5e0ecb7d5e0f871"
+    },
+    {
+      "file": "mcp/documentViews.mjs",
+      "sha256": "2faefa5cb24ed432c3f154ec61ec3a3cb0820510fc98b485508fb6a71a18d669"
+    },
+    {
+      "file": "mcp/imageAccess.mjs",
+      "sha256": "976ee6914b8fc840be403021e492706bde154a80947a0110539a929b656eea4f"
+    },
+    {
+      "file": "mcp/server.mjs",
+      "sha256": "10addea203f9ccf99871dec7e2137d27b9c00da9be8a24a470c16b4ddecbff44"
+    },
+    {
+      "file": "mcp/waitingItemNotes.mjs",
+      "sha256": "1c8d2c1af9e21ced2cbbd31bbb0c44081291e684b9b434dfd4f1195048f6ed09"
+    },
+    {
+      "file": "mcp/workspacePoolStatusGuide.mjs",
+      "sha256": "22584cf91f4a41301aaef3d3540e4efdaa91594a2db9ba6f9941ab07b1d5a81b"
+    },
+    {
+      "file": "runner/index.mjs",
+      "sha256": "98e84ab1ba43b21d297289baffe4cb7a46e2061babd4ff7fc840b3bd6f02cd21"
+    },
+    {
+      "file": "runner/lib/aionUiClient.mjs",
+      "sha256": "bbe2d219a7cb9e2a8f3d38543d36545c493e069e2d3702f2dda7f3811fd3fbc1"
+    },
+    {
+      "file": "runner/lib/completionRelay.mjs",
+      "sha256": "b12cb31325fa83ac83a5fd484eb95f57aeec84d29441593918cc5c869b6e15f2"
+    },
+    {
+      "file": "runner/lib/runnerConfig.mjs",
+      "sha256": "a6b25609b623eda681b5e4ada840d5d8fea6c399e25e066a2c478ea409e5296a"
+    },
+    {
+      "file": "runner/lib/runnerLoop.mjs",
+      "sha256": "386ea5954373ca178f1ccc00a3aac9f5fac29572d773ab87a89725c530c1ac8a"
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "sha256": "891587811d052347c909f670125dd40a00a71cb0bf18874bab78e85b526b76c4"
+    },
+    {
+      "file": "scripts/audit-guidance-preservation.mjs",
+      "sha256": "d6a86f2f3122ce2af9ce01f62132033dbd79a7f0fb1eff97ddb03281bae92013"
+    },
+    {
+      "file": "scripts/backup-data.ps1",
+      "sha256": "778209a7bce94b22041aa2141a34f4dfe5219cc57a748ca587945633b52e96c6"
+    },
+    {
+      "file": "scripts/capture-guidance-evidence.mjs",
+      "sha256": "f3dbf564d10490fccc280e176eb84ec5eacb8f24656725bbe60accae5b5500f7"
+    },
+    {
+      "file": "scripts/capture-guidance-rollback.mjs",
+      "sha256": "e8f0df229345e1d45c71de20805b22c49d9b8194fd87b6079a4ffa3600452465"
+    },
+    {
+      "file": "scripts/cleanup-image-assets.mjs",
+      "sha256": "7802d670460ac82ff35ef2673987dc002d4634091acdbfa68be5798da3581df0"
+    },
+    {
+      "file": "scripts/collect-child-output.mjs",
+      "sha256": "fb4bd385b917f66503dea9ada55d92763f1aeb445b6cecdb8b37c99d872e91c6"
+    },
+    {
+      "file": "scripts/comment-migration.mjs",
+      "sha256": "a2dfb51b973fff593708627de7fa2478dd8603815e3076b4072dc0a9b47e4c60"
+    },
+    {
+      "file": "scripts/dev.mjs",
+      "sha256": "f1f174f5ce8367691201cefc17ac5a360f95e9676becb660aeea698c1e4588c4"
+    },
+    {
+      "file": "scripts/export-completed-ai-history.mjs",
+      "sha256": "6c02833523f695ba61ea3f1f74158f998d127fc1f0347318709399a5bd57a660"
+    },
+    {
+      "file": "scripts/local-environment.mjs",
+      "sha256": "c63cde85b696a0c5692d8c0a34e2d3f9093de8dd3683484e152ec85303821383"
+    },
+    {
+      "file": "scripts/mcp-tool-usage.mjs",
+      "sha256": "b896e067628f749d1dac79032ab683abf5a9b453403ef699ccf1f4b2c163ffc2"
+    },
+    {
+      "file": "scripts/measure-ai-instructions.mjs",
+      "sha256": "0198cc6f2fde03fdbf58e3f0666aa7441674a833da840658f8753e2c1a6d1ea2"
+    },
+    {
+      "file": "scripts/mnp-runtime.ps1",
+      "sha256": "4615cce313a492cec39ddbe3cbac00aba137444e825e788b0a3720b7b89a59e2"
+    },
+    {
+      "file": "scripts/restore-data.ps1",
+      "sha256": "b153eeeed25132b0871ffd885d7dbe24be1f295c18985f1653bfc42a2383f5ae"
+    },
+    {
+      "file": "scripts/run-unit-tests.mjs",
+      "sha256": "da6e8f3323294a350a7360177c777a0679c6bfaf57dea568216e197d9f3c1a51"
+    },
+    {
+      "file": "scripts/runtime/config.mjs",
+      "sha256": "ba5da3c4d3d38bb3cb9cf8640217269e69e644332614bf859d52cffd7d6be697"
+    },
+    {
+      "file": "scripts/runtime/entrypoints/MindNProgress_Launcher.cjs",
+      "sha256": "41b8a01095269e351c584e7bab043355ba8f7368203a91b4bbe645ef77a45568"
+    },
+    {
+      "file": "scripts/runtime/launcher.cjs",
+      "sha256": "2bc8374b98e6119b71c0446adfce3fde19e6988c187caca83e3233b274e59a76"
+    },
+    {
+      "file": "scripts/runtime/process-owner.ps1",
+      "sha256": "021a3b731aa5ef1c87d340712a1f053217f208482feeac9ef16a2cee2b1a6bae"
+    },
+    {
+      "file": "scripts/runtime/supervisor.mjs",
+      "sha256": "f6724ab6dafd914c484a628592bd6f269122ab6e8e31f44f1f25531a84ba98a7"
+    },
+    {
+      "file": "scripts/runtime/web.mjs",
+      "sha256": "4bdbd7240cd3eed9ba1e64396234c870660147e9e5f1b57638741d72198f6d98"
+    },
+    {
+      "file": "scripts/start-server.mjs",
+      "sha256": "405e0dbc72eb9f1659547348ef7c235d486e5683baa9ecc3269c2a9337fae231"
+    },
+    {
+      "file": "scripts/sync-ai-workspaces-to-main.ps1",
+      "sha256": "946ea85829e57326b81fcc01d9f1c8dbe6b3af616c487730d78299cc84f45bfb"
+    },
+    {
+      "file": "scripts/test-group-overview-browser.mjs",
+      "sha256": "31597bf87b8e60963457bdd80b04cd3344655a2540a81ff6551c1e0e411ecc6a"
+    },
+    {
+      "file": "scripts/test-mcp.mjs",
+      "sha256": "509eba280e51c2609a9dc9230c1445fdfd453169dd1de94e8b043aff7175bd3a"
+    },
+    {
+      "file": "scripts/verify-guidance-rollback.mjs",
+      "sha256": "96b02bb53bab7676bdeb3dee38b3c91e912773a62088adefcb8584c68e772a5a"
+    },
+    {
+      "file": "server/index.mjs",
+      "sha256": "1d2c36456ab69bdf83760b91cf6e4cdac1b99a3c309fa136e10230126e847b11"
+    },
+    {
+      "file": "server/lib/aiClaudeAccounts.mjs",
+      "sha256": "635c8ea04bc64069e99d0891989be2b9efb0c9f96ffc51ade87002e148a6bb26"
+    },
+    {
+      "file": "server/lib/aiConversationContextHealth.mjs",
+      "sha256": "826d91df2768317f7e401091ad698685d67e33041206a3768a84b669c58f0b42"
+    },
+    {
+      "file": "server/lib/aiConversationDisplay.mjs",
+      "sha256": "b816a1bad9558cad10934badc833d88c381d01586529df783d467667164527f2"
+    },
+    {
+      "file": "server/lib/aiConversationMessageStatistics.mjs",
+      "sha256": "6d98f66614be3b5a4b9d9686cfb26990de8ca351633fd81b935f8fb744702f6a"
+    },
+    {
+      "file": "server/lib/aiConversationRemoval.mjs",
+      "sha256": "42f228f3c3b292301bca4828ef6e830f4bd02e5ca2dafb0c293cde04f286c0f0"
+    },
+    {
+      "file": "server/lib/aiDelegationDispatchRecovery.mjs",
+      "sha256": "03d0c1646b708c11e782426919632bf915d024923fa6c690f77eaed92f897d82"
+    },
+    {
+      "file": "server/lib/aiDelegationInterruptedRecovery.mjs",
+      "sha256": "ce1492efb008dbd0e72573894269a5b495dcfbaa0a1763bea1330afda602c42c"
+    },
+    {
+      "file": "server/lib/aiDelegationReportArchive.mjs",
+      "sha256": "f91f1992d0ed966a6958b6f9618d5d0f5b8877254844ac25d4c3fe3cc1f1467e"
+    },
+    {
+      "file": "server/lib/aiDelegationReports.mjs",
+      "sha256": "b4dcc698d88914c13e00ad6ed7c394187ac4d1eb244ec9a6872a3b3e61874a40"
+    },
+    {
+      "file": "server/lib/aiDelegationRequestFailures.mjs",
+      "sha256": "bb30213a9fa2aa1901f84a1d675d055ce51a5e025e3d09dfe2c265a9702b2806"
+    },
+    {
+      "file": "server/lib/aiDelegationResultCapture.mjs",
+      "sha256": "8cc156c31d617a21b8bf4cec688400fc7ad884bb0fc29c2338f526ec2b4d36dd"
+    },
+    {
+      "file": "server/lib/aiDelegationSourceCompletion.mjs",
+      "sha256": "9dc04465a7087c9f608eba937c3c9b7bbb808899cced2af24ba80d0127a8eab1"
+    },
+    {
+      "file": "server/lib/aiDelegationStatusLookup.mjs",
+      "sha256": "39ed9a0d5fb5fb93bd1bb7ca4cd3c7aca56748a95cb95236a569bfdb83f6227f"
+    },
+    {
+      "file": "server/lib/aiDelegations.mjs",
+      "sha256": "8ffb5b70a3b99c4fc61c849203ebe9687da20bdea071fc3acbcc8ab35b93c7ba"
+    },
+    {
+      "file": "server/lib/aiDialogPreferences.mjs",
+      "sha256": "5d4ea7a0bd57d184002030c51343899b075cd7e9e3f7e97dceb812564da12da0"
+    },
+    {
+      "file": "server/lib/aiDocumentCleanup.mjs",
+      "sha256": "0e158cb58680aa695d51dff220228e08647ffff08470173c5fc6d72ec920f885"
+    },
+    {
+      "file": "server/lib/aiIntegrationRecovery.mjs",
+      "sha256": "207a4c475cad4f9d9e49e031d150f2ca8c37030dfa41c721c16fc2affb7fd9f8"
+    },
+    {
+      "file": "server/lib/aiModelPolicy.mjs",
+      "sha256": "c5585bc577cee61605e57d1beaa96d7a6073dd53277fb0876ec6a7a436533f0c"
+    },
+    {
+      "file": "server/lib/aiParentWake.mjs",
+      "sha256": "f29ca4f10c4bfc437956b994dd898ff40717f2fea1ed006fc23bfb90b556aad5"
+    },
+    {
+      "file": "server/lib/aiWorkspaceSettings.mjs",
+      "sha256": "d45e45c15e4078f88fc33bcda40323a9baf25a4a019cabd31687d0b43d8fccaa"
+    },
+    {
+      "file": "server/lib/aionUiConversationRuntimes.mjs",
+      "sha256": "6d0e8acfa944afa2027f431276a799dc34804b8971b9e8ec3117b257e7d1c7e9"
+    },
+    {
+      "file": "server/lib/aionUiExternalLaunch.mjs",
+      "sha256": "fb6f62a2cd9d08f02981c49813902aa1f8e0c6c5a540cc21242859a94e36aa60"
+    },
+    {
+      "file": "server/lib/aionUiLaunchTracking.mjs",
+      "sha256": "311ddcb51b14a0af90eca8bb69ba1858ffca4b6be356824f2931b6b9f8a39d4a"
+    },
+    {
+      "file": "server/lib/aionUiSubscriptionUsage.mjs",
+      "sha256": "3c5b6a73b985824f86d3cc54bf09d1da381fc0b176d211eaeed65dce8eb3529a"
+    },
+    {
+      "file": "server/lib/attributionScope.mjs",
+      "sha256": "4c5107569ac10bccd50df19d907001fc05c5f4681132a5eb063f237eaa8a51bf"
+    },
+    {
+      "file": "server/lib/cardLayoutRequests.mjs",
+      "sha256": "021b59cdd7d0f7012035f35f7d61e933cb33c6346c27f98b593e86f97eac253c"
+    },
+    {
+      "file": "server/lib/commentContent.mjs",
+      "sha256": "17fa1f1fc943e9de58dbed4ee93f2058376caff1e40210cdf3e068fdeba76655"
+    },
+    {
+      "file": "server/lib/completedAiHistory.mjs",
+      "sha256": "2d87ff74d2012bcee08c53962e1a07da30a2eeef1e4485c65608b5bb46f4cf21"
+    },
+    {
+      "file": "server/lib/crossDocumentCardMove.mjs",
+      "sha256": "a79955e83251683d47c639ce6c4ab7899770ab1048bf4a8087dcbb1f026833ae"
+    },
+    {
+      "file": "server/lib/dailyBackupHistory.mjs",
+      "sha256": "f7da9bb0e1b71196c4e7b1a08f143d04aac50833a127a3534adc3abbd715f12f"
+    },
+    {
+      "file": "server/lib/documentGroupMetadata.mjs",
+      "sha256": "6946312d62a881259e2190ccaabb5a42d9fbc78cf34b9baab5274e26b645d25a"
+    },
+    {
+      "file": "server/lib/documentReadStore.mjs",
+      "sha256": "cae8ca096f1fc248380ed8df04cd528cd48925237f834c4199e6763a0b2e33b9"
+    },
+    {
+      "file": "server/lib/documentReconstruction.mjs",
+      "sha256": "a5bd5619b0dd897c5f9b8223248e7cb1ae3ebde819a5d19a92781dc64a896631"
+    },
+    {
+      "file": "server/lib/documentReconstructionRequests.mjs",
+      "sha256": "ac3ea2bab4cf245806d765cd7597643c2fcf68ff4c4c098f214586d8548def94"
+    },
+    {
+      "file": "server/lib/documentTrashReview.mjs",
+      "sha256": "2530d2af61ed2fb378cf569dff3dd887119364f092b01b646cf8735c711fd203"
+    },
+    {
+      "file": "server/lib/doorayExecutionHandoff.mjs",
+      "sha256": "c32f213369bdd3e5424beefa1fd08c0a6c6e92dd633320536bfe2df4a2f16f6f"
+    },
+    {
+      "file": "server/lib/doorayExecutionWorkspace.mjs",
+      "sha256": "5546fdf5b585c44a110fb08dd90164e42aaffb2097951d712bda54133e0263ea"
+    },
+    {
+      "file": "server/lib/doorayMentions.mjs",
+      "sha256": "42c56597a82b8dac53fae10564131635e559dbfe681b76d0e46176316253de09"
+    },
+    {
+      "file": "server/lib/doorayResponseDecision.mjs",
+      "sha256": "49a892ddb0e3cd9a25745bccf996d06d07ea3398414bb79d3e154c6578ff5ae9"
+    },
+    {
+      "file": "server/lib/doorayResponseIntegration.mjs",
+      "sha256": "45a0b72b106ec41fc5f93be19f740e512960a7eb1779101970a2445c363b01cd"
+    },
+    {
+      "file": "server/lib/doorayResponsePreferences.mjs",
+      "sha256": "47ca085cedf6577a4a6bfdf57bf94993d2a5a12b104bb4dc371d737732f14942"
+    },
+    {
+      "file": "server/lib/doorayResponses.mjs",
+      "sha256": "e589a503a11025d0da051b944d0ece5a632989978629cbf2c296037648798261"
+    },
+    {
+      "file": "server/lib/doorayTasks.mjs",
+      "sha256": "c2aff0651aad7b2a74780fdb22d3f9094188b25fb8314cb384008c39c7e3baae"
+    },
+    {
+      "file": "server/lib/globalSearch.mjs",
+      "sha256": "46401ab7b955b4dd25c82c6d5170f99a770dd6ce9cd3b26d16aaa0f9c6f2fdd3"
+    },
+    {
+      "file": "server/lib/groupDocumentInstructions.mjs",
+      "sha256": "6d16734c1440f17ec8477261e6b48fc53c1d2c775e3f9e2c985b69904909547e"
+    },
+    {
+      "file": "server/lib/groupProjects.mjs",
+      "sha256": "f1e110e2d6f40b67be68c90df6ae1da6d3ea4ec90db50c1f9855ea1fbe5947bd"
+    },
+    {
+      "file": "server/lib/groupWaitingReviews.mjs",
+      "sha256": "67fbadc24920a8eacb162be1f73c076990910b8d90db3541ed801d29b24287c8"
+    },
+    {
+      "file": "server/lib/historyCleanupBackup.mjs",
+      "sha256": "94fcad5ba174d6a2907850e216db8c4ef218a05eb743184e51bf0aadc7b9a3ba"
+    },
+    {
+      "file": "server/lib/imageAssetCleanup.mjs",
+      "sha256": "d2ed898ff5a93d9ec3cea27ded04d2a8f8ebc47994cfd5a241428a58da1f9bf8"
+    },
+    {
+      "file": "server/lib/imageAssets.mjs",
+      "sha256": "833c18a9f0a5184fe77ee8670bf9c83cad6cb58ed6e40990f8e89eb166fc8aca"
+    },
+    {
+      "file": "server/lib/localLoopbackRedirect.mjs",
+      "sha256": "df9db3744c7bb5e6c83dcc1b794e5f4766481ed5e4118382157de877eea1fc6e"
+    },
+    {
+      "file": "server/lib/machineOperations.mjs",
+      "sha256": "79d0b9a5d5e7fd98e13379801562d436f78d591d8aa1393436786742c4a1796b"
+    },
+    {
+      "file": "server/lib/machinePairings.mjs",
+      "sha256": "655ef8327131bf587321ee0c6678761892e2ea5405ea4a8dba07c9d48138f311"
+    },
+    {
+      "file": "server/lib/mcpToolUsage.mjs",
+      "sha256": "beb391f4862277c6199936a607029dc4033ef80c7e7571c8f821ea17f49fad79"
+    },
+    {
+      "file": "server/lib/progressRollup.mjs",
+      "sha256": "da3fadda6eb6422fc6039741dcb1dc67325750b0470d0cf5751059abf20205ef"
+    },
+    {
+      "file": "server/lib/reconstructionImpact.mjs",
+      "sha256": "e53cca21015e6721281852c2dfdabe17c78123b72fb6c84fd9793b452fc4f735"
+    },
+    {
+      "file": "server/lib/remoteWorkspaceArtifacts.mjs",
+      "sha256": "c4a20fb84b75f3ce8c2d5b5a4a7fd227086ded7c16b0ab2e25f6b897d1580801"
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "sha256": "a8dbae27623079d121cccbb40b872f0c25cf56cb244336b24c64cbdbfc8078e3"
+    },
+    {
+      "file": "server/lib/remoteWorkspaceProtocol.mjs",
+      "sha256": "9a8a44c3e329e5340ebbdb295ca067b2931dc46276124b10f788357589d79ef5"
+    },
+    {
+      "file": "server/lib/replaceFileWithRetry.mjs",
+      "sha256": "966f6d75028d19990d71177674c00486b0449e1518d616b1cbe6816b2810b0f1"
+    },
+    {
+      "file": "server/lib/requestTiming.mjs",
+      "sha256": "c6fbc53d83776ac7652710881cb4002ced2bfba4dde54edfdece8cb8f95e99de"
+    },
+    {
+      "file": "server/lib/runnerMcpAccess.mjs",
+      "sha256": "edd05b6334a8db80769a5ce33191f0f93e3541d9ef88ad0fd1cf623be4a7984e"
+    },
+    {
+      "file": "server/lib/runtimeLifecycle.mjs",
+      "sha256": "21f129e35e3d739c03bffe3d3c6a1e90335083a28702fcce1291fea4bb054502"
+    },
+    {
+      "file": "server/lib/runtimeStopping.mjs",
+      "sha256": "52f8644ad171f591a23e516702f84432607c0e19ae66689374c3f123d550ee0b"
+    },
+    {
+      "file": "server/lib/sharedKnowledgeAudit.mjs",
+      "sha256": "42fc9419a1272ab16f760e02e8d0a31d80cc83957be1cb9a9ded89a9df2f0a85"
+    },
+    {
+      "file": "server/lib/sharedKnowledgeMaintenance.mjs",
+      "sha256": "8f70ceabc4507e9532ab42019c352ecb393bbe0572150ed0b30ef7819d6ecf39"
+    },
+    {
+      "file": "server/lib/sharedKnowledgeReview.mjs",
+      "sha256": "4a5f1cce9f83c7d35d7e1ec245a6f168b87202d3620401a30163f0be5eeaf810"
+    },
+    {
+      "file": "server/lib/subMachines.mjs",
+      "sha256": "2e5dd396e8d34be53fc45ce3efe492a46f1692b295f72030a9df488c7149804c"
+    },
+    {
+      "file": "server/lib/waitingItems.mjs",
+      "sha256": "26e6691d859103c74b9d42167e449ba2d49434ae48c5e60a6763c62d4204a70c"
+    },
+    {
+      "file": "server/lib/workspaceBrowse.mjs",
+      "sha256": "0393b29cf21c28e32668daa6fb0594a3c5f667dc22138163b16859e84e50993d"
+    },
+    {
+      "file": "server/lib/workspaceEolRecovery.mjs",
+      "sha256": "3c1064de29991c7304017a7c4dbb2b985b433cd9a61f5b09f4371754231caa61"
+    },
+    {
+      "file": "server/lib/workspaceMetaRecovery.mjs",
+      "sha256": "9a30b51565470a16eadad9a2d23693ac6399c002bd38039b34bb0a1c5463f3cd"
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "sha256": "e049aef0165cce2e551e8f0c8efaf9aea9940a9fa53e2952ed839ddc00b2d5a4"
+    },
+    {
+      "file": "src/App.tsx",
+      "sha256": "cec8752f59c573f4b0df5953a9814e70856e7e70867f688ea09ff0c648db74c2"
+    },
+    {
+      "file": "src/aiIndicatorMotion.ts",
+      "sha256": "98b081a56d981b2f56e7310af8e978622be435993468a98b115a3f258c13fb10"
+    },
+    {
+      "file": "src/components/AdminEditorPanel.tsx",
+      "sha256": "33e8cf0ee5b8d8f53b189136e1c3fbc2d0ddd4526c79b7fd011088c062c9c59b"
+    },
+    {
+      "file": "src/components/AiConversationDialog.tsx",
+      "sha256": "e96bb314a66637418e6e5cc3f5a18701051523c15ccb210f838d6dda263e2529"
+    },
+    {
+      "file": "src/components/AiConversationPickerDialog.tsx",
+      "sha256": "093d169a28898db9a4c428112c53283ef7a930f017f261b5b8a7a2e093439f9a"
+    },
+    {
+      "file": "src/components/AiConversationRuntimeBadge.tsx",
+      "sha256": "ff5b9314b17a3c3dcf8578b06f682b8549910ed2d7eaca4fdfbf8b8337f6e806"
+    },
+    {
+      "file": "src/components/AiDelegationRecovery.tsx",
+      "sha256": "e708d82124c22557de8d844786f18c1b7f31930f4b03cc1e1bd0f438e42371c0"
+    },
+    {
+      "file": "src/components/AssigneeTooltip.tsx",
+      "sha256": "d0318b8236bb048b172b0a37027bc29744eff5dc2ae49c6284221f331c9152bb"
+    },
+    {
+      "file": "src/components/CardLayoutDialog.tsx",
+      "sha256": "9fd1b4661eef0ae596224db0d00f22eccc05b98002d4fbb9031b18dc689d3e2f"
+    },
+    {
+      "file": "src/components/DailyBackupPreviewDialog.tsx",
+      "sha256": "101d28836c5c6ab4a52df862f98ef841a07db45cbb9157e1581d330fa4d1b6b6"
+    },
+    {
+      "file": "src/components/DocumentLifecycle.tsx",
+      "sha256": "19ab1ca8d513e3d7d765ee09bb263e780ce244dd347b13210f5d156040c74bfb"
+    },
+    {
+      "file": "src/components/DocumentTrashReview.tsx",
+      "sha256": "a0cfe61d945aaf51bc28da71b4b08e88d450b91de38f57b1982f538d110d5b8c"
+    },
+    {
+      "file": "src/components/DoorayExecutionHandoff.tsx",
+      "sha256": "a69ba1d9f3bacdd2c33e402072b49c220208ffa2488ff2379849fa75b9b89dbc"
+    },
+    {
+      "file": "src/components/DoorayMentionsPanel.tsx",
+      "sha256": "c52919afc9e0373067ca8bbaee6c61121f799196b64c3385f4f4236464d4d051"
+    },
+    {
+      "file": "src/components/DoorayResponseDecision.tsx",
+      "sha256": "6ad47a49203af59a414371d8e665af79928e57606f6de580d0737ae9b479a169"
+    },
+    {
+      "file": "src/components/DoorayResponseHandoff.tsx",
+      "sha256": "897f372cea53d67d814a2ab2bb068293cb722496652a8742bb8ae0d25679f3b4"
+    },
+    {
+      "file": "src/components/DoorayResponseInbox.tsx",
+      "sha256": "bb3805ba44e1c6dfbd47d5ee40048589f8c8e11852b207832aec47de415c368a"
+    },
+    {
+      "file": "src/components/DoorayResponseRequestDialog.tsx",
+      "sha256": "ec34f3c2d57ac86989fb2060c773ba160f71b5cc35692e972c931e0e7beda6df"
+    },
+    {
+      "file": "src/components/DoorayResponseSettings.tsx",
+      "sha256": "644ce0dd8e0afa6ec72ff6e2845f95969ee138a7341640a1917fb73e34384039"
+    },
+    {
+      "file": "src/components/DoorayTaskLinkLabel.tsx",
+      "sha256": "482c81f3f632ef6fca947fc7e44bc8a97d94635dc6fe4674eb0ea21efcaee52d"
+    },
+    {
+      "file": "src/components/DoorayTaskNode.tsx",
+      "sha256": "9ba8c305f9ceb957ded439bb9a860c52f48636da1e1f7ffa060288d6173f0f6d"
+    },
+    {
+      "file": "src/components/GlobalSearchDialog.tsx",
+      "sha256": "a800a9b26a8859125c22bb835d86ab1a7bbcd3866dbbd0c3ebf337cb6d837967"
+    },
+    {
+      "file": "src/components/GroupOverview.tsx",
+      "sha256": "8ff2ab40fbaa492b384f70c7311cabddb3591d8abfb8f46050810f59a70104d0"
+    },
+    {
+      "file": "src/components/GroupPlanningSources.tsx",
+      "sha256": "11f910aab8c15a22c3426c7c92c38bace1df9771764de7accafcc9f158755a26"
+    },
+    {
+      "file": "src/components/GroupWaitingReasons.tsx",
+      "sha256": "28cba127fb529ef312dcd8cf4bf5a5cf343d7a9dffdce5d983533266520aa51a"
+    },
+    {
+      "file": "src/components/ImagePreviewDialog.tsx",
+      "sha256": "f786c278a1a5b6a4d5cd32aeb9b322f6b57e1d0b9e9e73f28ec32e761a08a1a8"
+    },
+    {
+      "file": "src/components/KnowledgeEdge.tsx",
+      "sha256": "2e65dedff9ad996339e97b42afd7af8aaa0a2486e466af2602dcf0a5fbd5dc83"
+    },
+    {
+      "file": "src/components/LinkifiedText.tsx",
+      "sha256": "f1620a2a25d27b8638081af6faf1bf8318e45d163b28d2b9b3702185bbfef805"
+    },
+    {
+      "file": "src/components/MentionText.tsx",
+      "sha256": "c3a8db3a4ba30cd513373cf78a499b725733c8bdadfe8d620c75c3a0e983d8ef"
+    },
+    {
+      "file": "src/components/MindImageNode.tsx",
+      "sha256": "37a544582ba46205d0c541b37fc7ce7f00901ad85478b66f7ab8b16759a33a35"
+    },
+    {
+      "file": "src/components/MindNode.tsx",
+      "sha256": "a4f960cc53f55feb206d87960599e886483378a8aee56f757c54599e79308a24"
+    },
+    {
+      "file": "src/components/NodeOverlapBadge.tsx",
+      "sha256": "9c8db78f25787373d4f1a6dc1ee58d171a7d30b1f9296a7ac60171f3ec91dd61"
+    },
+    {
+      "file": "src/components/ReconstructionMap.tsx",
+      "sha256": "c938737b474f00faf737799b790ee915288668ca081fcd78d0e7db097db80601"
+    },
+    {
+      "file": "src/components/SharedKnowledgeReviewDialog.tsx",
+      "sha256": "681e95317b48241d9ebcc799e43e5b9a17c5dd0f1a2771b8bf0fd835466877c3"
+    },
+    {
+      "file": "src/components/WebLinkNode.tsx",
+      "sha256": "af3fd9e5033d816dee003d543ee138f61fad0ecf44e04876989442a3f2b53c2f"
+    },
+    {
+      "file": "src/components/WorkViews.tsx",
+      "sha256": "7ca0bfef5848580106d3daa9df38dd312daac54ab68da316dd161d44c7046949"
+    },
+    {
+      "file": "src/components/WorkspaceHistoryList.tsx",
+      "sha256": "81e0e3792e2cdb0b0414a86b243b0eaf4dbfebdab90dcfda394145e7b69590ea"
+    },
+    {
+      "file": "src/components/WorkspaceSettingsDialog.tsx",
+      "sha256": "10161d19137740405ae7b1a6649d6692933b498a8b421df432799ec8fcf04ca0"
+    },
+    {
+      "file": "src/components/useAiDialogSections.ts",
+      "sha256": "6983c3ffbd0ce25ea69859e127079a6d9404c1ee3171ffa6f055963304cfb3e9"
+    },
+    {
+      "file": "src/components/useAiLaunchConfirmation.ts",
+      "sha256": "b275b26e9a67d6be0021d104d8242f1dd73f8134aece21364ddbf1f071f6ebf8"
+    },
+    {
+      "file": "src/components/useAiWorkspaceHistory.ts",
+      "sha256": "991c94bce68022a517777835e6ecad6d76532265750146d92222c6696edec7f4"
+    },
+    {
+      "file": "src/components/useDoorayResponses.ts",
+      "sha256": "30bfd593c52bd070436b754c5c206c269ac50c7179c5a79e32b6ac33a363ed9d"
+    },
+    {
+      "file": "src/components/useLibraryTouchMenu.ts",
+      "sha256": "7b5e157077f7266df4adc628fbde8e2539c9ebc94b2a2a1ce9d1350306c2494b"
+    },
+    {
+      "file": "src/main.tsx",
+      "sha256": "1bafa87c1d647cd82585497a8fad55fc022656e7ab5b5aff0f579c28dcf67e21"
+    },
+    {
+      "file": "src/theme.ts",
+      "sha256": "7ff975b82e81f373ec5952963e76c267430bd6e885790d80f08124554712d639"
+    },
+    {
+      "file": "src/types/mindMap.ts",
+      "sha256": "e71e11b7cc8df86eab95e3cc41f3fd7e30be6dfa07e43287e6a039e401efee50"
+    },
+    {
+      "file": "src/utils/aiApprovalInstructions.mjs",
+      "sha256": "1d3149231b0abaf396bb21ee3785828888ba30609341d203d7d465a4c051a070"
+    },
+    {
+      "file": "src/utils/aiContextInstructions.mjs",
+      "sha256": "2b91c5f6a40554e41a66b133245bc752f6217983797c2d020c53cb9ce33803c5"
+    },
+    {
+      "file": "src/utils/aiConversationLaunch.mjs",
+      "sha256": "cf79a9a7c6612529f0f2a4cfde7ee61658fe5abd20603a5f3727161240209874"
+    },
+    {
+      "file": "src/utils/aiConversationRole.mjs",
+      "sha256": "73bcc765e1b726165ab69f48bb0f99dc33ea448a05e0c273baf8ef63438e362a"
+    },
+    {
+      "file": "src/utils/aiConversations.mjs",
+      "sha256": "6eb56da99006129115666cb8d14ae852b61f1b8c0e737e2f5bd9868778f2e9fa"
+    },
+    {
+      "file": "src/utils/aiDelegationManagement.mjs",
+      "sha256": "2e528466e4865c669ed95dda371bda604cfa268246a392ef063ee6dc75da32f9"
+    },
+    {
+      "file": "src/utils/aiDelegationRuntimeSelection.mjs",
+      "sha256": "854186131f236d44038d6d02a62f23e04089259135d693ab3be1e451b0c0deb7"
+    },
+    {
+      "file": "src/utils/aiDelegationStatus.mjs",
+      "sha256": "25bec6188fdf9b513c50f40f0d81012867775a7d07079a619ca2750e5e65ddc9"
+    },
+    {
+      "file": "src/utils/aiDialogSections.mjs",
+      "sha256": "b2affa0419e1b58e5a9949fa1b8c340c86e238131261989056d5a031c83ccb4a"
+    },
+    {
+      "file": "src/utils/aiIntegrationRecovery.mjs",
+      "sha256": "6fff871729949b9d0a38f8f7b09176c355be543afbe30c50aefc4f2450c72822"
+    },
+    {
+      "file": "src/utils/aiRuntimeSelections.mjs",
+      "sha256": "7a1d2661e0b582e56271b21053d3be59e52f3d05917e7ce8c0c27752f0a15ec0"
+    },
+    {
+      "file": "src/utils/aiSkillSelection.mjs",
+      "sha256": "5a5114f5a2f5c2d82432c5e7b98f02116220c9ae11f94c2cc4832412ea53b6f8"
+    },
+    {
+      "file": "src/utils/aiWorkspaceHistory.mjs",
+      "sha256": "ab10bb2008a0e875fa1f3fe15002bffc0a03596098eb65c227b2ad84a2aec2f1"
+    },
+    {
+      "file": "src/utils/boxSelection.mjs",
+      "sha256": "1bd07620ebf9eb165bba3889e843128273a7ddd4b9a26d591a359488b55a7567"
+    },
+    {
+      "file": "src/utils/cardLayout.mjs",
+      "sha256": "04e70a7fbe15e6200a969cb7eb86cf8e39a2abb1e298b2684282cf561159d71d"
+    },
+    {
+      "file": "src/utils/cardLayoutRequest.mjs",
+      "sha256": "66d9df1dfdf1c77242af6b51279e3cd3c0073b94f6f085d5a37745f52aea8a95"
+    },
+    {
+      "file": "src/utils/claudeAccounts.mjs",
+      "sha256": "3fb9269b9b2efd07394f3cdb16ab59a89efb2db111ac4d98283215379970dabc"
+    },
+    {
+      "file": "src/utils/clipboardText.mjs",
+      "sha256": "c398f4e6e1ca278f0b15c5b5037f50ec4c62facaeb36b052217ba28175fa7e21"
+    },
+    {
+      "file": "src/utils/coalescedRefresh.mjs",
+      "sha256": "8ca6d89813bd5353cab3da221cd944f7f28b7bab4dead03b68ec2dadff86aede"
+    },
+    {
+      "file": "src/utils/dependencies.ts",
+      "sha256": "559de25985b416eed2f1bdf558784f61315e5144c491cfb07abce7370d561a45"
+    },
+    {
+      "file": "src/utils/documentGroupCollapse.mjs",
+      "sha256": "a400f72838d251923437d60acc62748b01fe4a138ec7feee0852c9480d8b8897"
+    },
+    {
+      "file": "src/utils/documentReconstructionGuide.mjs",
+      "sha256": "d4209ca8f4d26ee3e87730c6530c59d199acbe3ad7c329725440ab3b5081dcc8"
+    },
+    {
+      "file": "src/utils/documentReconstructionRequest.mjs",
+      "sha256": "86aa9ca84ed338201f731d07ebd1b94d445ccb61f34fec7f41d4e4c87732a0fe"
+    },
+    {
+      "file": "src/utils/documentSelection.mjs",
+      "sha256": "82c092c8a00814a613715db460831c1ad3055d3cdb97484ae4233a39511d7361"
+    },
+    {
+      "file": "src/utils/documentTrashReview.ts",
+      "sha256": "2ad056519a1cbb6a5e5135548f1b897c9037ee39bb3a4d5d3f7085d69373840a"
+    },
+    {
+      "file": "src/utils/doorayMentionRange.mjs",
+      "sha256": "8e9949ed2e35e804e9e52e17ef127e1950f0c988d7403210007da9adbf8b871e"
+    },
+    {
+      "file": "src/utils/eventStreamHealth.mjs",
+      "sha256": "87cf10293aa75dfad7240be388db6c42d84d3f65194ce3895f3face51e62d856"
+    },
+    {
+      "file": "src/utils/externalLinks.ts",
+      "sha256": "73757b41fa889818e05af6bd4884ab7af653bbd8738ca45bf8c0cb8b4856738a"
+    },
+    {
+      "file": "src/utils/globalSearch.mjs",
+      "sha256": "1f68ea5a9836e4207b970aed44cd511e904dd60e38ecb02ce2ab1ca601588fa4"
+    },
+    {
+      "file": "src/utils/groupDeepLink.mjs",
+      "sha256": "3b32cb60963fe6afdf9b3cc7135d1ae3f37695c7997eac58b565e195a33b38f9"
+    },
+    {
+      "file": "src/utils/groupOverview.mjs",
+      "sha256": "42a40b60eac1ab2ac27a571cb423e7f16d10c8b4e5c5855bd771d8eab1df3e69"
+    },
+    {
+      "file": "src/utils/groupPlanningSources.mjs",
+      "sha256": "580f896124644a0a2395215e19370c38d4b7f2c0ed0ee20a80e5124a7a895f15"
+    },
+    {
+      "file": "src/utils/groupWaiting.mjs",
+      "sha256": "9b419817e580df921f62313d29ac38c539105e821e261d7ce6c508ca66f76c33"
+    },
+    {
+      "file": "src/utils/hierarchyDrag.mjs",
+      "sha256": "0915741aab716ea71fb29b1ac381f1b6d875e54d9a59728dae48d2012b7abb0b"
+    },
+    {
+      "file": "src/utils/imageClipboard.mjs",
+      "sha256": "216be1264aa92ed0546d77be6d2353794a787193a8e7732b91ed5fd82da5e15b"
+    },
+    {
+      "file": "src/utils/imageFileNames.mjs",
+      "sha256": "7c201757d70fd3e347e7b5f36280c58bd1de1e270e6bcd5bdff93776d89c25be"
+    },
+    {
+      "file": "src/utils/knowledgeEdges.ts",
+      "sha256": "3fc498b174230b71e4403c80e9e054c1751d4bbb046f1077f3552fadc28c377f"
+    },
+    {
+      "file": "src/utils/localBackupNotice.mjs",
+      "sha256": "31103c1d67c1d3d03895e922f8bc1c9af29a05f234e526304777de11fc9d6822"
+    },
+    {
+      "file": "src/utils/mapChangeMetadata.mjs",
+      "sha256": "874a0721c6528fa98f729f7dcf9b8e9576a66e301c49473dfa379e28254a2fda"
+    },
+    {
+      "file": "src/utils/mapContentPatch.mjs",
+      "sha256": "7b7adcbbc04155cc9f99a5ebd2c853f9423937cb023aaa9efbb15896a7b63d3a"
+    },
+    {
+      "file": "src/utils/mapDocumentSync.mjs",
+      "sha256": "caa2bada84623c07687e279d500faf84926b5f3913dd3417a2560ce4a10b596b"
+    },
+    {
+      "file": "src/utils/mapLocalCache.mjs",
+      "sha256": "512595bcd5c21897e336c150598e52691500360098ef2b309770547c40ec7d28"
+    },
+    {
+      "file": "src/utils/mergeMapContent.mjs",
+      "sha256": "79f53b88ee3e97182c63802fff07413bc1d4d26276f25a4065d6d7e4d3b654b5"
+    },
+    {
+      "file": "src/utils/mindMapGrid.mjs",
+      "sha256": "e92d1fb62ec1c8e9f2a4c2fb84c637e047cc241d90125a4562da54f4d3f0b41e"
+    },
+    {
+      "file": "src/utils/mindMapLayout.mjs",
+      "sha256": "dd1e3827fa986563c4d36d16b8564ff53537ec678a2c6b3d4df2f8d082db9b6d"
+    },
+    {
+      "file": "src/utils/nodeOverlap.mjs",
+      "sha256": "140b5cc017b31120d34adaa22ab8bc7143f1541c8833060f4b646c7db4aa719a"
+    },
+    {
+      "file": "src/utils/nodeViewportVisibility.mjs",
+      "sha256": "9f3fb0722499faf05ddbd26eb232c3a06fa66d327bc3cfc2a1d95d5bc5910f88"
+    },
+    {
+      "file": "src/utils/notificationTitles.mjs",
+      "sha256": "120e3f10000cbed24dc3dadb4c4bbad61f1763cf46c9e3a8c8853ad86dfff845"
+    },
+    {
+      "file": "src/utils/progressRollup.mjs",
+      "sha256": "4f126967732348d38df81970d909ed3909203a06bec0df484463f8c2f571a62c"
+    },
+    {
+      "file": "src/utils/resizeGesture.ts",
+      "sha256": "b498a2e8ba7d462a0c2c75b6603bbced52c71dcbafa6ee35dfa4cb8039554650"
+    },
+    {
+      "file": "src/utils/resizeGrid.mjs",
+      "sha256": "d9854d98722b49f9cc6a02301064e459e1686f8621cb613ac54ee51c590020af"
+    },
+    {
+      "file": "src/utils/rootDeletion.mjs",
+      "sha256": "6f3b27818b0215576222680a501de2cf889ef0d4d34c3547a64634747905cb10"
+    },
+    {
+      "file": "src/utils/sharedKnowledgePolicy.mjs",
+      "sha256": "54877a5bb27decfed948ff77c2d6c0b6b86ca115ddc6f9e075b8966bb9cf30ba"
+    },
+    {
+      "file": "src/utils/textLinks.mjs",
+      "sha256": "f5d5aa6be3aa065037b775bbbddb1c047f672a600a55151f484d31d0c8e8e07a"
+    },
+    {
+      "file": "src/utils/touchViewport.mjs",
+      "sha256": "e2a830b4fd3f7f98569c5006513819ad9045dd0f86e770052241279f826a8dd4"
+    },
+    {
+      "file": "src/utils/webLinks.mjs",
+      "sha256": "d76e60b9f0ecd5220771c51be94ed0bda0e11557acabebaa7642173337dcafef"
+    },
+    {
+      "file": "src/utils/workspaceLocation.mjs",
+      "sha256": "27e039d3a901b1d944c688ddf189ce472bf6364da904de53f0456d976ef0bc36"
+    },
+    {
+      "file": "src/utils/workspaceSettings.ts",
+      "sha256": "6f5fb35b0f8c7bebc46685b131da3e50e1deeed67ee515b6d058cf22ba613810"
+    }
+  ],
+  "calls": [
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 73,
+      "call": "rm(lock, { recursive: true, force: true })",
+      "ancestors": [
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 78,
+      "call": "saveJson(stateFile, state)",
+      "ancestors": [
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 88,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 81,
+          "function": "cleanupCompletedLease"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 153,
+      "call": "saveJson(await ownerFile(worker), { coordinatorId, machineId, poolId: raw.poolId })",
+      "ancestors": [
+        {
+          "line": 126,
+          "function": "prepare"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 157,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 126,
+          "function": "prepare"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 169,
+      "call": "saveJson(path.join(worker.root, '.ai-session.json'), lease)",
+      "ancestors": [
+        {
+          "line": 126,
+          "function": "prepare"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 170,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 126,
+          "function": "prepare"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 182,
+      "call": "saveJson(path.join(worker.root, '.ai-session.json'), { ...session, conversationId })",
+      "ancestors": [
+        {
+          "line": 178,
+          "condition": "action === 'bind'"
+        },
+        {
+          "line": 174,
+          "function": "mutate"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 183,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 178,
+          "condition": "action === 'bind'"
+        },
+        {
+          "line": 174,
+          "function": "mutate"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 192,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 186,
+          "condition": "action === 'reuse' || action === 'recover'"
+        },
+        {
+          "line": 174,
+          "function": "mutate"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 199,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 196,
+          "condition": "action === 'quarantine'"
+        },
+        {
+          "line": 174,
+          "function": "mutate"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 214,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 210,
+          "condition": "await git(worker.root, ['status', '--porcelain=v1', '--untracked-files=all'])"
+        },
+        {
+          "line": 202,
+          "condition": "action === 'seal'"
+        },
+        {
+          "line": 174,
+          "function": "mutate"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 227,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 202,
+          "condition": "action === 'seal'"
+        },
+        {
+          "line": 174,
+          "function": "mutate"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 251,
+      "call": "rm(path.join(worker.root, '.ai-session.json'))",
+      "ancestors": [
+        {
+          "line": 231,
+          "condition": "action === 'release'"
+        },
+        {
+          "line": 174,
+          "function": "mutate"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 254,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 231,
+          "condition": "action === 'release'"
+        },
+        {
+          "line": 174,
+          "function": "mutate"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 284,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 260,
+          "function": "execute"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 288,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 260,
+          "function": "execute"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "runner/lib/workspaceAgent.mjs",
+      "line": 294,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 260,
+          "function": "execute"
+        },
+        {
+          "line": 25,
+          "function": "createWorkspaceAgent"
+        }
+      ]
+    },
+    {
+      "file": "scripts/audit-guidance-preservation.mjs",
+      "line": 92,
+      "call": "writeFile(path.join(output, 'followup-commit-inventory.json'), `${JSON.stringify({ baseline, initialHead, preservedMainHead, candidateHead, capturedAt: new Date().toISOString(), initialResponsePathChecks, originalBeforeSha256, mainCommitCou",
+      "ancestors": []
+    },
+    {
+      "file": "scripts/capture-guidance-evidence.mjs",
+      "line": 33,
+      "call": "writeFile(path.join(stateRoot, '_group-projects/group-fixture.json'), JSON.stringify({ version: 1, coordinatorMapId: maps[0].id, sources: [] }))",
+      "ancestors": [
+        {
+          "line": 21,
+          "function": "captureInitialResponses"
+        }
+      ]
+    },
+    {
+      "file": "scripts/capture-guidance-evidence.mjs",
+      "line": 35,
+      "call": "writeFile(tokenFile, 'fixture-token-for-isolated-guidance-evidence-only')",
+      "ancestors": [
+        {
+          "line": 21,
+          "function": "captureInitialResponses"
+        }
+      ]
+    },
+    {
+      "file": "scripts/capture-guidance-evidence.mjs",
+      "line": 221,
+      "call": "writeFile(evidenceFile, `${JSON.stringify({ schemaVersion: 2, capturedAt: new Date().toISOString(), method: '승인된 재생성: 현재 작업 트리의 실제 MCP 핸들러와 SDK initialize를 격리 상태 폴더에서 실행했습니다. 그룹 API는 작업 트리의 createGroupProjects.context/forDocument를 사용합니다. 문서",
+      "ancestors": [
+        {
+          "line": 192,
+          "function": "rebaselineWorkingTree"
+        }
+      ]
+    },
+    {
+      "file": "scripts/capture-guidance-evidence.mjs",
+      "line": 230,
+      "call": "writeFile(sourcesFile, `${JSON.stringify({ baseline: `working-tree@${head}`, rebaseline, sources }, null, 2)}\\n`)",
+      "ancestors": [
+        {
+          "line": 192,
+          "function": "rebaselineWorkingTree"
+        }
+      ]
+    },
+    {
+      "file": "scripts/capture-guidance-evidence.mjs",
+      "line": 234,
+      "call": "rm(temp, { recursive: true, force: true })",
+      "ancestors": [
+        {
+          "line": 192,
+          "function": "rebaselineWorkingTree"
+        }
+      ]
+    },
+    {
+      "file": "scripts/capture-guidance-evidence.mjs",
+      "line": 261,
+      "call": "writeFile(path.join(output, 'initial-response-evidence.json'), `${JSON.stringify({ schemaVersion: 1, capturedAt: new Date().toISOString(), method: '각 Git commit을 후보 작업공간 내부에 archive로 격리 추출하여 실제 MCP 핸들러와 SDK initialize를 실행했습니다. 그룹 API는 해당 co",
+      "ancestors": [
+        {
+          "line": 238,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/capture-guidance-evidence.mjs",
+      "line": 271,
+      "call": "rm(temp, { recursive: true, force: true })",
+      "ancestors": [
+        {
+          "line": 238,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/capture-guidance-rollback.mjs",
+      "line": 43,
+      "call": "writeFile(path.join(output, `${phase}-surface-and-prompts.json`), `${JSON.stringify(capture, null, 2)}\\n`)",
+      "ancestors": []
+    },
+    {
+      "file": "scripts/comment-migration.mjs",
+      "line": 53,
+      "call": "writeFile(temporaryFile, `${JSON.stringify(manifest, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 49,
+          "function": "writeManifest"
+        }
+      ]
+    },
+    {
+      "file": "scripts/comment-migration.mjs",
+      "line": 54,
+      "call": "rename(temporaryFile, manifestFile)",
+      "ancestors": [
+        {
+          "line": 49,
+          "function": "writeManifest"
+        }
+      ]
+    },
+    {
+      "file": "scripts/export-completed-ai-history.mjs",
+      "line": 32,
+      "call": "writeFile(path.join(output, name), JSON.stringify(value, null, 2) + '\\n', { encoding: 'utf8', flag: 'wx' })",
+      "ancestors": []
+    },
+    {
+      "file": "scripts/export-completed-ai-history.mjs",
+      "line": 40,
+      "call": "writeFile(file, text, { encoding: 'utf8', flag: 'wx' })",
+      "ancestors": [
+        {
+          "line": 34,
+          "condition": "Object.keys(backup.localResultFiles ?? {}).length"
+        }
+      ]
+    },
+    {
+      "file": "scripts/measure-ai-instructions.mjs",
+      "line": 118,
+      "call": "writeFile(fixturePath, `${JSON.stringify(budget, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 115,
+          "condition": "process.argv.includes('--write')"
+        }
+      ]
+    },
+    {
+      "file": "scripts/measure-ai-instructions.mjs",
+      "line": 119,
+      "call": "writeFile(toolSurfaceFixturePath, `${JSON.stringify(toolSurface, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 115,
+          "condition": "process.argv.includes('--write')"
+        }
+      ]
+    },
+    {
+      "file": "scripts/runtime/launcher.cjs",
+      "line": 18,
+      "call": "fs.writeFileSync(pidFile, `${process.pid}\\n${child.pid}\\n`, 'utf8')",
+      "ancestors": []
+    },
+    {
+      "file": "scripts/runtime/supervisor.mjs",
+      "line": 70,
+      "call": "rm(descriptorFile, { force: true })",
+      "ancestors": [
+        {
+          "line": 70,
+          "condition": "current.instanceId === instanceId"
+        },
+        {
+          "line": 44,
+          "function": "stop"
+        },
+        {
+          "line": 12,
+          "function": "supervise"
+        }
+      ]
+    },
+    {
+      "file": "scripts/runtime/supervisor.mjs",
+      "line": 96,
+      "call": "writeFile(temporary, JSON.stringify(descriptor), { mode: 0o600 })",
+      "ancestors": [
+        {
+          "line": 12,
+          "function": "supervise"
+        }
+      ]
+    },
+    {
+      "file": "scripts/runtime/supervisor.mjs",
+      "line": 97,
+      "call": "rename(temporary, descriptorFile)",
+      "ancestors": [
+        {
+          "line": 12,
+          "function": "supervise"
+        }
+      ]
+    },
+    {
+      "file": "scripts/test-group-overview-browser.mjs",
+      "line": 112,
+      "call": "writeFile(path.join(directory, name + '.png'), Buffer.from(result.data, 'base64'))",
+      "ancestors": []
+    },
+    {
+      "file": "scripts/test-group-overview-browser.mjs",
+      "line": 246,
+      "call": "writeFile(path.join(directory, 'failure.png'), Buffer.from(shot.data, 'base64'))",
+      "ancestors": [
+        {
+          "line": 246,
+          "condition": "shot"
+        },
+        {
+          "line": 246,
+          "condition": "command"
+        }
+      ]
+    },
+    {
+      "file": "scripts/test-mcp.mjs",
+      "line": 395,
+      "call": "writeFile(discoveryFile, `${JSON.stringify({ schemaVersion: 1, host: '127.0.0.1', port, pid: process.pid, updatedAt: new Date().toISOString(), })}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 393,
+          "function": "publishMockAionUiDiscovery"
+        }
+      ]
+    },
+    {
+      "file": "scripts/test-mcp.mjs",
+      "line": 434,
+      "call": "rm(testDataDirectory, { recursive: true, force: true })",
+      "ancestors": [
+        {
+          "line": 433,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/test-mcp.mjs",
+      "line": 445,
+      "call": "writeFile(aionUiUsageFile, `${JSON.stringify({ schemaVersion: 1, state: 'ready', generatedAt: usageSnapshotAt, updatedAt: usageSnapshotAt, retryAfterMs: null, claude: { state: 'ready', updatedAt: usageSnapshotAt, session: { usedPercent: 12,",
+      "ancestors": [
+        {
+          "line": 433,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/test-mcp.mjs",
+      "line": 1662,
+      "call": "writeFile(path.join(testDataDirectory, '_ai-delegations.json'), '[]\\n', 'utf8')",
+      "ancestors": [
+        {
+          "line": 433,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/test-mcp.mjs",
+      "line": 2512,
+      "call": "rm(notificationsPath, { recursive: true, force: true })",
+      "ancestors": [
+        {
+          "line": 433,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/test-mcp.mjs",
+      "line": 2513,
+      "call": "writeFile(notificationsPath, '알림 디렉터리 접근 실패 회귀 조건', 'utf8')",
+      "ancestors": [
+        {
+          "line": 433,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/test-mcp.mjs",
+      "line": 2526,
+      "call": "rm(notificationsPath, { force: true })",
+      "ancestors": [
+        {
+          "line": 433,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/test-mcp.mjs",
+      "line": 2529,
+      "call": "writeFile(path.join(notificationsPath, `${attribution.editorId}.json`), '{', 'utf8')",
+      "ancestors": [
+        {
+          "line": 433,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/test-mcp.mjs",
+      "line": 2589,
+      "call": "writeFile(path.join(notificationsPath, `${attribution.editorId}.json`), `${JSON.stringify(integrationNotifications, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 433,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/test-mcp.mjs",
+      "line": 3036,
+      "call": "rm(testDataDirectory, { recursive: true, force: true })",
+      "ancestors": [
+        {
+          "line": 433,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/verify-guidance-rollback.mjs",
+      "line": 28,
+      "call": "writeFile(path.join(logs, file), text, { flag: 'wx' })",
+      "ancestors": [
+        {
+          "line": 12,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "scripts/verify-guidance-rollback.mjs",
+      "line": 43,
+      "call": "writeFile(path.join(logs, `${runId}-results.json`), `${JSON.stringify({ runId, validationHead: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), results }, null, 2)}\\n`)",
+      "ancestors": [
+        {
+          "line": 12,
+          "function": "main"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 996,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 974,
+          "function": "issueAttributionContinuation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1044,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 1042,
+          "condition": "attribution.expiresAt <= Date.now()"
+        },
+        {
+          "line": 999,
+          "function": "attributedIntegrationUser"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1077,
+      "call": "persistSessions()",
+      "ancestors": [
+        {
+          "line": 1077,
+          "condition": "session.persistent"
+        },
+        {
+          "line": 1075,
+          "condition": "session.expiresAt <= Date.now()"
+        },
+        {
+          "line": 1069,
+          "function": "getSignedInUser"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1643,
+      "call": "writeFile(temporaryFile, `${JSON.stringify(layout, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 1640,
+          "function": "writeDocumentLayout"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1644,
+      "call": "replaceFileWithRetry(temporaryFile, mapOrderFile)",
+      "ancestors": [
+        {
+          "line": 1640,
+          "function": "writeDocumentLayout"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1649,
+      "call": "writeDocumentLayout(layout)",
+      "ancestors": [
+        {
+          "line": 1647,
+          "function": "reconcileDocumentLayout"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1658,
+      "call": "writeFile(temporaryFile, `${JSON.stringify(payload, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 1653,
+          "function": "writeStoredMap"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1660,
+      "call": "replaceFileWithRetry(temporaryFile, mapFile)",
+      "ancestors": [
+        {
+          "line": 1653,
+          "function": "writeStoredMap"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1678,
+      "call": "writeStoredMap(mapId, normalized)",
+      "ancestors": [
+        {
+          "line": 1664,
+          "function": "migrateStoredMapEdges"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1720,
+      "call": "writeStoredMap(mapId, { ...stored, createdAt, createdBy })",
+      "ancestors": [
+        {
+          "line": 1685,
+          "function": "migrateStoredMapCreationMetadata"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1741,
+      "call": "writeFile(temporaryFile, `${JSON.stringify(value, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 1736,
+          "function": "writeStoredArray"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1743,
+      "call": "replaceFileWithRetry(temporaryFile, filePath)",
+      "ancestors": [
+        {
+          "line": 1736,
+          "function": "writeStoredArray"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1759,
+      "call": "writeFile(temporaryFile, `${JSON.stringify(value, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 1756,
+          "function": "writeStoredRecord"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1760,
+      "call": "replaceFileWithRetry(temporaryFile, filePath)",
+      "ancestors": [
+        {
+          "line": 1756,
+          "function": "writeStoredRecord"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1771,
+      "call": "writeStoredArray(usersFile, users.map(serializedUser))",
+      "ancestors": [
+        {
+          "line": 1770,
+          "function": "persistUsers"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1779,
+      "call": "writeStoredArray(sessionsFile, storedSessions)",
+      "ancestors": [
+        {
+          "line": 1774,
+          "function": "persistSessions"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1789,
+      "call": "writeStoredArray(aiAttributionsFile, storedAttributions)",
+      "ancestors": [
+        {
+          "line": 1783,
+          "function": "persistAiAttributions"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1798,
+      "call": "writeStoredArray(aiConversationAttributionsFile, storedAttributions)",
+      "ancestors": [
+        {
+          "line": 1793,
+          "function": "persistAiConversationAttributions"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1807,
+      "call": "writeStoredArray(aiConversationOriginsFile, storedOrigins)",
+      "ancestors": [
+        {
+          "line": 1802,
+          "function": "persistAiConversationOrigins"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1815,
+      "call": "writeStoredArray(aiDelegationsFile, storedDelegations)",
+      "ancestors": [
+        {
+          "line": 1811,
+          "function": "persistAiDelegations"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1826,
+      "call": "writeStoredArray(file, remaining)",
+      "ancestors": [
+        {
+          "line": 1819,
+          "function": "removeLegacyAiCompletionNotifications"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1869,
+      "call": "writeStoredArray(aiRequestReceiptsFile, [...nextReceipts.values()])",
+      "ancestors": [
+        {
+          "line": 1864,
+          "condition": "ids.size"
+        },
+        {
+          "line": 1833,
+          "function": "cleanupCompletedAiHistory"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1874,
+      "call": "persistAiDelegations()",
+      "ancestors": [
+        {
+          "line": 1864,
+          "condition": "ids.size"
+        },
+        {
+          "line": 1833,
+          "function": "cleanupCompletedAiHistory"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1899,
+      "call": "writeStoredArray(groupDocumentInstructionsFile, storedInstructions)",
+      "ancestors": [
+        {
+          "line": 1895,
+          "function": "persistGroupDocumentInstructions"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1911,
+      "call": "writeStoredArray(aiWorkspaceHistoriesFile, storedHistories)",
+      "ancestors": [
+        {
+          "line": 1903,
+          "function": "persistAiWorkspaceHistories"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1930,
+      "call": "writeStoredArray(machineRegistryFile, storedMachines)",
+      "ancestors": [
+        {
+          "line": 1927,
+          "function": "persistMachineRegistry"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1939,
+      "call": "writeStoredArray(distributedWorkSettingsFile, storedSettings)",
+      "ancestors": [
+        {
+          "line": 1934,
+          "function": "persistDistributedWorkSettings"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1948,
+      "call": "persistMachineRegistry()",
+      "ancestors": [
+        {
+          "line": 1943,
+          "function": "loadMachineRegistry"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 1957,
+      "call": "persistDistributedWorkSettings()",
+      "ancestors": [
+        {
+          "line": 1951,
+          "function": "loadDistributedWorkSettings"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2057,
+      "call": "persistMachineRegistry()",
+      "ancestors": [
+        {
+          "line": 2028,
+          "function": "decommissionEditorMachines"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2057,
+      "call": "persistDistributedWorkSettings()",
+      "ancestors": [
+        {
+          "line": 2028,
+          "function": "decommissionEditorMachines"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2067,
+      "call": "persistMachineRegistry()",
+      "ancestors": [
+        {
+          "line": 2061,
+          "function": "noteMachineSeen"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2083,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 2070,
+          "function": "loadAiAttributions"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2094,
+      "call": "persistAiConversationAttributions()",
+      "ancestors": [
+        {
+          "line": 2086,
+          "function": "loadAiConversationAttributions"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2100,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 2097,
+          "function": "loadAiConversationOrigins"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2126,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 2103,
+          "function": "recoverAiConversationOrigins"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2170,
+      "call": "persistAiDelegations()",
+      "ancestors": [
+        {
+          "line": 2169,
+          "condition": "repairedCount > 0"
+        },
+        {
+          "line": 2129,
+          "function": "loadAiDelegations"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2187,
+      "call": "persistAiWorkspaceHistories()",
+      "ancestors": [
+        {
+          "line": 2175,
+          "function": "loadAiWorkspaceHistories"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2203,
+      "call": "persistSessions()",
+      "ancestors": [
+        {
+          "line": 2190,
+          "function": "loadSessions"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2216,
+      "call": "writeFile(integrationTokenFile, `${token}\\n`, { encoding: 'utf8', mode: 0o600 })",
+      "ancestors": [
+        {
+          "line": 2206,
+          "function": "loadIntegrationToken"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2419,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 2407,
+          "function": "resolveOrRememberDelegationSource"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2630,
+      "call": "persistGroupDocumentInstructions()",
+      "ancestors": [
+        {
+          "line": 2623,
+          "function": "updateGroupDocumentInstruction"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2702,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 2678,
+          "function": "linkGroupDocumentInstructionConversation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2702,
+      "call": "persistAiConversationAttributions()",
+      "ancestors": [
+        {
+          "line": 2678,
+          "function": "linkGroupDocumentInstructionConversation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2702,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 2678,
+          "function": "linkGroupDocumentInstructionConversation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2728,
+      "call": "saveMap(targetMap.id, { nodes: latestMap.nodes.map((node) => node.id === targetCard.id ? { ...node, data: { ...node.data, aiConversationId: targetConversationId, aiConversations: appendAiConversationLink(node.data, conversationLink), }, } :",
+      "ancestors": [
+        {
+          "line": 2678,
+          "function": "linkGroupDocumentInstructionConversation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2818,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 2751,
+          "function": "runGroupDocumentInstructionDispatch"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2877,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 2875,
+          "condition": "!dispatch"
+        },
+        {
+          "line": 2751,
+          "function": "runGroupDocumentInstructionDispatch"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 2892,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 2890,
+          "condition": "!validAiConversationId(targetConversationId)"
+        },
+        {
+          "line": 2751,
+          "function": "runGroupDocumentInstructionDispatch"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 3211,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 3199,
+          "condition": "liveWorkspace"
+        },
+        {
+          "line": 3195,
+          "condition": "validAiConversationId(parentConversationId)"
+        },
+        {
+          "line": 3180,
+          "function": "resolveAiDelegationWorkspacePool"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 3258,
+      "call": "persistAiDelegations()",
+      "ancestors": [
+        {
+          "line": 3251,
+          "function": "updateAiDelegation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 3329,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 3272,
+          "function": "dispatchPreparedAiDelegation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 3380,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 3374,
+          "condition": "!dispatch"
+        },
+        {
+          "line": 3272,
+          "function": "dispatchPreparedAiDelegation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 3400,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 3396,
+          "condition": "!aiDelegationWorkspaceLeaseMatches(workspaceLease, dispatch?.workspaceLease ?? null)"
+        },
+        {
+          "line": 3272,
+          "function": "dispatchPreparedAiDelegation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 3482,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 3272,
+          "function": "dispatchPreparedAiDelegation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 3482,
+      "call": "persistAiConversationAttributions()",
+      "ancestors": [
+        {
+          "line": 3272,
+          "function": "dispatchPreparedAiDelegation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 3482,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 3272,
+          "function": "dispatchPreparedAiDelegation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 3511,
+      "call": "saveMap(map.id, { nodes: latestMap.nodes.map((node) => node.id === targetCard.id ? { ...node, data: { ...node.data, aiConversationId: targetConversationId, aiConversations: appendAiConversationLink(node.data, conversationLink), }, } : node)",
+      "ancestors": [
+        {
+          "line": 3489,
+          "condition": "!latestMap || latestMap.trashedAt || !latestTargetCard"
+        },
+        {
+          "line": 3486,
+          "condition": "strategy === 'new'"
+        },
+        {
+          "line": 3272,
+          "function": "dispatchPreparedAiDelegation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 3581,
+      "call": "persistAiDelegations()",
+      "ancestors": [
+        {
+          "line": 3272,
+          "function": "dispatchPreparedAiDelegation"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 4005,
+      "call": "createNotification(recipient, { type, mapId: map.id, mapTitle: map.title, nodeId: node.id, nodeLabel: node.data?.label ?? delegation.targetCardLabel ?? node.id, message, actor: systemUser, dedupeKey, })",
+      "ancestors": [
+        {
+          "line": 3997,
+          "function": "ensureAiDelegationNotification"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 4218,
+      "call": "saveMap(map.id, { nodes: map.nodes.map((node) => node.id === delegation.targetCardId ? { ...node, data: { ...node.data, aiConversationId: conversationId, aiConversations: appendAiConversationLink(node.data, link) } } : node), edges: map.edg",
+      "ancestors": [
+        {
+          "line": 4171,
+          "function": "restoreConfirmedAiDelegationDispatch"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 4223,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 4171,
+          "function": "restoreConfirmedAiDelegationDispatch"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 5695,
+      "call": "saveMap(map.id, { nodes: map.nodes.map((node) => node.id === card.id ? { ...node, data: nextData } : node), edges: map.edges, }, user, map.title, map.color, 'content')",
+      "ancestors": [
+        {
+          "line": 5687,
+          "method": "unlink"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 5705,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 5687,
+          "method": "unlink"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 5705,
+      "call": "persistAiConversationAttributions()",
+      "ancestors": [
+        {
+          "line": 5687,
+          "method": "unlink"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 5705,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 5687,
+          "method": "unlink"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6267,
+      "call": "writeStoredArray(commentFileForMap(attribution.mapId), nextComments)",
+      "ancestors": [
+        {
+          "line": 6247,
+          "function": "repairUnspecifiedConversationComments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6318,
+      "call": "writeStoredArray(filePath, updated)",
+      "ancestors": [
+        {
+          "line": 6274,
+          "function": "repairUnspecifiedConversationNotifications"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6397,
+      "call": "persistAiConversationAttributions()",
+      "ancestors": [
+        {
+          "line": 6395,
+          "condition": "makeCurrent"
+        },
+        {
+          "line": 6393,
+          "function": "refreshConversationAttribution"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6463,
+      "call": "persistUsers()",
+      "ancestors": [
+        {
+          "line": 6461,
+          "condition": "stored.length === 0"
+        },
+        {
+          "line": 6459,
+          "function": "loadUsers"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6479,
+      "call": "persistUsers()",
+      "ancestors": [
+        {
+          "line": 6459,
+          "function": "loadUsers"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6492,
+      "call": "persistSessions()",
+      "ancestors": [
+        {
+          "line": 6492,
+          "condition": "persistentSessionRemoved"
+        },
+        {
+          "line": 6483,
+          "function": "invalidateUserSessions"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6574,
+      "call": "writeStoredRecord(doorayMentionFileForUser(userId), state)",
+      "ancestors": [
+        {
+          "line": 6573,
+          "function": "writeDoorayMentionState"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6818,
+      "call": "writeStoredArray(notificationFileForUser(user.id), [notification, ...notifications].slice(0, 200))",
+      "ancestors": [
+        {
+          "line": 6805,
+          "function": "createNotification"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6862,
+      "call": "createNotification(user, { type: 'schedule', mapId: map.id, mapTitle: map.title, nodeId: node.id, nodeLabel: node.data.label, message, actor: systemUser, dedupeKey, })",
+      "ancestors": [
+        {
+          "line": 6839,
+          "function": "ensureScheduleNotifications"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6889,
+      "call": "createNotification(recipient, { type: 'assignment', mapId: map.id, mapTitle: map.title, nodeId: node.id, nodeLabel: node.data.label, message: node.data.dueDate ? `담당자로 지정되었습니다. 마감일 ${node.data.dueDate}` : '담당자로 지정되었습니다.', actor: publicUser(",
+      "ancestors": [
+        {
+          "line": 6888,
+          "condition": "assigneeChanged"
+        },
+        {
+          "line": 6877,
+          "function": "createWorkChangeNotifications"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6899,
+      "call": "createNotification(recipient, { type: 'schedule', mapId: map.id, mapTitle: map.title, nodeId: node.id, nodeLabel: node.data.label, message: `마감일이 ${node.data.dueDate}(으)로 변경되었습니다.`, actor: publicUser(actor), })",
+      "ancestors": [
+        {
+          "line": 6898,
+          "condition": "dueDateChanged && node.data.dueDate"
+        },
+        {
+          "line": 6888,
+          "condition": "assigneeChanged"
+        },
+        {
+          "line": 6877,
+          "function": "createWorkChangeNotifications"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6919,
+      "call": "createNotification(recipient, { type: 'waiting-released', mapId: map.id, mapTitle: map.title, nodeId: release.nodeId, nodeLabel: release.nodeLabel, message: `외부 대기 '${release.item.label}'이(가) 해제되었습니다.`, actor: publicUser(actor), })",
+      "ancestors": [
+        {
+          "line": 6912,
+          "function": "createWaitingReleaseNotifications"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6986,
+      "call": "writeFile(temporaryFile, `${JSON.stringify(revision, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 6960,
+          "function": "archiveMapRevision"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 6987,
+      "call": "replaceFileWithRetry(temporaryFile, revisionFile)",
+      "ancestors": [
+        {
+          "line": 6960,
+          "function": "archiveMapRevision"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7024,
+      "call": "writeFile(temporaryFile, `${JSON.stringify(backup, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 6991,
+          "function": "writeDailyBackup"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7025,
+      "call": "replaceFileWithRetry(temporaryFile, backupFile)",
+      "ancestors": [
+        {
+          "line": 6991,
+          "function": "writeDailyBackup"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7080,
+      "call": "writeDailyBackup(map, systemUser, 'scheduled', seoulDateString(), { overwrite: false })",
+      "ancestors": [
+        {
+          "line": 7074,
+          "function": "ensureDailyBackups"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7098,
+      "call": "writeDailyBackup(snapshot, user ?? systemUser, 'history-backfill', date, { overwrite: false })",
+      "ancestors": [
+        {
+          "line": 7086,
+          "function": "backfillDailyBackupsFromHistory"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7203,
+      "call": "archiveMapRevision(existing, user, revisionReason)",
+      "ancestors": [
+        {
+          "line": 7202,
+          "condition": "existing && !existing.trashedAt"
+        },
+        {
+          "line": 7162,
+          "function": "saveMap"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7205,
+      "call": "writeStoredMap(mapId, payload, reconstructionCreate)",
+      "ancestors": [
+        {
+          "line": 7162,
+          "function": "saveMap"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7207,
+      "call": "writeDailyBackup(payload, user, 'automatic')",
+      "ancestors": [
+        {
+          "line": 7162,
+          "function": "saveMap"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7225,
+      "call": "rm(filePath, { force: true })",
+      "ancestors": [
+        {
+          "line": 7224,
+          "condition": "content === null"
+        },
+        {
+          "line": 7223,
+          "function": "restoreOptionalFile"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7230,
+      "call": "writeFile(temporaryFile, content)",
+      "ancestors": [
+        {
+          "line": 7223,
+          "function": "restoreOptionalFile"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7231,
+      "call": "replaceFileWithRetry(temporaryFile, filePath)",
+      "ancestors": [
+        {
+          "line": 7223,
+          "function": "restoreOptionalFile"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7254,
+      "call": "restoreOptionalFile(filePath, content)",
+      "ancestors": [
+        {
+          "line": 7253,
+          "function": "restoreMapMoveFiles"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7263,
+      "call": "rm(path.join(directory, entry.name), { force: true })",
+      "ancestors": [
+        {
+          "line": 7253,
+          "function": "restoreMapMoveFiles"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7489,
+      "call": "writeFile(asset.filePath, asset.content, { flag: 'wx', mode: 0o600 })",
+      "ancestors": [
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7496,
+      "call": "saveMap(mapId, candidate, user, current.title, current.color, 'cross-document-card-move', { expectedVersion: current.version, })",
+      "ancestors": [
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7502,
+      "call": "writeStoredArray(commentFileForMap(sourceMapId), nextSourceComments)",
+      "ancestors": [
+        {
+          "line": 7501,
+          "condition": "movedComments.length > 0"
+        },
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7503,
+      "call": "writeStoredArray(commentFileForMap(targetMapId), nextTargetComments)",
+      "ancestors": [
+        {
+          "line": 7501,
+          "condition": "movedComments.length > 0"
+        },
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7505,
+      "call": "writeStoredArray(update.filePath, update.next)",
+      "ancestors": [
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7538,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7539,
+      "call": "persistAiConversationAttributions()",
+      "ancestors": [
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7540,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7541,
+      "call": "persistAiDelegations()",
+      "ancestors": [
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7542,
+      "call": "persistGroupDocumentInstructions()",
+      "ancestors": [
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7577,
+      "call": "writeStoredArray(cardMoveOperationsFile, [operation, ...operations].slice(0, 500))",
+      "ancestors": [
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7596,
+      "call": "rm(filePath, { force: true })",
+      "ancestors": [
+        {
+          "line": 7327,
+          "function": "moveCardAcrossDocuments"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7615,
+      "call": "writeStoredMap(mapId, payload)",
+      "ancestors": [
+        {
+          "line": 7607,
+          "function": "trashMap"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7636,
+      "call": "writeStoredMap(mapId, payload)",
+      "ancestors": [
+        {
+          "line": 7619,
+          "function": "restoreMap"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7665,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7665,
+      "call": "persistAiConversationAttributions()",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7665,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7666,
+      "call": "persistAiDelegations()",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7666,
+      "call": "persistGroupDocumentInstructions()",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7667,
+      "call": "writeStoredArray(aiRequestReceiptsFile, [...aiRequestReceipts.values()])",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7674,
+      "call": "rm(mapFileForId(mapId), { force: true })",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7675,
+      "call": "rm(commentFileForMap(mapId), { force: true })",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7676,
+      "call": "rm(revisionDirectoryForMap(mapId), { recursive: true, force: true })",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7677,
+      "call": "rm(dailyBackupDirectoryForMap(mapId), { recursive: true, force: true })",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7678,
+      "call": "rm(imageAssetsDirectoryForMap(mapId), { recursive: true, force: true })",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7692,
+      "call": "writeStoredArray(filePath, remaining)",
+      "ancestors": [
+        {
+          "line": 7692,
+          "condition": "remaining.length !== notifications.length"
+        },
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7696,
+      "call": "reconcileDocumentLayout(remainingMaps.map((map) => map.id))",
+      "ancestors": [
+        {
+          "line": 7641,
+          "function": "permanentlyDeleteTrashedMaps"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7755,
+      "call": "saveMap(...args, { reconstructionCreate: true })",
+      "ancestors": []
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 7821,
+      "call": "saveMap(map.id, updated, actor, undefined, undefined, 'card-layout', { expectedVersion: map.version, validatePayload: (payload) => { if (JSON.stringify(payload.nodes) !== JSON.stringify(updated.nodes) || JSON.stringify(payload.edges) !== JS",
+      "ancestors": []
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 8502,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 8438,
+          "condition": "request.method === 'POST' && url.pathname === '/api/integrations/aionui/conversation-attribution/resolve'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 8548,
+      "call": "persistSessions()",
+      "ancestors": [
+        {
+          "line": 8548,
+          "condition": "rememberMe"
+        },
+        {
+          "line": 8535,
+          "condition": "request.method === 'POST' && url.pathname === '/api/auth/login'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 8551,
+      "call": "persistUsers()",
+      "ancestors": [
+        {
+          "line": 8535,
+          "condition": "request.method === 'POST' && url.pathname === '/api/auth/login'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 9051,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 8915,
+          "condition": "request.method === 'POST' && url.pathname === '/api/integrations/aionui/attributions'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 9208,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 9208,
+          "condition": "attribution"
+        },
+        {
+          "line": 9204,
+          "condition": "!launch.mapId && !launch.cardId"
+        },
+        {
+          "line": 9195,
+          "condition": "launch.purpose === 'dooray-response'"
+        },
+        {
+          "line": 9169,
+          "condition": "aionUiLaunchCompletionRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 9223,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 9221,
+          "condition": "attribution"
+        },
+        {
+          "line": 9169,
+          "condition": "aionUiLaunchCompletionRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 9240,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 9231,
+          "condition": "launch.purpose === 'shared-knowledge-review' || launch.purpose === 'document-reconstruction' || launch.purpose === 'card-layout'"
+        },
+        {
+          "line": 9169,
+          "condition": "aionUiLaunchCompletionRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 9266,
+      "call": "saveMap(launch.mapId, { nodes: map.nodes.map((node) => node.id === launch.cardId ? { ...node, data: { ...node.data, aiConversationId: conversationId, aiConversations: appendAiConversationLink(node.data, conversationLink), }, } : node), edge",
+      "ancestors": [
+        {
+          "line": 9169,
+          "condition": "aionUiLaunchCompletionRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 9289,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 9169,
+          "condition": "aionUiLaunchCompletionRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 9310,
+      "call": "persistAiConversationAttributions()",
+      "ancestors": [
+        {
+          "line": 9290,
+          "condition": "attribution"
+        },
+        {
+          "line": 9169,
+          "condition": "aionUiLaunchCompletionRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 9992,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 9620,
+          "condition": "aiDelegationRecoveryRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 10067,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 10062,
+          "condition": "!aiDelegationWorkspaceLeaseMatches(workspaceLease, dispatch?.workspaceLease ?? null) || String(dispatch?.conversationId ?? '').trim() !== delegation.targetConversationId || (resultCorrection && (dispatch?.operationId !== operationId || !['s"
+        },
+        {
+          "line": 9620,
+          "condition": "aiDelegationRecoveryRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 10089,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 10087,
+          "condition": "!resultCorrection && aiDelegationBusyDispatchRejected(dispatch, delegation.targetConversationId, operationId)"
+        },
+        {
+          "line": 9620,
+          "condition": "aiDelegationRecoveryRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 10436,
+      "call": "persistGroupDocumentInstructions()",
+      "ancestors": [
+        {
+          "line": 10184,
+          "condition": "groupDocumentInstructionsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 10729,
+      "call": "persistAiDelegations()",
+      "ancestors": [
+        {
+          "line": 10671,
+          "condition": "recoveredDispatch"
+        },
+        {
+          "line": 10657,
+          "condition": "parentMap.version !== sourceRevision || targetVersionMismatch"
+        },
+        {
+          "line": 10476,
+          "condition": "aiDelegationsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 10975,
+      "call": "persistAiDelegations()",
+      "ancestors": [
+        {
+          "line": 10903,
+          "condition": "expectsWorkspacePool"
+        },
+        {
+          "line": 10476,
+          "condition": "aiDelegationsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11060,
+      "call": "persistAiDelegations()",
+      "ancestors": [
+        {
+          "line": 11019,
+          "condition": "error.reasonCode === 'CAPACITY_EXHAUSTED' && expectsWorkspacePool"
+        },
+        {
+          "line": 11018,
+          "condition": "error instanceof WorkspacePoolUnavailableError"
+        },
+        {
+          "line": 10476,
+          "condition": "aiDelegationsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11092,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 10476,
+          "condition": "aiDelegationsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11145,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 11138,
+          "condition": "!dispatch"
+        },
+        {
+          "line": 10476,
+          "condition": "aiDelegationsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11226,
+      "call": "persistAiAttributions()",
+      "ancestors": [
+        {
+          "line": 10476,
+          "condition": "aiDelegationsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11226,
+      "call": "persistAiConversationAttributions()",
+      "ancestors": [
+        {
+          "line": 10476,
+          "condition": "aiDelegationsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11226,
+      "call": "persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 10476,
+          "condition": "aiDelegationsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11255,
+      "call": "saveMap(mapId, { nodes: latestMap.nodes.map((node) => node.id === targetCard.id ? { ...node, data: { ...node.data, aiConversationId: targetConversationId, aiConversations: appendAiConversationLink(node.data, conversationLink), }, } : node),",
+      "ancestors": [
+        {
+          "line": 11233,
+          "condition": "!latestMap || latestMap.trashedAt || !latestTargetCard"
+        },
+        {
+          "line": 11230,
+          "condition": "strategy === 'new'"
+        },
+        {
+          "line": 10476,
+          "condition": "aiDelegationsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11321,
+      "call": "persistAiDelegations()",
+      "ancestors": [
+        {
+          "line": 10476,
+          "condition": "aiDelegationsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11596,
+      "call": "persistDistributedWorkSettings()",
+      "ancestors": [
+        {
+          "line": 11583,
+          "condition": "request.method === 'PUT'"
+        },
+        {
+          "line": 11571,
+          "condition": "url.pathname === '/api/account/distributed-work'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11635,
+      "call": "persistMachineRegistry()",
+      "ancestors": [
+        {
+          "line": 11608,
+          "condition": "request.method === 'POST' && url.pathname === '/api/machines/runner/pairing/exchange'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11855,
+      "call": "persistMachineRegistry()",
+      "ancestors": [
+        {
+          "line": 11842,
+          "condition": "request.method === 'POST'"
+        },
+        {
+          "line": 11834,
+          "condition": "machineTokenRoute"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11871,
+      "call": "persistMachineRegistry()",
+      "ancestors": [
+        {
+          "line": 11859,
+          "condition": "request.method === 'DELETE'"
+        },
+        {
+          "line": 11834,
+          "condition": "machineTokenRoute"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11909,
+      "call": "persistMachineRegistry()",
+      "ancestors": [
+        {
+          "line": 11888,
+          "condition": "request.method === 'POST'"
+        },
+        {
+          "line": 11879,
+          "condition": "url.pathname === '/api/machines'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11935,
+      "call": "persistMachineRegistry()",
+      "ancestors": [
+        {
+          "line": 11913,
+          "condition": "request.method === 'DELETE'"
+        },
+        {
+          "line": 11879,
+          "condition": "url.pathname === '/api/machines'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11935,
+      "call": "persistDistributedWorkSettings()",
+      "ancestors": [
+        {
+          "line": 11913,
+          "condition": "request.method === 'DELETE'"
+        },
+        {
+          "line": 11879,
+          "condition": "url.pathname === '/api/machines'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 11996,
+      "call": "persistAiWorkspaceHistories()",
+      "ancestors": [
+        {
+          "line": 11989,
+          "condition": "typeof body?.workspace === 'string'"
+        },
+        {
+          "line": 11986,
+          "condition": "request.method === 'POST'"
+        },
+        {
+          "line": 11958,
+          "condition": "url.pathname === '/api/integrations/aionui/workspaces'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12010,
+      "call": "persistAiWorkspaceHistories()",
+      "ancestors": [
+        {
+          "line": 12000,
+          "condition": "body?.migration === true"
+        },
+        {
+          "line": 11986,
+          "condition": "request.method === 'POST'"
+        },
+        {
+          "line": 11958,
+          "condition": "url.pathname === '/api/integrations/aionui/workspaces'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12024,
+      "call": "persistAiWorkspaceHistories()",
+      "ancestors": [
+        {
+          "line": 12017,
+          "condition": "request.method === 'DELETE'"
+        },
+        {
+          "line": 11958,
+          "condition": "url.pathname === '/api/integrations/aionui/workspaces'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12162,
+      "call": "persistUsers()",
+      "ancestors": [
+        {
+          "line": 12140,
+          "condition": "request.method === 'POST' && url.pathname === '/api/account/password'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12199,
+      "call": "persistUsers()",
+      "ancestors": [
+        {
+          "line": 12173,
+          "condition": "request.method === 'POST'"
+        },
+        {
+          "line": 12166,
+          "condition": "url.pathname === '/api/admin/editors'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12220,
+      "call": "persistUsers()",
+      "ancestors": [
+        {
+          "line": 12209,
+          "condition": "editorPasswordRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12251,
+      "call": "persistUsers()",
+      "ancestors": [
+        {
+          "line": 12232,
+          "condition": "request.method === 'PATCH'"
+        },
+        {
+          "line": 12225,
+          "condition": "editorAccountRoute"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12263,
+      "call": "persistAiWorkspaceHistories()",
+      "ancestors": [
+        {
+          "line": 12255,
+          "condition": "request.method === 'DELETE'"
+        },
+        {
+          "line": 12225,
+          "condition": "editorAccountRoute"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12264,
+      "call": "persistDistributedWorkSettings()",
+      "ancestors": [
+        {
+          "line": 12255,
+          "condition": "request.method === 'DELETE'"
+        },
+        {
+          "line": 12225,
+          "condition": "editorAccountRoute"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12265,
+      "call": "persistUsers()",
+      "ancestors": [
+        {
+          "line": 12255,
+          "condition": "request.method === 'DELETE'"
+        },
+        {
+          "line": 12225,
+          "condition": "editorAccountRoute"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12348,
+      "call": "writeStoredArray(notificationFileForUser(user.id), notifications)",
+      "ancestors": [
+        {
+          "line": 12339,
+          "condition": "request.method === 'POST' && url.pathname === '/api/notifications/read-all'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12364,
+      "call": "writeStoredArray(notificationFileForUser(user.id), updated)",
+      "ancestors": [
+        {
+          "line": 12354,
+          "condition": "notificationReadRoute && request.method === 'PATCH'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12374,
+      "call": "persistSessions()",
+      "ancestors": [
+        {
+          "line": 12374,
+          "condition": "session?.persistent"
+        },
+        {
+          "line": 12371,
+          "condition": "token"
+        },
+        {
+          "line": 12369,
+          "condition": "request.method === 'POST' && url.pathname === '/api/auth/logout'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12524,
+      "call": "saveMap( mapId, prepared.map, user, existing.title, existing.color, 'shared-knowledge-review', { sharedKnowledgeReviewRequests: prepared.reviewRequests, expectedVersion: baseVersion, validatePayload: (payload) => { verifiedChanges = verifyS",
+      "ancestors": [
+        {
+          "line": 12492,
+          "condition": "sharedKnowledgeReviewsRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12604,
+      "call": "saveMap(mapId, { nodes: map.nodes.filter((node) => !deletedNodeIdSet.has(node.id)), edges: map.edges.filter((edge) => !deletedNodeIdSet.has(edge.source) && !deletedNodeIdSet.has(edge.target)), }, user, undefined, undefined, 'content')",
+      "ancestors": [
+        {
+          "line": 12603,
+          "condition": "deletedNodeIds.length > 0"
+        },
+        {
+          "line": 12587,
+          "condition": "mapImageAssetRoute && request.method === 'DELETE'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12641,
+      "call": "writeFile(imageAssetFile(mapId, assetId), content, { flag: 'wx', mode: 0o600 })",
+      "ancestors": [
+        {
+          "line": 12621,
+          "condition": "mapImageUploadRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12701,
+      "call": "saveMap(mapId, body.map, user, body.title, body.color)",
+      "ancestors": [
+        {
+          "line": 12691,
+          "condition": "request.method === 'POST' && url.pathname === '/api/maps'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12703,
+      "call": "reconcileDocumentLayout(maps.map((item) => item.id))",
+      "ancestors": [
+        {
+          "line": 12691,
+          "condition": "request.method === 'POST' && url.pathname === '/api/maps'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12721,
+      "call": "writeDocumentLayout(documentLayout)",
+      "ancestors": [
+        {
+          "line": 12708,
+          "condition": "request.method === 'PATCH' && url.pathname === '/api/maps/layout'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12765,
+      "call": "writeDocumentLayout(documentLayout)",
+      "ancestors": [
+        {
+          "line": 12734,
+          "condition": "request.method === 'PATCH' && url.pathname === '/api/maps/order'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12813,
+      "call": "writeStoredArray(commentFileForMap(mapId), comments.map((item) => item.id === commentId ? comment : item))",
+      "ancestors": [
+        {
+          "line": 12789,
+          "condition": "commentReactionRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12841,
+      "call": "writeStoredArray(commentFileForMap(mapId), comments.map((item) => item.id === commentId ? comment : item))",
+      "ancestors": [
+        {
+          "line": 12819,
+          "condition": "commentResolveRoute && request.method === 'PATCH'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12875,
+      "call": "writeStoredArray(commentFileForMap(mapId), comments.map((item) => item.id === commentId ? comment : item))",
+      "ancestors": [
+        {
+          "line": 12847,
+          "condition": "commentItemRoute && request.method === 'PATCH'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12906,
+      "call": "writeStoredArray(commentFileForMap(mapId), comments.filter((item) => !deletedIds.has(item.id)))",
+      "ancestors": [
+        {
+          "line": 12880,
+          "condition": "commentItemRoute && request.method === 'DELETE'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12911,
+      "call": "writeStoredArray(notificationFileForUser(recipient.id), notifications.filter((notification) => !deletedIds.has(notification.commentId)))",
+      "ancestors": [
+        {
+          "line": 12880,
+          "condition": "commentItemRoute && request.method === 'DELETE'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12977,
+      "call": "writeStoredArray(commentFileForMap(mapId), [...comments, comment])",
+      "ancestors": [
+        {
+          "line": 12952,
+          "condition": "request.method === 'POST'"
+        },
+        {
+          "line": 12920,
+          "condition": "commentsRoute"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 12983,
+      "call": "createNotification(recipient, { type: mentionedIds.has(recipient.id) ? 'mention' : parent?.author.id === recipient.id ? 'reply' : 'comment', mapId, mapTitle: map.title, nodeId, nodeLabel: node.data.label, commentId: comment.id, message: not",
+      "ancestors": [
+        {
+          "line": 12952,
+          "condition": "request.method === 'POST'"
+        },
+        {
+          "line": 12920,
+          "condition": "commentsRoute"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 13011,
+      "call": "writeDailyBackup(current, user, 'before-history-restore')",
+      "ancestors": [
+        {
+          "line": 13000,
+          "condition": "revisionRestoreRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 13012,
+      "call": "archiveMapRevision(current, user, 'history-restore')",
+      "ancestors": [
+        {
+          "line": 13000,
+          "condition": "revisionRestoreRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 13024,
+      "call": "writeStoredMap(mapId, map)",
+      "ancestors": [
+        {
+          "line": 13000,
+          "condition": "revisionRestoreRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 13048,
+      "call": "writeDailyBackup(current, user, 'before-daily-restore')",
+      "ancestors": [
+        {
+          "line": 13037,
+          "condition": "dailyBackupRestoreRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 13049,
+      "call": "archiveMapRevision(current, user, 'daily-backup-restore')",
+      "ancestors": [
+        {
+          "line": 13037,
+          "condition": "dailyBackupRestoreRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 13063,
+      "call": "writeStoredMap(mapId, map)",
+      "ancestors": [
+        {
+          "line": 13037,
+          "condition": "dailyBackupRestoreRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 13132,
+      "call": "reconcileDocumentLayout(maps.map((item) => item.id))",
+      "ancestors": [
+        {
+          "line": 13123,
+          "condition": "restoreRoute && request.method === 'POST'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 13260,
+      "call": "saveMap(mapId, normalizedIncomingMap, user, undefined, undefined, 'content', { expectedVersion: baseVersion })",
+      "ancestors": [
+        {
+          "line": 13219,
+          "condition": "mapContentPatchRoute && request.method === 'PATCH'"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 13324,
+      "call": "saveMap(mapId, normalizedIncomingMap, user, undefined, undefined, 'content')",
+      "ancestors": [
+        {
+          "line": 13298,
+          "condition": "request.method === 'PUT'"
+        },
+        {
+          "line": 13276,
+          "condition": "mapRoute"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 13356,
+      "call": "saveMap( mapId, { nodes: existing.nodes, edges: existing.edges }, user, title, nextColor, hasTitle && hasColor ? 'metadata' : hasTitle ? 'rename' : 'color', )",
+      "ancestors": [
+        {
+          "line": 13333,
+          "condition": "request.method === 'PATCH'"
+        },
+        {
+          "line": 13276,
+          "condition": "mapRoute"
+        }
+      ]
+    },
+    {
+      "file": "server/index.mjs",
+      "line": 13379,
+      "call": "reconcileDocumentLayout(remainingMaps.map((item) => item.id))",
+      "ancestors": [
+        {
+          "line": 13368,
+          "condition": "request.method === 'DELETE'"
+        },
+        {
+          "line": 13276,
+          "condition": "mapRoute"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiClaudeAccounts.mjs",
+      "line": 113,
+      "call": "writeFile(temporaryFile, `${JSON.stringify({ version: 1, machines: next }, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 83,
+          "function": "createAiClaudeAccountPolicy"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiClaudeAccounts.mjs",
+      "line": 115,
+      "call": "rm(temporaryFile, { force: true })",
+      "ancestors": [
+        {
+          "line": 83,
+          "function": "createAiClaudeAccountPolicy"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiConversationRemoval.mjs",
+      "line": 64,
+      "call": "unlink(current, conversationId, user)",
+      "ancestors": [
+        {
+          "line": 39,
+          "method": "remove"
+        },
+        {
+          "line": 35,
+          "function": "createAiConversationRemoval"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiDelegationRequestFailures.mjs",
+      "line": 115,
+      "call": "writeJson(filePath, next)",
+      "ancestors": [
+        {
+          "line": 93,
+          "method": "record"
+        },
+        {
+          "line": 89,
+          "function": "createAiDelegationRequestFailures"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiDelegationRequestFailures.mjs",
+      "line": 128,
+      "call": "writeJson(filePath, next)",
+      "ancestors": [
+        {
+          "line": 128,
+          "condition": "removedCount"
+        },
+        {
+          "line": 123,
+          "method": "purgeMaps"
+        },
+        {
+          "line": 89,
+          "function": "createAiDelegationRequestFailures"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiDelegationRequestFailures.mjs",
+      "line": 155,
+      "call": "writeJson(filePath, next)",
+      "ancestors": [
+        {
+          "line": 155,
+          "condition": "changed"
+        },
+        {
+          "line": 143,
+          "method": "preserveResolutionsBeforeCleanup"
+        },
+        {
+          "line": 89,
+          "function": "createAiDelegationRequestFailures"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiDelegationRequestFailures.mjs",
+      "line": 187,
+      "call": "writeJson(filePath, next)",
+      "ancestors": [
+        {
+          "line": 182,
+          "condition": "verified && !record.resolution"
+        },
+        {
+          "line": 175,
+          "method": "recheck"
+        },
+        {
+          "line": 89,
+          "function": "createAiDelegationRequestFailures"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiDelegationRequestFailures.mjs",
+      "line": 222,
+      "call": "writeJson(filePath, next)",
+      "ancestors": [
+        {
+          "line": 201,
+          "method": "close"
+        },
+        {
+          "line": 89,
+          "function": "createAiDelegationRequestFailures"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiDelegationRequestFailures.mjs",
+      "line": 250,
+      "call": "writeJson(filePath, next)",
+      "ancestors": [
+        {
+          "line": 230,
+          "method": "resolve"
+        },
+        {
+          "line": 89,
+          "function": "createAiDelegationRequestFailures"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiDialogPreferences.mjs",
+      "line": 24,
+      "call": "writeFile(temporaryFile, JSON.stringify([...next].map(([id, value]) => ({ userId: id, sections: value })), null, 2) + '\\n', 'utf8')",
+      "ancestors": [
+        {
+          "line": 7,
+          "function": "createAiDialogPreferences"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiDialogPreferences.mjs",
+      "line": 26,
+      "call": "rm(temporaryFile, { force: true })",
+      "ancestors": [
+        {
+          "line": 7,
+          "function": "createAiDialogPreferences"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiIntegrationRecovery.mjs",
+      "line": 78,
+      "call": "persist(id, { integrationRecoveryRequest: request, ...(previousRequest ? { integrationRecoveryRequestHistory: [...(delegation.integrationRecoveryRequestHistory ?? []), integrationRecoveryPublicView(previousRequest)].slice(-20) } : {}), })",
+      "ancestors": [
+        {
+          "line": 58,
+          "function": "accept"
+        },
+        {
+          "line": 34,
+          "function": "createIntegrationRecoveryQueue"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiIntegrationRecovery.mjs",
+      "line": 97,
+      "call": "persist(id, { integrationRecoveryRequest: request })",
+      "ancestors": [
+        {
+          "line": 86,
+          "function": "run"
+        },
+        {
+          "line": 34,
+          "function": "createIntegrationRecoveryQueue"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiIntegrationRecovery.mjs",
+      "line": 106,
+      "call": "persist(id, { ...successPatch(current, result), integrationRecoveryRequest: { ...request, status: 'accepted', completedAt: new Date().toISOString(), reasonCode: 'AI_DELEGATION_INTEGRATION_RECOVERY_ACCEPTED', message: result.status === 'comp",
+      "ancestors": [
+        {
+          "line": 86,
+          "function": "run"
+        },
+        {
+          "line": 34,
+          "function": "createIntegrationRecoveryQueue"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiIntegrationRecovery.mjs",
+      "line": 116,
+      "call": "persist(id, { integrationRecoveryRequest: { ...request, status: 'failed', completedAt: new Date().toISOString(), reasonCode: typeof error.reasonCode === 'string' && error.reasonCode ? error.reasonCode : typeof error.code === 'string' && err",
+      "ancestors": [
+        {
+          "line": 86,
+          "function": "run"
+        },
+        {
+          "line": 34,
+          "function": "createIntegrationRecoveryQueue"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/aiWorkspaceSettings.mjs",
+      "line": 106,
+      "call": "writeFile(temporary, JSON.stringify({ version: 1, records: next }) + '\\n', 'utf8')",
+      "ancestors": [
+        {
+          "line": 95,
+          "method": "save"
+        },
+        {
+          "line": 20,
+          "function": "createAiWorkspaceSettings"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/cardLayoutRequests.mjs",
+      "line": 23,
+      "call": "writeJson(file, next)",
+      "ancestors": [
+        {
+          "line": 9,
+          "function": "createCardLayoutRequests"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/cardLayoutRequests.mjs",
+      "line": 70,
+      "call": "persist({ id: `layout-request-${randomUUID()}`, mapId: snapshot.map.id, documentTitle: snapshot.map.title, baseVersion: snapshot.map.version, sourceHash: signature(snapshot), snapshot, target, revision: 0, state: 'open', createdAt: new Date",
+      "ancestors": [
+        {
+          "line": 9,
+          "function": "createCardLayoutRequests"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/cardLayoutRequests.mjs",
+      "line": 79,
+      "call": "persist({ ...record, measurements })",
+      "ancestors": [
+        {
+          "line": 9,
+          "function": "createCardLayoutRequests"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/cardLayoutRequests.mjs",
+      "line": 87,
+      "call": "persist({ ...record, plan, revision: record.revision + 1, submittedAt: new Date(now()).toISOString() })",
+      "ancestors": [
+        {
+          "line": 9,
+          "function": "createCardLayoutRequests"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/cardLayoutRequests.mjs",
+      "line": 114,
+      "call": "persist({ ...record, state: 'applied', appliedAt: new Date(now()).toISOString(), appliedVersion: map.version, appliedLayout: { version: entry.layout.version, target: entry.target, variant: entry.variant } })",
+      "ancestors": [
+        {
+          "line": 9,
+          "function": "createCardLayoutRequests"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/cardLayoutRequests.mjs",
+      "line": 121,
+      "call": "persist({ ...record, state: 'cancelled' })",
+      "ancestors": [
+        {
+          "line": 9,
+          "function": "createCardLayoutRequests"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/cardLayoutRequests.mjs",
+      "line": 127,
+      "call": "persist({ ...record, conversation })",
+      "ancestors": [
+        {
+          "line": 9,
+          "function": "createCardLayoutRequests"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/documentReconstruction.mjs",
+      "line": 236,
+      "call": "writeJson(file, next)",
+      "ancestors": [
+        {
+          "line": 236,
+          "function": "persist"
+        },
+        {
+          "line": 213,
+          "function": "createDocumentReconstruction"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/documentReconstruction.mjs",
+      "line": 370,
+      "call": "persist(next)",
+      "ancestors": [
+        {
+          "line": 350,
+          "function": "archive"
+        },
+        {
+          "line": 213,
+          "function": "createDocumentReconstruction"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/documentReconstruction.mjs",
+      "line": 397,
+      "call": "persist(next)",
+      "ancestors": [
+        {
+          "line": 375,
+          "function": "setArchivedTrash"
+        },
+        {
+          "line": 213,
+          "function": "createDocumentReconstruction"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/documentReconstruction.mjs",
+      "line": 434,
+      "call": "persist(staged)",
+      "ancestors": [
+        {
+          "line": 402,
+          "function": "apply"
+        },
+        {
+          "line": 213,
+          "function": "createDocumentReconstruction"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/documentReconstruction.mjs",
+      "line": 437,
+      "call": "saveMap(target.map.id, target.map, user, target.map.title, target.map.color, 'reconstruction-created')",
+      "ancestors": [
+        {
+          "line": 402,
+          "function": "apply"
+        },
+        {
+          "line": 213,
+          "function": "createDocumentReconstruction"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/documentReconstruction.mjs",
+      "line": 470,
+      "call": "persist(next)",
+      "ancestors": [
+        {
+          "line": 402,
+          "function": "apply"
+        },
+        {
+          "line": 213,
+          "function": "createDocumentReconstruction"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/documentReconstruction.mjs",
+      "line": 476,
+      "call": "persist(failed)",
+      "ancestors": [
+        {
+          "line": 402,
+          "function": "apply"
+        },
+        {
+          "line": 213,
+          "function": "createDocumentReconstruction"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/documentReconstruction.mjs",
+      "line": 505,
+      "call": "persist(next)",
+      "ancestors": [
+        {
+          "line": 482,
+          "function": "rollback"
+        },
+        {
+          "line": 213,
+          "function": "createDocumentReconstruction"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/documentReconstruction.mjs",
+      "line": 516,
+      "call": "persist(structuredClone(state))",
+      "ancestors": [
+        {
+          "line": 213,
+          "function": "createDocumentReconstruction"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/documentReconstructionRequests.mjs",
+      "line": 19,
+      "call": "writeJson(file, next)",
+      "ancestors": [
+        {
+          "line": 8,
+          "function": "createReconstructionRequests"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/doorayResponseIntegration.mjs",
+      "line": 319,
+      "call": "d.persistAiConversationOrigins()",
+      "ancestors": [
+        {
+          "line": 312,
+          "method": "linkReview"
+        },
+        {
+          "line": 120,
+          "function": "createDoorayResponseIntegration"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/doorayResponsePreferences.mjs",
+      "line": 49,
+      "call": "writeFile(temporaryFile, JSON.stringify([...next].map(([id, value]) => ({ userId: id, settings: value })), null, 2) + '\\n', 'utf8')",
+      "ancestors": [
+        {
+          "line": 26,
+          "function": "createDoorayResponsePreferences"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/doorayResponsePreferences.mjs",
+      "line": 51,
+      "call": "rm(temporaryFile, { force: true })",
+      "ancestors": [
+        {
+          "line": 26,
+          "function": "createDoorayResponsePreferences"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/groupProjects.mjs",
+      "line": 64,
+      "call": "writeFile(temporary, `${JSON.stringify(value, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 60,
+          "function": "write"
+        },
+        {
+          "line": 37,
+          "function": "createGroupProjects"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/groupProjects.mjs",
+      "line": 122,
+      "call": "saveMap(mapId, rootMap(title, description), user, title)",
+      "ancestors": [
+        {
+          "line": 119,
+          "function": "addDocument"
+        },
+        {
+          "line": 37,
+          "function": "createGroupProjects"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/groupProjects.mjs",
+      "line": 124,
+      "call": "writeLayout(layout)",
+      "ancestors": [
+        {
+          "line": 119,
+          "function": "addDocument"
+        },
+        {
+          "line": 37,
+          "function": "createGroupProjects"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/historyCleanupBackup.mjs",
+      "line": 37,
+      "call": "handle.writeFile(await compress(bytes))",
+      "ancestors": [
+        {
+          "line": 27,
+          "function": "saveHistoryCleanupBackup"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/historyCleanupBackup.mjs",
+      "line": 42,
+      "call": "rename(temporary, file)",
+      "ancestors": [
+        {
+          "line": 27,
+          "function": "saveHistoryCleanupBackup"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/historyCleanupBackup.mjs",
+      "line": 44,
+      "call": "rm(temporary, { force: true })",
+      "ancestors": [
+        {
+          "line": 27,
+          "function": "saveHistoryCleanupBackup"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/historyCleanupBackup.mjs",
+      "line": 89,
+      "call": "rm(file)",
+      "ancestors": [
+        {
+          "line": 75,
+          "function": "pruneHistoryCleanupBackups"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/imageAssetCleanup.mjs",
+      "line": 113,
+      "call": "rm(assetFile, { force: true })",
+      "ancestors": [
+        {
+          "line": 113,
+          "condition": "!dryRun"
+        },
+        {
+          "line": 64,
+          "function": "cleanupUnreferencedImageAssets"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/mcpToolUsage.mjs",
+      "line": 243,
+      "call": "writeFile(temporary, `${JSON.stringify(payload, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 240,
+          "function": "writeShardFile"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/mcpToolUsage.mjs",
+      "line": 244,
+      "call": "rename(temporary, file)",
+      "ancestors": [
+        {
+          "line": 240,
+          "function": "writeShardFile"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/mcpToolUsage.mjs",
+      "line": 250,
+      "call": "writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 247,
+          "function": "writeShardFileSync"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/mcpToolUsage.mjs",
+      "line": 251,
+      "call": "renameSync(temporary, file)",
+      "ancestors": [
+        {
+          "line": 247,
+          "function": "writeShardFileSync"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspaceArtifacts.mjs",
+      "line": 24,
+      "call": "rm(path.join(this.root, leaseId), { recursive: true, force: true, maxRetries: 6, retryDelay: 100 })",
+      "ancestors": [
+        {
+          "line": 22,
+          "method": "cleanup"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspaceArtifacts.mjs",
+      "line": 39,
+      "call": "saveJson(path.join(this.directory(leaseId, kind), 'manifest.json'), manifest)",
+      "ancestors": [
+        {
+          "line": 36,
+          "method": "publish"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspaceArtifacts.mjs",
+      "line": 74,
+      "call": "saveJson(path.join(directory, 'upload.json'), normalized)",
+      "ancestors": [
+        {
+          "line": 74,
+          "condition": "!prior"
+        },
+        {
+          "line": 58,
+          "method": "receive"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspaceArtifacts.mjs",
+      "line": 79,
+      "call": "writeFile(`${target}.tmp`, buffer, { mode: 0o600 })",
+      "ancestors": [
+        {
+          "line": 78,
+          "condition": "!existing"
+        },
+        {
+          "line": 58,
+          "method": "receive"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspaceArtifacts.mjs",
+      "line": 80,
+      "call": "rename(`${target}.tmp`, target)",
+      "ancestors": [
+        {
+          "line": 78,
+          "condition": "!existing"
+        },
+        {
+          "line": 58,
+          "method": "receive"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspaceArtifacts.mjs",
+      "line": 95,
+      "call": "output.writeFile(chunk)",
+      "ancestors": [
+        {
+          "line": 84,
+          "method": "finish"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspaceArtifacts.mjs",
+      "line": 99,
+      "call": "rename(temporary, this.file(leaseId, kind))",
+      "ancestors": [
+        {
+          "line": 84,
+          "method": "finish"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspaceArtifacts.mjs",
+      "line": 100,
+      "call": "saveJson(path.join(directory, 'manifest.json'), manifest)",
+      "ancestors": [
+        {
+          "line": 84,
+          "method": "finish"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 33,
+      "call": "saveJson(this.stateFile, this.state)",
+      "ancestors": [
+        {
+          "line": 33,
+          "method": "persist"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 50,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 34,
+          "method": "pruneCompletedLeases"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 59,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 59,
+          "condition": "!stored"
+        },
+        {
+          "line": 55,
+          "method": "initialize"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 66,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 64,
+          "condition": "!report"
+        },
+        {
+          "line": 62,
+          "method": "observe"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 85,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 62,
+          "method": "observe"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 94,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 92,
+          "condition": "!enabled"
+        },
+        {
+          "line": 88,
+          "method": "approve"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 108,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 88,
+          "method": "approve"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 176,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 169,
+          "method": "command"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 197,
+      "call": "rm(path.join(stagingRoot, 'repository'), removalOptions)",
+      "ancestors": [
+        {
+          "line": 195,
+          "condition": "legacyRecovery"
+        },
+        {
+          "line": 183,
+          "method": "cleanupCompletedLease"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 198,
+      "call": "rm(path.join(stagingRoot, 'state.json'), removalOptions)",
+      "ancestors": [
+        {
+          "line": 195,
+          "condition": "legacyRecovery"
+        },
+        {
+          "line": 183,
+          "method": "cleanupCompletedLease"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 199,
+      "call": "rm(stagingRoot, removalOptions)",
+      "ancestors": [
+        {
+          "line": 195,
+          "condition": "legacyRecovery"
+        },
+        {
+          "line": 183,
+          "method": "cleanupCompletedLease"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 203,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 183,
+          "method": "cleanupCompletedLease"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 226,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 223,
+          "condition": "prior.status === 'preparing'"
+        },
+        {
+          "line": 221,
+          "condition": "prior"
+        },
+        {
+          "line": 214,
+          "method": "acquire"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 266,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 214,
+          "method": "acquire"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 276,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 214,
+          "method": "acquire"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 297,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 286,
+          "method": "retryPreparation"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 316,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 310,
+          "method": "bindConversation"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 337,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 329,
+          "method": "checkpoint"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 367,
+      "call": "copyFile(source, target)",
+      "ancestors": [
+        {
+          "line": 347,
+          "condition": "!state"
+        },
+        {
+          "line": 341,
+          "method": "stage"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 380,
+      "call": "saveJson(path.join(workerPath, '.ai-session.json'), staged)",
+      "ancestors": [
+        {
+          "line": 347,
+          "condition": "!state"
+        },
+        {
+          "line": 341,
+          "method": "stage"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 382,
+      "call": "saveJson(stateFile, state)",
+      "ancestors": [
+        {
+          "line": 347,
+          "condition": "!state"
+        },
+        {
+          "line": 341,
+          "method": "stage"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 391,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 341,
+          "method": "stage"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 393,
+      "call": "this.local.persist()",
+      "ancestors": [
+        {
+          "line": 341,
+          "method": "stage"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 411,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 409,
+          "condition": "sealed.status === 'checkpoint-required'"
+        },
+        {
+          "line": 407,
+          "condition": "!lease.sealed"
+        },
+        {
+          "line": 402,
+          "method": "finalize"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 423,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 407,
+          "condition": "!lease.sealed"
+        },
+        {
+          "line": 402,
+          "method": "finalize"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 435,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 433,
+          "condition": "result?.status !== 'completed'"
+        },
+        {
+          "line": 402,
+          "method": "finalize"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 442,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 440,
+          "method": "release"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 456,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 445,
+          "condition": "!lease.releaseCommit"
+        },
+        {
+          "line": 440,
+          "method": "release"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 463,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 440,
+          "method": "release"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 471,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 468,
+          "method": "hold"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 493,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 478,
+          "method": "reactivateQuarantinedLease"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspacePool.mjs",
+      "line": 508,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 497,
+          "method": "retryIntegration"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspaceProtocol.mjs",
+      "line": 45,
+      "call": "handle.writeFile(`${JSON.stringify(value, null, 2)}\\n`)",
+      "ancestors": [
+        {
+          "line": 41,
+          "function": "saveJson"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspaceProtocol.mjs",
+      "line": 46,
+      "call": "replaceFileWithRetry(temporary, file)",
+      "ancestors": [
+        {
+          "line": 41,
+          "function": "saveJson"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/remoteWorkspaceProtocol.mjs",
+      "line": 78,
+      "call": "rm(directory, { recursive: true, force: true })",
+      "ancestors": [
+        {
+          "line": 71,
+          "function": "acquireWorkspaceLock"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/replaceFileWithRetry.mjs",
+      "line": 11,
+      "call": "rm(temporaryFile, { force: true })",
+      "ancestors": [
+        {
+          "line": 10,
+          "condition": "!retryableCodes.has(error?.code) || attempt === 5"
+        },
+        {
+          "line": 3,
+          "function": "replaceFileWithRetry"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspaceEolRecovery.mjs",
+      "line": 126,
+      "call": "writeFile(path.join(sharedRoot, archiveRelative, `original-${file.index}`), file.original, { flag: 'wx' })",
+      "ancestors": [
+        {
+          "line": 121,
+          "condition": "!record"
+        },
+        {
+          "line": 58,
+          "function": "recoverTrackedCheckoutEol"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspaceEolRecovery.mjs",
+      "line": 133,
+      "call": "writeFile(path.join(sharedRoot, archiveRelative, 'metadata.json'), `${JSON.stringify(record, null, 2)}\\n`, { flag: 'wx' })",
+      "ancestors": [
+        {
+          "line": 121,
+          "condition": "!record"
+        },
+        {
+          "line": 58,
+          "function": "recoverTrackedCheckoutEol"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspaceEolRecovery.mjs",
+      "line": 135,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 121,
+          "condition": "!record"
+        },
+        {
+          "line": 58,
+          "function": "recoverTrackedCheckoutEol"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspaceEolRecovery.mjs",
+      "line": 147,
+      "call": "rename(target, removed)",
+      "ancestors": [
+        {
+          "line": 143,
+          "condition": "current"
+        },
+        {
+          "line": 58,
+          "function": "recoverTrackedCheckoutEol"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspaceEolRecovery.mjs",
+      "line": 155,
+      "call": "writeFile(path.join(workerRoot, file.path), file.canonical, { flag: 'wx', mode: file.mode })",
+      "ancestors": [
+        {
+          "line": 58,
+          "function": "recoverTrackedCheckoutEol"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspaceEolRecovery.mjs",
+      "line": 162,
+      "call": "persist()",
+      "ancestors": [
+        {
+          "line": 58,
+          "function": "recoverTrackedCheckoutEol"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspaceMetaRecovery.mjs",
+      "line": 77,
+      "call": "writeFile(path.join(archiveRoot, 'original.meta'), inspected.bytes, { flag: 'wx' })",
+      "ancestors": [
+        {
+          "line": 68,
+          "function": "preserveUntrackedMeta"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspaceMetaRecovery.mjs",
+      "line": 86,
+      "call": "writeFile(path.join(archiveRoot, 'metadata.json'), `${JSON.stringify(record, null, 2)}\\n`, { flag: 'wx' })",
+      "ancestors": [
+        {
+          "line": 68,
+          "function": "preserveUntrackedMeta"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspaceMetaRecovery.mjs",
+      "line": 136,
+      "call": "rename(path.join(workerRoot, record.plan.path), path.join(archiveRoot, moved))",
+      "ancestors": [
+        {
+          "line": 133,
+          "condition": "inspected.bytes"
+        },
+        {
+          "line": 90,
+          "function": "consumePreservedMeta"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspaceMetaRecovery.mjs",
+      "line": 138,
+      "call": "writeFile(path.join(archiveRoot, `${moved}.json`), JSON.stringify({ moved, sha256: movedHash, at: new Date().toISOString() }), { flag: 'wx' })",
+      "ancestors": [
+        {
+          "line": 133,
+          "condition": "inspected.bytes"
+        },
+        {
+          "line": 90,
+          "function": "consumePreservedMeta"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 250,
+      "call": "writeFile(temporary, `${JSON.stringify(value, null, 2)}\\n`, 'utf8')",
+      "ancestors": [
+        {
+          "line": 246,
+          "function": "atomicJson"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 538,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 482,
+          "method": "initialize"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 680,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 645,
+          "method": "recoverPreparationFailureWorkspace"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 895,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 753,
+          "method": "synchronizeIdleWorkersToIntegration"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 954,
+      "call": "rm(sessionFile, { force: true })",
+      "ancestors": [
+        {
+          "line": 926,
+          "method": "recoverCleanFailureWorkspace"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 972,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 926,
+          "method": "recoverCleanFailureWorkspace"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1008,
+      "call": "writeFile(path.join(archiveRoot, 'tracked.diff'), trackedDiff, 'utf8')",
+      "ancestors": [
+        {
+          "line": 976,
+          "method": "archiveAndRestoreDriftOnce"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1009,
+      "call": "writeFile(path.join(archiveRoot, 'staged.diff'), stagedDiff, 'utf8')",
+      "ancestors": [
+        {
+          "line": 976,
+          "method": "archiveAndRestoreDriftOnce"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1019,
+      "call": "copyFile(source, target)",
+      "ancestors": [
+        {
+          "line": 1018,
+          "condition": "info.isFile()"
+        },
+        {
+          "line": 976,
+          "method": "archiveAndRestoreDriftOnce"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1023,
+      "call": "writeFile(`${target}.symlink.txt`, link, 'utf8')",
+      "ancestors": [
+        {
+          "line": 1021,
+          "condition": "info.isSymbolicLink()"
+        },
+        {
+          "line": 1018,
+          "condition": "info.isFile()"
+        },
+        {
+          "line": 976,
+          "method": "archiveAndRestoreDriftOnce"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1052,
+      "call": "rm(pathInside(workspace.root, relative), { force: true })",
+      "ancestors": [
+        {
+          "line": 976,
+          "method": "archiveAndRestoreDriftOnce"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1104,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1082,
+          "method": "prepareIdleWorkspace"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1164,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1141,
+          "condition": "intendedPaths.length === 0"
+        },
+        {
+          "line": 1108,
+          "method": "checkpoint"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1238,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1108,
+          "method": "checkpoint"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1256,
+      "call": "saveJson(localOwner, { poolId: this.registry.poolId })",
+      "ancestors": [
+        {
+          "line": 1250,
+          "method": "claimLocalWorkspace"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1326,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1314,
+          "condition": "this.recoverablePreparationFailureState(current)"
+        },
+        {
+          "line": 1261,
+          "method": "acquire"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1342,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1330,
+          "condition": "current.status === 'quarantined' && current.reason !== idleDriftReason"
+        },
+        {
+          "line": 1261,
+          "method": "acquire"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1362,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1261,
+          "method": "acquire"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1418,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1261,
+          "method": "acquire"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1436,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1261,
+          "method": "acquire"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1643,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1448,
+          "method": "reactivateQuarantinedLease"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1715,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1648,
+          "method": "reuseLease"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1765,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1720,
+          "method": "bindConversation"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1941,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1938,
+          "condition": "trackedEolRecovery || lease.trackedEolRecovery"
+        },
+        {
+          "line": 1855,
+          "method": "recoverLocalChangesIntegrationFailure"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1955,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1946,
+          "condition": "releaseReason"
+        },
+        {
+          "line": 1855,
+          "method": "recoverLocalChangesIntegrationFailure"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1961,
+      "call": "rm(path.join(workspace.root, '.ai-session.json'), { force: true })",
+      "ancestors": [
+        {
+          "line": 1946,
+          "condition": "releaseReason"
+        },
+        {
+          "line": 1855,
+          "method": "recoverLocalChangesIntegrationFailure"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 1972,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 1946,
+          "condition": "releaseReason"
+        },
+        {
+          "line": 1855,
+          "method": "recoverLocalChangesIntegrationFailure"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2269,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2226,
+          "method": "waitForIntegration"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2480,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2479,
+          "condition": "lease.status === 'correcting-result'"
+        },
+        {
+          "line": 2422,
+          "method": "prepareIntegrationResultCorrection"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2486,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2422,
+          "method": "prepareIntegrationResultCorrection"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2502,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2422,
+          "method": "prepareIntegrationResultCorrection"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2523,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2520,
+          "condition": "correction.operationId !== operationId"
+        },
+        {
+          "line": 2507,
+          "method": "resumeIntegrationResultCorrection"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2534,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2507,
+          "method": "resumeIntegrationResultCorrection"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2579,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2550,
+          "condition": "correction.phase === 'correcting'"
+        },
+        {
+          "line": 2546,
+          "condition": "lease.resultCorrection && lease.resultCorrection.phase !== 'completed'"
+        },
+        {
+          "line": 2539,
+          "method": "finalize"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2647,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2539,
+          "method": "finalize"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2657,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2653,
+          "condition": "metaRecovery && (await this.git(workspace.root, ['branch', '--show-current'])) === metaRecovery.preservedBranch"
+        },
+        {
+          "line": 2539,
+          "method": "finalize"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2741,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2731,
+          "condition": "mainHead !== lease.integrationBaseCommit && !alreadyIntegrated"
+        },
+        {
+          "line": 2725,
+          "condition": "checkpointIntegrationRecoveryTypes.has(recovery?.type) && lease.integrationHeadCommit === recovery.preservedHead && currentBranch === lease.integrationBranch"
+        },
+        {
+          "line": 2539,
+          "method": "finalize"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2756,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2747,
+          "condition": "lease.integrationBranch && currentBranch === lease.integrationBranch && (this.state.integrationLeaseId === leaseId || lease.integrationHeadCommit)"
+        },
+        {
+          "line": 2539,
+          "method": "finalize"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2815,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2539,
+          "method": "finalize"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 2911,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 2880,
+          "method": "requireCheckpoint"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3041,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 3006,
+          "method": "awaitConflictResolution"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3069,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 3064,
+          "condition": "!lease.integrationHeadCommit"
+        },
+        {
+          "line": 3045,
+          "method": "applyIntegration"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3116,
+      "call": "rm(path.join(workspace.root, '.ai-session.json'), { force: true })",
+      "ancestors": [
+        {
+          "line": 3111,
+          "method": "completeLease"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3150,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 3111,
+          "method": "completeLease"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3161,
+      "call": "rm(path.join(workspace.root, '.ai-session.json'), { force: true })",
+      "ancestors": [
+        {
+          "line": 3154,
+          "method": "releaseCleanFailure"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3178,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 3154,
+          "method": "releaseCleanFailure"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3197,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 3182,
+          "method": "holdIntegrationResultCorrection"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3240,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 3201,
+          "method": "quarantineIntegrationFailure"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3259,
+      "call": "rm(path.join(workspace.root, '.ai-session.json'), { force: true })",
+      "ancestors": [
+        {
+          "line": 3244,
+          "method": "cancel"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3275,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 3244,
+          "method": "cancel"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3293,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 3244,
+          "method": "cancel"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3332,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 3299,
+          "method": "quarantine"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3370,
+      "call": "this.persist()",
+      "ancestors": [
+        {
+          "line": 3356,
+          "method": "pruneCompletedLeases"
+        }
+      ]
+    },
+    {
+      "file": "server/lib/workspacePool.mjs",
+      "line": 3377,
+      "call": "rm(file, { force: true })",
+      "ancestors": [
+        {
+          "line": 3356,
+          "method": "pruneCompletedLeases"
+        }
+      ]
+    },
+    {
+      "file": "src/components/AiConversationDialog.tsx",
+      "line": 272,
+      "call": "persistRuntimeSelection(agentId, { modelId, mode, thoughtLevel })",
+      "ancestors": [
+        {
+          "line": 131,
+          "function": "AiConversationDialog"
+        }
+      ]
+    },
+    {
+      "file": "src/components/AiConversationDialog.tsx",
+      "line": 306,
+      "call": "persistRuntimeSelection(agentId, { modelId, mode, thoughtLevel })",
+      "ancestors": [
+        {
+          "line": 131,
+          "function": "AiConversationDialog"
+        }
+      ]
+    },
+    {
+      "file": "src/components/DoorayMentionsPanel.tsx",
+      "line": 326,
+      "call": "persistPreferences({ since: nextSince, until: nextUntil, quickRangeId: null })",
+      "ancestors": [
+        {
+          "line": 168,
+          "function": "DoorayMentionsPanel"
+        }
+      ]
+    },
+    {
+      "file": "src/components/DoorayMentionsPanel.tsx",
+      "line": 437,
+      "call": "persistPreferences({ ...currentQuickDates, quickRangeId })",
+      "ancestors": [
+        {
+          "line": 434,
+          "condition": "currentQuickDates"
+        },
+        {
+          "line": 168,
+          "function": "DoorayMentionsPanel"
+        }
+      ]
+    },
+    {
+      "file": "src/components/DoorayMentionsPanel.tsx",
+      "line": 584,
+      "call": "persistPreferences({ ...dates, quickRangeId: range.id })",
+      "ancestors": [
+        {
+          "line": 168,
+          "function": "DoorayMentionsPanel"
+        }
+      ]
+    },
+    {
+      "file": "src/components/DoorayMentionsPanel.tsx",
+      "line": 602,
+      "call": "persistPreferences({ includeBody: event.target.checked })",
+      "ancestors": [
+        {
+          "line": 168,
+          "function": "DoorayMentionsPanel"
+        }
+      ]
+    },
+    {
+      "file": "src/components/DoorayMentionsPanel.tsx",
+      "line": 609,
+      "call": "persistPreferences({ includeComments: event.target.checked })",
+      "ancestors": [
+        {
+          "line": 168,
+          "function": "DoorayMentionsPanel"
+        }
+      ]
+    },
+    {
+      "file": "src/components/DoorayMentionsPanel.tsx",
+      "line": 616,
+      "call": "persistPreferences({ includeAssigned: event.target.checked })",
+      "ancestors": [
+        {
+          "line": 168,
+          "function": "DoorayMentionsPanel"
+        }
+      ]
+    },
+    {
+      "file": "src/components/DoorayMentionsPanel.tsx",
+      "line": 623,
+      "call": "persistPreferences({ includeCc: event.target.checked })",
+      "ancestors": [
+        {
+          "line": 168,
+          "function": "DoorayMentionsPanel"
+        }
+      ]
+    },
+    {
+      "file": "src/components/DoorayMentionsPanel.tsx",
+      "line": 723,
+      "call": "persistPreferences({ unacknowledgedOnly: event.target.checked })",
+      "ancestors": [
+        {
+          "line": 168,
+          "function": "DoorayMentionsPanel"
+        }
+      ]
+    },
+    {
+      "file": "src/components/DoorayMentionsPanel.tsx",
+      "line": 738,
+      "call": "persistPreferences({ hiddenKinds: [...next] })",
+      "ancestors": [
+        {
+          "line": 168,
+          "function": "DoorayMentionsPanel"
+        }
+      ]
+    },
+    {
+      "file": "src/components/DoorayMentionsPanel.tsx",
+      "line": 751,
+      "call": "persistPreferences({ sortOrder: next })",
+      "ancestors": [
+        {
+          "line": 168,
+          "function": "DoorayMentionsPanel"
+        }
+      ]
+    }
+  ],
+  "httpBranches": [
+    {
+      "line": 891,
+      "condition": "url.protocol !== 'http:' || !loopback || !Number.isInteger(port) || port < 1 || port > 65_535 || url.username || url.password || (url.pathname !== '/' && url.pathname !== '') || url.search || url.hash"
+    },
+    {
+      "line": 943,
+      "condition": "request.method === 'GET' && source === 'token'"
+    },
+    {
+      "line": 7943,
+      "condition": "!isConversationRemoval && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && /^\\/api\\/(maps|groups|document-reconstructions|card-layouts|integrations\\/aionui)(\\/|$)/.test(url.pathname)"
+    },
+    {
+      "line": 7953,
+      "condition": "writableMapRoute && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && writableMapRoute[2] !== '/archive'"
+    },
+    {
+      "line": 7964,
+      "condition": "trashPreviewRoute && request.method === 'GET'"
+    },
+    {
+      "line": 7971,
+      "condition": "url.pathname === '/api/maps/archive' && request.method === 'GET'"
+    },
+    {
+      "line": 7975,
+      "condition": "archiveRoute && request.method === 'PATCH'"
+    },
+    {
+      "line": 7984,
+      "condition": "archiveRoute && request.method === 'DELETE'"
+    },
+    {
+      "line": 7997,
+      "condition": "url.pathname === '/api/card-layouts' || url.pathname.startsWith('/api/card-layouts/')"
+    },
+    {
+      "line": 8003,
+      "condition": "request.method === 'GET' && !parts.length"
+    },
+    {
+      "line": 8004,
+      "condition": "request.method === 'GET' && parts.length === 1"
+    },
+    {
+      "line": 8005,
+      "condition": "request.method === 'POST'"
+    },
+    {
+      "line": 8023,
+      "condition": "url.pathname === '/api/document-reconstructions' || url.pathname.startsWith('/api/document-reconstructions/')"
+    },
+    {
+      "line": 8027,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 8049,
+      "condition": "request.method === 'POST' && suffix === '/preview'"
+    },
+    {
+      "line": 8054,
+      "condition": "request.method === 'POST' && ['/measure-layout', '/verify-layout'].includes(suffix)"
+    },
+    {
+      "line": 8058,
+      "condition": "request.method === 'POST' && suffix === '/requests'"
+    },
+    {
+      "line": 8059,
+      "condition": "request.method === 'POST' && /^\\/requests\\/[^/]+\\/proposal$/.test(suffix)"
+    },
+    {
+      "line": 8060,
+      "condition": "request.method === 'POST' && (suffix === '/apply' || /^\\/[^/]+\\/rollback$/.test(suffix))"
+    },
+    {
+      "line": 8072,
+      "condition": "failureResolutionRoute && request.method === 'POST'"
+    },
+    {
+      "line": 8116,
+      "condition": "actionRoute && request.method === 'POST'"
+    },
+    {
+      "line": 8303,
+      "condition": "request.method === 'GET' && !groupRoute[2]"
+    },
+    {
+      "line": 8305,
+      "condition": "(request.method === 'PATCH' && !groupRoute[2]) || (request.method === 'POST' && groupRoute[2])"
+    },
+    {
+      "line": 8315,
+      "condition": "request.method === 'GET' && url.pathname === '/api/health'"
+    },
+    {
+      "line": 8324,
+      "condition": "request.method === 'POST' && url.pathname === '/api/integrations/aionui/conversation-display/resolve'"
+    },
+    {
+      "line": 8339,
+      "condition": "aionUiMindNProgressConversationRoute && (request.method === 'GET' || request.method === 'POST')"
+    },
+    {
+      "line": 8351,
+      "condition": "(request.method === 'POST') !== selectionRequested"
+    },
+    {
+      "line": 8438,
+      "condition": "request.method === 'POST' && url.pathname === '/api/integrations/aionui/conversation-attribution/resolve'"
+    },
+    {
+      "line": 8535,
+      "condition": "request.method === 'POST' && url.pathname === '/api/auth/login'"
+    },
+    {
+      "line": 8563,
+      "condition": "request.method === 'POST' && url.pathname === '/api/auth/viewer-access'"
+    },
+    {
+      "line": 8573,
+      "condition": "request.method === 'GET' && url.pathname === '/api/auth/me'"
+    },
+    {
+      "line": 8578,
+      "condition": "request.method === 'POST' && url.pathname === '/api/integrations/dooray/task-preview'"
+    },
+    {
+      "line": 8593,
+      "condition": "request.method === 'POST' && url.pathname === '/api/integrations/dooray/wiki-preview'"
+    },
+    {
+      "line": 8608,
+      "condition": "request.method === 'POST' && url.pathname === '/api/integrations/dooray/task-titles'"
+    },
+    {
+      "line": 8652,
+      "condition": "request.method === 'GET' && url.pathname === '/api/integrations/dooray/mentions'"
+    },
+    {
+      "line": 8661,
+      "condition": "doorayApprovalContextRoute && request.method === 'GET'"
+    },
+    {
+      "line": 8674,
+      "condition": "url.pathname === '/api/integrations/dooray/mentions/response-settings'"
+    },
+    {
+      "line": 8679,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 8680,
+      "condition": "request.method === 'PUT'"
+    },
+    {
+      "line": 8701,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 8702,
+      "condition": "request.method === 'POST'"
+    },
+    {
+      "line": 8706,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 8707,
+      "condition": "request.method === 'POST'"
+    },
+    {
+      "line": 8713,
+      "condition": "request.method === 'GET' && !doorayResponseRoute[1]"
+    },
+    {
+      "line": 8716,
+      "condition": "request.method === 'POST' && doorayResponseRoute[1]"
+    },
+    {
+      "line": 8733,
+      "condition": "request.method === 'POST' && !doorayResponseRoute[1]"
+    },
+    {
+      "line": 8746,
+      "condition": "url.pathname === '/api/integrations/dooray/mentions/projects'"
+    },
+    {
+      "line": 8751,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 8776,
+      "condition": "request.method === 'PUT'"
+    },
+    {
+      "line": 8791,
+      "condition": "request.method === 'PUT' && url.pathname === '/api/integrations/dooray/mentions/preferences'"
+    },
+    {
+      "line": 8801,
+      "condition": "request.method === 'POST' && url.pathname === '/api/integrations/dooray/mentions/scan'"
+    },
+    {
+      "line": 8858,
+      "condition": "request.method === 'POST' && url.pathname === '/api/integrations/dooray/mentions/acknowledgements'"
+    },
+    {
+      "line": 8892,
+      "condition": "request.method === 'GET' && url.pathname === '/api/integrations/aionui/subscription-usage'"
+    },
+    {
+      "line": 8903,
+      "condition": "request.method === 'GET' && url.pathname === '/api/users'"
+    },
+    {
+      "line": 8909,
+      "condition": "request.method === 'GET' && url.pathname === '/api/assignees'"
+    },
+    {
+      "line": 8915,
+      "condition": "request.method === 'POST' && url.pathname === '/api/integrations/aionui/attributions'"
+    },
+    {
+      "line": 9076,
+      "condition": "request.method === 'POST' && url.pathname === '/api/integrations/aionui/external-conversation-launches'"
+    },
+    {
+      "line": 9156,
+      "condition": "aionUiLaunchStatusRoute && request.method === 'GET'"
+    },
+    {
+      "line": 9169,
+      "condition": "aionUiLaunchCompletionRoute && request.method === 'POST'"
+    },
+    {
+      "line": 9350,
+      "condition": "request.method === 'POST' && url.pathname === '/api/internal/ai-workspaces/synchronize-idle'"
+    },
+    {
+      "line": 9378,
+      "condition": "aiWorkspacesRoute && request.method === 'GET'"
+    },
+    {
+      "line": 9392,
+      "condition": "aiWorkspaceCheckpointRoute && request.method === 'POST'"
+    },
+    {
+      "line": 9494,
+      "condition": "aiDelegationCompletionRoute && request.method === 'POST'"
+    },
+    {
+      "line": 9620,
+      "condition": "aiDelegationRecoveryRoute && request.method === 'POST'"
+    },
+    {
+      "line": 10161,
+      "condition": "groupDocumentInstructionsRoute && request.method === 'GET'"
+    },
+    {
+      "line": 10184,
+      "condition": "groupDocumentInstructionsRoute && request.method === 'POST'"
+    },
+    {
+      "line": 10449,
+      "condition": "aiDelegationsRoute && request.method === 'GET'"
+    },
+    {
+      "line": 10476,
+      "condition": "aiDelegationsRoute && request.method === 'POST'"
+    },
+    {
+      "line": 11347,
+      "condition": "cardAiConversationOpenRoute && request.method === 'GET'"
+    },
+    {
+      "line": 11388,
+      "condition": "cardAiConversationItemRoute && request.method === 'DELETE'"
+    },
+    {
+      "line": 11416,
+      "condition": "documentAiConversationsRoute && request.method === 'GET'"
+    },
+    {
+      "line": 11435,
+      "condition": "cardAiConversationsRoute && request.method === 'GET'"
+    },
+    {
+      "line": 11454,
+      "condition": "aionUiConversationTranscriptRoute && request.method === 'GET'"
+    },
+    {
+      "line": 11537,
+      "condition": "aionUiConversationAttributionRoute && request.method === 'POST'"
+    },
+    {
+      "line": 11571,
+      "condition": "url.pathname === '/api/account/distributed-work'"
+    },
+    {
+      "line": 11576,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 11583,
+      "condition": "request.method === 'PUT'"
+    },
+    {
+      "line": 11608,
+      "condition": "request.method === 'POST' && url.pathname === '/api/machines/runner/pairing/exchange'"
+    },
+    {
+      "line": 11653,
+      "condition": "remotePoolRoute && request.method === 'GET'"
+    },
+    {
+      "line": 11654,
+      "condition": "remotePoolRoute && request.method === 'PUT'"
+    },
+    {
+      "line": 11655,
+      "condition": "remoteRecoveryRoute && request.method === 'POST'"
+    },
+    {
+      "line": 11692,
+      "condition": "request.method === 'POST' && machineRunnerClaimRoute"
+    },
+    {
+      "line": 11734,
+      "condition": "request.method === 'POST' && machineRunnerResultRoute"
+    },
+    {
+      "line": 11754,
+      "condition": "request.method === 'POST' && machineRunnerHeartbeatRoute"
+    },
+    {
+      "line": 11776,
+      "condition": "request.method === 'POST' && machineProbeRoute"
+    },
+    {
+      "line": 11811,
+      "condition": "request.method === 'POST' && machinePairingRoute"
+    },
+    {
+      "line": 11842,
+      "condition": "request.method === 'POST'"
+    },
+    {
+      "line": 11859,
+      "condition": "request.method === 'DELETE'"
+    },
+    {
+      "line": 11879,
+      "condition": "url.pathname === '/api/machines'"
+    },
+    {
+      "line": 11884,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 11888,
+      "condition": "request.method === 'POST'"
+    },
+    {
+      "line": 11913,
+      "condition": "request.method === 'DELETE'"
+    },
+    {
+      "line": 11942,
+      "condition": "url.pathname === '/api/integrations/aionui/dialog-preferences'"
+    },
+    {
+      "line": 11946,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 11947,
+      "condition": "request.method !== 'PATCH'"
+    },
+    {
+      "line": 11958,
+      "condition": "url.pathname === '/api/integrations/aionui/workspaces'"
+    },
+    {
+      "line": 11963,
+      "condition": "!['GET', 'POST', 'DELETE'].includes(request.method)"
+    },
+    {
+      "line": 11982,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 11986,
+      "condition": "request.method === 'POST'"
+    },
+    {
+      "line": 12017,
+      "condition": "request.method === 'DELETE'"
+    },
+    {
+      "line": 12031,
+      "condition": "request.method === 'GET' && url.pathname === '/api/integrations/aionui/directories'"
+    },
+    {
+      "line": 12061,
+      "condition": "['/api/integrations/aionui/workspace-context', '/api/integrations/aionui/workspace-settings'].includes(url.pathname)"
+    },
+    {
+      "line": 12068,
+      "condition": "request.method === 'POST' && url.pathname.endsWith('/workspace-settings')"
+    },
+    {
+      "line": 12072,
+      "condition": "request.method !== 'GET' || !url.pathname.endsWith('/workspace-context')"
+    },
+    {
+      "line": 12078,
+      "condition": "request.method === 'GET' && url.pathname === '/api/integrations/aionui/options'"
+    },
+    {
+      "line": 12140,
+      "condition": "request.method === 'POST' && url.pathname === '/api/account/password'"
+    },
+    {
+      "line": 12166,
+      "condition": "url.pathname === '/api/admin/editors'"
+    },
+    {
+      "line": 12169,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 12173,
+      "condition": "request.method === 'POST'"
+    },
+    {
+      "line": 12209,
+      "condition": "editorPasswordRoute && request.method === 'POST'"
+    },
+    {
+      "line": 12232,
+      "condition": "request.method === 'PATCH'"
+    },
+    {
+      "line": 12255,
+      "condition": "request.method === 'DELETE'"
+    },
+    {
+      "line": 12271,
+      "condition": "request.method === 'GET' && url.pathname === '/api/events'"
+    },
+    {
+      "line": 12309,
+      "condition": "request.method === 'POST' && url.pathname === '/api/presence/cursor'"
+    },
+    {
+      "line": 12331,
+      "condition": "request.method === 'GET' && url.pathname === '/api/notifications'"
+    },
+    {
+      "line": 12339,
+      "condition": "request.method === 'POST' && url.pathname === '/api/notifications/read-all'"
+    },
+    {
+      "line": 12354,
+      "condition": "notificationReadRoute && request.method === 'PATCH'"
+    },
+    {
+      "line": 12369,
+      "condition": "request.method === 'POST' && url.pathname === '/api/auth/logout'"
+    },
+    {
+      "line": 12381,
+      "condition": "request.method === 'GET' && url.pathname === '/api/document-groups'"
+    },
+    {
+      "line": 12391,
+      "condition": "request.method === 'GET' && url.pathname === '/api/search'"
+    },
+    {
+      "line": 12404,
+      "condition": "request.method === 'GET' && url.pathname === '/api/maps'"
+    },
+    {
+      "line": 12428,
+      "condition": "request.method === 'GET' && url.pathname === '/api/shared-knowledge/audit'"
+    },
+    {
+      "line": 12450,
+      "condition": "sharedKnowledgeReviewContextRoute && request.method === 'GET'"
+    },
+    {
+      "line": 12492,
+      "condition": "sharedKnowledgeReviewsRoute && request.method === 'POST'"
+    },
+    {
+      "line": 12560,
+      "condition": "mapImageAssetRoute && request.method === 'GET'"
+    },
+    {
+      "line": 12587,
+      "condition": "mapImageAssetRoute && request.method === 'DELETE'"
+    },
+    {
+      "line": 12621,
+      "condition": "mapImageUploadRoute && request.method === 'POST'"
+    },
+    {
+      "line": 12650,
+      "condition": "request.method === 'GET' && url.pathname === '/api/maps/trash'"
+    },
+    {
+      "line": 12657,
+      "condition": "request.method === 'DELETE' && url.pathname === '/api/maps/trash'"
+    },
+    {
+      "line": 12691,
+      "condition": "request.method === 'POST' && url.pathname === '/api/maps'"
+    },
+    {
+      "line": 12708,
+      "condition": "request.method === 'PATCH' && url.pathname === '/api/maps/layout'"
+    },
+    {
+      "line": 12734,
+      "condition": "request.method === 'PATCH' && url.pathname === '/api/maps/order'"
+    },
+    {
+      "line": 12778,
+      "condition": "commentStatsRoute && request.method === 'GET'"
+    },
+    {
+      "line": 12789,
+      "condition": "commentReactionRoute && request.method === 'POST'"
+    },
+    {
+      "line": 12819,
+      "condition": "commentResolveRoute && request.method === 'PATCH'"
+    },
+    {
+      "line": 12847,
+      "condition": "commentItemRoute && request.method === 'PATCH'"
+    },
+    {
+      "line": 12880,
+      "condition": "commentItemRoute && request.method === 'DELETE'"
+    },
+    {
+      "line": 12928,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 12952,
+      "condition": "request.method === 'POST'"
+    },
+    {
+      "line": 13000,
+      "condition": "revisionRestoreRoute && request.method === 'POST'"
+    },
+    {
+      "line": 13037,
+      "condition": "dailyBackupRestoreRoute && request.method === 'POST'"
+    },
+    {
+      "line": 13077,
+      "condition": "dailyBackupPreviewRoute && request.method === 'GET'"
+    },
+    {
+      "line": 13096,
+      "condition": "dailyBackupsRoute && request.method === 'GET'"
+    },
+    {
+      "line": 13107,
+      "condition": "historyRoute && request.method === 'GET'"
+    },
+    {
+      "line": 13123,
+      "condition": "restoreRoute && request.method === 'POST'"
+    },
+    {
+      "line": 13144,
+      "condition": "aiConversationWorkStatesRoute && request.method === 'GET'"
+    },
+    {
+      "line": 13165,
+      "condition": "crossDocumentCardMoveRoute && request.method === 'POST'"
+    },
+    {
+      "line": 13219,
+      "condition": "mapContentPatchRoute && request.method === 'PATCH'"
+    },
+    {
+      "line": 13282,
+      "condition": "request.method === 'GET'"
+    },
+    {
+      "line": 13298,
+      "condition": "request.method === 'PUT'"
+    },
+    {
+      "line": 13333,
+      "condition": "request.method === 'PATCH'"
+    },
+    {
+      "line": 13368,
+      "condition": "request.method === 'DELETE'"
+    },
+    {
+      "line": 13391,
+      "condition": "request.method === 'GET' && !url.pathname.startsWith('/api/')"
+    },
+    {
+      "line": 13392,
+      "condition": "await serveStatic(request, response, url.pathname)"
+    }
+  ]
+}

@@ -691,6 +691,7 @@ type MapDocument = {
 }
 
 type MapRevisionSummary = {
+  snapshotSha256?: string
   id: string
   mapId: string
   title: string
@@ -710,6 +711,7 @@ type MapRevisionPage = {
 }
 
 type DailyBackupSummary = {
+  snapshotSha256?: string
   date: string
   mapId: string
   title: string
@@ -5797,7 +5799,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     try {
       const result = await apiRequest<{ map: MapDocument; summary: MapSummary; revisions: MapRevisionSummary[]; historyHasMore: boolean; historyNextOffset: number | null }>(
         `/api/maps/${encodeURIComponent(activeMapId)}/history/${encodeURIComponent(revision.id)}/restore`,
-        { method: 'POST' },
+        { method: 'POST', body: JSON.stringify({ baseVersion: serverBaseline.current?.version,
+          baseLifecycleVersion: serverBaseline.current?.lifecycleVersion ?? 0, expectedSnapshotSha256: revision.snapshotSha256 }) },
       )
       serverBaseline.current = structuredClone(result.map)
       const nextSelectedId = resolveDocumentNodeSelection(result.map.nodes, null, isPhoneViewport())
@@ -5831,7 +5834,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     try {
       const result = await apiRequest<{ map: MapDocument; summary: MapSummary; dailyBackups: DailyBackupSummary[]; revisions: MapRevisionSummary[]; historyHasMore: boolean; historyNextOffset: number | null }>(
         `/api/maps/${encodeURIComponent(activeMapId)}/backups/daily/${encodeURIComponent(backup.date)}/restore`,
-        { method: 'POST' },
+        { method: 'POST', body: JSON.stringify({ baseVersion: serverBaseline.current?.version,
+          baseLifecycleVersion: serverBaseline.current?.lifecycleVersion ?? 0, expectedSnapshotSha256: backup.snapshotSha256 }) },
       )
       serverBaseline.current = structuredClone(result.map)
       const nextSelectedId = resolveDocumentNodeSelection(result.map.nodes, null, isPhoneViewport())

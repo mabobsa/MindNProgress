@@ -133,7 +133,7 @@ test('보관·전환 HTTP/MCP 경로는 임시 서버에서 원본·댓글·이�
   assert.equal(nextMap.nodes[1].data.waitingItems[0].resumeCondition, waiting[0].resumeCondition)
   assert.equal(nextMap.nodes[1].data.reconstructionSources[0].cardId, 'task')
   for (const [url, method, body] of [
-    [`/api/maps/${source.id}`, 'PUT', { map: source, baseVersion: source.version }],
+    [`/api/maps/${source.id}`, 'PUT', { map: source, baseVersion: source.version, baseLifecycleVersion: source.lifecycleVersion ?? 0 }],
     [`/api/maps/${source.id}`, 'PATCH', { title: '보관 원문 변경 금지' }],
     [`/api/maps/${source.id}`, 'DELETE'],
     [`/api/maps/${source.id}/comments`, 'POST', { nodeId: 'task', summary: '추가 금지' }],
@@ -184,7 +184,7 @@ test('보관·전환 HTTP/MCP 경로는 임시 서버에서 원본·댓글·이�
   assert.equal((await api(`/api/maps/${coordinator.id}/archive`, 'PATCH', { baseVersion: coordinatorMap.version, baseLifecycleVersion: 0, archived: true })).status, 409)
   const activeSource = (await api(`/api/maps/${source.id}`)).body.map
   activeSource.nodes[1].data.aiConversationId = 'unavailable-test-conversation'
-  const aiLinked = (await api(`/api/maps/${source.id}`, 'PUT', { map: activeSource, baseVersion: activeSource.version })).body.map
+  const aiLinked = (await api(`/api/maps/${source.id}`, 'PUT', { map: activeSource, baseVersion: activeSource.version, baseLifecycleVersion: activeSource.lifecycleVersion ?? 0 })).body.map
   const blocked = await api(`/api/maps/${source.id}/archive`, 'PATCH', { baseVersion: aiLinked.version, baseLifecycleVersion: activeSource.lifecycleVersion, archived: true })
   assert.equal(blocked.status, 409, JSON.stringify(blocked.body)); assert.equal(blocked.body.code, 'RECONSTRUCTION_AI_BUSY')
 

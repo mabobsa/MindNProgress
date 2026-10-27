@@ -929,6 +929,7 @@ async function main() {
       body: JSON.stringify({
         map: { nodes: transientOnlyMap.nodes, edges: transientOnlyMap.edges },
         baseVersion: documentResult.map.version,
+        baseLifecycleVersion: documentResult.map.lifecycleVersion ?? 0,
       }),
     })
     assert.equal(transientOnlySaveResponse.status, 200)

@@ -196,7 +196,7 @@ test('검토 문맥 조회와 해시 조건부 일괄 저장을 원자적으로 
     const changeResponse = await fetch(`${baseUrl}/api/maps/${mapId}`, {
       method: 'PUT',
       headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ map: changedMap, baseVersion: reviewedMap.version }),
+      body: JSON.stringify({ map: changedMap, baseVersion: reviewedMap.version, baseLifecycleVersion: reviewedMap.lifecycleVersion ?? 0 }),
     })
     assert.equal(changeResponse.status, 200)
 

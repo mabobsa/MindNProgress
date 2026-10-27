@@ -267,6 +267,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     const leafId = 'implementation-leaf'
     const withLeaf = await api(`/api/maps/${target.id}`, 'PUT', {
       baseVersion: beforeLeaf.version,
+      baseLifecycleVersion: beforeLeaf.lifecycleVersion ?? 0,
       map: {
         nodes: [...beforeLeaf.nodes, { id: leafId, type: 'mind', position: { x: 300, y: 0 }, data: { label: '하위 구현', description: '로비 진입 구현과 검증', kind: 'task', isWork: true, status: 'planned', progress: 0 } }],
         edges: [...beforeLeaf.edges, { id: 'root-to-leaf', source: targetRoot, target: leafId, data: { relation: 'hierarchy' } }],
@@ -688,7 +689,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     const reviewRoot = reviewDocument.nodes[0]
     const waitingItem = { id: 'wait-assets', label: '최종 아트 전달', note: '첫 절\n\n보존할 마지막 절', resumeCondition: '승인된 아트 제공 후 검증', since: '2026-09-10T00:00:00Z' }
     const waitingNode = { id: 'waiting-child', type: 'mind', position: { x: 200, y: 0 }, data: { label: '최종 아트 적용', description: '원문 요구사항', kind: 'task', isWork: true, status: 'planned', progress: 0, waitingItems: [waitingItem] } }
-    const reviewFixture = await api(`/api/maps/${reviewDocument.id}`, 'PUT', { baseVersion: reviewDocument.version, map: { nodes: [...reviewDocument.nodes, waitingNode], edges: [{ id: 'review-edge', source: reviewRoot.id, target: waitingNode.id }] } })
+    const reviewFixture = await api(`/api/maps/${reviewDocument.id}`, 'PUT', { baseVersion: reviewDocument.version, baseLifecycleVersion: reviewDocument.lifecycleVersion ?? 0, map: { nodes: [...reviewDocument.nodes, waitingNode], edges: [{ id: 'review-edge', source: reviewRoot.id, target: waitingNode.id }] } })
     assert.equal(reviewFixture.status, 200, JSON.stringify(reviewFixture.body))
     const beforeReviewDocument = (await api(`/api/maps/${reviewDocument.id}`)).body.map
     const beforeReviewContext = (await api(`/api/groups/${reviewGroupId}`)).body

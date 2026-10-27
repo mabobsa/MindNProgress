@@ -37,9 +37,9 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
     const tools = [...(await client.listTools()).tools].sort((a, b) => a.name.localeCompare(b.name))
     assert.deepEqual(tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), fixture)
     assert.equal(tools.length, 60)
-    // 2026-10-22 승인된 복구(R2 L27): get_document knownVersion 설명에 full 응답의 freshness 부재를 추가해 해시를 갱신했다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'e891b28d0dd4eca19ac7bb0c0469c1c3341255f310474f9401d334641cc30df2')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 155)
+    // REQ-MNP-03: 검토 토큰·댓글 기대값·전체 복원 조건의 기존 도구 입력 확장.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'd3961d5e5d33e3c52fe0869dd3f5e02dc09416a67ee651f88863de1b0382985c')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 160)
     const metaRecovery = tools.find(tool => tool.name === 'mindnprogress_recover_ai_delegation').inputSchema.properties.untrackedMetaRecovery
     assert.deepEqual(metaRecovery.required, ['path', 'expectedSha256', 'mainCommit'])
     assert.equal(metaRecovery.additionalProperties, false)
@@ -47,13 +47,16 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
     // 2026-10-22 작업 트리 기준 재생성 기준선(capture-guidance-evidence.mjs --rebaseline-working-tree)의 registerTool 직접 등록 수
     assert.equal(baselineDescriptions.size, 58)
     for (const tool of tools) {
-      if (safetyTools.has(tool.name) || tool.name ==='mindnprogress_search_content' || tool.name === 'mindnprogress_patch_card_text') continue
+      if (safetyTools.has(tool.name) || tool.name ==='mindnprogress_search_content' || tool.name === 'mindnprogress_patch_card_text'
+        || ['mindnprogress_get_shared_knowledge_review_context', 'mindnprogress_apply_shared_knowledge_review'].includes(tool.name)) continue
       const original = baselineDescriptions.get(tool.name)
       if (!original) continue // 배열로 등록되는 복구 도구는 아래 의미 검사에서 검증한다.
       assert.equal(tool.description, original.slice(1, -1), `${tool.name}의 기준선 상세 설명이 달라졌습니다.`)
     }
 
     const descriptions = new Map(tools.map(({ name, description }) => [name, description]))
+    assert.match(descriptions.get('mindnprogress_get_shared_knowledge_review_context'), /reviewContextToken.*그대로.*기대값을 자동 교체하지/s)
+    assert.match(descriptions.get('mindnprogress_apply_shared_knowledge_review'), /설명·종류·관계·댓글·Ref 출처.*무관한 문서 버전.*생략한 기존 요청.*엄격한 문서 버전.*충돌 시 변경 없이 거부/s)
     assert.match(descriptions.get('mindnprogress_restore_history'), /복원 직전.*백업.*전체.*교체.*변경.*새.*이력.*get_document.*list_history/s)
     assert.match(descriptions.get('mindnprogress_update_document_info'), /최신 baseVersion.*force=true.*사용자가 명시적으로 승인.*get_document/s)
     const getDocument = descriptions.get('mindnprogress_get_document')

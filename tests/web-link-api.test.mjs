@@ -83,7 +83,7 @@ test('웹 링크 카드 저장은 허용하고 원본 URL이 어긋난 데이터
     const invalidResponse = await fetch(`${baseUrl}/api/maps/${created.map.id}`, {
       method: 'PUT',
       headers,
-      body: JSON.stringify({ map: invalidMap, baseVersion: created.map.version }),
+      body: JSON.stringify({ map: invalidMap, baseVersion: created.map.version, baseLifecycleVersion: created.map.lifecycleVersion ?? 0 }),
     })
     assert.equal(invalidResponse.status, 400)
   } finally {

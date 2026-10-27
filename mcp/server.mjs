@@ -29,6 +29,7 @@ import { WORKSPACE_POOL_STATUS_GUIDE, WORKSPACE_POOL_STATUS_REFERENCE } from './
 import { MCP_TOOL_USAGE_DIRECTORY_NAME, createFileToolUsageRecorder } from '../server/lib/mcpToolUsage.mjs'
 import { formatAiConversationDisplay } from '../server/lib/aiConversationDisplay.mjs'
 import { createMapContentPatch } from '../src/utils/mapContentPatch.mjs'
+import { createContentPreconditions, commentContentHash, commentResolvedHash, commentDeleteHash, conflict } from '../server/lib/contentPreconditions.mjs'
 import { createMnpApiConnectionResolver } from './apiConnection.mjs'
 import { AI_USAGE_GUIDE, buildAiUsageResult } from './aiUsage.mjs'
 
@@ -359,6 +360,9 @@ async function apiRequest(pathname, init = {}) {
     error.code = body?.code
     error.reasonCode = body?.reasonCode ?? body?.code
     error.details = body?.details
+    error.conflicts = body?.conflicts
+    error.outcome = body?.outcome
+    error.retryable = body?.retryable
     error.requestFailure = body?.requestFailure
     throw error
   }
@@ -497,11 +501,15 @@ function registerTool(server, name, description, schema, handler, options = {}) 
       return result
     } catch (error) {
       const message = error instanceof Error ? error.message : '요청을 처리하지 못했습니다.'
-      const reasonCode = String(error?.reasonCode ?? '').trim()
+      const reasonCode = String(error?.reasonCode ?? error?.details?.reasonCode ?? '').trim()
       const errorResult = reasonCode
         ? {
             reasonCode,
             message,
+            ...(error?.code === undefined ? {} : { code: error.code }),
+            ...((error?.conflicts ?? error?.details?.conflicts) === undefined ? {} : { conflicts: error.conflicts ?? error.details.conflicts }),
+            ...((error?.outcome ?? error?.details?.outcome) === undefined ? {} : { outcome: error.outcome ?? error.details.outcome }),
+            ...((error?.retryable ?? error?.details?.retryable) === undefined ? {} : { retryable: error.retryable ?? error.details.retryable }),
             ...(error?.details === undefined ? {} : { details: error.details }),
             ...(error?.requestFailure === undefined ? {} : { requestFailure: error.requestFailure }),
           }
@@ -535,32 +543,26 @@ async function getDocument(mapId) {
   return (await apiRequest(`/api/maps/${encodeURIComponent(mapId)}`)).map
 }
 
-async function saveDocument(before, map, aiCardId = '') {
+async function saveDocument(before, map, aiCardId = '', options = {}) {
+  const patch = createMapContentPatch(before, map)
   return apiRequest(`/api/maps/${encodeURIComponent(map.id)}/content-patch`, {
     method: 'PATCH',
     aiCardId,
     body: JSON.stringify({
-      patch: createMapContentPatch(before, map),
+      patch,
       baseVersion: before.version,
+      preconditions: createContentPreconditions(before, patch),
+      ...options,
     }),
   })
 }
 
-async function mutateDocument(mapId, aiCardId, mutation, maxAttempts = 3) {
-  let lastError = null
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const map = await getDocument(mapId)
-    const before = structuredClone(map)
-    const result = mutation(map)
-    try {
-      const saved = await saveDocument(before, map, aiCardId)
-      return { saved, result }
-    } catch (error) {
-      lastError = error
-      if (error?.code !== 'VERSION_CONFLICT' || attempt === maxAttempts - 1) throw error
-    }
-  }
-  throw lastError ?? new Error('문서를 변경하지 못했습니다.')
+async function mutateDocument(mapId, aiCardId, mutation, options = {}) {
+  const map = await getDocument(mapId)
+  const before = structuredClone(map)
+  const result = mutation(map)
+  const saved = await saveDocument(before, map, aiCardId, options)
+  return { saved, result }
 }
 
 function isKnowledgeEdge(edge) {
@@ -1878,7 +1880,7 @@ async function main() {
     }
   })
 
-  registerTool(server, 'mindnprogress_get_shared_knowledge_review_context', '정리 후보 한 카드의 sharedKnowledge 원문, 무결성 해시, 검토 신호, 계층·지식선 관계와 최근 댓글을 조회합니다. 후보 목록에서 선택한 카드만 호출하고 반환된 document.version과 card.textIntegrity.sha256을 저장 요청에 그대로 사용하세요.', {
+  registerTool(server, 'mindnprogress_get_shared_knowledge_review_context', '정리 후보 한 카드의 sharedKnowledge 원문, 무결성 해시, 검토 신호, 계층·지식선 관계와 최근 댓글을 조회합니다. 후보 목록에서 선택한 카드만 호출하고 반환된 document.version, card.textIntegrity.sha256과 reviewContextToken을 저장 요청에 그대로 사용하세요. 검토 의존성이 변경되면 충돌로 거부하며 기대값을 자동 교체하지 않습니다.', {
     mapId: z.string().min(1),
     cardId: z.string().min(1).max(120),
     commentLimit: z.number().int().min(0).max(20).default(10),
@@ -2014,7 +2016,8 @@ async function main() {
       ...checklistState,
       ...(data.waitingItems === undefined ? {} : { waitingItems: normalizeWaitingItems(preserveOmittedWaitingItemNotes(node.data?.waitingItems, data.waitingItems)) }),
     }
-    node.data = nextData.status === 'done' || nextData.progress >= 100
+    const updatesWorkState = ['status', 'progress', 'checklist', 'waitingItems'].some((field) => Object.hasOwn(data, field))
+    node.data = updatesWorkState && (nextData.status === 'done' || nextData.progress >= 100)
       ? { ...nextData, waitingItems: [] }
       : nextData
     if (position) node.position = position
@@ -2063,7 +2066,7 @@ async function main() {
       const beforeText = typeof node.data?.[field] === 'string' ? node.data[field] : ''
       const before = textIntegrity(beforeText)
       if (before.sha256 !== expectedSha256) {
-        throw new Error(`TEXT_HASH_MISMATCH: 원문이 조회 이후 변경되었습니다. 다시 조회해 최신 해시를 사용하세요. (currentSha256=${before.sha256})`)
+        conflict('TEXT_HASH_MISMATCH', 'FIELD_CONFLICT', mapId, field, expectedSha256, before.sha256, cardId)
       }
 
       const nextText = applyCardTextPatch(beforeText, operation)
@@ -2075,7 +2078,7 @@ async function main() {
       }
       node.data = { ...node.data, [field]: nextText }
       return { before, nextText }
-    })
+    }, { textOperations: [{ cardId, field, expectedSha256, operation }] })
 
     const savedCard = saved.map.nodes.find((item) => item.id === cardId)
     if (!savedCard) throw new Error('저장 후 카드를 찾을 수 없습니다.')
@@ -2097,12 +2100,14 @@ async function main() {
     }
   })
 
-  registerTool(server, 'mindnprogress_apply_shared_knowledge_review', '검토 문맥에서 만든 sharedKnowledge 정리 결과를 한 문서에 원자적으로 저장하고 검토 완료로 기록합니다. 모든 카드의 현재 SHA-256과 문서 버전이 일치할 때만 전체 요청을 한 번에 반영하며 하나라도 다르면 아무것도 저장하지 않습니다. 본문을 줄이거나 재구성한 경우 cleaned와 replacement를, 현재 장문 전체가 계속 필요하면 accepted-long만 사용하세요. Ref 카드는 지원하지 않습니다.', {
+  registerTool(server, 'mindnprogress_apply_shared_knowledge_review', '검토 문맥에서 만든 sharedKnowledge 정리 결과를 한 문서에 원자적으로 저장하고 검토 완료로 기록합니다. 모든 patch에 원래 reviewContextToken을 전달하면 본문 해시와 설명·종류·관계·댓글·Ref 출처를 검사하며 무관한 문서 버전 변경은 허용합니다. 토큰을 생략한 기존 요청은 엄격한 문서 버전 조건을 유지합니다. 충돌 시 변경 없이 거부하며 기대값을 최신 값으로 자동 교체하지 않습니다. cleaned는 replacement를, accepted-long은 replacement 없이 사용합니다. Ref 카드는 원본에서 검토하세요.', {
     mapId: z.string().min(1),
     baseVersion: z.number().int().positive().describe('검토 문맥의 document.version'),
     patches: z.array(z.object({
       cardId: z.string().min(1).max(120),
       expectedSha256: z.string().regex(/^[a-f0-9]{64}$/).describe('검토 문맥의 card.textIntegrity.sha256'),
+      reviewContextToken: z.object({ schemaVersion: z.literal(1), mapId: z.string(), cardId: z.string(), lifecycleVersion: z.number().int().nonnegative(),
+        dependencies: z.record(z.string().regex(/^[a-f0-9]{64}$/)) }).optional().describe('검토 문맥의 reviewContextToken을 변경 없이 전달. 생략하면 기존 문서 버전 조건 적용'),
       reviewResult: z.enum(['cleaned', 'accepted-long']),
       replacement: z.string().max(sharedKnowledgeMaxLength, sharedKnowledgeLimitMessage).optional().describe('cleaned일 때만 보내는 정리된 sharedKnowledge 전체. accepted-long일 때는 생략'),
     })).min(1).max(20),
@@ -2488,7 +2493,26 @@ async function main() {
     apiRequest(`/api/maps/${encodeURIComponent(mapId)}/history?offset=${offset}&limit=${limit}`))
   registerTool(server, 'mindnprogress_restore_history', '선택한 변경 이력으로 문서 전체를 복원합니다. 복원 직전 view를 생략한 get_document(full)로 현재 문서를 백업하세요. 복원은 현재 문서 전체를 교체해 현재 변경을 잃을 수 있고, 복원 자체가 새 변경 이력을 만듭니다. 먼저 list_history에서 revisionId를 확인하고 복원 후 get_document와 list_history로 결과를 재조회해 검증하세요.', {
     mapId: z.string().min(1), revisionId: z.string().min(1),
-  }, async ({ mapId, revisionId }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/history/${encodeURIComponent(revisionId)}/restore`, { method: 'POST' }))
+    baseVersion: z.number().int().positive().optional().describe('백업·검토한 현재 문서 버전. 생략 시 호출 시작의 문서 버전을 고정'),
+    baseLifecycleVersion: z.number().int().nonnegative().optional(),
+    expectedSnapshotSha256: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('list_history의 복원할 이력 snapshotSha256'),
+  }, async ({ mapId, revisionId, baseVersion, baseLifecycleVersion, expectedSnapshotSha256 }) => {
+    if ((baseVersion === undefined) !== (baseLifecycleVersion === undefined)) {
+      throw new Error('검토한 baseVersion과 baseLifecycleVersion을 함께 전달해 주세요.')
+    }
+    const current = await getDocument(mapId)
+    let snapshotHash = expectedSnapshotSha256
+    for (let offset = 0; !snapshotHash;) {
+      const history = await apiRequest(`/api/maps/${encodeURIComponent(mapId)}/history?limit=100&offset=${offset}`)
+      snapshotHash = history.revisions.find((r) => r.id === revisionId)?.snapshotSha256
+      if (!history.hasMore || !Number.isInteger(history.nextOffset) || history.nextOffset <= offset) break
+      offset = history.nextOffset
+    }
+    return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/history/${encodeURIComponent(revisionId)}/restore`, {
+      method: 'POST', body: JSON.stringify({ baseVersion: baseVersion ?? current.version,
+        baseLifecycleVersion: baseLifecycleVersion ?? current.lifecycleVersion ?? 0, expectedSnapshotSha256: snapshotHash }),
+    })
+  })
 
   registerTool(server, 'mindnprogress_list_users', '담당자로 지정할 수 있는 편집자 계정 목록을 조회합니다. active=false인 계정은 기존 담당자 표시용이며 새 담당자로 지정하지 마세요.', {}, async () =>
     apiRequest('/api/assignees'))
@@ -2534,13 +2558,15 @@ async function main() {
         detail: z.string().max(6000).optional().describe('빈 문자열이면 기존 상세 삭제'),
         text: z.string().min(1).max(1000).optional().describe('이전 형식 호환용. 새 형식 댓글의 요약 변경에는 summary 사용'),
         expectedText: z.string().max(1000).optional().describe('현재 댓글 원문과 다르면 다른 편집자의 변경을 덮어쓰지 않고 실패'),
+        expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('요약·상세·레거시 본문 전체의 기대 해시'),
       }).strict(),
-      z.object({ action: z.literal('delete'), commentId: z.string().min(1) }).strict(),
-      z.object({ action: z.literal('set-resolved'), commentId: z.string().min(1), resolved: z.boolean() }).strict(),
+      z.object({ action: z.literal('delete'), commentId: z.string().min(1), expectedDeleteSha256: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict(),
+      z.object({ action: z.literal('set-resolved'), commentId: z.string().min(1), resolved: z.boolean(), expectedResolvedSha256: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict(),
       z.object({
         action: z.literal('toggle-reaction'),
         commentId: z.string().min(1),
         emoji: z.enum(['👍', '❤️', '🎉', '👀']),
+        expectedReacted: z.boolean().optional().describe('해당 이모지에 대한 현재 편집자의 이전 반응 여부'),
       }).strict(),
     ]).describe('댓글에 수행할 동작과 동작별 필수 입력'),
   }, async ({ mapId, operation }) => {
@@ -2563,6 +2589,9 @@ async function main() {
         return result
       })
     }
+    const comments = (await apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments?includeDetail=true`)).comments
+    const target = comments.find((c) => c.id === operation.commentId)
+    if (!target) throw new Error('댓글을 찾을 수 없습니다.')
     if (operation.action === 'update') {
       if (operation.summary === undefined && operation.detail === undefined && operation.text === undefined) {
         throw new Error('수정할 댓글 내용을 입력해 주세요.')
@@ -2574,19 +2603,25 @@ async function main() {
           detail: operation.detail,
           text: operation.text,
           expectedText: operation.expectedText,
+          expectedContentSha256: operation.expectedContentSha256 ?? commentContentHash(target),
         }),
       })
     }
     if (operation.action === 'delete') {
-      return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments/${encodeURIComponent(operation.commentId)}`, { method: 'DELETE' })
+      return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments/${encodeURIComponent(operation.commentId)}`, {
+        method: 'DELETE', body: JSON.stringify({ expectedDeleteSha256: operation.expectedDeleteSha256 ?? commentDeleteHash(comments, target.id) }),
+      })
     }
     if (operation.action === 'set-resolved') {
       return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments/${encodeURIComponent(operation.commentId)}/resolve`, {
-        method: 'PATCH', body: JSON.stringify({ resolved: operation.resolved }),
+        method: 'PATCH', body: JSON.stringify({ resolved: operation.resolved, expectedResolvedSha256: operation.expectedResolvedSha256 ?? commentResolvedHash(target) }),
       })
     }
+    const actor = (await apiRequest('/api/auth/me')).user
+    if (!actor?.id) throw new Error('댓글 반응을 변경할 편집자를 확인하지 못했습니다.')
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments/${encodeURIComponent(operation.commentId)}/reactions`, {
-      method: 'POST', body: JSON.stringify({ emoji: operation.emoji }),
+      method: 'POST', body: JSON.stringify({ emoji: operation.emoji,
+        expectedReacted: operation.expectedReacted ?? (target.reactions?.[operation.emoji] ?? []).includes(actor.id) }),
     })
   })
 

@@ -112,6 +112,7 @@ test('이미지 업로드와 원본 조회 및 이미지 노드 삭제 후 자�
       body: JSON.stringify({
         map: { nodes: [created.map.nodes[0], imageNode], edges: [] },
         baseVersion: created.map.version,
+        baseLifecycleVersion: created.map.lifecycleVersion ?? 0,
       }),
     })
     assert.equal(saveResponse.status, 200)

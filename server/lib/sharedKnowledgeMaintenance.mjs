@@ -229,6 +229,7 @@ export function prepareSharedKnowledgeReviewBatch(map, patches, { now = new Date
     if (currentAnalysis.sha256 !== patch.expectedSha256) {
       fail('SHARED_KNOWLEDGE_REVIEW_HASH_MISMATCH', '공유 지식이 조회 이후 변경되었습니다. 최신 검토 문맥을 다시 조회해 주세요.', 409, {
         cardId: patch.cardId,
+        expectedSha256: patch.expectedSha256,
         currentSha256: currentAnalysis.sha256,
         currentLength: currentAnalysis.length,
       })

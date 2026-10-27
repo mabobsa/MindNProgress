@@ -52,7 +52,7 @@ test('배치 HTTP·MCP·실제 브라우저는 원본을 보존하고 승인한 
   assert.equal(uploaded.status, 201); const asset = (await uploaded.json()).image
   map.nodes.push(node('image', { kind: 'image', isWork: false, image: { assetId: asset.assetId, fileName: '검증.png', mimeType: 'image/png', naturalWidth: 1, naturalHeight: 1, displayWidth: 460, displayHeight: 220 } }))
   map.edges.push({ id: 'knowledge', source: 'image', target: 'a', data: { relation: 'knowledge', knowledgePolicy: 'reuse-first' } })
-  const updated = await api(`/api/maps/${map.id}`, 'PUT', { baseVersion: map.version, map }); assert.equal(updated.status, 200, JSON.stringify(updated.body)); map = updated.body.map
+  const updated = await api(`/api/maps/${map.id}`, 'PUT', { baseVersion: map.version, baseLifecycleVersion: map.lifecycleVersion ?? 0, map }); assert.equal(updated.status, 200, JSON.stringify(updated.body)); map = updated.body.map
   const file = path.join(directory, map.id + '.json'); const before = await readFile(file)
   let request = (await api('/api/card-layouts', 'POST', { mapId: map.id, proposalOnly: true })).body
   assert.deepEqual(request.target, { ratio: '16:9' })

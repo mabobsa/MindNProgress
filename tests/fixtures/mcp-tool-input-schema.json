@@ -397,7 +397,7 @@
   },
   {
     "name": "mindnprogress_apply_shared_knowledge_review",
-    "description": "검토 문맥에서 만든 sharedKnowledge 정리 결과를 한 문서에 원자적으로 저장하고 검토 완료로 기록합니다. 모든 카드의 현재 SHA-256과 문서 버전이 일치할 때만 전체 요청을 한 번에 반영하며 하나라도 다르면 아무것도 저장하지 않습니다. 본문을 줄이거나 재구성한 경우 cleaned와 replacement를, 현재 장문 전체가 계속 필요하면 accepted-long만 사용하세요. Ref 카드는 지원하지 않습니다.",
+    "description": "검토 문맥에서 만든 sharedKnowledge 정리 결과를 한 문서에 원자적으로 저장하고 검토 완료로 기록합니다. 모든 patch에 원래 reviewContextToken을 전달하면 본문 해시와 설명·종류·관계·댓글·Ref 출처를 검사하며 무관한 문서 버전 변경은 허용합니다. 토큰을 생략한 기존 요청은 엄격한 문서 버전 조건을 유지합니다. 충돌 시 변경 없이 거부하며 기대값을 최신 값으로 자동 교체하지 않습니다. cleaned는 replacement를, accepted-long은 replacement 없이 사용합니다. Ref 카드는 원본에서 검토하세요.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -424,6 +424,41 @@
                 "type": "string",
                 "pattern": "^[a-f0-9]{64}$",
                 "description": "검토 문맥의 card.textIntegrity.sha256"
+              },
+              "reviewContextToken": {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "mapId": {
+                    "type": "string"
+                  },
+                  "cardId": {
+                    "type": "string"
+                  },
+                  "lifecycleVersion": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "dependencies": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  }
+                },
+                "required": [
+                  "schemaVersion",
+                  "mapId",
+                  "cardId",
+                  "lifecycleVersion",
+                  "dependencies"
+                ],
+                "additionalProperties": false,
+                "description": "검토 문맥의 reviewContextToken을 변경 없이 전달. 생략하면 기존 문서 버전 조건 적용"
               },
               "reviewResult": {
                 "type": "string",
@@ -1481,7 +1516,7 @@
   },
   {
     "name": "mindnprogress_get_shared_knowledge_review_context",
-    "description": "정리 후보 한 카드의 sharedKnowledge 원문, 무결성 해시, 검토 신호, 계층·지식선 관계와 최근 댓글을 조회합니다. 후보 목록에서 선택한 카드만 호출하고 반환된 document.version과 card.textIntegrity.sha256을 저장 요청에 그대로 사용하세요.",
+    "description": "정리 후보 한 카드의 sharedKnowledge 원문, 무결성 해시, 검토 신호, 계층·지식선 관계와 최근 댓글을 조회합니다. 후보 목록에서 선택한 카드만 호출하고 반환된 document.version, card.textIntegrity.sha256과 reviewContextToken을 저장 요청에 그대로 사용하세요. 검토 의존성이 변경되면 충돌로 거부하며 기대값을 자동 교체하지 않습니다.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1846,6 +1881,11 @@
                   "type": "string",
                   "maxLength": 1000,
                   "description": "현재 댓글 원문과 다르면 다른 편집자의 변경을 덮어쓰지 않고 실패"
+                },
+                "expectedContentSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$",
+                  "description": "요약·상세·레거시 본문 전체의 기대 해시"
                 }
               },
               "required": [
@@ -1864,6 +1904,10 @@
                 "commentId": {
                   "type": "string",
                   "minLength": 1
+                },
+                "expectedDeleteSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
                 }
               },
               "required": [
@@ -1885,6 +1929,10 @@
                 },
                 "resolved": {
                   "type": "boolean"
+                },
+                "expectedResolvedSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
                 }
               },
               "required": [
@@ -1913,6 +1961,10 @@
                     "🎉",
                     "👀"
                   ]
+                },
+                "expectedReacted": {
+                  "type": "boolean",
+                  "description": "해당 이모지에 대한 현재 편집자의 이전 반응 여부"
                 }
               },
               "required": [
@@ -2617,6 +2669,20 @@
         "revisionId": {
           "type": "string",
           "minLength": 1
+        },
+        "baseVersion": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "백업·검토한 현재 문서 버전. 생략 시 호출 시작의 문서 버전을 고정"
+        },
+        "baseLifecycleVersion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expectedSnapshotSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "list_history의 복원할 이력 snapshotSha256"
         }
       },
       "required": [

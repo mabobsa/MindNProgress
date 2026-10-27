@@ -47,6 +47,8 @@ import { createDoorayResponsePreferences } from './lib/doorayResponsePreferences
 import { AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_REPORT_INSTRUCTION, AI_DELEGATION_RESULT_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 import { MNP_CONTEXT_BOOTSTRAP_INSTRUCTION } from '../src/utils/aiContextInstructions.mjs'
 import { applyMapContentPatch, MapContentPatchError } from '../src/utils/mapContentPatch.mjs'
+import { ContentConditionError, assertLifecycle, assertReplacementConditions, conflict, digest, reviewContextToken, validateReviewContext,
+  validateContentPreconditions, validateTextOperations, validateCommentCondition } from './lib/contentPreconditions.mjs'
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto'
 import { mkdir, open } from 'node:fs/promises'
 import { hostname, networkInterfaces, tmpdir } from 'node:os'
@@ -655,8 +657,28 @@ function sendSharedKnowledgeMaintenanceError(response, error) {
     error: error.message,
     code: error.code,
     ...error.details,
+    ...(error.status === 409 ? { reasonCode: error.code === 'SHARED_KNOWLEDGE_REVIEW_HASH_MISMATCH' ? 'FIELD_CONFLICT' : 'READ_DEPENDENCY_CHANGED',
+      outcome: 'not-applied', retryable: false, conflicts: [{ resource: 'sharedKnowledge', cardId: error.details?.cardId,
+        field: 'sharedKnowledge', kind: error.code === 'SHARED_KNOWLEDGE_REVIEW_HASH_MISMATCH' ? 'FIELD_CONFLICT' : 'READ_DEPENDENCY_CHANGED',
+        expected: error.details?.expectedSha256 ?? null,
+        current: error.details?.currentSha256 ?? null }] } : {}),
   })
   return true
+}
+
+async function reviewDependencies(map, cardId, comments) {
+  const related = new Set([cardId, ...map.edges.filter((e) => e.source === cardId || e.target === cardId).flatMap((e) => [e.source, e.target])])
+  const sources = []
+  for (const node of map.nodes.filter((n) => related.has(n.id) && n.data?.reference)) {
+    const reference = node.data.reference
+    const source = await readMap(reference.mapId)
+    const sourceCard = source?.nodes.find((n) => n.id === reference.nodeId)
+    sources.push({ localCardId: node.id, reference, lifecycleVersion: source?.lifecycleVersion ?? 0,
+      unavailable: !source || Boolean(source.trashedAt || source.archivedAt),
+      card: sourceCard ? { id: sourceCard.id, type: sourceCard.type, data: sourceCard.data } : null,
+      comments: sourceCard ? await listComments(reference.mapId, reference.nodeId) : [] })
+  }
+  return { token: reviewContextToken(map, cardId, comments, sources), sources }
 }
 
 function requestClientId(request) {
@@ -7063,6 +7085,7 @@ async function writeDailyBackup(map, user, reason = 'automatic', date = seoulDat
 
 function dailyBackupSummary(backup) {
   return {
+    snapshotSha256: digest(normalizeMapForPersistence(backup.map)),
     date: backup.date,
     mapId: backup.mapId,
     title: backup.map.title,
@@ -7146,6 +7169,7 @@ async function backfillDailyBackupsFromHistory() {
 
 function revisionSummary(revision) {
   return {
+    snapshotSha256: digest(normalizeMapForPersistence(revision.map)),
     id: revision.id,
     mapId: revision.mapId,
     title: revision.map.title,
@@ -12684,12 +12708,15 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       try {
         const context = buildSharedKnowledgeReviewContext(map, cardId)
         const allComments = await listComments(mapId, cardId)
+        const dependencies = await reviewDependencies(map, cardId, allComments)
         const comments = commentLimit > 0
           ? [...allComments].reverse().slice(0, commentLimit).map((comment) => commentForResponse(comment, includeCommentDetail))
           : []
         return sendJson(response, 200, {
           context: {
             ...context,
+            reviewContextToken: dependencies.token,
+            sources: dependencies.sources,
             accessUrl: `${publicBaseUrl}/mindmap/${encodeURIComponent(mapId)}/${encodeURIComponent(cardId)}`,
             comments,
             commentsPage: {
@@ -12720,17 +12747,24 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!Number.isInteger(baseVersion) || baseVersion < 1) {
         return sendJson(response, 400, { error: '검토 문맥에서 확인한 문서 버전을 입력해 주세요.' })
       }
-      if (baseVersion !== existing.version) {
+      const contextual = Array.isArray(body.patches) && body.patches.length > 0 && body.patches.every((p) => p.reviewContextToken !== undefined)
+      if (!contextual && baseVersion !== existing.version) {
         return sendJson(response, 409, {
           error: '다른 사용자가 먼저 문서를 변경했습니다. 검토 후보와 문맥을 다시 조회해 주세요.',
           code: 'VERSION_CONFLICT',
           currentVersion: existing.version,
+          reasonCode: 'READ_DEPENDENCY_CHANGED', outcome: 'not-applied', retryable: false,
+          conflicts: [{ resource: mapId, field: 'version', expected: baseVersion, current: existing.version, kind: 'READ_DEPENDENCY_CHANGED' }],
         })
       }
 
       let prepared
       try {
         prepared = prepareSharedKnowledgeReviewBatch(existing, body.patches)
+        for (const patch of body.patches) if (patch.reviewContextToken !== undefined) {
+          const current = await reviewDependencies(existing, patch.cardId, await listComments(mapId, patch.cardId))
+          validateReviewContext(existing, patch.reviewContextToken, current.token)
+        }
       } catch (error) {
         if (sendSharedKnowledgeMaintenanceError(response, error)) return
         throw error
@@ -12748,7 +12782,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           'shared-knowledge-review',
           {
             sharedKnowledgeReviewRequests: prepared.reviewRequests,
-            expectedVersion: baseVersion,
+            expectedVersion: existing.version,
             validatePayload: (payload) => {
               verifiedChanges = verifySharedKnowledgeReviewChanges(payload, prepared.changes)
             },
@@ -13021,6 +13055,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!target) return sendJson(response, 404, { error: '댓글을 찾을 수 없습니다.' })
       const currentUsers = Array.isArray(target.reactions?.[emoji]) ? target.reactions[emoji] : []
       const reacted = currentUsers.includes(user.id)
+      validateCommentCondition(mapId, target, body, 'reaction', comments, user.id)
       const comment = {
         ...target,
         reactions: {
@@ -13051,6 +13086,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
       const body = await readJsonBody(request)
       const resolved = body.resolved === true
+      validateCommentCondition(mapId, target, body, 'resolve', comments, user.id)
       const comment = {
         ...target,
         resolvedAt: resolved ? new Date().toISOString() : null,
@@ -13079,11 +13115,9 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
       const body = await readJsonBody(request)
       if (typeof body.expectedText === 'string' && target.text !== body.expectedText) {
-        return sendJson(response, 409, {
-          error: '댓글 원문이 조회 이후 변경되었습니다. 최신 댓글을 다시 확인해 주세요.',
-          currentComment: commentForResponse(target, true),
-        })
+        conflict('COMMENT_CONFLICT', 'FIELD_CONFLICT', `${mapId}/comments/${commentId}`, 'text', digest(body.expectedText), digest(target.text), target.nodeId)
       }
+      validateCommentCondition(mapId, target, body, 'update', comments, user.id)
       const updatedContent = updateCommentContent(target, body)
       if (updatedContent.error) return sendJson(response, 400, { error: updatedContent.error })
       const comment = {
@@ -13110,6 +13144,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!canEdit(user) && comment.author.id !== user.id) {
         return sendJson(response, 403, { error: '자신이 작성한 댓글만 삭제할 수 있습니다.' })
       }
+      validateCommentCondition(mapId, comment, await readJsonBody(request), 'delete', comments, user.id)
       const deletedIds = new Set([commentId])
       let foundDescendant = true
       while (foundDescendant) {
@@ -13229,6 +13264,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!current || current.trashedAt) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
       const revision = await readMapRevision(mapId, revisionId)
       if (!revision) return sendJson(response, 404, { error: '변경 이력을 찾을 수 없습니다.' })
+      const body = await readJsonBody(request)
+      assertReplacementConditions(current, body, revision.map)
       await writeDailyBackup(current, user, 'before-history-restore')
       await archiveMapRevision(current, user, 'history-restore')
       const map = {
@@ -13266,6 +13303,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!current || current.trashedAt) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
       const backup = await readDailyBackup(mapId, date)
       if (!backup) return sendJson(response, 404, { error: '일일 백업을 찾을 수 없습니다.' })
+      const body = await readJsonBody(request)
+      assertReplacementConditions(current, body, backup.map)
       await writeDailyBackup(current, user, 'before-daily-restore')
       await archiveMapRevision(current, user, 'daily-backup-restore')
       const map = {
@@ -13444,23 +13483,29 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!user) return
       if (!canEdit(user)) return sendJson(response, 403, { error: '뷰어는 마인드맵을 변경할 수 없습니다.' })
       const existing = await readMap(mapId)
+      const body = await readJsonBody(request)
+      if (existing && body.preconditions) assertLifecycle(existing, body.preconditions.lifecycleVersion)
       if (!existing || existing.trashedAt || existing.archivedAt) {
         return sendJson(response, 404, { error: '활성 마인드맵을 찾을 수 없습니다.' })
       }
-      const body = await readJsonBody(request)
       const baseVersion = Number(body.baseVersion)
       if (!Number.isInteger(baseVersion) || baseVersion < 1) {
         return sendJson(response, 400, { error: '현재 문서 버전을 입력해 주세요.' })
       }
-      if (baseVersion !== existing.version) {
+      if (body.preconditions === undefined && baseVersion !== existing.version) {
         return sendJson(response, 409, {
           error: '다른 사용자가 먼저 문서를 변경했습니다.', code: 'VERSION_CONFLICT',
           map: existing, summary: mapSummary(existing),
+          reasonCode: 'READ_DEPENDENCY_CHANGED', outcome: 'not-applied', retryable: false,
+          conflicts: [{ resource: mapId, field: 'version', expected: baseVersion, current: existing.version, kind: 'READ_DEPENDENCY_CHANGED' }],
         })
       }
       let patchedMap
       try {
-        patchedMap = applyMapContentPatch(existing, body.patch)
+        validateTextOperations(existing, body.patch, body.textOperations)
+        const current = body.preconditions ? (await resolveReferencesForMap(existing)).map : existing
+        const patch = validateContentPreconditions(current, body)
+        patchedMap = applyMapContentPatch(existing, patch)
       } catch (error) {
         if (error instanceof MapContentPatchError) return sendJson(response, 400, { error: error.message, code: error.code })
         throw error
@@ -13478,7 +13523,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       )
       let map
       try {
-        map = await saveMap(mapId, normalizedIncomingMap, user, undefined, undefined, 'content', { expectedVersion: baseVersion })
+        map = await saveMap(mapId, normalizedIncomingMap, user, undefined, undefined, 'content', { expectedVersion: existing.version })
       } catch (error) {
         if (error?.code !== 'VERSION_CONFLICT') throw error
         const latest = await readMap(mapId)
@@ -13523,15 +13568,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         const body = await readJsonBody(request)
         if (!isValidMap(body.map)) return sendJson(response, 400, { error: '올바르지 않은 마인드맵 데이터입니다.' })
         const normalizedIncomingMap = reconcileSharedKnowledgeReviews(existing, normalizeMapForPersistence(body.map))
-        const baseVersion = Number(body.baseVersion)
-        if (existing && Number.isInteger(baseVersion) && baseVersion !== existing.version && body.force !== true) {
-          return sendJson(response, 409, {
-            error: '다른 사용자가 먼저 문서를 변경했습니다.',
-            code: 'VERSION_CONFLICT',
-            map: existing,
-            summary: mapSummary(existing),
-          })
-        }
+        if (existing && body.force !== true) assertReplacementConditions(existing, body)
+        else if (existing && body.baseLifecycleVersion !== undefined) assertLifecycle(existing, body.baseLifecycleVersion)
         const contentChanged = !existing || JSON.stringify({ nodes: existing.nodes, edges: existing.edges }) !== JSON.stringify({
           nodes: normalizedIncomingMap.nodes,
           edges: normalizedIncomingMap.edges,
@@ -13616,6 +13654,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     return sendJson(response, 404, { error: '요청한 경로를 찾을 수 없습니다.' })
   } catch (error) {
     throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    if (error instanceof ContentConditionError) return sendJson(response, error.status, { error: error.message, code: error.code, ...error.details })
     if (error instanceof DocumentTrashReviewError) return sendJson(response, error.status, {
       error: error.message, code: error.code, ...(error.preview ? { preview: error.preview } : {}),
     })
@@ -13625,7 +13664,9 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       code: error.code,
       ...(error.details ? { details: error.details } : {}),
     })
-    if (error?.reconstructionError) return sendJson(response, error.status, { error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) })
+    if (error?.reconstructionError) return sendJson(response, error.status, { error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}),
+      ...(error.code === 'DOCUMENT_ARCHIVED' ? { reasonCode: 'LIFECYCLE_CONFLICT', outcome: 'not-applied', retryable: false,
+        conflicts: [{ resource: 'document', field: 'lifecycle', kind: 'LIFECYCLE_CONFLICT', expected: 'active', current: 'unavailable' }] } : {}) })
     if (error?.groupProjectError) return sendJson(response, error.status, { error: error.message })
     if (error?.message === 'PAYLOAD_TOO_LARGE') return sendJson(response, 413, { error: '요청 데이터가 너무 큽니다.' })
     if (error instanceof SyntaxError) return sendJson(response, 400, { error: 'JSON 형식이 올바르지 않습니다.' })

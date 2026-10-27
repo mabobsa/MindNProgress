@@ -133,7 +133,7 @@ test('전체 활성 문서의 공유 지식 현황을 원문과 문서 변경 �
     const forgedSaveResponse = await fetch(`${baseUrl}/api/maps/${mapId}`, {
       method: 'PUT',
       headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ map: forgedMap, baseVersion: created.map.version }),
+      body: JSON.stringify({ map: forgedMap, baseVersion: created.map.version, baseLifecycleVersion: created.map.lifecycleVersion ?? 0 }),
     })
     assert.equal(forgedSaveResponse.status, 200)
     const forgedSave = await forgedSaveResponse.json()
@@ -151,7 +151,7 @@ test('전체 활성 문서의 공유 지식 현황을 원문과 문서 변경 �
     const malformedSaveResponse = await fetch(`${baseUrl}/api/maps/${mapId}`, {
       method: 'PUT',
       headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ map: malformedMap, baseVersion: created.map.version }),
+      body: JSON.stringify({ map: malformedMap, baseVersion: created.map.version, baseLifecycleVersion: created.map.lifecycleVersion ?? 0 }),
     })
     assert.equal(malformedSaveResponse.status, 400)
 

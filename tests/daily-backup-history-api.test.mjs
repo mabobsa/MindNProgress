@@ -108,10 +108,13 @@ test('API 재기동은 과거 본문 재조회 없이 일일 백업 조회·미�
     const currentBefore = await readFile(mapFile, 'utf8')
     const preview = await fetch(`${server.base}/api/maps/${mapId}/backups/daily/2026-01-01/preview`, { headers })
     assert.equal(preview.status, 200)
-    assert.equal((await preview.json()).backup.map.nodes[0].data.label, '당일 최신 카드')
+    const previewedBackup = (await preview.json()).backup
+    assert.equal(previewedBackup.map.nodes[0].data.label, '당일 최신 카드')
     assert.equal(await readFile(mapFile, 'utf8'), currentBefore)
 
-    const restored = await fetch(`${server.base}/api/maps/${mapId}/backups/daily/2026-01-01/restore`, { method: 'POST', headers })
+    const currentMap = (await (await fetch(`${server.base}/api/maps/${mapId}`, { headers })).json()).map
+    const restored = await fetch(`${server.base}/api/maps/${mapId}/backups/daily/2026-01-01/restore`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseVersion: currentMap.version, baseLifecycleVersion: currentMap.lifecycleVersion ?? 0, expectedSnapshotSha256: previewedBackup.snapshotSha256 }) })
     assert.equal(restored.status, 200)
     assert.equal((await restored.json()).map.nodes[0].data.label, '당일 최신 카드')
     assert.equal(await readFile(pastBackupFile, 'utf8'), backupBefore)

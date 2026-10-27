@@ -148,7 +148,7 @@ test('2MB 넘는 문서도 변경 카드만 보내 저장하고 원문·버전·
     })
     assert.equal(invalid.status, 400)
     assert.equal(invalid.body.code, 'MAP_CONTENT_PATCH_INVALID')
-    const fullSave = await api(url, 'PUT', { map: { nodes: map.nodes, edges: map.edges }, baseVersion: map.version })
+    const fullSave = await api(url, 'PUT', { map: { nodes: map.nodes, edges: map.edges }, baseVersion: map.version, baseLifecycleVersion: map.lifecycleVersion ?? 0 })
     assert.equal(fullSave.status, 413, '전체 요청의 2MB 상한은 유지되어야 합니다.')
     const reloaded = await api(url)
     assert.equal(reloaded.status, 200)

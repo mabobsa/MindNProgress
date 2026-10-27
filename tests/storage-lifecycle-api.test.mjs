@@ -154,7 +154,7 @@ test('Ref 추가가 이동보다 먼저 확정되면 새 Ref도 이동 대상으
   const map = (await api.call('/api/maps/map-bench-4')).body.map
   map.nodes[1].data.reference = { mapId: source, nodeId: 'card-1' }
   const barrier = await api.barrier('map-bench-4.json', 'rename')
-  const reference = api.call('/api/maps/map-bench-4', 'PUT', { baseVersion: 1, map })
+  const reference = api.call('/api/maps/map-bench-4', 'PUT', { baseVersion: 1, baseLifecycleVersion: 0, map })
   await barrier.reached
   let moved = false
   const moving = move(api).then((r) => { moved = true; return r })

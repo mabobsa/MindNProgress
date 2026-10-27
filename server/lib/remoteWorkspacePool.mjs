@@ -220,6 +220,7 @@ export class RemoteWorkspacePool {
     if (lease.operations[key] && stableHash(lease.operations[key].options) !== stableHash(options)) throw workspaceError('REMOTE_WORKSPACE_OPERATION_CONFLICT')
     const operation = lease.operations[key] ??= { ...body, operationId: `${action}-${stableHash(body).slice(0, 48)}` }
     if (lease.pendingOperation && lease.pendingOperation !== operation.operationId) throw workspaceError('REMOTE_WORKSPACE_OPERATION_PENDING')
+    const alreadyPending = Boolean(lease.pendingOperation)
     lease.pendingOperation = operation.operationId
     await this.persist()
     try {
@@ -228,6 +229,17 @@ export class RemoteWorkspacePool {
       await this.persist()
       return result
     } catch (error) {
+      if (error.storageResourceError && ['REQUEST_DEADLINE_EXCEEDED', 'REQUEST_CANCELLED'].includes(error.code)) {
+        if (error.externalOperationStarted || alreadyPending) {
+          // 응답만 중단되었을 수 있다. 같은 영속 명령으로 결과를 확인하기 전에는 변경 없음을 단정하지 않는다.
+          throw Object.assign(workspaceError('REMOTE_WORKSPACE_RESPONSE_PENDING', '외부 작업의 결과가 아직 확인되지 않았습니다. 보존된 같은 작업으로 결과를 확인하세요.'), {
+            status: 503, outcome: 'processing', retryable: false, retryAfterMs: 250, storageResourceError: true, cause: error,
+          })
+        }
+        // 이번에 처음 준비한 명령이 외부 호출 전에 거부된 경우만 예약을 취소한다.
+        delete lease.pendingOperation
+        await this.persist()
+      }
       if ([error.reasonCode, error.code].some((code) => ['REMOTE_WORKSPACE_RUNTIME_ACTIVE', 'REMOTE_WORKSPACE_DIRTY', 'AI_WORKSPACE_CHECKPOINT_PATH_REJECTED'].includes(code))) {
         delete lease.pendingOperation
         await this.persist()

@@ -8214,7 +8214,7 @@ async function withStorageRequest(request, response, operation) {
   finally {
     if (admission) admission.queueWaitMs = Math.max(admission.queueWaitMs, budget.queueWaitMs)
     clearTimeout(timer); request.off('aborted', cancel); response.off('close', cancel)
-    budget.finish(budget.preparing ? 'committed-or-recovering' : response.statusCode >= 400 ? 'not-applied' : 'read-or-external')
+    budget.finish(budget.outcome ?? (budget.preparing ? 'committed-or-recovering' : response.statusCode >= 400 ? 'not-applied' : 'read-or-external'))
   }
 }
 
@@ -8310,7 +8310,8 @@ async function executeStorageRequest(request, response, operation) {
     throw storageResourceError('RESOURCE_SET_CHANGED', '문서 참조 집합이 변경되었습니다. 최신 상태를 다시 조회하세요.')
   } catch (error) {
     throwIfRuntimeStopping(error, runtimeLifecycle.signal)
-    console.error('[Storage request]', JSON.stringify({ requestId: budget?.requestId, code: error.code ?? 'STORAGE_WRITE_FAILED', phase: budget?.phase }))
+    if (budget) budget.outcome = error.outcome
+    console.error('[Storage request]', JSON.stringify({ requestId: budget?.requestId, code: error.code ?? 'STORAGE_WRITE_FAILED', phase: budget?.phase, outcome: error.outcome }))
     if (!response.headersSent && !response.destroyed) sendJson(response, error.status ?? (error.message === 'PAYLOAD_TOO_LARGE' ? 413 : error instanceof SyntaxError ? 400 : 500), {
       error: error.storageResourceError ? error.message : '요청을 저장하지 못했습니다.', code: error.code ?? 'STORAGE_WRITE_FAILED',
       ...(error.storageResourceError ? { outcome: error.outcome ?? 'not-applied', retryable: error.retryable ?? false,

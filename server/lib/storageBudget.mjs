@@ -36,12 +36,20 @@ export function createStorageBudget({ multi = false, totalMs = multi ? storageLi
       budget.assert()
       const started = now()
       budget.phase = phase
-      let timer, abort
+      let timer, abort, operationStarted = false
+      // 응답 대기 종료와 실행 전 거부를 구분한다. 공유 취소 사유 자체는 바꾸지 않는다.
+      const interrupted = (error) => Object.assign(new Error(error.message, { cause: error }), error, {
+        externalOperationStarted: phase === 'external' && operationStarted,
+      })
       try {
-        return await Promise.race([Promise.resolve().then(operation), new Promise((_, reject) => {
-          abort = () => reject(controller.signal.reason)
+        return await Promise.race([Promise.resolve().then(() => {
+          budget.assert()
+          operationStarted = true
+          return operation()
+        }), new Promise((_, reject) => {
+          abort = () => reject(interrupted(controller.signal.reason))
           controller.signal.addEventListener('abort', abort, { once: true })
-          timer = setTimeout(() => reject(storageAdmissionError('REQUEST_DEADLINE_EXCEEDED')), budget.remaining())
+          timer = setTimeout(() => reject(interrupted(storageAdmissionError('REQUEST_DEADLINE_EXCEEDED'))), budget.remaining())
         })])
       } finally {
         clearTimeout(timer); controller.signal.removeEventListener('abort', abort)

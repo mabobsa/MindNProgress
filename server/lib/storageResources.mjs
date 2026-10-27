@@ -95,6 +95,7 @@ export function createStorageResources() {
     }
   }
   return { withResources, holds, assert, current, detached: (operation) => context.run(null, operation),
+    isQuarantined: (key) => blocked.has(normalizeResourceKey(key)),
     quarantine: (keys) => { for (const key of keys) blocked.add(normalizeResourceKey(key)) },
     pending: () => [...locks].map(([key, lock]) => ({ key, readers: lock.readers, writer: lock.writer, pending: lock.pending.length })),
   }

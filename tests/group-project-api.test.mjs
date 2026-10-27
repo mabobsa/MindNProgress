@@ -214,7 +214,15 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.equal((await api(`/api/maps/${target.id}`, 'DELETE')).status, 409)
     assert.equal((await api(delegateUrl)).body.delegations[0].id, 'group-first')
 
+    const recoveryPublishing = await storage.barrier('_ai-delegations.json.', 'writeFile', { prefix: true })
     dispatches.get('group-first').state = 'recovery_required'
+    await recoveryPublishing.reached
+    let recoveryContextResolved = false
+    const recoveryContext = api(`/api/groups/${groupId}`).then((value) => { recoveryContextResolved = true; return value })
+    await pause(80)
+    assert.equal(recoveryContextResolved, false, '그룹 조회는 확정되지 않은 메모리 위임 상태를 노출하지 않는다.')
+    recoveryPublishing.release()
+    assert.equal((await recoveryContext).status, 200)
     await until(async () => (await api(`/api/groups/${groupId}`)).body.delegations.some((item) => item.state === 'recovery-required'), '복구 필요 상태가 되지 않았습니다.')
     await stop(child); await start()
     assert.equal((await api(`/api/groups/${groupId}`)).body.project.source, source)

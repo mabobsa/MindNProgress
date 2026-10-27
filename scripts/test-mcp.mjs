@@ -538,7 +538,8 @@ async function main() {
     }
     assert.deepEqual(toolSchema('mindnprogress_patch_card_text')?.properties?.field?.enum, ['description', 'sharedKnowledge'])
     assert.equal(toolSchema('mindnprogress_patch_card_text')?.properties?.expectedSha256?.pattern, '^[a-f0-9]{64}$')
-    assert.ok(toolSchema('mindnprogress_patch_card_text')?.required?.includes('operation'))
+    assert.ok(toolSchema('mindnprogress_patch_card_text')?.properties?.operation)
+    assert.equal(toolSchema('mindnprogress_patch_card_text')?.properties?.resultOnly?.type, 'boolean')
     assert.equal(toolSchema('mindnprogress_list_shared_knowledge_candidates')?.properties?.limit?.maximum, 100)
     assert.equal(toolSchema('mindnprogress_get_shared_knowledge_review_context')?.properties?.commentLimit?.minimum, 0)
     assert.equal(toolSchema('mindnprogress_apply_shared_knowledge_review')?.properties?.patches?.maxItems, 20)
@@ -612,9 +613,10 @@ async function main() {
     assert.ok(toolSchema('mindnprogress_supersede_ai_delegation')?.required?.includes('replacementDelegationId'))
     assert.deepEqual(toolSchema('mindnprogress_get_card_layout_request')?.required, ['requestId'])
     assert.deepEqual(
-      toolSchema('mindnprogress_submit_card_layout_proposal')?.required,
-      ['requestId', 'baseRevision', 'plan'],
+      toolSchema('mindnprogress_submit_card_layout_proposal')?.required ?? [],
+      [],
     )
+    assert.ok(toolSchema('mindnprogress_submit_card_layout_proposal')?.properties?.proposalRequestId)
     assert.deepEqual(
       toolSchema('mindnprogress_submit_card_layout_proposal')?.properties?.plan?.required,
       ['order', 'reason'],
@@ -648,6 +650,7 @@ async function main() {
       return errorPayload
     }
 
+    await invokeExpectError('mindnprogress_patch_card_text', {}, /operation/)
     const guide = await invoke('mindnprogress_read_me_first')
     assert.ok(guide.important.includes(AI_CONVERSATION_SELECTION_INSTRUCTION))
     assert.ok(guide.guide.operationRules.includes(AI_CONVERSATION_SELECTION_INSTRUCTION))
@@ -2527,13 +2530,18 @@ async function main() {
     assert.equal(commentWithFailedNotification.comment.author.name, 'Claude Code(Claude Test Model)')
     let commentList = await invoke('mindnprogress_list_comments', { mapId, nodeId: 'root' })
     assert.equal(commentList.comments.filter((comment) => comment.id === commentWithFailedNotification.comment.id).length, 1)
-    const deletedWithFailedNotification = await invoke('mindnprogress_manage_comment', {
+    const failedDelete = await invokeExpectError('mindnprogress_manage_comment', {
       mapId,
       operation: { action: 'delete', commentId: commentWithFailedNotification.comment.id },
-    })
-    assert.deepEqual(deletedWithFailedNotification.deletedIds, [commentWithFailedNotification.comment.id])
+    }, /요청을 저장하지 못했습니다/, 'ENOTDIR')
+    assert.equal(failedDelete.outcome, 'not-applied')
+    assert.ok((await invoke('mindnprogress_list_comments', { mapId })).comments.some((comment) => comment.id === commentWithFailedNotification.comment.id))
     await rm(notificationsPath, { force: true })
     await mkdir(notificationsPath, { recursive: true })
+    const deletedAfterRepair = await invoke('mindnprogress_manage_comment', {
+      mapId, operation: { action: 'delete', commentId: commentWithFailedNotification.comment.id },
+    })
+    assert.deepEqual(deletedAfterRepair.deletedIds, [commentWithFailedNotification.comment.id])
 
     await writeFile(path.join(notificationsPath, `${attribution.editorId}.json`), '{', 'utf8')
     const parentComment = await invoke('mindnprogress_manage_comment', {
@@ -2585,6 +2593,8 @@ async function main() {
     assert.equal(commentList.comments.find((comment) => comment.id === parentComment.comment.id)?.detail, undefined)
     assert.equal(commentList.comments.find((comment) => comment.id === parentComment.comment.id)?.hasDetail, true)
     assert.equal(commentList.comments.find((comment) => comment.id === replyComment.comment.id)?.parentId, parentComment.comment.id)
+    // 기존 알림의 참조 제거는 필수 공동 변경이다. 손상된 정본을 먼저 복구한다.
+    await writeFile(path.join(notificationsPath, `${attribution.editorId}.json`), '[]', 'utf8')
     const deletedThread = await invoke('mindnprogress_manage_comment', {
       mapId,
       operation: { action: 'delete', commentId: parentComment.comment.id },
@@ -2966,6 +2976,17 @@ async function main() {
     })
     assert.equal(cardLayoutProposal.submitted, true)
     assert.equal(cardLayoutProposal.revision, 1)
+    assert.equal(cardLayoutProposal.requestId, cardLayoutRequest.id)
+    assert.match(cardLayoutProposal.storageRequestId, /^mnpw:/)
+    const layoutReplay = await invoke('mindnprogress_submit_card_layout_proposal', {
+      requestId: cardLayoutProposal.storageRequestId, proposalRequestId: cardLayoutRequest.id,
+      baseRevision: cardLayoutContext.revision,
+      plan: { order: cardLayoutContext.snapshot.map.nodes.map((node) => node.id), reason: '카드 계층과 실측 크기를 기준으로 읽기 순서를 정렬했습니다.' },
+    })
+    assert.equal(layoutReplay.revision, 1)
+    assert.equal(layoutReplay.transactionId, cardLayoutProposal.transactionId)
+    assert.equal(layoutReplay.proposalRequestId, cardLayoutRequest.id)
+    assert.equal((await invoke('mindnprogress_submit_card_layout_proposal', { requestId: cardLayoutProposal.storageRequestId, resultOnly: true })).revision, 1)
     const lifecycleContext = await invoke('mindnprogress_get_reconstruction_context', { mapIds: [lifecycleSource.id] })
     const lifecyclePlan = {
       id: 'mcp-full-lifecycle', mode: 'compact', baseline: 'v0.4', reason: '임시 데이터 전환 검증',

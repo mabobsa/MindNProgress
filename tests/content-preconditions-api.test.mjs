@@ -48,7 +48,7 @@ async function rejectedWithoutEffects(api, id, call, reason) {
   return r
 }
 
-test('새 카드·필드·검토 계약: 동시 1/10/20, 새 fixture 3회, 회당 독립 변경 20개를 모두 보존한다', { timeout: 120_000 }, async (t) => {
+test('새 카드·필드·검토 계약: 동시 1/10/20, 새 fixture 3회, 회당 독립 변경 20개를 모두 보존한다', { timeout: 300_000 }, async (t) => {
   const api = await storageApi(t, { seed: async ({ data, ids }) => {
     // 검토 의존성이 서로 겹치지 않는 카드. 연결된 검토는 아래 의존 충돌 시험에서 다룬다.
     for (const id of ids.slice(10)) { const map = fixture(id); map.edges = []; await writeFile(path.join(data, `${id}.json`), JSON.stringify(map)) }

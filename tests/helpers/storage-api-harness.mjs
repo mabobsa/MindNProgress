@@ -39,7 +39,7 @@ export async function storageApi(t, { documents = 96, seed = async () => {}, moc
   await new Promise((resolve) => probe.close(resolve))
   const base = `http://127.0.0.1:${port}`
   let output = ''
-  const child = spawn(process.execPath, ['--import', new URL('./storage-fs-barrier.mjs', import.meta.url).href, 'server/index.mjs'], {
+  const spawnOptions = {
     cwd: process.env.MNP_STORAGE_TEST_SOURCE_ROOT || path.resolve(import.meta.dirname, '../..'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     env: { ...process.env, MNP_DATA_DIR: data, MNP_TOKEN_FILE: path.join(data, '_integration-token'),
       MNP_API_HOST: '127.0.0.1', MNP_API_PORT: String(port), MNP_WEB_PORT: String(port), MNP_API_URL: base, MNP_PUBLIC_URL: base,
@@ -47,16 +47,23 @@ export async function storageApi(t, { documents = 96, seed = async () => {}, moc
       MNP_WORKSPACE_POOL_REGISTRY: path.join(directory, 'no-pool.json'), MNP_AIONUI_URL: `http://127.0.0.1:${fakeAion.address().port}`,
       MNP_AIONUI_DISCOVERY_FILE: path.join(directory, 'no-discovery.json'), MNP_AIONUI_USAGE_FILE: path.join(directory, 'no-usage.json'),
       AIONUI_CONVERSATION_ID: '', MNP_ADMIN_EMAIL: 'isolated@mind.local', MNP_ADMIN_PASSWORD: 'IsolatedOnly!2026' },
-  })
-  child.stdout.on('data', (chunk) => { output += chunk })
-  child.stderr.on('data', (chunk) => { output += chunk })
-  const exited = new Promise((resolve) => child.once('exit', resolve))
+  }
+  let child, exited
+  const launch = () => {
+    child = spawn(process.execPath, ['--import', new URL('./storage-fs-barrier.mjs', import.meta.url).href,
+      '--import', new URL('./storage-crash-phases.mjs', import.meta.url).href, 'server/index.mjs'], spawnOptions)
+    child.stdout.on('data', (chunk) => { output += chunk })
+    child.stderr.on('data', (chunk) => { output += chunk })
+    exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })))
+  }
+  launch()
   t.after(async () => {
     child.kill(); await exited
     await new Promise((resolve) => fakeAion.close(resolve))
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     assert.doesNotMatch(output, /RESOURCE_(?:NOT_HELD|ORDER_VIOLATION|UPGRADE_FORBIDDEN)/, output)
   })
+  async function waitReady() {
   let ready = false
   for (let attempt = 0; attempt < 300; attempt++) {
     assert.equal(child.exitCode, null, output)
@@ -64,6 +71,8 @@ export async function storageApi(t, { documents = 96, seed = async () => {}, moc
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
   assert.ok(ready, output)
+  }
+  await waitReady()
   const headers = { Authorization: `Bearer ${(await readFile(path.join(data, '_integration-token'), 'utf8')).trim()}`,
     'X-MNP-AI-Editor-Id': 'user-editor', 'X-MNP-AI-Type': 'Fixture AI', 'X-MNP-AI-Model': 'fixture', 'Content-Type': 'application/json' }
   const call = async (route, method = 'GET', body, extraHeaders = {}) => {
@@ -72,6 +81,15 @@ export async function storageApi(t, { documents = 96, seed = async () => {}, moc
     return { status: response.status, body: await response.json() }
   }
   return { data, ids, base, headers, call, ...storageControl(child, data), output: () => output,
+    env: spawnOptions.env, directory,
+    restart: async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); const exit = await exited; launch(); await waitReady(); return exit },
+    stop: async () => { child.kill('SIGKILL'); return exited },
+    crash: async (name, extra = {}) => {
+      const armed = new Promise((resolve) => { const listener = (value) => {
+        if (value?.phase === 'crash-armed') { child.off('message', listener); resolve() }
+      }; child.on('message', listener) })
+      child.send({ action: 'crash-phase', name, ...extra }); await armed
+    },
     read: async (relative) => JSON.parse(await readFile(path.join(data, relative), 'utf8')) }
 }
 
@@ -81,11 +99,11 @@ export function storageControl(child, data) {
     const listener = (value) => { if (value?.id === id && value.phase === phase) { child.off('message', listener); resolve(value) } }
     child.on('message', listener)
   })
-  async function barrier(file, method = 'readFile', { fail = false, skip = 0, prefix = false } = {}) {
+  async function barrier(file, method = 'readFile', { fail = false, failAfter = false, skip = 0, prefix = false } = {}) {
     const id = ++sequence
     const ready = message(id, 'armed')
     const reached = message(id, 'reached')
-    child.send({ id, action: 'arm', file: path.resolve(data, file), method, fail, skip, prefix })
+    child.send({ id, action: 'arm', file: path.resolve(data, file), method, fail, failAfter, skip, prefix })
     await ready
     return { reached, release: () => child.send({ id, action: 'release' }) }
   }

@@ -32,9 +32,11 @@ import { createMapContentPatch } from '../src/utils/mapContentPatch.mjs'
 import { createContentPreconditions, commentContentHash, commentResolvedHash, commentDeleteHash, conflict } from '../server/lib/contentPreconditions.mjs'
 import { createMnpApiConnectionResolver } from './apiConnection.mjs'
 import { AI_USAGE_GUIDE, buildAiUsageResult } from './aiUsage.mjs'
+import { createMcpStorageRequests, storageWriteTools } from './storageRequests.mjs'
 
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dataDirectory = path.resolve(String(process.env.MNP_DATA_DIR ?? '').trim() || path.join(projectDirectory, 'server', 'data'))
+const storageRequests = createMcpStorageRequests(path.join(dataDirectory, '_mcp-write-intents'))
 const tokenFile = path.resolve(String(process.env.MNP_TOKEN_FILE ?? '').trim() || path.join(dataDirectory, '_integration-token'))
 const apiConnectionResolver = createMnpApiConnectionResolver({
   explicitApiBaseUrl: String(process.env.MNP_API_URL ?? '').trim(),
@@ -274,6 +276,12 @@ const productGuide = {
 }
 
 async function apiRequest(pathname, init = {}) {
+  const storageScope = storageRequests.current()
+  if (storageScope && !init.storageResultOnly && !['GET', 'HEAD', 'OPTIONS'].includes(String(init.method ?? 'GET').toUpperCase())
+    && !pathname.startsWith('/api/integrations/')) {
+    const prepared = await storageRequests.prepare(pathname, init)
+    pathname = prepared.pathname; init = prepared.init
+  }
   const connection = await apiConnectionResolver.resolve()
   const {
     aiMapId,
@@ -285,6 +293,7 @@ async function apiRequest(pathname, init = {}) {
     timeoutMs = 30_000,
     requestAttributionContinuation,
     allowUnresolvedAttribution = false,
+    storageResultOnly = false,
     ...requestInit
   } = init
   if (aionUiConversationId
@@ -325,7 +334,9 @@ async function apiRequest(pathname, init = {}) {
       throw error
     }
   }
-  const response = await fetch(`${connection.apiBaseUrl}${pathname}`, {
+  const storageWrite = storageScope && (storageResultOnly || mutatesState && !pathname.startsWith('/api/integrations/'))
+  let response
+  try { response = await fetch(`${connection.apiBaseUrl}${pathname}`, {
     ...requestInit,
     headers: {
       Accept: 'application/json',
@@ -340,11 +351,22 @@ async function apiRequest(pathname, init = {}) {
       ...(aionUiConversationId ? { 'X-MNP-AI-Conversation-Id': aionUiConversationId } : {}),
       ...(requestAttributionContinuation ? { 'X-MNP-AI-Request-Attribution-Continuation': 'true' } : {}),
       ...(requestInit.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(storageWrite ? { 'Idempotency-Key': storageScope.requestId,
+        'X-MNP-Write-Map-Id': storageScope.identity.mapId, 'X-MNP-Write-Card-Id': storageScope.identity.cardId,
+        ...(storageScope.intentDigest ? { 'X-MNP-Intent-Digest': storageScope.intentDigest } : {}),
+        ...(storageResultOnly ? { 'X-MNP-Result-Only': '1' } : {}) } : {}),
       ...requestInit.headers,
     },
     signal: AbortSignal.timeout(timeoutMs),
-  })
-  const responseText = await response.text()
+  }) } catch (error) {
+    if (storageWrite) Object.assign(error, { outcome: 'unknown', reasonCode: 'REQUEST_RESPONSE_UNKNOWN', requestId: storageScope.requestId })
+    throw error
+  }
+  let responseText
+  try { responseText = await response.text() } catch (error) {
+    if (storageWrite) Object.assign(error, { outcome: 'unknown', reasonCode: 'REQUEST_RESPONSE_UNKNOWN', requestId: storageScope.requestId })
+    throw error
+  }
   let body = null
   if (responseText) {
     try {
@@ -364,9 +386,18 @@ async function apiRequest(pathname, init = {}) {
     error.outcome = body?.outcome
     error.retryable = body?.retryable
     error.requestFailure = body?.requestFailure
+    error.requestId = body?.requestId
+    error.transactionId = body?.transactionId
     throw error
   }
   const result = body ?? { ok: true, status: response.status }
+  if (storageWrite) {
+    storageScope.receipt = Object.fromEntries(['outcome', 'requestId', 'transactionId', 'resources', 'replayed', 'sideEffectsPending', 'retryAfterMs']
+      .filter((key) => result[key] !== undefined).map((key) => [key, result[key]]))
+    if (result.outcome === 'processing' && !storageResultOnly) throw Object.assign(new Error('저장 처리 또는 복구 중입니다.'), {
+      reasonCode: result.code ?? 'REQUEST_PROCESSING', ...storageScope.receipt })
+    if (storageScope.canonicalResponse) throw Object.assign(new Error('STORED_WRITE_RESPONSE'), { storageResult: result })
+  }
   if (requestAttributionContinuation && result && typeof result === 'object') {
     const continuationToken = String(response.headers.get('x-mnp-ai-attribution-continuation') ?? '').trim()
     if (continuationToken.length >= 32 && continuationToken.length <= 200) {
@@ -489,6 +520,46 @@ function toolResult(value, pretty = false) {
 
 function registerTool(server, name, description, schema, handler, options = {}) {
   toolUsage?.declare(name)
+  if (storageWriteTools.has(name)) {
+    const original = handler
+    const validation = z.object(schema)
+    const proposalId = schema.requestId
+    schema = { ...Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, value.optional()])),
+      requestId: (proposalId ? z.string().min(1) : z.string().regex(/^mnpw:\d{13}:[a-f0-9]{32}$/)).optional()
+        .describe(proposalId ? '논리 저장 ID(mnpw:...) 또는 기존 호출의 제안 대상 ID. 논리 ID 사용 시 대상은 proposalRequestId로 지정' : '같은 논리 저장의 재전송에 유지할 요청 ID'),
+      ...(proposalId ? { proposalRequestId: proposalId.optional().describe('논리 저장 requestId와 함께 사용할 기존 제안 대상 ID') } : {}),
+      resultOnly: z.boolean().optional().describe('true이면 requestId만으로 기존 결과를 조회하며 저장을 시작하지 않음') }
+    description += ' requestId를 보존해 재전송하세요. resultOnly=true는 변경 본문 없이 결과만 조회합니다. 응답 유실은 unknown이며 같은 ID로 확인합니다.'
+    if (proposalId) description += ' 기존 제안 대상 requestId 호출도 유지합니다. 이 호출의 응답은 기존 requestId와 논리 저장 storageRequestId를 함께 반환합니다. 새 호출은 proposalRequestId와 mnpw 형식 requestId를 구분하세요.'
+    handler = async (rawInput) => {
+      const legacyProposalId = proposalId && rawInput.requestId && !rawInput.requestId.startsWith('mnpw:') ? rawInput.requestId : null
+      if (legacyProposalId && rawInput.proposalRequestId && rawInput.proposalRequestId !== legacyProposalId) throw new Error('제안 대상 ID가 서로 다릅니다.')
+      const input = legacyProposalId ? { ...rawInput, requestId: undefined, proposalRequestId: legacyProposalId } : rawInput
+      const value = await storageRequests.run(name, input, { editorId: activeEditorId, mapId: activeMapId,
+      cardId: activeCardId, conversationId: aionUiConversationId }, async (scope) => {
+      if (input.requestId) {
+        try {
+          const receipt = await apiRequest('/api/maps', { storageResultOnly: true })
+          return scope.record.value && receipt.outcome === 'committed' ? { ...scope.record.value, ...scope.receipt } : receipt
+        } catch (error) { if (input.resultOnly || error.code !== 'REQUEST_UNKNOWN') throw error }
+      }
+      // local 준비 기록의 불일치도 서버의 현재 권한을 확인한 뒤에만 노출한다.
+      if (scope.intentMismatch) throw Object.assign(new Error('같은 요청 ID에 다른 내용을 사용할 수 없습니다.'), {
+        code: 'REQUEST_ID_REUSED', reasonCode: 'REQUEST_ID_REUSED', outcome: 'not-applied', requestId: scope.requestId })
+      // 준비된 전송이 있으면 handler의 권위 읽기·기대값 계산을 반복하지 않는다.
+      if (scope.record.prepared) return apiRequest(scope.record.prepared.pathname, scope.record.prepared)
+      let value
+      try { value = await original(validation.parse(proposalId ? { ...input, requestId: input.proposalRequestId } : input)) } catch (error) {
+        if (error.storageResult) return error.storageResult
+        throw error
+      }
+      scope.record.value = { ...value, ...scope.receipt }
+      await storageRequests.save(scope).catch(() => {})
+      return scope.record.value
+      })
+      return legacyProposalId && value.requestId ? { ...value, storageRequestId: value.requestId, requestId: legacyProposalId } : value
+    }
+  }
   server.tool(name, description, schema, async (input) => {
     try {
       const value = await handler(input)
@@ -512,6 +583,8 @@ function registerTool(server, name, description, schema, handler, options = {}) 
             ...((error?.retryable ?? error?.details?.retryable) === undefined ? {} : { retryable: error.retryable ?? error.details.retryable }),
             ...(error?.details === undefined ? {} : { details: error.details }),
             ...(error?.requestFailure === undefined ? {} : { requestFailure: error.requestFailure }),
+            ...(error?.requestId === undefined ? {} : { requestId: error.requestId }),
+            ...(error?.transactionId === undefined ? {} : { transactionId: error.transactionId }),
           }
         : null
       const errorText = errorResult ? JSON.stringify(errorResult) : message

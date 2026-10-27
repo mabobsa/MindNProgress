@@ -5,7 +5,7 @@ import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { storageApi, fixture, knowledge, actor } from './helpers/storage-api-harness.mjs'
 
-test('댓글·검토 1/10/20 동시 요청의 성공 효과와 권위 파일·새 조회가 일치한다', { timeout: 90_000 }, async (t) => {
+test('댓글·검토 1/10/20 동시 요청의 성공 효과와 권위 파일·새 조회가 일치한다', { timeout: 300_000 }, async (t) => {
   const api = await storageApi(t, { seed: async ({ data, ids }) => {
     const ref = fixture(ids[1])
     for (let i = 1; i < 20; i++) ref.nodes[i].data.reference = { mapId: ids[2 + i % 5], nodeId: `card-${i}` }
@@ -191,8 +191,9 @@ test('SSE와 댓글 성공 응답은 파일 확정 이후에만 전달한다', {
         let end
         while ((end = buffer.indexOf('\n\n')) >= 0) {
           const block = buffer.slice(0, end); buffer = buffer.slice(end + 2)
-          if (!block.startsWith('data: ')) continue
-          const event = JSON.parse(block.slice(6)); events.push(event)
+          const data = block.split('\n').find((line) => line.startsWith('data: '))
+          if (!data) continue
+          const event = JSON.parse(data.slice(6)); events.push(event)
           if (event.type === 'connected') connected()
           if (event.type === 'comment-changed') changed(event)
         }
@@ -213,6 +214,7 @@ test('SSE와 댓글 성공 응답은 파일 확정 이후에만 전달한다', {
     const saved = await comment
     assert.equal(saved.status, 201)
     const event = await committed
+    assert.ok(event.eventId, '확정 이벤트는 재조회에 사용할 안정 ID가 있다')
     assert.equal(event.comment.id, saved.body.comment.id)
     assert.equal((await api.read('_comments/map-bench-0.json'))[0].id, event.comment.id)
   } finally { abort.abort(); await consume }

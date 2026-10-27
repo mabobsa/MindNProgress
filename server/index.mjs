@@ -17,6 +17,7 @@ import { claudeAccountRequestId, claudeAccountRoleForPurpose, createAiClaudeAcco
 import { createAiDialogPreferences } from './lib/aiDialogPreferences.mjs'
 import { createStorageResources, storageResourceError } from './lib/storageResources.mjs'
 import { createStorageChanges } from './lib/storageChanges.mjs'
+import { createStorageJournal, storageDigest, storagePhase, storageRequestError } from './lib/storageJournal.mjs'
 import { backfillDailyBackupHistory } from './lib/dailyBackupHistory.mjs'
 import { createDocumentReconstruction, reconstructionError } from './lib/documentReconstruction.mjs'
 import { createReconstructionRequests } from './lib/documentReconstructionRequests.mjs'
@@ -294,12 +295,16 @@ function resourceForFile(file) {
   if (relative.startsWith('_notifications/')) return `notification:${path.basename(file, '.json')}`
   return `state:${relative}`
 }
+const invalidateStorageFile = (file) => { const key = resourceForFile(file); if (key.startsWith('doc:')) documentReads.invalidate(key.slice(4)) }
+const storageJournal = createStorageJournal({ root: dataDirectory, resources: storageResources, keyForFile: resourceForFile,
+  invalidate: (file) => invalidateStorageFile(file) })
 const storageChanges = createStorageChanges({
   root: dataDirectory, resources: storageResources, keyForFile: resourceForFile,
-  invalidate: (file) => { const key = resourceForFile(file); if (key.startsWith('doc:')) documentReads.invalidate(key.slice(4)) },
+  journal: storageJournal, invalidate: invalidateStorageFile,
 })
 const { readFile, writeFile, readdir, rm, stat, replaceFile: replaceFileWithRetry } = storageChanges
 const requestBodies = new WeakMap()
+const requestBinaryBodies = new WeakMap()
 const withResources = (keys, operation) => storageResources.withResources(keys, operation)
 const withDocument = (mapId, operation) => withResources([`doc:${mapId}`], () => storageChanges.run(operation))
 const withAiResources = (ids, operation) => withResources([{ key: 'catalog', mode: 'read' }], () => withResources([
@@ -640,7 +645,8 @@ function isPublicViewer(user) {
 }
 
 function sendJson(response, statusCode, body, headers = {}) {
-  if (storageChanges.deferResponse(statusCode, () => sendJson(response, statusCode, body, headers))) return
+  if (storageChanges.deferResponse(statusCode, (stored) => sendJson(response, stored?.status ?? statusCode, stored?.body ?? body, headers), body, headers)) return
+  storagePhase.publish({ name: 'before-response', requestId: body?.requestId, transactionId: body?.transactionId })
   response.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -649,6 +655,7 @@ function sendJson(response, statusCode, body, headers = {}) {
     ...headers,
   })
   response.end(JSON.stringify(body))
+  storagePhase.publish({ name: 'after-response', requestId: body?.requestId, transactionId: body?.transactionId })
 }
 
 function sendSharedKnowledgeMaintenanceError(response, error) {
@@ -692,8 +699,10 @@ function removeEventClient(client) {
 }
 
 function broadcastEvent(payload, predicate = () => true) {
-  if (storageChanges.afterCommit(() => broadcastEvent(payload, predicate))) return 0
-  const message = `data: ${JSON.stringify(payload)}\n\n`
+  if (storageChanges.effect('sse', payload.mapId ?? payload.type, { payload })) return 0
+  if (storageChanges.current()?.effectKind !== 'sse' && storageChanges.afterCommit(() => broadcastEvent(payload, predicate))) return 0
+  const eventId = payload.eventId ?? storageChanges.current()?.effectId
+  const message = `${eventId ? `id: ${eventId}\n` : ''}data: ${JSON.stringify({ ...payload, ...(eventId ? { eventId } : {}) })}\n\n`
   let deliveredClientCount = 0
   for (const [client, clientInfo] of eventClients) {
     if (!predicate(clientInfo)) continue
@@ -1193,6 +1202,7 @@ async function resolveDoorayComment(parsed, task, config) {
 }
 
 async function readBinaryBody(request, maxBytes) {
+  if (requestBinaryBodies.has(request)) return requestBinaryBodies.get(request)
   const chunks = []
   let size = 0
   for await (const chunk of request) {
@@ -1200,7 +1210,9 @@ async function readBinaryBody(request, maxBytes) {
     if (size > maxBytes) throw new Error('PAYLOAD_TOO_LARGE')
     chunks.push(chunk)
   }
-  return Buffer.concat(chunks)
+  const content = Buffer.concat(chunks)
+  requestBinaryBodies.set(request, content)
+  return content
 }
 
 function requireUser(request, response) {
@@ -1463,6 +1475,15 @@ function mapSummary(map) {
 const documentReads = createDocumentReadStore({ fileForId: mapFileForId })
 
 async function readMapProjection(mapId, options = {}, select = (value) => value.map) {
+  if (storageResources.isQuarantined(`doc:${mapId}`)) throw storageResourceError('RECOVERY_REQUIRED', '저장 복구가 필요한 문서입니다.')
+  if (storageJournal.isApplying(`doc:${mapId}`) && !storageResources.holds(`doc:${mapId}`, 'read')
+    && [...(storageResources.current()?.held.keys() ?? [])].every((key) => key === 'catalog')) {
+    return withResources([{ key: `doc:${mapId}`, mode: 'read' }], () => readMapProjection(mapId, options, select))
+  }
+  const assertVisible = () => {
+    if (storageJournal.isApplying(`doc:${mapId}`)) throw Object.assign(storageResourceError('STORAGE_PROCESSING', '문서 저장을 반영 중입니다.'), { status: 503, outcome: 'processing' })
+  }
+  assertVisible()
   const lifecycle = options?.lifecycleMetadata ?? documentReconstruction?.metadata(mapId) ?? {}
   const key = JSON.stringify([lifecycle, users.filter((user) => user.role === 'editor').map((user) => user.id)])
   const project = (stored) => {
@@ -1485,7 +1506,9 @@ async function readMapProjection(mapId, options = {}, select = (value) => value.
     try { return structuredClone(select(project(JSON.parse(await readFile(mapFileForId(mapId), 'utf8'))))) }
     catch (error) { if (error.code === 'ENOENT') return null; throw error }
   }
-  return documentReads.select(mapId, key, project, select)
+  const result = await documentReads.select(mapId, key, project, select)
+  assertVisible()
+  return result
 }
 
 async function readMap(mapId, options = {}) {
@@ -1508,10 +1531,11 @@ async function listActiveMapIds() {
   return (await readdir(dataDirectory, { withFileTypes: true }))
     .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && isValidMapId(entry.name.slice(0, -5)))
     .map((entry) => entry.name.slice(0, -5))
-    .filter((id) => !lifecycle[id]?.trashedAt && !lifecycle[id]?.archivedAt && !lifecycle[id]?.reconstructionPending)
+    .filter((id) => !storageResources.isQuarantined(`doc:${id}`) && !lifecycle[id]?.trashedAt && !lifecycle[id]?.archivedAt && !lifecycle[id]?.reconstructionPending)
 }
 
 async function listMaps({ trashedOnly = false, archivedOnly = false, includeArchived = false, includePending = false, includeTrashed = false, lifecycleRetries = 3 } = {}) {
+  const visibilityEpoch = storageJournal.visibilityEpoch()
   const lifecycleSnapshot = documentReconstruction?.metadataSnapshot()
   await mkdir(dataDirectory, { recursive: true })
   const entries = await readdir(dataDirectory, { withFileTypes: true })
@@ -1521,7 +1545,12 @@ async function listMaps({ trashedOnly = false, archivedOnly = false, includeArch
   }
   const maps = await Promise.all(entries
     .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && isValidMapId(entry.name.slice(0, -5)))
+    .filter((entry) => !storageResources.isQuarantined(`doc:${entry.name.slice(0, -5)}`))
     .map((entry) => readMapProjection(entry.name.slice(0, -5), { lifecycleMetadata: lifecycleSnapshot?.[entry.name.slice(0, -5)] ?? {} }, (value) => value.summary)))
+  if (visibilityEpoch !== storageJournal.visibilityEpoch()) {
+    if (lifecycleRetries === 0) throw Object.assign(storageResourceError('STORAGE_PROCESSING', '문서 저장을 반영 중입니다.'), { status: 503, outcome: 'processing' })
+    return listMaps({ trashedOnly, archivedOnly, includeArchived, includePending, includeTrashed, lifecycleRetries: lifecycleRetries - 1 })
+  }
   const summaries = maps
     .filter((map) => map && (includeTrashed || (trashedOnly ? Boolean(map.trashedAt) : !map.trashedAt))
       && (includePending || !map.reconstructionPending)
@@ -1745,7 +1774,7 @@ async function migrateStoredMapEdges() {
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.startsWith('_')) continue
     const mapId = entry.name.slice(0, -5)
-    if (!isValidMapId(mapId) || documentReconstruction?.isUnavailable(mapId)) continue
+    if (!isValidMapId(mapId) || documentReconstruction?.isUnavailable(mapId) || storageResources.isQuarantined(`doc:${mapId}`)) continue
     await withDocument(mapId, async () => {
     const stored = JSON.parse(await readFile(path.join(dataDirectory, entry.name), 'utf8'))
     if (!isValidMap(stored)) return
@@ -1767,7 +1796,7 @@ async function migrateStoredMapCreationMetadata() {
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.startsWith('_')) continue
     const mapId = entry.name.slice(0, -5)
-    if (!isValidMapId(mapId) || documentReconstruction?.isUnavailable(mapId)) continue
+    if (!isValidMapId(mapId) || documentReconstruction?.isUnavailable(mapId) || storageResources.isQuarantined(`doc:${mapId}`)) continue
     await withDocument(mapId, async () => {
     const stored = JSON.parse(await readFile(path.join(dataDirectory, entry.name), 'utf8'))
     if (!isValidMap(stored) || stored.createdAt && stored.createdBy) return
@@ -6855,7 +6884,7 @@ function reportRejectedSideEffects(results, label) {
 }
 
 async function createNotification(user, payload) {
-  if (storageChanges.afterCommit(() => createNotification(user, payload))) return null
+  if (storageChanges.effect('notification', user.id, { user, payload })) return null
   return withResources([`notification:${user.id}`], () => storageChanges.run(async () => {
   const notifications = await listNotifications(user.id)
   if (payload.dedupeKey) {
@@ -6863,7 +6892,8 @@ async function createNotification(user, payload) {
     if (existing) return existing
   }
   const notification = {
-    id: `notification-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`,
+    id: storageChanges.current()?.effectId ? `notification-${storageDigest(storageChanges.current().effectId).slice(0, 32)}`
+      : `notification-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`,
     userId: user.id,
     createdAt: new Date().toISOString(),
     readAt: null,
@@ -7049,6 +7079,12 @@ async function writeDailyBackup(map, user, reason = 'automatic', date = seoulDat
   if (!map || map.trashedAt || !isValidMap(map) || !isValidDailyBackupDate(date)) return null
   const directory = dailyBackupDirectoryForMap(map.id)
   const backupFile = dailyBackupFileForMap(map.id, date)
+  if (reason === 'automatic') {
+    const current = await readDailyBackup(map.id, date)
+    if (current && Number(current.map.version) >= Number(map.version)) return current
+    // 삭제·재구성 이후 오래된 후속 처리가 문서를 되살리지 않는다.
+    if (!await readMap(map.id)) return null
+  }
   if (!overwrite) {
     try {
       await stat(backupFile)
@@ -7267,7 +7303,7 @@ async function saveMap(mapId, map, user, title, color, revisionReason = 'edit', 
     await archiveMapRevision(existing, user, revisionReason)
   }
   await writeStoredMap(mapId, payload, reconstructionCreate)
-  storageChanges.afterCommit(() => writeDailyBackup(payload, user, 'automatic'))
+  storageChanges.effect('daily-backup', mapId, { map: payload, user, date: seoulDateString() })
   return payload
 }
 
@@ -7812,6 +7848,23 @@ async function serveStatic(request, response, pathname) {
   }
 }
 
+storageChanges.registerEffect('notification', {
+  keys: ({ user }) => [`notification:${user.id}`],
+  run: ({ user, payload }) => createNotification(user, payload),
+})
+storageChanges.registerEffect('daily-backup', {
+  keys: ({ map }) => [`doc:${map.id}`],
+  run: ({ map, user, date }) => writeDailyBackup(map, user, 'automatic', date),
+})
+storageChanges.registerEffect('sse', {
+  keys: () => [],
+  run: ({ payload }, eventId) => broadcastEvent({ ...payload, eventId }, (client) => {
+    const userId = payload.notification?.userId ?? payload.userId
+    return !userId || client.user.id === userId
+  }),
+})
+// 정본 복구는 모든 migration, 메모리 로드, scheduler, listen보다 먼저 수행한다.
+await storageJournal.recover()
 integrationToken = await loadIntegrationToken()
 const adminBootstrapped = await loadUsers()
 await loadSessions()
@@ -7988,6 +8041,8 @@ const doorayResponses = createDoorayResponseIntegration({
 
 await removeLegacyAiCompletionNotifications().catch((error) => console.warn('[AI completion notification cleanup]', error))
 await cleanupCompletedAiHistory().catch((error) => console.warn('[AI history cleanup deferred]', error))
+for (const record of [...storageJournal.records.values()]) await storageChanges.resumeEffects(record)
+await storageJournal.cleanup()
 
 function freshMapId() { return `map-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}` }
 
@@ -8008,7 +8063,7 @@ async function requestStoragePlan(request, url, body) {
     || route && (['/archive', '/restore'].includes(route[2]) || request.method === 'DELETE' && !route[2] || /\/move$/.test(route[2] ?? ''))
     || /^\/api\/(groups|document-reconstructions)(\/|$)/.test(url.pathname))
   const patch = body?.patch
-  const restoringContent = write && route?.[2]?.match(/^\/(history|daily-backups)\/([^/]+)\/restore$/)
+  const restoringContent = write && route?.[2]?.match(/^\/(history|backups\/daily)\/([^/]+)\/restore$/)
   const structure = write && (restoringContent || request.method === 'PUT' && route && !route[2]
     || route?.[2] === '/content-patch' && (patch?.nodeAdds?.length || patch?.nodeDeletes?.length
       || patch?.edgeUpserts?.length || patch?.edgeDeletes?.length || patch?.nodeOrder || patch?.edgeOrder
@@ -8035,6 +8090,11 @@ async function requestStoragePlan(request, url, body) {
   }
   const group = url.pathname.match(/^\/api\/groups\/([^/]+)/)
   if (group && write) states.add(`state:_group-projects/${decodeURIComponent(group[1])}.json`)
+  if (group && !write) {
+    // 그룹 문맥에 포함되는 메모리 상태도 journal 확정 이후에만 조회한다.
+    states.add(resourceForFile(aiDelegationsFile))
+    states.add(resourceForFile(groupDocumentInstructionsFile))
+  }
   const layout = url.pathname.match(/^\/api\/card-layouts(?:\/([^/]+))?/)
   if (layout) {
     if (write) states.add('state:_card-layout-requests.json')
@@ -8086,7 +8146,7 @@ async function requestStoragePlan(request, url, body) {
   for (const target of body?.plan?.targets ?? []) for (const node of target.nodes ?? []) add(node.data?.reference?.mapId)
   const aiMutation = write && (/\/ai-|\/integrations\/aionui\/|group-document-instructions/.test(url.pathname) || moving || deleting)
   if (aiMutation) for (const file of sharedAiStateFiles) states.add(resourceForFile(file))
-  if (moving || deleting) {
+  if (moving || deleting || write && request.method === 'DELETE' && /\/comments\/[^/]+$/.test(url.pathname)) {
     for (const user of users) notifications.add(`notification:${user.id}`)
     for (const file of await readdir(notificationsDirectory).catch((error) => { if (error.code === 'ENOENT') return []; throw error })) {
       if (file.endsWith('.json')) notifications.add(`notification:${file.slice(0, -5)}`)
@@ -8097,7 +8157,7 @@ async function requestStoragePlan(request, url, body) {
     if (user) notifications.add(`notification:${user.id}`)
   }
   const keys = [...ids].map((id) => ({ key: `doc:${id}`, mode: write ? 'write' : 'read' }))
-  keys.push(...states, ...notifications)
+  keys.push(...[...states].map((key) => ({ key, mode: write ? 'write' : 'read' })), ...notifications)
   const transactional = write && (Boolean(route) && !/\/ai-|\/group-document-instructions/.test(route[2] ?? '')
     || transition || Boolean(layout) || url.pathname.startsWith('/api/notifications/'))
   return { catalog, keys, newMapId, transactional }
@@ -8116,6 +8176,37 @@ async function withStorageRequest(request, response, operation) {
   try {
     const write = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)
     const body = write && String(request.headers['content-type'] ?? '').includes('application/json') ? await readJsonBody(request) : null
+    const binary = write && body === null && request.method === 'POST' && /^\/api\/maps\/[^/]+\/images$/.test(url.pathname)
+      ? await readBinaryBody(request, imageAssetMaxBytes) : null
+    const requestId = String(request.headers['idempotency-key'] ?? '')
+    const resultOnly = request.headers['x-mnp-result-only'] === '1'
+    if (requestId || resultOnly) {
+      const runner = authorizeRunnerMcpRequest({ request, pathname: url.pathname, machineRegistry,
+        conversationOrigins: aiConversationOrigins, transientAttributions: aiAttributions.values(), users })
+      if (runner.kind === 'rejected') throw storageRequestError(runner.code, runner.status)
+      if (runner.kind === 'authorized') {
+        request.headers.authorization = `Bearer ${integrationToken}`
+        request.headers['x-mnp-ai-editor-id'] = runner.owner.id
+      }
+      const user = getCurrentUser(request)
+      const declared = integrationRequestScope(request)
+      const attribution = aiAttributions.get(sessionTokenKey(String(request.headers['x-mnp-ai-attribution'] ?? '')))
+      if (!user) throw storageRequestError('REQUEST_UNAUTHORIZED', 401)
+      if (!canEdit(user) || [declared.editorId, attribution?.startedBy].filter(Boolean)
+        .some((id) => !users.some((candidate) => candidate.id === id && candidate.active !== false && canEdit(candidate)))) {
+        throw storageRequestError('REQUEST_FORBIDDEN', 403)
+      }
+      const scope = { editorId: user.id, conversationId: attribution?.conversationId ?? declared.conversationId,
+        attributionMapId: attribution?.mapId ?? String(request.headers['x-mnp-write-map-id'] ?? declared.mapId),
+        attributionCardId: attribution?.cardId ?? String(request.headers['x-mnp-write-card-id'] ?? declared.cardId), authorName: user.name }
+      const logical = { requestId, scope, digest: storageDigest({ schemaVersion: 1, method: request.method,
+        route: url.pathname, query: [...url.searchParams].sort(), payload: binary ? { sha256: createHash('sha256').update(binary).digest('hex'),
+          contentType: request.headers['content-type'] } : body, scope }),
+        intentDigest: String(request.headers['x-mnp-intent-digest'] ?? '') }
+      const existing = storageJournal.lookup(logical, resultOnly)
+      if (existing) return sendJson(response, existing.status, existing.body, existing.headers)
+      request.storageLogicalRequest = logical
+    }
     const action = request.method === 'POST' && url.pathname.match(/^\/api\/maps\/[^/]+\/ai-delegations\/([^/]+)\/(recover|refresh|retry-report|finalize-coordination|supersede|close)$/)
     if (action) {
       const current = aiDelegations.get(decodeURIComponent(action[1]))
@@ -8141,9 +8232,13 @@ async function withStorageRequest(request, response, operation) {
           const verified = await requestStoragePlan(request, url, body)
           if ((verified.keys ?? []).some((item) => !storageResources.holds(typeof item === 'string' ? item : item.key, typeof item === 'string' ? 'write' : item.mode))) return { retry: true }
           scope.newMapId = plan.newMapId
-          if (!plan.transactional) return { value: await operation() }
+          if (!plan.transactional) {
+            if (request.storageLogicalRequest) throw storageRequestError('REQUEST_ROUTE_UNSUPPORTED', 400)
+            return { value: await operation() }
+          }
           let reply
-          const value = await storageChanges.run(async (change) => { const value = await operation(); reply = () => change.response?.(); return value })
+          const value = await storageChanges.run(async (change) => { const value = await operation(); reply = () => change.response?.(); return value },
+            { request: request.storageLogicalRequest })
           reply?.()
           return { value }
         })
@@ -8156,8 +8251,13 @@ async function withStorageRequest(request, response, operation) {
     console.error('[Storage request]', error)
     if (!response.headersSent) sendJson(response, error.status ?? (error.message === 'PAYLOAD_TOO_LARGE' ? 413 : error instanceof SyntaxError ? 400 : 500), {
       error: error.storageResourceError ? error.message : '요청을 저장하지 못했습니다.', code: error.code ?? 'STORAGE_WRITE_FAILED',
+      ...(request.headers['idempotency-key'] ? { requestId: request.headers['idempotency-key'],
+        outcome: error.outcome ?? (error.code === 'RECOVERY_REQUIRED' ? 'processing' : 'not-applied'),
+        reasonCode: error.code ?? 'STORAGE_WRITE_FAILED', retryable: error.retryable ?? false,
+        ...(error.transactionId ? { transactionId: error.transactionId } : {}) } : {}),
     })
   } finally {
+    storageJournal.release(request.storageLogicalRequest)
     if (request.storageDelegationActionId) aiDelegationActions.delete(request.storageDelegationActionId)
   }
 }
@@ -13157,17 +13257,13 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         }
       }
       await writeStoredArray(commentFileForMap(mapId), comments.filter((item) => !deletedIds.has(item.id)))
-      const cleanNotifications = async () => {
-      const notificationCleanupResults = await Promise.allSettled(users.map((recipient) => withResources([`notification:${recipient.id}`], () => storageChanges.run(async () => {
+      await Promise.all(users.map((recipient) => withResources([`notification:${recipient.id}`], () => storageChanges.run(async () => {
         const notifications = await listNotifications(recipient.id)
         const removedIds = notifications.filter((notification) => deletedIds.has(notification.commentId)).map((notification) => notification.id)
         if (removedIds.length === 0) return
         await writeStoredArray(notificationFileForUser(recipient.id), notifications.filter((notification) => !deletedIds.has(notification.commentId)))
         broadcastEvent({ type: 'notifications-removed', userId: recipient.id, notificationIds: removedIds }, (client) => client.user.id === recipient.id)
       }))))
-      reportRejectedSideEffects(notificationCleanupResults, 'Comment notification cleanup')
-      }
-      if (!storageChanges.afterCommit(cleanNotifications)) await cleanNotifications()
       broadcastEvent({ type: 'comment-changed', mapId, nodeId: comment.nodeId, action: 'deleted', commentIds: [...deletedIds] })
       return sendJson(response, 200, { deletedIds: [...deletedIds] })
     }
@@ -13274,6 +13370,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         color: normalizeMapColor(revision.map.color, current.color),
         nodes: revision.map.nodes,
         edges: revision.map.edges,
+        createdAt: current.createdAt ?? revision.map.createdAt ?? null,
+        createdBy: current.createdBy ?? revision.map.createdBy ?? null,
         updatedAt: new Date().toISOString(),
         updatedBy: publicUser(user),
         version: (current.version ?? 1) + 1,
@@ -13654,6 +13752,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     return sendJson(response, 404, { error: '요청한 경로를 찾을 수 없습니다.' })
   } catch (error) {
     throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    if (error.storageResourceError) throw error
     if (error instanceof ContentConditionError) return sendJson(response, error.status, { error: error.message, code: error.code, ...error.details })
     if (error instanceof DocumentTrashReviewError) return sendJson(response, error.status, {
       error: error.message, code: error.code, ...(error.preview ? { preview: error.preview } : {}),
@@ -13684,6 +13783,10 @@ runtimeLifecycle.interval(() => {
 runtimeLifecycle.interval(() => refreshVisibleAiConversationRuntimes(), aiConversationRuntimePollIntervalMs, 'AI conversation runtime poll')
 
 runtimeLifecycle.interval(() => pollAiDelegations(), aiDelegationPollIntervalMs, 'AI delegation poll')
+runtimeLifecycle.interval(() => trackStorageBackground(async () => {
+  for (const record of [...storageJournal.records.values()]) if (storageJournal.pending(record).length) await storageChanges.resumeEffects(record)
+  await storageJournal.cleanup()
+}), 60_000, 'Storage journal effects')
 runtimeLifecycle.interval(() => cleanupCompletedAiHistory(), 15 * 60_000, 'Completed AI history cleanup')
 
 runtimeLifecycle.interval(() => {

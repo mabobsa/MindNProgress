@@ -45,11 +45,9 @@ test('댓글 확정·카드 이동·Ref 수정과 반대 방향 이동은 직렬
   assert.equal((await api.read(`_comments/${target}.json`))[0].id, comment.body.comment.id)
 })
 
-test('다중 문서 반영 중 실패하면 파일·댓글·이력·새 조회를 이전 상태로 복구한다', { timeout: 30_000 }, async (t) => {
+test('다중 문서 marker 이후 일시 교체 실패는 redo하고 중간 읽기를 차단한다', { timeout: 30_000 }, async (t) => {
   const api = await storageApi(t, { documents: 5, seed: moveSeed })
   assert.equal((await api.call(`/api/maps/${source}/comments`, 'POST', { nodeId: 'card-1', text: '실패해도 보존' })).status, 201)
-  const paths = [`${source}.json`, `${target}.json`, 'map-bench-3.json', `_comments/${source}.json`, '_notifications/user-second.json']
-  const before = await Promise.all(paths.map((file) => readFile(path.join(api.data, file))))
   const barrier = await api.barrier(`${source}.json`, 'rename', { fail: true })
   const moving = move(api)
   await barrier.reached
@@ -58,15 +56,16 @@ test('다중 문서 반영 중 실패하면 파일·댓글·이력·새 조회�
   assert.equal((await api.call('/api/maps/map-bench-2', 'PATCH', { title: '복구 중 독립 문서', baseVersion: 1 })).status, 200)
   assert.equal(readFinished, false)
   barrier.release()
-  assert.equal((await moving).status, 500)
-  assert.equal((await query).body.map.version, 1)
-  // 다른 문서의 새 알림은 정상 후속 변경이므로 알림 파일은 효과 ID로 대조한다.
-  for (let i = 0; i < paths.length - 1; i++) assert.deepEqual(await readFile(path.join(api.data, paths[i])), before[i], paths[i])
+  assert.equal((await moving).status, 200)
+  assert.equal((await query).body.map.version, 2)
+  assert.equal((await api.read(`${source}.json`)).nodes.some((n) => n.id === 'card-1'), false)
+  assert.equal((await api.read(`${target}.json`)).nodes.some((n) => n.id === 'card-1'), true)
+  assert.equal((await api.read('map-bench-3.json')).nodes[1].data.reference.mapId, target)
+  assert.equal((await api.read(`_comments/${target}.json`)).some((c) => c.text === '실패해도 보존'), true)
   const notifications = await api.read('_notifications/user-second.json')
-  for (const old of JSON.parse(before.at(-1))) assert.deepEqual(notifications.find((item) => item.id === old.id), old)
-  assert.equal((await api.call(`/api/maps/${source}/history`)).body.revisions.length, 0)
-  assert.equal((await api.call(`/api/maps/${target}/history`)).body.revisions.length, 0)
-  assert.equal((await move(api)).status, 200, '복구 후 같은 자원으로 다시 작업할 수 있다')
+  assert.ok(notifications.some((n) => n.nodeId === 'card-1' && n.mapId === target))
+  assert.equal((await api.call(`/api/maps/${source}/history`)).body.revisions.length, 1)
+  assert.equal((await api.call(`/api/maps/${target}/history`)).body.revisions.length, 1)
 })
 
 test('보관·휴지통·복원은 진행 중 댓글 저장과 교차해도 성공 결과와 수명주기 버전을 보존한다', { timeout: 30_000 }, async (t) => {
@@ -124,10 +123,9 @@ test('검증된 재구성안 뒤에 먼저 확정된 댓글이 있으면 전환�
   assert.equal(Boolean((await api.call(`/api/maps/${source}`)).body.map.archivedAt), false)
 })
 
-test('재구성 파일 교체 실패는 후보 문서와 수명주기를 복구하고 후속 저장을 보존한다', { timeout: 30_000 }, async (t) => {
+test('재구성 marker 이후 교체 실패는 전환을 redo하고 보관 원본의 후속 저장을 거부한다', { timeout: 30_000 }, async (t) => {
   const api = await storageApi(t, { documents: 3 })
   const { plan, previewHash, targetId } = await verifiedReconstruction(api, 'storage-failure')
-  const original = await readFile(path.join(api.data, `${source}.json`))
   const barrier = await api.barrier(`${targetId}.json`, 'rename', { fail: true })
   const applying = api.call('/api/document-reconstructions/apply', 'POST', { plan, previewHash })
   await barrier.reached
@@ -137,16 +135,11 @@ test('재구성 파일 교체 실패는 후보 문서와 수명주기를 복구�
   assert.equal((await api.call(`/api/maps/${target}`, 'PATCH', { title: '전환과 독립', baseVersion: 1 })).status, 200)
   assert.equal(finished, false)
   barrier.release()
-  assert.equal((await applying).status, 500)
-  assert.equal((await comment).status, 201)
-  assert.deepEqual(await readFile(path.join(api.data, `${source}.json`)), original)
-  await assert.rejects(readFile(path.join(api.data, `${targetId}.json`)), { code: 'ENOENT' })
-  assert.equal(Boolean((await api.call(`/api/maps/${source}`)).body.map.archivedAt), false)
-  assert.equal((await api.call('/api/document-reconstructions')).body.operations.length, 0)
-  const next = await verifiedReconstruction(api, 'storage-success')
-  const changed = await api.call('/api/document-reconstructions/apply', 'POST', { plan: next.plan, previewHash: next.previewHash })
-  assert.equal(changed.status, 200, JSON.stringify(changed) + api.output())
-  assert.equal((await api.read(`_comments/${source}.json`)).length, 1)
+  assert.equal((await applying).status, 200)
+  assert.equal((await comment).status, 409)
+  assert.equal((await api.read(`${targetId}.json`)).version, 1)
+  assert.equal(Boolean((await api.call(`/api/maps/${source}`)).body.map.archivedAt), true)
+  assert.equal((await api.call('/api/document-reconstructions')).body.operations[0].state, 'applied')
 })
 
 test('Ref 추가가 이동보다 먼저 확정되면 새 Ref도 이동 대상으로 함께 고친다', { timeout: 30_000 }, async (t) => {
@@ -166,11 +159,11 @@ test('Ref 추가가 이동보다 먼저 확정되면 새 Ref도 이동 대상으
   for (const id of ['map-bench-3', 'map-bench-4']) assert.equal((await api.read(`${id}.json`)).nodes[1].data.reference.mapId, target)
 })
 
-test('영구 삭제 실패와 복원 경쟁은 휴지통 원본을 회복하고 성공 삭제 뒤 복원을 거부한다', { timeout: 30_000 }, async (t) => {
+test('영구 삭제 marker 이후 일시 실패는 삭제를 redo하고 경쟁 복원을 거부한다', { timeout: 30_000 }, async (t) => {
   const api = await storageApi(t, { documents: 3 })
   assert.equal((await api.call(`/api/maps/${source}/comments`, 'POST', { nodeId: 'card-1', text: '삭제 검증 댓글' })).status, 201)
   assert.equal((await api.call(`/api/maps/${source}`, 'DELETE')).status, 200)
-  for (const fail of [true, false]) {
+  for (const fail of [true]) {
     const barrier = await api.barrier(`${source}.json`, 'rm', { fail })
     const deleting = api.call('/api/maps/trash', 'DELETE', { mapIds: [source] })
     await barrier.reached
@@ -180,11 +173,8 @@ test('영구 삭제 실패와 복원 경쟁은 휴지통 원본을 회복하고 
     assert.equal((await api.call(`/api/maps/${target}`, 'PATCH', { title: `삭제와 독립 ${fail}`, baseVersion: other.version })).status, 200)
     assert.equal(restored, false)
     barrier.release()
-    assert.equal((await deleting).status, fail ? 500 : 200)
-    assert.equal((await restoring).status, fail ? 200 : 404)
-    if (fail) {
-      assert.equal((await api.read(`_comments/${source}.json`))[0].text, '삭제 검증 댓글')
-      assert.equal((await api.call(`/api/maps/${source}`, 'DELETE')).status, 200)
-    } else await assert.rejects(readFile(path.join(api.data, `${source}.json`)), { code: 'ENOENT' })
+    assert.equal((await deleting).status, 200)
+    assert.equal((await restoring).status, 404)
+    await assert.rejects(readFile(path.join(api.data, `${source}.json`)), { code: 'ENOENT' })
   }
 })

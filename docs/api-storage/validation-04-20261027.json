@@ -1,0 +1,986 @@
+{
+  "schemaVersion": 1,
+  "requirement": "REQ-MNP-04",
+  "mapId": "map-mszsv4fs-a9ccf4",
+  "cardId": "node-mvq4frgn-55c83c",
+  "generatedAt": "2026-10-27T12:36:28.418105+00:00",
+  "verifier": {
+    "role": "하위 실행자 자체 검증",
+    "conversationId": "e5b5cd67"
+  },
+  "status": {
+    "implementation": "구현 완료",
+    "validation": "필수 자동 검증 완료",
+    "requiredRemaining": "없음",
+    "optionalRemaining": "없음",
+    "acceptance": "상위 인수·07 독립 통합 검수와 구분"
+  },
+  "source": {
+    "baseCommit": "75217e476fa94a65d4bb8143b1f52f5f9ee09af9",
+    "isolation": "기준 커밋 archive에 담당 변경만 반영했다. 공통 server/index.mjs는 시작 원문을 기준으로 다른 업무 변경을 분리했다. node_modules만 기존 설치에 연결했고 운영 데이터를 복사하지 않았다.",
+    "candidateDirectory": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-20261027\\isolated",
+    "files": [
+      {
+        "file": "mcp/server.mjs",
+        "sha256": "249861c70de2ccd2c9cb4e9b13688211f8f9136fc07f096d015e4fe5a2482776",
+        "normalizedLfSha256": "1e9130d7412f962d39206c24b2f8a46640c0747fc550b57d94c2aec5238679eb"
+      },
+      {
+        "file": "mcp/storageRequests.mjs",
+        "sha256": "bf689a00a2c5ea1f349695e81429a9dc858ec0dcfb8bbbe66d4b5b02e663615c",
+        "normalizedLfSha256": "bf689a00a2c5ea1f349695e81429a9dc858ec0dcfb8bbbe66d4b5b02e663615c"
+      },
+      {
+        "file": "server/lib/storageJournal.mjs",
+        "sha256": "556c15514c4c92df7618ae5d8be2ec589fcc7b8688ea6f431246a637b734c4f5",
+        "normalizedLfSha256": "556c15514c4c92df7618ae5d8be2ec589fcc7b8688ea6f431246a637b734c4f5"
+      },
+      {
+        "file": "server/lib/storageChanges.mjs",
+        "sha256": "1de9d5e42f8f171e11d4b15cfff1b7f844fbd91ac337cb7b48d73b2c46150d98",
+        "normalizedLfSha256": "1de9d5e42f8f171e11d4b15cfff1b7f844fbd91ac337cb7b48d73b2c46150d98"
+      },
+      {
+        "file": "server/lib/storageResources.mjs",
+        "sha256": "12c6775c85d0d54bee52644193672bd4ec33fd784e598cf4f14a760e2fe06505",
+        "normalizedLfSha256": "12c6775c85d0d54bee52644193672bd4ec33fd784e598cf4f14a760e2fe06505"
+      },
+      {
+        "file": "tests/storage-journal.test.mjs",
+        "sha256": "89601b367dc56901c1b55fcada225fe605e703774074366731ae3fc3716fa333",
+        "normalizedLfSha256": "89601b367dc56901c1b55fcada225fe605e703774074366731ae3fc3716fa333"
+      },
+      {
+        "file": "tests/storage-idempotency-api.test.mjs",
+        "sha256": "f71da8063a76bfd26599e17d0f4ac35a7d798a557423fee0483d9f7d55e829af",
+        "normalizedLfSha256": "f71da8063a76bfd26599e17d0f4ac35a7d798a557423fee0483d9f7d55e829af"
+      },
+      {
+        "file": "tests/storage-idempotency-mcp.test.mjs",
+        "sha256": "8cdb88383c2aa85f18fc60dbb1d60c92aa218ae4bbc0fe6ca74eb6fa28031838",
+        "normalizedLfSha256": "8cdb88383c2aa85f18fc60dbb1d60c92aa218ae4bbc0fe6ca74eb6fa28031838"
+      },
+      {
+        "file": "tests/storage-journal-lifecycle-api.test.mjs",
+        "sha256": "021fa651db7ba7ab667b562bed28134d96f307f36c5f3bf1811625ffca1c353e",
+        "normalizedLfSha256": "021fa651db7ba7ab667b562bed28134d96f307f36c5f3bf1811625ffca1c353e"
+      },
+      {
+        "file": "tests/helpers/storage-crash-phases.mjs",
+        "sha256": "6c120ec0e37a713fc3c99b319d0bcfa123fcfd99ec7625e859127b1811345c63",
+        "normalizedLfSha256": "6c120ec0e37a713fc3c99b319d0bcfa123fcfd99ec7625e859127b1811345c63"
+      },
+      {
+        "file": "tests/helpers/storage-api-harness.mjs",
+        "sha256": "be214c95143af48e92a95981593ce126d7830c7c7f0e21631365e07acfc4eb93",
+        "normalizedLfSha256": "be214c95143af48e92a95981593ce126d7830c7c7f0e21631365e07acfc4eb93"
+      },
+      {
+        "file": "tests/helpers/storage-fs-barrier.mjs",
+        "sha256": "035c2435a5e491073d05c76d1bbf5160de6989397b579aa089547e8a49219316",
+        "normalizedLfSha256": "035c2435a5e491073d05c76d1bbf5160de6989397b579aa089547e8a49219316"
+      },
+      {
+        "file": "tests/content-preconditions-api.test.mjs",
+        "sha256": "07d4ea63ddee26a1508698515bb31c7ccb6538e705cdf42918eb1cfd588f9691",
+        "normalizedLfSha256": "07d4ea63ddee26a1508698515bb31c7ccb6538e705cdf42918eb1cfd588f9691"
+      },
+      {
+        "file": "tests/storage-concurrency-api.test.mjs",
+        "sha256": "1854c5cc3c2984afe8040d49601e8aaf2871e647df70f54a99a12180eb977696",
+        "normalizedLfSha256": "1854c5cc3c2984afe8040d49601e8aaf2871e647df70f54a99a12180eb977696"
+      },
+      {
+        "file": "tests/storage-lifecycle-api.test.mjs",
+        "sha256": "471e2d4ba8bf6d0655a1d1b47cb24e628a38d3a041f7046c4b716451d1384123",
+        "normalizedLfSha256": "471e2d4ba8bf6d0655a1d1b47cb24e628a38d3a041f7046c4b716451d1384123"
+      },
+      {
+        "file": "tests/mcp-instruction-surface.test.mjs",
+        "sha256": "3c860ccbf2fc08610f5bac99d277cfdb26a5d37e251452173c0a18a7501bb3d2",
+        "normalizedLfSha256": "3c860ccbf2fc08610f5bac99d277cfdb26a5d37e251452173c0a18a7501bb3d2"
+      },
+      {
+        "file": "tests/fixtures/ai-instruction-budget.json",
+        "sha256": "190dab68495dbf86b57a732766bc74741e4d50f02aa107029b6798ff3a0848b6",
+        "normalizedLfSha256": "190dab68495dbf86b57a732766bc74741e4d50f02aa107029b6798ff3a0848b6"
+      },
+      {
+        "file": "tests/fixtures/mcp-tool-input-schema.json",
+        "sha256": "c608af3ad16ec2ad6c75ca6db8c0aaac2e0e445268e3ac461775c70aed8428ab",
+        "normalizedLfSha256": "c608af3ad16ec2ad6c75ca6db8c0aaac2e0e445268e3ac461775c70aed8428ab"
+      },
+      {
+        "file": "server/index.mjs",
+        "sha256": "6c87281573a00ae80e5378c820b60a104490bfc9acf34dbc8b761a86f576d884",
+        "normalizedLfSha256": "6c87281573a00ae80e5378c820b60a104490bfc9acf34dbc8b761a86f576d884"
+      },
+      {
+        "file": "scripts/test-mcp.mjs",
+        "sha256": "6c495f8ebfdb24dbf9b020055da94d93d5e9e05918b77a56f1fd9f0ec2fb97d0",
+        "normalizedLfSha256": "03538a86f5ae12dcd76fe6731dcc088be93acdc4f9504c9e00a255175d83efbe"
+      },
+      {
+        "file": "tests/group-project-api.test.mjs",
+        "sha256": "8a3e71e6c0d9de9c336a33f1c79448a81f441f5be2e8d16ab314ef34dbfd91f4",
+        "normalizedLfSha256": "7a0d8c70ac0c707ac278acad971bb82018748fa617f682f1a51f3781dc366c10"
+      },
+      {
+        "file": "docs/api-storage/implementation-04.md",
+        "sha256": "97aeeb75f730667fcc739e5944f8ce1f009cd301c77c628ab86a3e8a6ae68319",
+        "normalizedLfSha256": "97aeeb75f730667fcc739e5944f8ce1f009cd301c77c628ab86a3e8a6ae68319"
+      }
+    ],
+    "initialRunSources": {
+      "base": "75217e476fa94a65d4bb8143b1f52f5f9ee09af9",
+      "files": [
+        {
+          "file": "mcp/server.mjs",
+          "sha256": "8b5b5512d966d9bff8da1442b2ea79cb55e5d7e298a846f74f3ced57efb87bb3"
+        },
+        {
+          "file": "mcp/storageRequests.mjs",
+          "sha256": "3c8399c983372c3a3a1a70c94c6979f12c4a2878a438f7d8acbaab2bc66c9a8e"
+        },
+        {
+          "file": "server/lib/storageJournal.mjs",
+          "sha256": "5747f94f1d892757169a1b70c6e195ee739b988aeeb4b8c4a9b206a6f16ed15e"
+        },
+        {
+          "file": "server/lib/storageChanges.mjs",
+          "sha256": "1de9d5e42f8f171e11d4b15cfff1b7f844fbd91ac337cb7b48d73b2c46150d98"
+        },
+        {
+          "file": "server/lib/storageResources.mjs",
+          "sha256": "12c6775c85d0d54bee52644193672bd4ec33fd784e598cf4f14a760e2fe06505"
+        },
+        {
+          "file": "tests/storage-journal.test.mjs",
+          "sha256": "879e9807a3cb5bb8543cd234776a4f13a1289cebb54e4154080b82519c303c4a"
+        },
+        {
+          "file": "tests/storage-idempotency-api.test.mjs",
+          "sha256": "f71da8063a76bfd26599e17d0f4ac35a7d798a557423fee0483d9f7d55e829af"
+        },
+        {
+          "file": "tests/storage-idempotency-mcp.test.mjs",
+          "sha256": "f532ca0fd8bf39208f021a8788a26fa5c9977b4f352349c5b6bbb4a519130491"
+        },
+        {
+          "file": "tests/storage-journal-lifecycle-api.test.mjs",
+          "sha256": "021fa651db7ba7ab667b562bed28134d96f307f36c5f3bf1811625ffca1c353e"
+        },
+        {
+          "file": "tests/helpers/storage-crash-phases.mjs",
+          "sha256": "6c120ec0e37a713fc3c99b319d0bcfa123fcfd99ec7625e859127b1811345c63"
+        },
+        {
+          "file": "tests/helpers/storage-api-harness.mjs",
+          "sha256": "be214c95143af48e92a95981593ce126d7830c7c7f0e21631365e07acfc4eb93"
+        },
+        {
+          "file": "tests/helpers/storage-fs-barrier.mjs",
+          "sha256": "035c2435a5e491073d05c76d1bbf5160de6989397b579aa089547e8a49219316"
+        },
+        {
+          "file": "tests/content-preconditions-api.test.mjs",
+          "sha256": "07d4ea63ddee26a1508698515bb31c7ccb6538e705cdf42918eb1cfd588f9691"
+        },
+        {
+          "file": "tests/storage-concurrency-api.test.mjs",
+          "sha256": "1854c5cc3c2984afe8040d49601e8aaf2871e647df70f54a99a12180eb977696"
+        },
+        {
+          "file": "tests/storage-lifecycle-api.test.mjs",
+          "sha256": "471e2d4ba8bf6d0655a1d1b47cb24e628a38d3a041f7046c4b716451d1384123"
+        },
+        {
+          "file": "tests/mcp-instruction-surface.test.mjs",
+          "sha256": "b2759840eee481fa0f98b75b9d57a8b00d8cb732e38a9a5b8af00eccd36aa817"
+        },
+        {
+          "file": "tests/fixtures/ai-instruction-budget.json",
+          "sha256": "48c94a50e1eb61d09ef08ee1882286878a4b258d646c6926d253d356fc918fa8"
+        },
+        {
+          "file": "tests/fixtures/mcp-tool-input-schema.json",
+          "sha256": "f577865c3d99c1adaa4b31ea1ed3f704966359d0c06411b5841846c08bb15f9a"
+        },
+        {
+          "file": "server/index.mjs",
+          "sha256": "11f1476463ad1d0819137a000f4c0db56714fbc3654ee9d9de03403b4ac39b88"
+        }
+      ]
+    },
+    "finalSources": {
+      "path": ".tmp/api-storage-04-20261027/source-snapshot-v2.json",
+      "sha256": "e53d6a5b650bae925229386434419d059883dd55c5de1c655206125f2ffcd693",
+      "bytes": 2391
+    },
+    "lateChanges": [
+      "서버 결과의 proposalRequestId 별칭과 MCP의 기존 제안 requestId 입력·출력 호환: 60개 도구 및 스키마 시험으로 검증",
+      "그룹 메모리 상태의 journal 이전 선노출: 저장 barrier 조회와 재시작 그룹 시험으로 검증",
+      "로컬 MCP 의도 불일치도 서버의 현재 권한 확인 후 노출: 권한 회수 stdio 시험으로 검증"
+    ],
+    "otherTrackedChangesPreserved": {
+      "src/App.tsx": true,
+      "src/utils/mapLocalCache.d.mts": true,
+      "src/utils/mapLocalCache.mjs": true,
+      "tests/local-backup-notice-browser.test.mjs": true,
+      "tests/map-local-cache.test.mjs": true
+    },
+    "initialWorktree": {
+      "path": ".tmp/mnp04-start-20261027/initial.diff",
+      "sha256": "a63bbf67d14349cecda97975e7105239fb7b18babb48cb68ca1679a86dc90134",
+      "bytes": 42100
+    }
+  },
+  "environment": {
+    "node": "v24.13.0",
+    "platform": "win32",
+    "arch": "x64",
+    "release": "10.0.26200",
+    "cpu": "Intel(R) Core(TM) i7-14700",
+    "memory": 68372971520
+  },
+  "isolation": {
+    "data": "os.tmpdir 아래 시험별 새 데이터 루트, 종합 MCP는 격리 사본의 .mcp-test-data",
+    "network": "루프백 임의 포트와 모의 AionUi/Runner·외부 서비스",
+    "credentials": "시험 전용 합성 사용자·토큰",
+    "crash": "IPC로 지정 지점에서 서버 프로세스 자신에게 SIGKILL. OS와 디스크는 유지."
+  },
+  "checks": [
+    {
+      "command": "node --test --test-concurrency=1 tests/storage-concurrency-api.test.mjs tests/content-preconditions-api.test.mjs tests/storage-resources.test.mjs tests/content-preconditions-mcp.test.mjs",
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-20261027\\isolated",
+      "source": "초기 격리 소스 스냅샷. 이후 그룹 상태 조회 보호와 MCP 제안 ID·권한 확인 보완은 해당 경로를 별도 재검증했다.",
+      "result": "통과",
+      "tests": 17,
+      "pass": 17,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "durationMs": 242308.899,
+      "log": {
+        "path": ".tmp/api-storage-04-20261027/final-core.log",
+        "sha256": "78ce3172179171a1aa02e415c6037ff73c07b1c0011e2f7408bca1dadae94b26",
+        "bytes": 10275
+      }
+    },
+    {
+      "command": "node --test --test-concurrency=1 tests/storage-journal.test.mjs tests/storage-idempotency-api.test.mjs tests/storage-idempotency-mcp.test.mjs tests/storage-journal-lifecycle-api.test.mjs tests/storage-lifecycle-api.test.mjs",
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-20261027\\isolated",
+      "source": "초기 격리 소스 스냅샷. journal 커밋·복구·effect 로직은 이후 변경하지 않았고 결과의 제안 대상 ID 별칭만 추가했다.",
+      "result": "통과",
+      "tests": 60,
+      "pass": 60,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "durationMs": 228310.2845,
+      "log": {
+        "path": ".tmp/api-storage-04-20261027/final-04.log",
+        "sha256": "e7aebd84fe0ef7edaf3a8de5d489324240bf0927bce738b38a92d49fdd1c82f3",
+        "bytes": 5518
+      }
+    },
+    {
+      "command": "node --test --test-concurrency=2 tests/comments-api.test.mjs tests/map-content-patch-api.test.mjs tests/shared-knowledge-review-api.test.mjs tests/daily-backup-history-api.test.mjs tests/cross-document-card-move-api.test.mjs tests/document-reconstruction-api.test.mjs tests/document-trash-review-api.test.mjs tests/trash-ai-records-api.test.mjs tests/group-project-api.test.mjs tests/image-assets-api.test.mjs",
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-20261027\\isolated",
+      "source": "MCP 제안 ID 호환 보완 후, 그룹 상태 조회 보호 전",
+      "result": "9개 통과, 그룹 상태 조회 1개 실패 후 수정",
+      "tests": 10,
+      "pass": 9,
+      "fail": 1,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "durationMs": 30343.2397,
+      "log": {
+        "path": ".tmp/api-storage-04-20261027/final-related.log",
+        "sha256": "ba143619c0aea7ee6c1753fde0db2a78b43b55ea58a765e9752c3e0592d13945",
+        "bytes": 3619
+      }
+    },
+    {
+      "command": "node --test tests/group-project-api.test.mjs",
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-20261027\\isolated",
+      "source": "최종 담당 소스",
+      "result": "통과",
+      "tests": 1,
+      "pass": 1,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "durationMs": 25727.5971,
+      "log": {
+        "path": ".tmp/api-storage-04-20261027/final-group-v3.log",
+        "sha256": "8517a96862b578adcc5abe7c8ed02948c85021afe801c23034d10fc408f2e8a3",
+        "bytes": 259
+      }
+    },
+    {
+      "command": "node --test --test-concurrency=1 tests/storage-idempotency-mcp.test.mjs tests/content-preconditions-mcp.test.mjs tests/mcp-instruction-surface.test.mjs tests/storage-journal.test.mjs",
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-20261027\\isolated",
+      "source": "최종 담당 소스",
+      "result": "통과",
+      "tests": 5,
+      "pass": 5,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "durationMs": 17604.1906,
+      "log": {
+        "path": ".tmp/api-storage-04-20261027/final-mcp-focused-v2.log",
+        "sha256": "e0b1a0c6349c26ae10d5cdf8fcdacf12330850a5b92f66058eaad9433f6096ae",
+        "bytes": 829
+      }
+    },
+    {
+      "command": "node --test tests/storage-journal.test.mjs",
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-20261027\\isolated",
+      "source": "최종 담당 소스",
+      "result": "통과",
+      "tests": 2,
+      "pass": 2,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "durationMs": 519.1867,
+      "log": {
+        "path": ".tmp/api-storage-04-20261027/final-journal-unit.log",
+        "sha256": "d90bec82f34dc457c8357a6c040568ea18bfab6af36855f07f93c27c823e5289",
+        "bytes": 331
+      }
+    },
+    {
+      "command": "node scripts/test-mcp.mjs",
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-20261027\\isolated",
+      "source": "최종 담당 소스",
+      "result": "통과",
+      "summary": {
+        "registeredTools": 60,
+        "calledTools": 60,
+        "totalCalls": 228,
+        "measuredTools": 60,
+        "measuredCalls": 245,
+        "readMeFirstResponseChars": 18298,
+        "selectedContextResponseChars": 25528,
+        "status": "passed"
+      },
+      "log": {
+        "path": ".tmp/api-storage-04-20261027/final-mcp-v6.log",
+        "sha256": "e161b7d9b32ad3f8630cb06a6d9cba98b368a5ce1990087be03169dc2cddeba1",
+        "bytes": 227
+      }
+    },
+    {
+      "command": "npm run lint",
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-20261027\\isolated",
+      "source": "최종 담당 소스",
+      "result": "오류 없이 통과, 기존 경고 4개",
+      "log": {
+        "path": ".tmp/api-storage-04-20261027/final-lint-v3.log",
+        "sha256": "0e0e6adf9a374e1351d07d3563b580a5fc9fee0e5cb9d1cad6a7feba447706b6",
+        "bytes": 866
+      },
+      "warnings": [
+        "remoteWorkspacePool.mjs의 기존 미사용 변수 3개",
+        "ai-conversation-role-browser.test.mjs의 기존 finally 경고 1개"
+      ]
+    },
+    {
+      "command": "npm run build",
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-20261027\\isolated",
+      "result": "통과",
+      "source": "초기 격리 소스. 이후 프런트엔드·빌드 입력 변경 없음",
+      "log": {
+        "path": ".tmp/api-storage-04-20261027/final-build.log",
+        "sha256": "3658b906ed6c137aa642b50c0f2a74bd66911926cbc102a73f8f3f214f5e9054",
+        "bytes": 794
+      },
+      "warnings": [
+        "기존 번들 크기 경고"
+      ]
+    },
+    {
+      "command": "node --check server/index.mjs; node --check server/lib/storageJournal.mjs; node --check server/lib/storageChanges.mjs; node --check mcp/server.mjs; node --check mcp/storageRequests.mjs",
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\api-storage-04-20261027\\isolated",
+      "source": "최종 담당 소스",
+      "result": "모두 종료 코드 0"
+    },
+    {
+      "command": "git diff --check",
+      "cwd": "C:\\Git\\MindNProgress\\MindNProgress",
+      "result": "종료 코드 0"
+    }
+  ],
+  "requirements": [
+    {
+      "id": "mnp-api-04-1",
+      "result": "통과",
+      "evidence": [
+        "동일 ID 동시 20회와 순차 재전송에서 문서 버전·필수 revision·댓글·reaction toggle·알림을 한 번 반영",
+        "응답 drop 뒤 서버/MCP 재시작 및 같은 transactionId 결과 재조회",
+        "알림 effect 확정 직후 종료, 표시 목록 200개 정리 뒤 재개, 오래된 백업 재개 검사"
+      ]
+    },
+    {
+      "id": "mnp-api-04-2",
+      "result": "통과",
+      "evidence": [
+        "다른 본문과 원래 기대값 변경은 REQUEST_ID_REUSED",
+        "다른 편집자·대화·귀속 scope는 결과 비노출",
+        "현재 권한 회수 후 재전송·조회 거부, token 갱신은 동일 scope 유지",
+        "로컬 MCP 불일치에서도 권한 회수 거부를 먼저 반환"
+      ]
+    },
+    {
+      "id": "mnp-api-04-3",
+      "result": "통과",
+      "evidence": [
+        "10개 journal/응답 지점 강제 종료와 시작 redo",
+        "다중 이동 11개·복원 3개·삭제 8개·재구성 2개의 각 정본 교체 뒤 종료 및 4개 commit 직후 종료",
+        "before/after 이외 해시의 정본 보존·RECOVERY_REQUIRED 격리와 무관한 문서 접근",
+        "파일·버전·effect·응답 ID·읽기 노출 상태 대조"
+      ]
+    },
+    {
+      "id": "mnp-api-04-4",
+      "result": "통과",
+      "evidence": [
+        "committed/processing/not-applied/unknown 및 resultOnly 변경 없음",
+        "과거 24시간·미래 5분의 경계와 1ms 초과, terminal+24시간 보존·만료, 미완료 보존",
+        "실제 HTTP와 stdio MCP, 기존 60개 도구, 레거시 제안 requestId와 새 proposalRequestId 호환",
+        "일반 호출의 필수 입력 유지, 새 MCP 도구 없음, 문서화 완료"
+      ]
+    }
+  ],
+  "regressionDiagnostics": [
+    {
+      "mode": "cards",
+      "concurrency": 1,
+      "round": 0,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "303d02eff1656167a478d29f6848a3e740050c2e86a9b4f92e0a7c540b364a41",
+      "resultSha256": "b7183f495c5f3f22beb74c119e8b1874d986f2a07f2303d66fc9a9e665f8139f"
+    },
+    {
+      "mode": "cards",
+      "concurrency": 1,
+      "round": 1,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "412cb82d13c7ae54266dd31c541ffa7bc7b09b69162711e4bfa4d3898d2a7245",
+      "resultSha256": "853a4266fedb311070c5986debe9282c5ec4a1f95aadc836e4866ef297bf420b"
+    },
+    {
+      "mode": "cards",
+      "concurrency": 1,
+      "round": 2,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "4b2947a57bec506a31f64d1d66d3996bbac28641290e59033739d62c180bde26",
+      "resultSha256": "fe439f4082e676d3afcac9be881ebaaa45237cf5d101b53f54a0fab66d06c818"
+    },
+    {
+      "mode": "cards",
+      "concurrency": 10,
+      "round": 0,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "ebaf655c537407336bec4a235cc261ac8a555ff19503796f3299cb1a105b01af",
+      "resultSha256": "3d639a011b90f0a9cc0e4eec9181bee8c939609239ee80e49c9a865513be8270"
+    },
+    {
+      "mode": "cards",
+      "concurrency": 10,
+      "round": 1,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "352621da65d04e1759ec30e82f9c4553c98c64b8de93bead297e4f57c2f72c89",
+      "resultSha256": "51694fe15f9fcaf421dfc2d86e712b39624749e9689051ace503b57a291f60f9"
+    },
+    {
+      "mode": "cards",
+      "concurrency": 10,
+      "round": 2,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "4e75ade5ec59ffe290893edfc09700605a4c3e73b190dcc1351bc97a3502d925",
+      "resultSha256": "8a74cf9ac239c8dbc8195fe2c52acdd1c78e837e361160bf4735af0dda717b89"
+    },
+    {
+      "mode": "cards",
+      "concurrency": 20,
+      "round": 0,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "192cd565a50f088b0ffd8d82536a817a3a641e4e3b9854e54cf5f6179e49b5f2",
+      "resultSha256": "e4abf8b100632df5a6b2e269de3621007791332712bbec37ef7bb3504f247ed1"
+    },
+    {
+      "mode": "cards",
+      "concurrency": 20,
+      "round": 1,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "d3d42b25f7a5bcd2feba2d83597f9b14bb7c67661ef53fcc834f954d9e006ba7",
+      "resultSha256": "b01ba28137f0055b704428903a147a40a643ee162e003b8beaff0424578557b1"
+    },
+    {
+      "mode": "cards",
+      "concurrency": 20,
+      "round": 2,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "9e62dd01a385e3772605546a7cdced846d62f6c694d4176cf8a2596342d491df",
+      "resultSha256": "8e64d3cc16063d6d6f146c082975057c67cb443924d035c1552d5f7120df1d80"
+    },
+    {
+      "mode": "fields",
+      "concurrency": 1,
+      "round": 0,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "a9393689109dcec7cef0e96079f5318a805cbdf789a5c254c93bc1c7765d8152",
+      "resultSha256": "ec8e869ccf7b753e2ffc79659a3f56cc8655801f89660638e06ac4ce71f74aa2"
+    },
+    {
+      "mode": "fields",
+      "concurrency": 1,
+      "round": 1,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "072e51e63296035aae730e9014b0356ece27d4948f3b895b4b156859fc073c4e",
+      "resultSha256": "b67db79ad57b25e3e02eddc690c016bec3d7d511891ae197093d38e531eb8b1d"
+    },
+    {
+      "mode": "fields",
+      "concurrency": 1,
+      "round": 2,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "e2207415c0c273854538e322c83d3a9ccace9d70548d3f7ce5cbacdcf9980360",
+      "resultSha256": "6571f29217671b7082493dcd496a68fce3f487a56d1491cbabfda5fd09492a63"
+    },
+    {
+      "mode": "fields",
+      "concurrency": 10,
+      "round": 0,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "186b442c8f8fc238c9c4e09504c0e83fc03ba537bae4a77a467d6de372049ecd",
+      "resultSha256": "f0fce1a087fc2851d5731a3d14c3c22fc4879acca8a56c7528b7ffc625e21543"
+    },
+    {
+      "mode": "fields",
+      "concurrency": 10,
+      "round": 1,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "c5027908f01a0502ee239dc47d148243fe36a998d4a0b5e79375b47171326b74",
+      "resultSha256": "e8e60cc274b4f03cd75de1905c6e04044d684eb091ee89407d75a20f5c973f2b"
+    },
+    {
+      "mode": "fields",
+      "concurrency": 10,
+      "round": 2,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "fd38bb0c67b0a76e010beb6f9e0bc29872277b018f90dbf1f9423911cfd55ec1",
+      "resultSha256": "8c66a969f197b6b2f2d0e4166a49b18502d1e92b3e3241fcf30bfd4e0bfbee95"
+    },
+    {
+      "mode": "fields",
+      "concurrency": 20,
+      "round": 0,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "0a07db900ca0497428d6bc089df591eaea217241326dc57aac5d44df2abf787c",
+      "resultSha256": "a620cd739eab94272c1b15660df3c0b0465df80689e685c4d37c9b823d5c64c6"
+    },
+    {
+      "mode": "fields",
+      "concurrency": 20,
+      "round": 1,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "5328bf3c5e0dbf767c52d971780b65ad69eb500369467dcbc4f12d3002166bcd",
+      "resultSha256": "c5270a81a555f3554ec4bba45d0f4b315d080f5895f792134b989ac3dd2e47e0"
+    },
+    {
+      "mode": "fields",
+      "concurrency": 20,
+      "round": 2,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "06889ae422bd47c3f7934350b6ce6bf35f7ae6a0c15a6ffbd42174ee942f81c2",
+      "resultSha256": "1100cf4df336263f5a9f38196e56501bf2f45ba867d5dff3ef04709df5cd7af7"
+    },
+    {
+      "mode": "reviews",
+      "concurrency": 1,
+      "round": 0,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "2e19c1756d0c18f952547c61c2c30db6b8e0b3011b3b3bfc4e0c925e6d76734b",
+      "resultSha256": "4e38df5b63459095bba1f2468835493dc47620682c952de4fe215cc608e325da"
+    },
+    {
+      "mode": "reviews",
+      "concurrency": 1,
+      "round": 1,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "fe7e27fd0f7e83284c74b1ba02854de7986b1d1dca30c7f54f9dcafd7fbe4a8c",
+      "resultSha256": "a30230bcb24d91c4415ea3b3de7c7f077230198d1f9fb1ff11121985fdb77917"
+    },
+    {
+      "mode": "reviews",
+      "concurrency": 1,
+      "round": 2,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "9eab66fde3419ecde54834c50c20dfead62c6f64a5e46f29f2293a4e1e827627",
+      "resultSha256": "0726f2fb80b90cc1f81d8bf6c35911c3afc289976abd3c3920003e03cdea4f01"
+    },
+    {
+      "mode": "reviews",
+      "concurrency": 10,
+      "round": 0,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "eb45c269eb28a7bf3f8f78c1384bea5646b140ac47140b142f0f9ce6928246ed",
+      "resultSha256": "75806e5c9d1982653ea609392ecf0311c29b773a1ae588641ccf12f2fcff0220"
+    },
+    {
+      "mode": "reviews",
+      "concurrency": 10,
+      "round": 1,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "05abb68a5ff48ccacb61a1b91a355802626cd614fb1a153b759004865ca4973e",
+      "resultSha256": "88269dca2031bc7248be41a0a31111392c7211af9c72fae36e491df80169ed68"
+    },
+    {
+      "mode": "reviews",
+      "concurrency": 10,
+      "round": 2,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "73de2aef4fc0b012add242b91028fb9a61b27974600bf40c3ddcf4f4bb472919",
+      "resultSha256": "66cfd631a1177e92f7b474071c966ffbc7a117cceb0ef568de88ac941267d46f"
+    },
+    {
+      "mode": "reviews",
+      "concurrency": 20,
+      "round": 0,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "f750e77fd66dde89517be1c966b876decd48e7a0504b2b22823ad85690567cef",
+      "resultSha256": "0204fffc8f7b27431919bc90cc0e911a75726da4301514e8b8e0ba15108f863a"
+    },
+    {
+      "mode": "reviews",
+      "concurrency": 20,
+      "round": 1,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "c8af16cfef2bf834d15b71a827cb731cd4709979d634666ece523d2c3deec02d",
+      "resultSha256": "6450073b89233ef008c1f0496319b78fb6b3a0e44c31dd140b21429c472435df"
+    },
+    {
+      "mode": "reviews",
+      "concurrency": 20,
+      "round": 2,
+      "success": 20,
+      "preserved": 20,
+      "version": 21,
+      "fixtureSha256": "53a4415e6383a3d44eee94f7a08819eb4a00fc7ff9760811cfb30816e8512a93",
+      "resultSha256": "4b4c5d1ad340584519fefb71bd424244c7f12b868866341bf7730697bc9409b9"
+    },
+    {
+      "independent": 20,
+      "sameFieldSuccess": 1,
+      "sameFieldConflict": 1,
+      "sameFieldAttempts": 2,
+      "relationAttempts": 2
+    },
+    {
+      "concurrency": 1,
+      "round": 0,
+      "comments": 20,
+      "reviewSuccess": 20,
+      "explicitConflict": 0
+    },
+    {
+      "concurrency": 1,
+      "round": 1,
+      "comments": 20,
+      "reviewSuccess": 20,
+      "explicitConflict": 0
+    },
+    {
+      "concurrency": 1,
+      "round": 2,
+      "comments": 20,
+      "reviewSuccess": 20,
+      "explicitConflict": 0
+    },
+    {
+      "concurrency": 10,
+      "round": 0,
+      "comments": 20,
+      "reviewSuccess": 2,
+      "explicitConflict": 18
+    },
+    {
+      "concurrency": 10,
+      "round": 1,
+      "comments": 20,
+      "reviewSuccess": 2,
+      "explicitConflict": 18
+    },
+    {
+      "concurrency": 10,
+      "round": 2,
+      "comments": 20,
+      "reviewSuccess": 2,
+      "explicitConflict": 18
+    },
+    {
+      "concurrency": 20,
+      "round": 0,
+      "comments": 20,
+      "reviewSuccess": 1,
+      "explicitConflict": 19
+    },
+    {
+      "concurrency": 20,
+      "round": 1,
+      "comments": 20,
+      "reviewSuccess": 1,
+      "explicitConflict": 19
+    },
+    {
+      "concurrency": 20,
+      "round": 2,
+      "comments": 20,
+      "reviewSuccess": 1,
+      "explicitConflict": 19
+    },
+    {
+      "successResponses": 2,
+      "stored": 2,
+      "beforeRelease": {
+        "secondDone": false,
+        "readDone": false
+      }
+    }
+  ],
+  "resolvedFailures": [
+    {
+      "finding": "기존 시험의 post-marker rollback 기대값과 SSE data-only 파서",
+      "resolution": "확정 계약의 redo 성공·안정 SSE ID를 검증하도록 기존 시험을 수정",
+      "evidence": [
+        "final-04.log",
+        "final-core.log"
+      ]
+    },
+    {
+      "finding": "bulk 회귀의 기존 90/120초 시험 예산 초과",
+      "resolution": "journal I/O가 포함된 시험 예산만 300초로 조정. 제품 요청 기한·540건 및 180건 검증량은 유지",
+      "evidence": [
+        "final-core.log"
+      ]
+    },
+    {
+      "finding": "이력 복원 후 시작 migration이 생성자·생성 시각을 보충하여 after-image 해시와 불일치",
+      "resolution": "복원 시 원본 생성 메타데이터를 보존",
+      "evidence": [
+        "final-04.log"
+      ]
+    },
+    {
+      "finding": "기존 제안 requestId와 논리 저장 requestId의 이름 충돌",
+      "resolution": "기존 입력·출력 보존과 proposalRequestId/storageRequestId 호환 처리",
+      "evidence": [
+        "final-mcp-v6.log",
+        "final-mcp-focused-v2.log"
+      ]
+    },
+    {
+      "finding": "종합 시험의 손상된 알림 저장소에서도 댓글 삭제 성공 기대",
+      "resolution": "알림 참조 제거가 필수인 계약에 맞춰 변경 전 실패와 복구 후 삭제를 검증",
+      "evidence": [
+        "final-mcp-v6.log"
+      ]
+    },
+    {
+      "finding": "그룹 조회가 journal 확정 전 메모리의 recovery-required 상태를 반환",
+      "resolution": "기준 커밋에서는 시험 통과를 확인하고 현행 조회에 state 읽기 잠금 추가. 저장 barrier 중 조회 대기와 재시작을 검증",
+      "evidence": [
+        "baseline-group.log",
+        "final-group-v3.log"
+      ]
+    },
+    {
+      "finding": "작업 루트 lint가 기존 .tmp 생성 산출물까지 검사",
+      "resolution": "담당 변경 격리 사본에서 다시 실행. 제품 소스 오류 없음",
+      "evidence": [
+        "final-lint-v3.log"
+      ]
+    }
+  ],
+  "preservedDiagnostics": [
+    {
+      "path": ".tmp/mnp04-idempotency-api.log",
+      "sha256": "d408e00429d21e0c9821ea6ce0171e53fa0161e84b461af7f04be08cd563c4b4",
+      "bytes": 1395
+    },
+    {
+      "path": ".tmp/mnp04-idempotency-mcp.log",
+      "sha256": "aeda915721f47bf7484144641c9db28f98a8735faa61fa58f81ae570ba801291",
+      "bytes": 265
+    },
+    {
+      "path": ".tmp/mnp04-journal-lifecycle-v2.log",
+      "sha256": "d8dad2593fa24eb7d9072f2ef9956dd1a3f8ca0d692b375e5cc6d624245756d5",
+      "bytes": 5753
+    },
+    {
+      "path": ".tmp/mnp04-journal-lifecycle.log",
+      "sha256": "e2359f1aee3be096dc8eb2bb39301806ae1f616d4f7a411fa39c443b7304ae1d",
+      "bytes": 11660
+    },
+    {
+      "path": ".tmp/mnp04-lint.log",
+      "sha256": "b3fab526aa24ed30e61fdea61551c6d1bf9cbb91dc7efbea1d24263dea19cac0",
+      "bytes": 2991413
+    },
+    {
+      "path": ".tmp/mnp04-marker-effects.log",
+      "sha256": "51d6b41464379ff3b99e8bd85fe78f36b04e64f027731b581af98c4a07e06b6d",
+      "bytes": 368
+    },
+    {
+      "path": ".tmp/mnp04-read-sse.log",
+      "sha256": "bca5fceff53c54e27ed71dfbdaf6c7b9e0cb80a504e187ddd7057450195d0d15",
+      "bytes": 324
+    },
+    {
+      "path": ".tmp/mnp04-regression-core-v2.log",
+      "sha256": "7c5bbe65e0fb5ac1e3874042f65c72c392c8deabad22ce52b0b4f68bb3401970",
+      "bytes": 10019
+    },
+    {
+      "path": ".tmp/mnp04-regression-core.log",
+      "sha256": "878d4cc847877b56308779ce22d8a0e7516e320b93c02b24c8b48d00bef2f2da",
+      "bytes": 8179
+    },
+    {
+      "path": ".tmp/mnp04-regression-lifecycle-v2.log",
+      "sha256": "fd38ddd7f921ef3b51973d29a21fac67469b7101cd43b0868334c1d585a6495f",
+      "bytes": 1502
+    },
+    {
+      "path": ".tmp/mnp04-regression-lifecycle.log",
+      "sha256": "d609a53bf57839c59a0691eb9ca056910d5ee3d24a2e2cb76fc98cd4555d301f",
+      "bytes": 3393
+    },
+    {
+      "path": ".tmp/mnp04-restore-debug.log",
+      "sha256": "2d5e25e207ae5ba377355f39c5b616eb27e38e77c30abd5a272729b7c026d11d",
+      "bytes": 3852
+    },
+    {
+      "path": ".tmp/mnp04-restore-diff.log",
+      "sha256": "fadf6991b52cd4fd4944c7f1ec0d1293aea6bc7df7532618ab940371bf4f3d84",
+      "bytes": 4441
+    },
+    {
+      "path": ".tmp/mnp04-restore-fixed.log",
+      "sha256": "47bbf0d4dc5898e3446a6edd1763898c9ac69b8143950ef1491bb6e2cb57f8b2",
+      "bytes": 524
+    },
+    {
+      "path": ".tmp/mnp04-schema-check.log",
+      "sha256": "be78ea7341664747a13aacaf59e72aff0d029d11f49307a5cf061eca09f65b12",
+      "bytes": 788
+    },
+    {
+      "path": ".tmp/mnp04-side-effects.log",
+      "sha256": "040f37d1ad138484f97458e4a15ea220aaffbb566a09437435d8088082f58f49",
+      "bytes": 485
+    },
+    {
+      "path": ".tmp/api-storage-04-20261027/final-mcp.log",
+      "sha256": "6098ddf74250df8aa0ad4c84d37f26c85fa1db0dbd882e5f8091a1ef740d839f",
+      "bytes": 988
+    },
+    {
+      "path": ".tmp/api-storage-04-20261027/final-mcp-v2.log",
+      "sha256": "9a6709de3d854538a9492b9032c01117246b3547e4b0f7e16a4e84c2294640b6",
+      "bytes": 71153
+    },
+    {
+      "path": ".tmp/api-storage-04-20261027/final-mcp-v3.log",
+      "sha256": "43c3dfbd54aa14c9653787da3dd32cddac0f303b018bd0a0b86656b892a4fb86",
+      "bytes": 63012
+    },
+    {
+      "path": ".tmp/api-storage-04-20261027/final-related.log",
+      "sha256": "ba143619c0aea7ee6c1753fde0db2a78b43b55ea58a765e9752c3e0592d13945",
+      "bytes": 3619
+    },
+    {
+      "path": ".tmp/api-storage-04-20261027/baseline-group.log",
+      "sha256": "49998660495eeb3434db15b31e46113fabb15929fe830c9b23b31288178616cd",
+      "bytes": 259
+    }
+  ],
+  "limits": [
+    "데이터 루트당 콘텐츠 작성 API 한 프로세스",
+    "서버 프로세스 종료·재시작까지 검증. 정전·OS crash 내구성은 미실행",
+    "SSE 네트워크 단일 전달은 보장하지 않음",
+    "운영 서버 재시작·배포, 실제 외부 Runner/AionUi 실행, 원격 push, Dooray 작성은 미실행",
+    "05 전체 기한·대기열·취소 정책, 06 조회 최적화, 07 독립 통합 검수와 별도 웹 전체 전환은 이번 범위 밖"
+  ],
+  "next": {
+    "required": "없음",
+    "optional": "없음"
+  }
+}

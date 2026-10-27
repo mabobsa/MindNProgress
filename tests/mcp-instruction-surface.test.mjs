@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { MNP_MCP_SERVER_INSTRUCTIONS } from '../src/utils/aiContextInstructions.mjs'
+import { storageWriteTools } from '../mcp/storageRequests.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const fixture = JSON.parse(await readFile(path.join(root, 'tests/fixtures/mcp-tool-input-schema.json'), 'utf8'))
@@ -37,9 +38,14 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
     const tools = [...(await client.listTools()).tools].sort((a, b) => a.name.localeCompare(b.name))
     assert.deepEqual(tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), fixture)
     assert.equal(tools.length, 60)
-    // REQ-MNP-03: 검토 토큰·댓글 기대값·전체 복원 조건의 기존 도구 입력 확장.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'd3961d5e5d33e3c52fe0869dd3f5e02dc09416a67ee651f88863de1b0382985c')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 160)
+    // REQ-MNP-04: 기존 변경 도구의 requestId/resultOnly 호환 확장. 도구 개수는 유지한다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'ed8fe7a10b0970ec5f87d29e59143ed193be4cb545569b4cf8887d985b8b1a9c')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 208)
+    for (const tool of tools.filter((tool) => storageWriteTools.has(tool.name))) {
+      assert.ok(tool.inputSchema.properties.requestId.pattern || tool.inputSchema.properties.proposalRequestId)
+      assert.equal(tool.inputSchema.properties.resultOnly.type, 'boolean')
+      assert.match(tool.description, /변경 본문 없이 결과만 조회/)
+    }
     const metaRecovery = tools.find(tool => tool.name === 'mindnprogress_recover_ai_delegation').inputSchema.properties.untrackedMetaRecovery
     assert.deepEqual(metaRecovery.required, ['path', 'expectedSha256', 'mainCommit'])
     assert.equal(metaRecovery.additionalProperties, false)
@@ -51,7 +57,8 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
         || ['mindnprogress_get_shared_knowledge_review_context', 'mindnprogress_apply_shared_knowledge_review'].includes(tool.name)) continue
       const original = baselineDescriptions.get(tool.name)
       if (!original) continue // 배열로 등록되는 복구 도구는 아래 의미 검사에서 검증한다.
-      assert.equal(tool.description, original.slice(1, -1), `${tool.name}의 기준선 상세 설명이 달라졌습니다.`)
+      const currentDescription = storageWriteTools.has(tool.name) ? tool.description.split(' requestId를 보존해 재전송하세요.')[0] : tool.description
+      assert.equal(currentDescription, original.slice(1, -1), `${tool.name}의 기준선 상세 설명이 달라졌습니다.`)
     }
 
     const descriptions = new Map(tools.map(({ name, description }) => [name, description]))

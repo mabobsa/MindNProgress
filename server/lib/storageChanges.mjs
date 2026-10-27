@@ -4,10 +4,11 @@ import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { replaceFileWithRetry } from './replaceFileWithRetry.mjs'
 
-// 02의 프로세스 내 prepare/commit/rollback 경계. 04의 영속 journal은 이 경계에 연결한다.
-// 권위 파일을 모두 준비한 뒤 교체하고, 겹치는 읽기/쓰기는 같은 자원 잠금으로 차단한다.
-export function createStorageChanges({ root, resources, keyForFile, invalidate = () => {}, io = fs, beforeApply = async () => {} }) {
+// 후보 집합과 메모리 복구를 소유한다. journal을 사용하면 marker 이후에는 redo만 허용한다.
+export function createStorageChanges({ root, resources, keyForFile, invalidate = () => {}, io = fs, beforeApply = async () => {}, journal = null }) {
   const context = new AsyncLocalStorage()
+  const effectHandlers = new Map()
+  const effectRuns = new Set()
   const base = path.resolve(root)
   const current = () => { const value = context.getStore(); return value?.active ? value : null }
   function checked(file) {
@@ -85,16 +86,52 @@ export function createStorageChanges({ root, resources, keyForFile, invalidate =
     await io.writeFile(temporary, content)
     await replaceFileWithRetry(temporary, file)
   }
-  async function run(operation) {
+  async function resumeEffects(record) {
+    if (!record?.terminalAt || record.rejected || effectRuns.has(record.transactionId)) return
+    effectRuns.add(record.transactionId)
+    try {
+    for (const effect of record.effects ?? []) {
+      if (record.effectsDone?.includes(effect.id)) continue
+      try {
+        const handler = effectHandlers.get(effect.kind)
+        if (!handler) throw new Error(`UNKNOWN_STORAGE_EFFECT: ${effect.kind}`)
+        // SSE는 데이터 RMW가 아니다. 재발행할 수 있는 안정 ID와 부모의 완료 기록만 필요하다.
+        if (effect.kind === 'sse') {
+          await handler.run(effect.payload, effect.id)
+          await journal.effectDone(record, effect.id)
+          continue
+        }
+        const transactionId = journal.effectTransactionId(effect.id)
+        const existing = journal.records.get(transactionId)
+        if (existing && !existing.terminalAt) throw new Error('EFFECT_RECOVERY_REQUIRED')
+        if (!existing) await resources.withResources(handler.keys(effect.payload), () => run(
+          () => handler.run(effect.payload, effect.id), { transactionId, effectKind: effect.kind, effectId: effect.id }))
+        else await resumeEffects(existing)
+        if (journal.pending(journal.records.get(transactionId)).length) throw new Error('NESTED_EFFECT_PENDING')
+        await journal.effectDone(record, effect.id)
+      } catch (error) { console.error('[Storage durable effect]', effect.id, error.code ?? error.message) }
+    }
+    } finally { effectRuns.delete(record.transactionId) }
+  }
+  async function run(operation, options = {}) {
     if (current()) return operation(current())
-    const scope = { active: true, files: new Map(), directories: new Set(), undo: [], effects: [], response: null, rejected: false }
+    const scope = { active: true, files: new Map(), directories: new Set(), undo: [], effects: [], durableEffects: [], response: null,
+      responseData: null, rejected: false, keys: [...(resources.current()?.held.keys() ?? [])],
+      transactionId: options.transactionId ?? journal?.transactionId(options.request?.requestId), ...options }
     return context.run(scope, async () => {
       let result
       const prepared = []
       const applied = []
       try {
         result = await operation(scope)
-        if (scope.rejected) { for (const undo of scope.undo.reverse()) undo(); return result }
+        if (scope.rejected) {
+          for (const undo of scope.undo.reverse()) undo()
+          if (journal && scope.request && scope.responseData?.status < 500) scope.record = await journal.reject(scope)
+          return result
+        }
+        if (journal) {
+          if (scope.files.size || scope.durableEffects.length || scope.request || scope.effectId) scope.record = await journal.commit(scope)
+        } else {
         for (const [file, entry] of scope.files) {
           if (entry.after !== null && entry.before?.equals(entry.after) || entry.before === null && entry.after === null) continue
           let temporary = null
@@ -115,7 +152,9 @@ export function createStorageChanges({ root, resources, keyForFile, invalidate =
         for (const directory of scope.directories) {
           try { await io.rmdir(directory) } catch (error) { if (error.code !== 'ENOENT') throw error }
         }
+        }
       } catch (error) {
+        if (error.outcome === 'processing') throw error
         const failures = []
         for (const entry of applied.reverse()) {
           try { await restore(entry.file, entry.before) } catch (failure) { failures.push(failure) }
@@ -131,17 +170,27 @@ export function createStorageChanges({ root, resources, keyForFile, invalidate =
         for (const { temporary } of prepared) if (temporary) await io.rm(temporary, { force: true }).catch(() => {})
         for (const file of scope.files.keys()) invalidate(file)
       }
+      if (journal && scope.record) await resumeEffects(scope.record)
       for (const effect of scope.effects) {
         try { await effect() } catch (error) { console.error('[Storage after commit]', error) }
       }
       return result
     })
   }
-  return { run, current, stage, readFile, writeFile, readdir, stat, rm, replaceFile,
+  return { run, current, stage, readFile, writeFile, readdir, stat, rm, replaceFile, resumeEffects,
+    registerEffect: (kind, handler) => effectHandlers.set(kind, handler),
+    effect: (kind, resource, payload) => {
+      const scope = current()
+      if (!journal || !scope || scope.effectKind === kind) return false
+      const id = `${scope.transactionId}/${kind}/${resource}/${scope.durableEffects.length}`
+      scope.durableEffects.push({ id, kind, payload: structuredClone(payload) })
+      return true
+    },
     has: (file) => current()?.files.has(path.resolve(file)) ?? false,
     onRollback: (undo) => { current()?.undo.push(undo) },
     afterCommit: (effect) => { const scope = current(); if (!scope) return false; scope.effects.push(effect); return true },
-    deferResponse: (status, effect) => { const scope = current(); if (!scope) return false; scope.rejected ||= status >= 400; scope.response = effect; return true },
+    deferResponse: (status, effect, body, headers) => { const scope = current(); if (!scope) return false; scope.rejected ||= status >= 400;
+      scope.responseData = { status, body, headers }; scope.response = () => effect(scope.request && scope.record ? journal.result(scope.record, false) : null); return true },
     detached: (operation) => context.run(null, operation),
   }
 }

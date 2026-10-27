@@ -33,7 +33,10 @@ for (const method of ['readFile', 'writeFile', 'rename', 'rm']) {
       process.send?.({ id, phase: 'reached' })
       await new Promise((resolve) => { barrier.release = resolve })
       barriers.delete(id)
-      if (barrier.fail) throw Object.assign(new Error('주입된 저장 실패'), { code: 'EIO' })
+      if (barrier.fail) {
+        if (barrier.failAfter) await original(...args)
+        throw Object.assign(new Error('주입된 저장 실패'), { code: 'EIO' })
+      }
     }
     return original(...args)
   }

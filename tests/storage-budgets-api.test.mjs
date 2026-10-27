@@ -183,6 +183,31 @@ test('미연결 Runner의 외부 확인과 정상 25초 long-poll 동안 무관�
   t.diagnostic(JSON.stringify({ runnerLongPollMs: Math.round(elapsedMs), storageWaitBudgetMs: 5000 }))
 })
 
+test('원격 풀 HTTP의 실행 전 큐 기한은 503 변경 없음이고 다음 요청을 막지 않는다', { timeout: 25000 }, async (t) => {
+  const api = await storageApi(t, { documents: 3 })
+  const login = await fetch(api.base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: api.env.MNP_ADMIN_EMAIL, password: api.env.MNP_ADMIN_PASSWORD }) })
+  assert.equal(login.status, 200)
+  const signedIn = { Cookie: login.headers.get('set-cookie').split(';')[0] }
+  assert.equal((await api.call('/api/machines', 'POST', { machineId: 'queue-05', label: '격리 큐 검증' }, signedIn)).status, 200)
+  const file = '_remote-workspace-pools.json', before = await api.read(file)
+  const barrier = await api.barrier(file, 'rename')
+  const disable = () => api.call('/api/machines/queue-05/workspace-pool', 'PUT', { poolId: 'pool', enabled: false }, signedIn)
+  const first = disable()
+  await barrier.reached
+  try {
+    const pending = disable()
+    await independent(api, t)
+    const rejected = await pending
+    assert.equal(rejected.status, 503, JSON.stringify(rejected))
+    assert.equal(rejected.body.code, 'LOCK_WAIT_TIMEOUT')
+    assert.equal(rejected.body.outcome, 'not-applied')
+    assert.equal(rejected.body.retryAfterMs, 250)
+    assert.deepEqual(await api.read(file), before)
+  } finally { barrier.release(); await first }
+  assert.equal((await disable()).status, 200)
+})
+
 test('launch callback 외부 확인 중 문서 저장을 허용하고 같은 예약·버전 변경을 재검증한다', { timeout: 35000 }, async (t) => {
   let blocked = true
   const entered = deferred(), release = deferred()

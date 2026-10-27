@@ -55,6 +55,9 @@ export class RemoteWorkspacePool {
     catch (error) {
       // 영속 pendingOperation은 보존하되 재접수 가능한 요청을 메모리 예약으로 영구 차단하지 않는다.
       if (lease && this.reservations.get(lease.leaseId) === token) this.reservations.delete(lease.leaseId)
+      if (lease) throw Object.assign(workspaceError('REMOTE_WORKSPACE_REVALIDATION_PENDING', '외부 작업 이후 로컬 재검증을 완료하지 못했습니다. 보존된 같은 작업으로 결과를 확인하세요.'), {
+        status: 503, outcome: 'processing', retryable: false, storageResourceError: true, cause: error,
+      })
       throw error
     }
     if (!lease) {

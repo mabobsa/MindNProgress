@@ -12118,7 +12118,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           return sendJson(response, 200, result)
         }
         return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
-      } catch (error) { return sendJson(response, 409, { error: error.message, reasonCode: error.reasonCode ?? error.code }) }
+      } catch (error) {
+        if (error.storageResourceError) throw error
+        return sendJson(response, 409, { error: error.message, reasonCode: error.reasonCode ?? error.code })
+      }
     }
 
     const remoteArtifactRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/runner\/workspace-artifacts\/([^/]+)\/(baseline|result|release)\/(manifest|complete|chunks\/\d+)$/)
@@ -12129,7 +12132,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       try {
         const body = request.method === 'POST' ? await readJsonBody(request) : undefined
         return sendJson(response, 200, await remoteWorkspacePool.artifactRequest(machine.machineId, remoteArtifactRoute[2], remoteArtifactRoute[3], remoteArtifactRoute[4], request.method, body))
-      } catch (error) { return sendJson(response, 409, { error: error.message, reasonCode: error.reasonCode ?? error.code }) }
+      } catch (error) {
+        if (error.storageResourceError) throw error
+        return sendJson(response, 409, { error: error.message, reasonCode: error.reasonCode ?? error.code })
+      }
     }
 
     // Runner는 사용자 세션이 아니라 머신 토큰으로 인증한다.
@@ -12207,6 +12213,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       noteRunnerObservedAddress(machine.machineId, request)
       await noteMachineSeen(machine.machineId)
       try { await remoteWorkspacePool.observe(machine.machineId, body?.workspacePool) } catch (error) {
+        if (error.storageResourceError) throw error
         return sendJson(response, 409, { error: error.message, reasonCode: error.reasonCode ?? error.code })
       }
       return sendJson(response, 200, {

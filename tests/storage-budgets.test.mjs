@@ -171,7 +171,9 @@ test('외부 수행 뒤 재획득 실패는 메모리 예약을 해제하고 영
     if (operationIds.length === 1) remote.queue.acquire = () => { throw Object.assign(new Error('대기 포화'), { code: 'WRITE_QUEUE_FULL' }) }
     return { ok: true }
   }
-  await assert.rejects(remote.bindConversation('slow', 'conversation-slow'), { code: 'WRITE_QUEUE_FULL' })
+  await assert.rejects(remote.bindConversation('slow', 'conversation-slow'), {
+    code: 'REMOTE_WORKSPACE_REVALIDATION_PENDING', outcome: 'processing', retryable: false,
+  })
   assert.equal(remote.reservations.size, 0)
   assert.ok(remote.state.leases.slow.pendingOperation)
   assert.equal(remote.state.leases.slow.conversationId, '')

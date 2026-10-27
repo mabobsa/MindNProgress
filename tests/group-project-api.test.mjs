@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { storageControl } from './helpers/storage-api-harness.mjs'
 import { AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, GROUP_COORDINATOR_INSTRUCTION, DOCUMENT_COORDINATOR_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION, GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 
 const projectDirectory = path.resolve(import.meta.dirname, '..')
@@ -102,14 +103,16 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
   await new Promise((resolve) => probe.close(resolve))
   const baseUrl = `http://127.0.0.1:${port}`
   let errors = ''
+  let storage
   async function start({ allowLegacyGroupDelegationCreation = true } = {}) {
-    child = spawn(process.execPath, ['server/index.mjs'], { cwd: projectDirectory, env: {
+    child = spawn(process.execPath, ['--import', './tests/helpers/storage-fs-barrier.mjs', 'server/index.mjs'], { cwd: projectDirectory, env: {
       ...process.env, MNP_DATA_DIR: directory, MNP_API_HOST: '127.0.0.1', MNP_API_PORT: String(port), MNP_WEB_PORT: String(port),
       MNP_AIONUI_URL: `http://127.0.0.1:${fakePort}`, MNP_AI_DELEGATION_POLL_INTERVAL_MS: '100',
       MNP_ALLOW_LEGACY_GROUP_DELEGATION_CREATION: allowLegacyGroupDelegationCreation ? '1' : '0',
       MNP_WORKSPACE_POOL_REGISTRY: path.join(directory, 'no-workspace-pool.json'),
       MNP_ADMIN_EMAIL: 'group-test@mind.local', MNP_ADMIN_PASSWORD: 'GroupTest!2026',
-    }, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
+    }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true })
+    storage = storageControl(child, directory)
     child.stderr.on('data', (chunk) => { errors += chunk })
     await until(async () => { try { return (await fetch(baseUrl + '/api/health')).ok } catch { return false } }, `서버를 시작하지 못했습니다. ${errors}`)
   }
@@ -118,7 +121,8 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     const token = (await readFile(path.join(directory, '_integration-token'), 'utf8')).trim()
     const headers = { Authorization: `Bearer ${token}`, 'X-MNP-Editor-Id': 'group-test-editor', 'Content-Type': 'application/json' }
     async function api(url, method = 'GET', body, extraHeaders = {}) {
-      const response = await fetch(baseUrl + url, { method, headers: { ...headers, ...extraHeaders }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+      const response = await fetch(baseUrl + url, { method, signal: AbortSignal.timeout(15_000), headers: { ...headers, ...extraHeaders }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        .catch((error) => { throw new Error(`${method} ${url}: ${error.message}\n${errors}`, { cause: error }) })
       return { status: response.status, body: await response.json() }
     }
     await api('/api/maps', 'POST', { title: '그룹 밖 문서', map: { nodes: [{ id: 'outside-root', type: 'mind', position: { x: 0, y: 0 }, data: { label: '그룹 밖 원본', description: '', kind: 'root', isWork: false, status: 'planned', progress: 0 } }], edges: [] } })
@@ -558,7 +562,14 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.equal(invalidReplyTarget.status, 400)
     assert.equal(invalidReplyTarget.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_REQUEST_INVALID')
     assert.equal(calls.some((call) => call.operationId === 'gdi:group-instruction-invalid-reply-target'), false)
-    const instructed = await api(instructionUrl, 'POST', instructionArgs, sourceHeaders)
+    const publishing = await storage.barrier('_group-document-instructions.json.', 'writeFile', { prefix: true })
+    const instructing = api(instructionUrl, 'POST', instructionArgs, sourceHeaders)
+    await publishing.reached
+    await storage.tick(100)
+    assert.equal((await api(`/api/maps/${outsideMap}`)).status, 200, '지시 저장 대기 중 무관한 문서를 읽는다.')
+    assert.equal(calls.some((call) => call.operationId === 'gdi:group-instruction-first'), false)
+    publishing.release()
+    const instructed = await instructing
     assert.equal(instructed.status, 202, JSON.stringify(instructed.body))
     assert.equal(instructed.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_DELIVERED', JSON.stringify(instructed.body))
     assert.match(instructed.body.message, /업무 완료를 의미하지 않습니다/)

@@ -34,14 +34,14 @@ function validateSources(value) {
 }
 
 // 그룹 설정은 목록 배치와 분리해 보관한다. 이전 클라이언트의 정렬 저장이 설정을 지우지 않는다.
-export function createGroupProjects({ dataDirectory, replaceFile, listMaps, readMap, saveMap, readLayout, writeLayout, delegations, publicDelegation, documentInstructions = new Map(), publicDocumentInstruction = (item) => item, runtimeSnapshot }) {
+export function createGroupProjects({ dataDirectory, replaceFile, listMaps, readMap, saveMap, readLayout, writeLayout, delegations, publicDelegation, documentInstructions = new Map(), publicDocumentInstruction = (item) => item, runtimeSnapshot, withMutation, readStoredFile = readFile, newMapId = () => `map-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}` }) {
   const directory = path.join(dataDirectory, '_group-projects')
   let queue = Promise.resolve()
-  const exclusive = (action) => {
+  const exclusive = withMutation ?? ((action) => {
     const result = queue.then(action)
     queue = result.catch(() => {})
     return result
-  }
+  })
   const validId = (id) => typeof id === 'string' && /^group-[a-zA-Z0-9_-]{1,100}$/.test(id)
   const fileFor = (id) => {
     if (!validId(id)) throw groupProjectError('올바르지 않은 그룹 ID입니다.')
@@ -49,7 +49,7 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
   }
   async function read(id) {
     try {
-      const project = JSON.parse(await readFile(fileFor(id), 'utf8'))
+      const project = JSON.parse(await readStoredFile(fileFor(id), 'utf8'))
       return withGroupPlanningSources(project, groupPlanningSources(project))
     }
     catch (error) {
@@ -118,7 +118,7 @@ export function createGroupProjects({ dataDirectory, replaceFile, listMaps, read
   }
   async function addDocument(id, title, description, user) {
     const { group, layout } = await find(id)
-    const mapId = `map-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
+    const mapId = newMapId()
     const map = await saveMap(mapId, rootMap(title, description), user, title)
     group.mapIds.push(map.id)
     await writeLayout(layout)

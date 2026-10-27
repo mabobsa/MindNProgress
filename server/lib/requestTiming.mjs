@@ -19,6 +19,7 @@ export function startRequestTiming(request, response, { now = () => performance.
   response.once('finish', finish)
   response.once('close', finish)
   return {
+    addDuration(name, elapsedMs) { stages[name] = Math.round((stages[name] ?? 0) + elapsedMs) },
     async measure(name, operation) {
       const at = now()
       try { return await operation() } finally { stages[name] = Math.round(now() - at) }

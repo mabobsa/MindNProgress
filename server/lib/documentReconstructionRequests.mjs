@@ -5,18 +5,18 @@ import { reconstructionError } from './documentReconstruction.mjs'
 import { proposalHash } from './reconstructionImpact.mjs'
 
 // 제안함은 업무 문서·보관 상태·진행률과 별개다. 제출은 적용 승인이 아니다.
-export async function createReconstructionRequests({ dataDirectory, writeJson, lifecycle, readMap }) {
+export async function createReconstructionRequests({ dataDirectory, writeJson, lifecycle, readMap, withMutation, onRollback = () => {} }) {
   const file = path.join(dataDirectory, '_document-reconstruction-requests.json')
   let records
   try { records = JSON.parse(await readFile(file, 'utf8')) }
   catch (error) { if (error.code !== 'ENOENT') throw error; records = {} }
   let queue = Promise.resolve()
-  const exclusive = (action) => { const result = queue.then(action); queue = result.catch(() => {}); return result }
+  const exclusive = withMutation ?? ((action) => { const result = queue.then(action); queue = result.catch(() => {}); return result })
   const required = (id) => {
     if (!Object.hasOwn(records, id)) throw reconstructionError('정리 요청을 찾을 수 없습니다.', 404)
     return records[id]
   }
-  const save = async (record) => { const next = { ...records, [record.id]: record }; await writeJson(file, next); records = next; return structuredClone(record) }
+  const save = async (record) => { const previous = records; const next = { ...records, [record.id]: record }; await writeJson(file, next); onRollback(() => { records = previous }); records = next; return structuredClone(record) }
   const field = (value, label, max, optional = false) => {
     if (optional && value === undefined) return ''
     if (typeof value !== 'string' || (!optional && !value.trim()) || value.length > max) throw reconstructionError(`${label} 입력을 확인하세요. (최대 ${max}자)`)

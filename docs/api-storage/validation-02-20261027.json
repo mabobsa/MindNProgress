@@ -1,0 +1,227 @@
+{
+  "요구사항": "REQ-MNP-02",
+  "작성시각": "2026-10-27T07:32:25.981Z",
+  "출발커밋": "bb0fd0422b124262a6c55de0e86f863dfde4bb0b",
+  "검증범위": "단일 API 프로세스의 저장 무결성·독립 처리·기존 의미 자체 회귀. 전체 성능 비교나 07 독립 통합 검수는 아님.",
+  "환경": {
+    "운영체제": "win32 10.0.26200 x64",
+    "Node": "v24.13.0",
+    "실행파일": "C:\\Program Files\\nodejs\\node.exe",
+    "CPU": "Intel(R) Core(TM) i7-14700",
+    "논리CPU": 28,
+    "메모리바이트": 68372971520,
+    "임시루트": "C:\\Users\\NHN\\AppData\\Local\\Temp",
+    "외부연동": "모의 Aion 서버, 없는 작업공간 레지스트리, 독립 포트, 운영 자료·Runner 미사용",
+    "새시험": "완료 이력 정리 비활성, 예약 백업은 최초 실행 및 IPC로 직접 호출, 귀속 보정은 실제 시작 후 백그라운드 경로",
+    "요청기한": "격리 harness HTTP 20초; 일반 저장 큐 기한·재시도 정책은 05 소유"
+  },
+  "자료": {
+    "문서": 96,
+    "문서당카드": 20,
+    "기존댓글": 100,
+    "참조원본": 5,
+    "대표문자수": 151642,
+    "대표UTF8바이트": 359826,
+    "대표sha256": "59d3342444dae2f94a618855f51bcf8dbd9a5fc17090650ae54cd1af83634219",
+    "동시성": [
+      1,
+      10,
+      20
+    ],
+    "조건당반복": 3,
+    "회당논리변경": 20
+  },
+  "무결성": {
+    "댓글": {
+      "성공": 180,
+      "파일과조회보존": 180,
+      "중복": 0,
+      "유실": 0
+    },
+    "지식검토": {
+      "성공": 69,
+      "보존": 69,
+      "명시409": 111,
+      "성공유실": 0
+    },
+    "barrier대조": {
+      "출발": {
+        "성공": 2,
+        "보존": 1
+      },
+      "수정": {
+        "성공": 2,
+        "보존": 2,
+        "독립문서": "처리 완료"
+      }
+    },
+    "필수새시험": 17,
+    "관련API시험": 19,
+    "관련모듈시험": 68
+  },
+  "실행": [
+    {
+      "이름": "최종 필수·관련 API",
+      "명령": "node --test --test-concurrency=2 tests/storage-resources.test.mjs tests/storage-concurrency-api.test.mjs tests/storage-lifecycle-api.test.mjs tests/comments-api.test.mjs tests/shared-knowledge-review-api.test.mjs tests/shared-knowledge-audit-api.test.mjs tests/map-content-patch-api.test.mjs tests/card-layout-api.test.mjs tests/ai-conversation-removal-api.test.mjs tests/daily-backup-history-api.test.mjs tests/daily-backup-preview-api.test.mjs tests/event-stream-api.test.mjs tests/ai-workspace-history-api.test.mjs tests/cross-document-card-move-api.test.mjs tests/document-reconstruction-api.test.mjs tests/document-trash-review-api.test.mjs tests/trash-ai-records-api.test.mjs tests/group-project-api.test.mjs tests/ai-delegation-request-failures-api.test.mjs tests/ai-integration-recovery-api.test.mjs",
+      "출력파일": ".tmp/req-mnp02-final-suite.log",
+      "sha256": "82a733e22b579a740b036d48594932f86abde1a426b4debce64abda190b4d975",
+      "결과": {
+        "통과": 36,
+        "실패": 0
+      }
+    },
+    {
+      "이름": "관련 모듈",
+      "명령": "node --test --test-concurrency=2 tests/ai-delegation-request-failures.test.mjs tests/ai-conversation-removal.test.mjs tests/document-reconstruction.test.mjs tests/document-reconstruction-requests.test.mjs tests/document-read-store.test.mjs tests/daily-backup-history.test.mjs tests/card-layout-requests.test.mjs tests/ai-integration-recovery-queue.test.mjs tests/runtime-lifecycle.test.mjs",
+      "출력파일": ".tmp/req-mnp02-unit-final.log",
+      "sha256": "2be378752bd3c447afdb8277ba00bbf17c1c50d95bdaecba77c5bc892a933dc8",
+      "결과": {
+        "통과": 68,
+        "실패": 0
+      }
+    },
+    {
+      "이름": "MCP 전체",
+      "명령": "npm run test:mcp",
+      "출력파일": ".tmp/req-mnp02-mcp-final.log",
+      "sha256": "69edef7ef4ca03a57b08041a247425f7aa197ca898c29db8af5a6939a437fdc9",
+      "결과": {
+        "registeredTools": 60,
+        "calledTools": 60,
+        "totalCalls": 223,
+        "measuredTools": 59,
+        "measuredCalls": 239,
+        "readMeFirstResponseChars": 18298,
+        "selectedContextResponseChars": 25528,
+        "status": "passed"
+      }
+    },
+    {
+      "이름": "소스 lint",
+      "명령": "npm run lint -- server tests scripts src mcp runner",
+      "출력파일": ".tmp/req-mnp02-source-lint.log",
+      "sha256": "bba3c3bb3c5e74aa79fec08e042e9f992cda1a30bc38ea989b5f073103c9630c",
+      "결과": {
+        "오류": 0,
+        "기존경고": 4,
+        "변경파일경고": 0
+      }
+    },
+    {
+      "이름": "빌드",
+      "명령": "npm run build",
+      "출력파일": ".tmp/req-mnp02-build.log",
+      "sha256": "347847bc17a57930ae8a75eb43694da2dddf27eb39e8726e145c44673e33c334",
+      "결과": {
+        "상태": "통과",
+        "경고": "기존 500kB 청크 경고"
+      }
+    },
+    {
+      "이름": "출발 커밋 유실 재현",
+      "명령": "MNP_STORAGE_TEST_SOURCE_ROOT에 출발 커밋 checkout을 지정한 뒤 node --test --test-name-pattern '파일 교체 barrier' tests/storage-concurrency-api.test.mjs",
+      "출력파일": ".tmp/req-mnp02-baseline-barrier.log",
+      "sha256": "f39a781c1b31de63e745063ce8780ed6ff9fba7738f5fc1b1ee562f61ac11a47",
+      "결과": {
+        "상태": "예상 실패",
+        "성공응답": 2,
+        "보존": 1
+      }
+    },
+    {
+      "이름": "기존 MCP 시험 조건 실패 대조",
+      "명령": "출발 커밋 checkout에서 npm run test:mcp",
+      "출력파일": ".tmp/req-mnp02-baseline-mcp.log",
+      "sha256": "61defabf961eb829b402c87b2f725ed7525e86dfbcf7eadcc7ee04241705274b",
+      "결과": {
+        "상태": "기존 시험 실패 확인",
+        "위치": "scripts/test-mcp.mjs:2762",
+        "관측": "공용 대화 삭제 409를 200으로 기대"
+      }
+    }
+  ],
+  "소스해시기준": "UTF-8 내용의 CRLF를 LF로 정규화한 SHA-256",
+  "소스": [
+    {
+      "파일": "server/index.mjs",
+      "sha256": "ab807fc73f1f88afca79342ca61b7943ba18454e0436d9107af3574dfa918573"
+    },
+    {
+      "파일": "server/lib/storageResources.mjs",
+      "sha256": "ba75431d29a31f9060efb039a320a0bc3b83d55474dd8a0d23f47bc6c01abcc0"
+    },
+    {
+      "파일": "server/lib/storageChanges.mjs",
+      "sha256": "5611f11bb66e06a85a31928f044a672e257c559815199c3024d38a0e7a4bb40e"
+    },
+    {
+      "파일": "server/lib/requestTiming.mjs",
+      "sha256": "ce4861e1f8d3ce0b5d62a84d44de0d8bbb53c7dcb75f0c4884cc044f5930e0ef"
+    },
+    {
+      "파일": "server/lib/aiConversationRemoval.mjs",
+      "sha256": "df7b788a0a97d5a15b5f0b42c78e75562ecb5993d7c7a02d80b09842e14605e1"
+    },
+    {
+      "파일": "server/lib/aiDelegationRequestFailures.mjs",
+      "sha256": "dd561665ff4c5d044244569aa8520d4eed82dc9508cc1c800ad0aca8cf5652c1"
+    },
+    {
+      "파일": "server/lib/cardLayoutRequests.mjs",
+      "sha256": "ff264572947e93867b99798a587e4504dc685decf69d32df6e96b4119a00a2c5"
+    },
+    {
+      "파일": "server/lib/documentReconstruction.mjs",
+      "sha256": "cb783fdb712072b0c0d109e7a1a49366ac9c76ec66ff067bbb72e1e993b71125"
+    },
+    {
+      "파일": "server/lib/documentReconstructionRequests.mjs",
+      "sha256": "38f21444a6a8378e6cfede36cdd16a985f4128575bdf78397ab55fefba4f444f"
+    },
+    {
+      "파일": "server/lib/groupProjects.mjs",
+      "sha256": "4dc86a43b60e25c069889dc6d3e5670bc562da330bbc0d9f8c5d70cc56edc670"
+    },
+    {
+      "파일": "scripts/test-mcp.mjs",
+      "sha256": "c72a92e090e04edcfdb1e77c140d20b2721dc00878bed0920e22a60af87d91af"
+    },
+    {
+      "파일": "tests/group-project-api.test.mjs",
+      "sha256": "c1c5c73acf7eff6a68ec57b3773800fe1bb71d3c1f1cfc2f14e5db37aaf0a917"
+    },
+    {
+      "파일": "tests/document-reconstruction-api.test.mjs",
+      "sha256": "e409df2932b0a2ef0dcf2b87ec42dc608589a811f5e9e02f154df97a3cde08ba"
+    },
+    {
+      "파일": "tests/helpers/storage-api-harness.mjs",
+      "sha256": "649a85b4e6ac44b217e9f88e4d7880c4c638a5c9125e441709cf4611ed35bee4"
+    },
+    {
+      "파일": "tests/helpers/storage-fs-barrier.mjs",
+      "sha256": "3d8b029c53afb4699f11b5a7f7b8599b762d3ee3fe0877df536646a30e907f5e"
+    },
+    {
+      "파일": "tests/storage-resources.test.mjs",
+      "sha256": "9ea25f5b097a775a6a1e9c3b87f069fe2bdacd51914ff826ab55f564920ccfe3"
+    },
+    {
+      "파일": "tests/storage-concurrency-api.test.mjs",
+      "sha256": "e8984de158575452090687ca4443acf90fb9508759b53b38d62ef7afa18e06b6"
+    },
+    {
+      "파일": "tests/storage-lifecycle-api.test.mjs",
+      "sha256": "247bb3ab193f397f41a8e834c42310adccaca3925577047ac5a6253e3f05fb2a"
+    }
+  ],
+  "미실행": [
+    "04 일반 요청 중복 방지·프로세스 강제 종료 후 journal 복구",
+    "05 전체 큐 한계·취소·기한 정책",
+    "06 조회 비용 전후 비교",
+    "07 독립 통합·전체 성능·운영 배포 검수",
+    "별도 웹 전체 소비자 전환과 2MB/5MB/10MB 전체 인수"
+  ],
+  "필수미완료": "없음",
+  "선택개선": "없음"
+}

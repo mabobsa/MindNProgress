@@ -32,7 +32,7 @@ export async function ensureConversationArchived({ call, conversationId, assertI
   return 'archived'
 }
 
-export function createAiConversationRemoval({ readContext, assertSafe, call, assertIdle, acquireMutation, unlink }) {
+export function createAiConversationRemoval({ readContext, assertSafe, call, assertIdle, acquireMutation, unlink, withMutation }) {
   const removing = new Set()
   return {
     isRemoving: (id) => removing.has(id),
@@ -51,8 +51,7 @@ export function createAiConversationRemoval({ readContext, assertSafe, call, ass
           })
         }
         // 외부 호출 중에는 전역 문서 변경 잠금을 보유하지 않는다. 마지막 쓰기에서 최신 문서를 다시 읽는다.
-        const release = await acquireMutation()
-        try {
+        const commit = async () => {
           const current = await readContext(user, mapId, cardId, conversationId)
           if (current.link) {
             if (!initial.link || current.machineId !== initial.machineId
@@ -62,7 +61,10 @@ export function createAiConversationRemoval({ readContext, assertSafe, call, ass
             await assertSafe(current, conversationId)
           }
           return { ...await unlink(current, conversationId, user), archiveState }
-        } finally { release() }
+        }
+        if (withMutation) return await withMutation(mapId, commit)
+        const release = await acquireMutation()
+        try { return await commit() } finally { release() }
       } finally { removing.delete(conversationId) }
     },
   }

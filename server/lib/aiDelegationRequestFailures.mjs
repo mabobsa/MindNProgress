@@ -86,9 +86,21 @@ export function safeDelegationFailureMessage(message, instruction = '') {
 }
 
 // Request failures are not executable delegations and never enter the delegation poller.
-export async function createAiDelegationRequestFailures({ filePath, readJson, writeJson, deletedMapIds = new Set() }) {
+export async function createAiDelegationRequestFailures({ filePath, readJson, writeJson, deletedMapIds = new Set(), withMutation, onRollback = () => {} }) {
   let records = await readJson(filePath)
   let queue = Promise.resolve()
+  const exclusive = (action) => {
+    const protectedAction = async () => {
+      const previous = records
+      const previousDeleted = [...deletedMapIds]
+      onRollback(() => { records = previous; deletedMapIds.clear(); for (const id of previousDeleted) deletedMapIds.add(id) })
+      return action()
+    }
+    if (withMutation) return withMutation(protectedAction)
+    const result = queue.catch(() => {}).then(protectedAction)
+    queue = result.catch(() => {})
+    return result
+  }
   return {
     record(context, { status, reasonCode, message }) {
       const action = async () => {
@@ -116,9 +128,7 @@ export async function createAiDelegationRequestFailures({ filePath, readJson, wr
         records = next
         return publicFailure(record)
       }
-      const result = queue.catch(() => {}).then(action)
-      queue = result.catch(() => {})
-      return result
+      return exclusive(action)
     },
     purgeMaps(mapIds) {
       const ids = new Set(mapIds)
@@ -130,9 +140,7 @@ export async function createAiDelegationRequestFailures({ filePath, readJson, wr
         for (const mapId of ids) deletedMapIds.add(mapId)
         return removedCount
       }
-      const result = queue.catch(() => {}).then(action)
-      queue = result.catch(() => {})
-      return result
+      return exclusive(action)
     },
     list({ mapId, parentCardId, targetCardId, delegations }) {
       return records.filter(item => (item.parentMapId === mapId || item.mapId === mapId)
@@ -154,9 +162,7 @@ export async function createAiDelegationRequestFailures({ filePath, readJson, wr
         })
         if (changed) { await writeJson(filePath, next); records = next }
       }
-      const result = queue.catch(() => {}).then(action)
-      queue = result.catch(() => {})
-      return result
+      return exclusive(action)
     },
     validateRetry(context, requestId, delegations) {
       if (requestId === undefined) return null
@@ -190,9 +196,7 @@ export async function createAiDelegationRequestFailures({ filePath, readJson, wr
         }
         return { requestFailure: verificationView(record, delegations, records) }
       }
-      const result = queue.catch(() => {}).then(action)
-      queue = result.catch(() => {})
-      return result
+      return exclusive(action)
     },
     get(id) {
       const record = records.find(item => item.id === id)
@@ -223,9 +227,7 @@ export async function createAiDelegationRequestFailures({ filePath, readJson, wr
         records = next
         return { requestFailure: verificationView(updated, delegations, records), repeated: false }
       }
-      const result = queue.catch(() => {}).then(action)
-      queue = result.catch(() => {})
-      return result
+      return exclusive(action)
     },
     resolve({ mapId, failureId, replacementDelegationId, expectedUpdatedAt, confirmSameWork, note, actorId }, delegations) {
       const action = async () => {
@@ -251,9 +253,7 @@ export async function createAiDelegationRequestFailures({ filePath, readJson, wr
         records = next
         return { requestFailure: publicFailure(updated), repeated: false }
       }
-      const result = queue.catch(() => {}).then(action)
-      queue = result.catch(() => {})
-      return result
+      return exclusive(action)
     },
   }
 }

@@ -49,6 +49,7 @@ async function startMockAionUi({
   conversationWorkspace = mockLiveConversationWorkspace,
 } = {}) {
   let conversationRuntimeState = 'running'
+  let conversationArchivedAt = null
   const dispatchRequests = []
   const conversationTitleUpdates = []
   const conversationMessageRequests = []
@@ -77,6 +78,13 @@ async function startMockAionUi({
       }])
     }
     if (request.url === '/api/providers') return send([])
+    if (request.url === `/api/sidebar/conversation/${conversationId}/archive-state` && request.method === 'GET') {
+      return send({ conversation_id: conversationId, exists: true, archived_at: conversationArchivedAt })
+    }
+    if (request.url === `/api/sidebar/conversation/${conversationId}/archive` && request.method === 'POST') {
+      conversationArchivedAt ??= Date.now()
+      return send({ conversation_id: conversationId, archived_at: conversationArchivedAt })
+    }
     if (request.url === '/api/skills') return send([])
     if (request.url === '/api/mcp/servers') return send([])
     if (request.url === '/api/internal/conversation-runtimes/active') {
@@ -2755,11 +2763,20 @@ async function main() {
     assert.equal(deleteLinkEditorLoginResponse.status, 200)
     editorSessionCookie = deleteLinkEditorLoginResponse.headers.get('set-cookie')?.split(';')[0]
     assert.ok(editorSessionCookie, '대화 연결 삭제용 테스트 편집자 세션 쿠키가 없습니다.')
+    const sharedConversationLinkResponse = await fetch(`${apiBaseUrl}/api/maps/${encodeURIComponent(mapId)}/cards/task-a/ai-conversations/conversation-test`, {
+      method: 'DELETE', headers: { Cookie: editorSessionCookie },
+    })
+    assert.equal(sharedConversationLinkResponse.status, 409)
+    assert.equal((await sharedConversationLinkResponse.json()).code, 'AI_CONVERSATION_REMOVAL_BLOCKED')
+    // 지식선 검수에서 branch-a에 만든 공용 연결을 해제한 뒤 단독 대화 삭제를 검사한다.
+    await invoke('mindnprogress_update_card', { mapId, cardId: 'branch-a',
+      data: { aiConversationId: null, aiConversations: [] }, responseMode: 'affected' })
+    mockAionUi.setConversationRuntimeState('idle')
     const deleteConversationLinkResponse = await fetch(`${apiBaseUrl}/api/maps/${encodeURIComponent(mapId)}/cards/task-a/ai-conversations/conversation-test`, {
       method: 'DELETE',
       headers: { Cookie: editorSessionCookie, 'X-MNP-Client': 'mcp-test-client' },
     })
-    assert.equal(deleteConversationLinkResponse.status, 200)
+    assert.equal(deleteConversationLinkResponse.status, 200, await deleteConversationLinkResponse.clone().text())
     const deletedConversationLink = await deleteConversationLinkResponse.json()
     assert.equal(deletedConversationLink.removedConversationId, 'conversation-test')
     assert.equal(deletedConversationLink.latestConversationId, null)
@@ -2776,7 +2793,8 @@ async function main() {
       method: 'DELETE',
       headers: { Cookie: editorSessionCookie },
     })
-    assert.equal(repeatedDeleteConversationLinkResponse.status, 404)
+    assert.equal(repeatedDeleteConversationLinkResponse.status, 200)
+    assert.equal((await repeatedDeleteConversationLinkResponse.json()).archiveState, 'unlinked')
 
     const groupLibrary = await invoke('mindnprogress_list_documents', {})
     const unconfiguredGroup = await invoke('mindnprogress_get_group_context', { groupId: 'group-mcp-regression' })
@@ -3013,6 +3031,8 @@ async function main() {
       '실패한 도구 호출이 계측되지 않았습니다.',
     )
 
+    assert.doesNotMatch(serverLogs.join(''), /RESOURCE_(?:NOT_HELD|ORDER_VIOLATION|UPGRADE_FORBIDDEN)/,
+      '요청에서 분리한 귀속·위임 저장이 보호 문맥을 우회하면 안 됩니다.')
     console.log(JSON.stringify({
       registeredTools: registeredToolNames.length,
       calledTools: calledTools.size,

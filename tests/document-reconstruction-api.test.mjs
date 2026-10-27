@@ -246,7 +246,8 @@ test('보관·전환 HTTP/MCP 경로는 임시 서버에서 원본·댓글·이�
   assert.equal((await api(trashArchiveUrl, 'PATCH', { baseVersion: activeRestored.version, baseLifecycleVersion: activeRestored.lifecycleVersion, archived: true })).status, 200)
   const rearchived = (await api(`/api/maps/${trashFixture.id}`)).body.map
   assert.equal((await api(trashArchiveUrl, 'DELETE', { baseVersion: rearchived.version, baseLifecycleVersion: rearchived.lifecycleVersion })).status, 200)
-  assert.equal((await api('/api/maps/trash', 'DELETE', { mapIds: [trashFixture.id] })).status, 200)
+  const purged = await api('/api/maps/trash', 'DELETE', { mapIds: [trashFixture.id] })
+  assert.equal(purged.status, 200, JSON.stringify(purged.body) + stderr)
   await assert.rejects(readFile(trashFile), { code: 'ENOENT' })
   await assert.rejects(readFile(trashComments), { code: 'ENOENT' })
   assert.equal((await api('/api/maps/trash')).body.maps.some((map) => map.id === trashFixture.id), false)

@@ -6,12 +6,12 @@ import { validateLayoutMeasurements } from '../../src/utils/mindMapLayout.mjs'
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const fail = (message, status = 409) => { throw Object.assign(new Error(message), { status, code: 'CARD_LAYOUT_INVALID', reconstructionError: true }) }
-export async function createCardLayoutRequests({ dataDirectory, writeJson, readSnapshot, savePositions, assertWritable, now = Date.now }) {
+export async function createCardLayoutRequests({ dataDirectory, writeJson, readSnapshot, savePositions, assertWritable, now = Date.now, withMutation, onRollback = () => {} }) {
   const file = path.join(dataDirectory, '_card-layout-requests.json')
   let records
   try { records = JSON.parse(await readFile(file, 'utf8')) } catch (error) { if (error.code !== 'ENOENT') throw error; records = {} }
   let queue = Promise.resolve()
-  const exclusive = (action) => { const result = queue.then(action); queue = result.catch(() => {}); return result }
+  const exclusive = withMutation ?? ((action) => { const result = queue.then(action); queue = result.catch(() => {}); return result })
   const cache = new Map()
   const recordFor = (id, user) => {
     const record = Object.hasOwn(records, id) ? records[id] : null
@@ -20,7 +20,7 @@ export async function createCardLayoutRequests({ dataDirectory, writeJson, readS
     return record
   }
   const serialize = (record) => ({ ...structuredClone(record), target: validateCardLayoutTarget(record.target) })
-  const persist = async (record) => { const normalized = serialize(record); const next = { ...records, [record.id]: normalized }; await writeJson(file, next); records = next; return structuredClone(normalized) }
+  const persist = async (record) => { const previous = records; const normalized = serialize(record); const next = { ...records, [record.id]: normalized }; await writeJson(file, next); onRollback(() => { records = previous }); records = next; return structuredClone(normalized) }
   const signature = (snapshot) => hash({ map: snapshot.map, renderMap: snapshot.renderMap })
   const current = async (record) => {
     if (record.state !== 'open') fail('종료된 배치 요청입니다. 새 요청을 시작하세요.')

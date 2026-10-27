@@ -210,7 +210,7 @@ export function validateReconstruction(plan, sourceMaps, { isValidMap, targetExi
 }
 
 // 보관·전환 상태는 문서 원문과 분리한다. 한 파일의 원자적 교체가 활성 문서 전환점이다.
-export async function createDocumentReconstruction({ dataDirectory, writeJson, readMap, saveMap, listMaps, readLayout, checkIdle, isValidMap, readComments = async () => [], checkGroup = async () => {}, groupContext = async () => [], proposalBaseline = () => null, projectReferenceData = (local) => local }) {
+export async function createDocumentReconstruction({ dataDirectory, writeJson, readMap, saveMap, listMaps, readLayout, checkIdle, isValidMap, readComments = async () => [], checkGroup = async () => {}, groupContext = async () => [], proposalBaseline = () => null, projectReferenceData = (local) => local, withMutation, onRollback = () => {} }) {
   const file = path.join(dataDirectory, '_document-lifecycle.json')
   let state
   try { state = JSON.parse(await readFile(file, 'utf8')) }
@@ -232,8 +232,8 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
     while (previews.size > 20) previews.delete(previews.keys().next().value)
     return structuredClone(published)
   }
-  const exclusive = (action) => { const result = queue.then(action); queue = result.catch(() => {}); return result }
-  async function persist(next) { await writeJson(file, next); state = next }
+  const exclusive = withMutation ?? ((action) => { const result = queue.then(action); queue = result.catch(() => {}); return result })
+  async function persist(next) { const previous = state; await writeJson(file, next); onRollback(() => { state = previous }); state = next }
   const metadata = (id) => state.documents[id] ?? {}
   const get = (id) => state.operations[id] ?? null
   const publicRecord = (record) => record ? { ...record, plan: undefined } : null
@@ -515,7 +515,14 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
     for (const id of record.targetMapIds) state.documents[id] = { archivedAt: new Date().toISOString(), archiveReason: record.error, reconstructionId: record.id }
     await persist(structuredClone(state))
   }
-  return { metadata, metadataSnapshot: () => state.documents, isUnavailable, assertWritable, projectLayout, context, choices, preview: inspect, inspectRenderedLayout, apply, archive, setArchivedTrash, rollback,
+  const advanceLifecycle = async (id, currentVersion = 0) => {
+    const next = structuredClone(state)
+    const lifecycleVersion = Math.max(metadata(id).lifecycleVersion ?? 0, currentVersion) + 1
+    next.documents[id] = { ...metadata(id), lifecycleVersion }
+    await persist(next)
+    return lifecycleVersion
+  }
+  return { metadata, metadataSnapshot: () => state.documents, isUnavailable, assertWritable, projectLayout, context, choices, preview: inspect, inspectRenderedLayout, apply, archive, setArchivedTrash, advanceLifecycle, rollback,
     list: () => Object.values(state.operations).map(publicRecord).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     get: (id) => publicRecord(get(id)) }
 }

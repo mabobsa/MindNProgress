@@ -111,8 +111,9 @@ test('댓글 생성과 알림 읽음·생성이 경쟁해도 사용자 배열을
 test('예약 백업이 저장과 겹쳐도 최신 성공 버전의 백업을 과거 후보로 덮어쓰지 않는다', { timeout: 30_000 }, async (t) => {
   const api = await storageApi(t, { documents: 3 })
   const directory = path.join(api.data, '_daily-backups/map-bench-0')
-  const [file] = (await readdir(directory)).filter((name) => name.endsWith('.json'))
-  assert.ok(file)
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+  const file = `${today}.json`
+  assert.ok((await readdir(directory)).includes(file))
   // 이 시험 전용 루트에서만 오늘의 예약 생성 조건을 다시 만든다.
   await rm(path.join(directory, file))
   const barrier = await api.barrier(`_daily-backups/map-bench-0/${file}`, 'rename')

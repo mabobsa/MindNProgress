@@ -1,5 +1,6 @@
 import { RuntimeStoppingError, isRuntimeStoppingError } from './runtimeStopping.mjs'
 import { setMaxListeners } from 'node:events'
+import { readBoundedBody } from './storageBudget.mjs'
 
 function requestLabel(request) {
   const resources = new Set(['maps', 'machines', 'integrations', 'ai-workspaces', 'ai-delegations', 'document-groups', 'users', 'auth'])
@@ -33,22 +34,8 @@ export function createRuntimeLifecycle() {
     signal: controller.signal,
     throwIfStopping() { controller.signal.throwIfAborted() },
     async readJsonBody(request) {
-      const abort = () => { if (!request.complete) request.destroy(controller.signal.reason) }
-      controller.signal.throwIfAborted()
-      controller.signal.addEventListener('abort', abort, { once: true })
-      try {
-        const chunks = []
-        let size = 0
-        for await (const chunk of request) {
-          size += chunk.length
-          if (size > 2_000_000) throw new Error('PAYLOAD_TOO_LARGE')
-          chunks.push(chunk)
-        }
-        return chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString('utf8'))
-      } catch (error) {
-        if (!request.complete && controller.signal.aborted) throw controller.signal.reason
-        throw error
-      } finally { controller.signal.removeEventListener('abort', abort) }
+      const bytes = await readBoundedBody(request, 2_000_000, controller.signal)
+      return bytes.length ? JSON.parse(bytes.toString('utf8')) : {}
     },
     request(handler) {
       return (request, response) => {

@@ -6,6 +6,7 @@ import { layoutMindMap, verifyRenderedLayout, MIND_MAP_LAYOUT_VERSION } from '..
 import { applyProgressRollup } from '../../src/utils/progressRollup.mjs'
 import { impactHash, inspectReconstructionImpact } from './reconstructionImpact.mjs'
 import { groupPlanningBaseline } from '../../src/utils/groupPlanningSources.mjs'
+import { createResourceQueue } from './storageBudget.mjs'
 
 export function reconstructionError(message, status = 400, code = 'RECONSTRUCTION_INVALID', details = undefined) {
   return Object.assign(new Error(message), { status, code, reconstructionError: true, ...(details ? { details } : {}) })
@@ -13,24 +14,8 @@ export function reconstructionError(message, status = 400, code = 'RECONSTRUCTIO
 
 // 평소 문서 요청은 병렬 실행하고, 보관·전환만 진행 중인 변경을 기다려 독점한다.
 export function createDocumentMutationGate() {
-  const pending = []
-  let active = 0
-  let exclusive = false
-  const drain = () => {
-    while (pending.length && !exclusive) {
-      if (pending[0].exclusive && active > 0) return
-      const next = pending.shift()
-      active++
-      exclusive = next.exclusive
-      let released = false
-      next.resolve(() => {
-        if (released) return
-        released = true
-        active--; exclusive = false; drain()
-      })
-    }
-  }
-  return (isExclusive = false) => new Promise((resolve) => { pending.push({ exclusive: isExclusive, resolve }); drain() })
+  const queue = createResourceQueue()
+  return (isExclusive = false) => queue.acquire('catalog', isExclusive ? 'write' : 'read')
 }
 
 export const reconstructionSourceHash = (map) => createHash('sha256').update(JSON.stringify({
@@ -215,7 +200,7 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
   let state
   try { state = JSON.parse(await readFile(file, 'utf8')) }
   catch (error) { if (error.code !== 'ENOENT') throw error; state = { version: 1, documents: {}, operations: {} } }
-  let queue = Promise.resolve()
+  const mutationQueue = createDocumentMutationGate()
   const previewSecret = randomBytes(32)
   const lockedIds = new Set()
   const previewHash = (value) => createHmac('sha256', previewSecret).update(JSON.stringify(canonicalValue(value))).digest('hex')
@@ -232,7 +217,7 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
     while (previews.size > 20) previews.delete(previews.keys().next().value)
     return structuredClone(published)
   }
-  const exclusive = withMutation ?? ((action) => { const result = queue.then(action); queue = result.catch(() => {}); return result })
+  const exclusive = withMutation ?? (async (action) => { const release = await mutationQueue(true); try { return await action() } finally { release() } })
   async function persist(next) { const previous = state; await writeJson(file, next); onRollback(() => { state = previous }); state = next }
   const metadata = (id) => state.documents[id] ?? {}
   const get = (id) => state.operations[id] ?? null

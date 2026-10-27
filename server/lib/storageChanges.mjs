@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { replaceFileWithRetry } from './replaceFileWithRetry.mjs'
+import { currentStorageBudget } from './storageBudget.mjs'
 
 // 후보 집합과 메모리 복구를 소유한다. journal을 사용하면 marker 이후에는 redo만 허용한다.
 export function createStorageChanges({ root, resources, keyForFile, invalidate = () => {}, io = fs, beforeApply = async () => {}, journal = null }) {
@@ -30,6 +31,7 @@ export function createStorageChanges({ root, resources, keyForFile, invalidate =
     return encoding ? entry.after.toString(encoding) : Buffer.from(entry.after)
   }
   async function stage(file, content) {
+    currentStorageBudget()?.assert()
     const scope = current()
     if (!scope) throw new Error('STORAGE_CHANGE_REQUIRED')
     const absolute = checked(file)
@@ -128,6 +130,8 @@ export function createStorageChanges({ root, resources, keyForFile, invalidate =
       let result
       const prepared = []
       const applied = []
+      const budget = currentStorageBudget()
+      let persistStarted
       try {
         result = await operation(scope)
         if (scope.rejected) {
@@ -135,6 +139,8 @@ export function createStorageChanges({ root, resources, keyForFile, invalidate =
           if (journal && scope.request && scope.responseData?.status < 500) scope.record = await journal.reject(scope)
           return result
         }
+        budget?.prepare()
+        persistStarted = Date.now()
         if (journal) {
           if (scope.files.size || scope.durableEffects.length || scope.request || scope.effectId) scope.record = await journal.commit(scope)
         } else {
@@ -172,6 +178,7 @@ export function createStorageChanges({ root, resources, keyForFile, invalidate =
         }
         throw error
       } finally {
+        if (budget && persistStarted) budget.persistMs += Date.now() - persistStarted
         scope.active = false
         for (const { temporary } of prepared) if (temporary) await io.rm(temporary, { force: true }).catch(() => {})
         for (const file of scope.files.keys()) invalidate(file)

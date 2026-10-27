@@ -12,6 +12,10 @@ globalThis.setInterval = (callback, delay, ...args) => {
   return setIntervalOriginal(callback, delay, ...args)
 }
 process.on('message', (value) => {
+  if (value?.action === 'enable-cleanup') {
+    process.env.MNP_COMPLETED_AI_CLEANUP_DISABLED = '0'
+    process.send?.({ id: value.id, phase: 'cleanup-enabled' })
+  }
   if (value?.action === 'arm') {
     barriers.set(value.id, { ...value, remaining: value.skip ?? 0 })
     process.send?.({ id: value.id, phase: 'armed' })

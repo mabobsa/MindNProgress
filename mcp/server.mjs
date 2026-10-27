@@ -33,6 +33,7 @@ import { createContentPreconditions, commentContentHash, commentResolvedHash, co
 import { createMnpApiConnectionResolver } from './apiConnection.mjs'
 import { AI_USAGE_GUIDE, buildAiUsageResult } from './aiUsage.mjs'
 import { createMcpStorageRequests, storageWriteTools } from './storageRequests.mjs'
+import { retryStorageRequest, requestDeadlineError } from './requestRetry.mjs'
 
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dataDirectory = path.resolve(String(process.env.MNP_DATA_DIR ?? '').trim() || path.join(projectDirectory, 'server', 'data'))
@@ -276,6 +277,15 @@ const productGuide = {
 }
 
 async function apiRequest(pathname, init = {}) {
+  const scope = storageRequests.current()
+  const storageWrite = scope && !init.storageResultOnly && !['GET', 'HEAD', 'OPTIONS'].includes(String(init.method ?? 'GET').toUpperCase())
+    && !pathname.startsWith('/api/integrations/')
+  if (!storageWrite) return apiRequestOnce(pathname, init)
+  return retryStorageRequest(() => apiRequestOnce(pathname, init), { deadlineAt: scope.deadlineAt,
+    onRetry: (attempt) => { scope.retries = attempt } })
+}
+
+async function apiRequestOnce(pathname, init = {}) {
   const storageScope = storageRequests.current()
   if (storageScope && !init.storageResultOnly && !['GET', 'HEAD', 'OPTIONS'].includes(String(init.method ?? 'GET').toUpperCase())
     && !pathname.startsWith('/api/integrations/')) {
@@ -335,6 +345,8 @@ async function apiRequest(pathname, init = {}) {
     }
   }
   const storageWrite = storageScope && (storageResultOnly || mutatesState && !pathname.startsWith('/api/integrations/'))
+  const remainingMs = storageScope && !storageResultOnly ? Math.min(timeoutMs, storageScope.deadlineAt - Date.now()) : timeoutMs
+  if (remainingMs <= 0) throw requestDeadlineError()
   let response
   try { response = await fetch(`${connection.apiBaseUrl}${pathname}`, {
     ...requestInit,
@@ -352,12 +364,13 @@ async function apiRequest(pathname, init = {}) {
       ...(requestAttributionContinuation ? { 'X-MNP-AI-Request-Attribution-Continuation': 'true' } : {}),
       ...(requestInit.body ? { 'Content-Type': 'application/json' } : {}),
       ...(storageWrite ? { 'Idempotency-Key': storageScope.requestId,
+        ...(!storageResultOnly ? { 'X-MNP-Deadline-At': String(storageScope.deadlineAt), 'X-MNP-Retry-Count': String(storageScope.retries) } : {}),
         'X-MNP-Write-Map-Id': storageScope.identity.mapId, 'X-MNP-Write-Card-Id': storageScope.identity.cardId,
         ...(storageScope.intentDigest ? { 'X-MNP-Intent-Digest': storageScope.intentDigest } : {}),
         ...(storageResultOnly ? { 'X-MNP-Result-Only': '1' } : {}) } : {}),
       ...requestInit.headers,
     },
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: AbortSignal.timeout(Math.max(1, remainingMs)),
   }) } catch (error) {
     if (storageWrite) Object.assign(error, { outcome: 'unknown', reasonCode: 'REQUEST_RESPONSE_UNKNOWN', requestId: storageScope.requestId })
     throw error
@@ -385,6 +398,7 @@ async function apiRequest(pathname, init = {}) {
     error.conflicts = body?.conflicts
     error.outcome = body?.outcome
     error.retryable = body?.retryable
+    error.retryAfterMs = body?.retryAfterMs
     error.requestFailure = body?.requestFailure
     error.requestId = body?.requestId
     error.transactionId = body?.transactionId

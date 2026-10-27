@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdir, readFile, writeFile, rename, link, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { newStorageRequestId, storageDigest, validateStorageRequestId } from '../server/lib/storageJournal.mjs'
+import { createStorageBudget } from '../server/lib/storageBudget.mjs'
 
 export const storageWriteTools = new Set([
   'set_document_archive', 'submit_card_layout_proposal', 'submit_reconstruction_proposal', 'apply_reconstruction',
@@ -23,6 +24,8 @@ export function createMcpStorageRequests(directory) {
     await rename(temporary, scope.file)
   }
   async function run(name, input, identity, operation) {
+    const startedAt = Date.now()
+    const totalMs = /reconstruction|move_card/.test(name) ? 60_000 : 30_000
     const requestId = input.requestId ?? newStorageRequestId()
     validateStorageRequestId(requestId, Date.now(), true)
     if (input.resultOnly && !input.requestId) throw new Error('resultOnly에는 requestId가 필요합니다.')
@@ -32,9 +35,11 @@ export function createMcpStorageRequests(directory) {
     const previous = queues.get(file) ?? Promise.resolve()
     let release
     const done = new Promise((resolve) => { release = resolve })
-    queues.set(file, done)
-    await previous
+    const queued = previous.then(() => done)
+    queues.set(file, queued)
+    const waiting = createStorageBudget({ totalMs })
     try {
+      await waiting.wait(() => previous, 'join')
       let record
       try { record = JSON.parse(await readFile(file, 'utf8')) } catch (error) { if (error.code !== 'ENOENT') throw error }
       if (!record) {
@@ -42,11 +47,14 @@ export function createMcpStorageRequests(directory) {
       }
       const intentMismatch = !input.resultOnly && record && record.intentDigest !== intentDigest
       record ??= { requestId, intentDigest }
-      const scope = { requestId, intentDigest: input.resultOnly ? '' : intentDigest, intentMismatch, file, record, identity, receipt: null }
+      record.deadlineAt ??= startedAt + totalMs
+      const scope = { requestId, intentDigest: input.resultOnly ? '' : intentDigest, intentMismatch, file, record, identity, receipt: null,
+        deadlineAt: input.resultOnly ? Date.now() + totalMs : record.deadlineAt, retries: 0 }
       return await context.run(scope, () => operation(scope))
     } finally {
       release()
-      if (queues.get(file) === done) queues.delete(file)
+      if (queues.get(file) === queued) void queued.then(() => { if (queues.get(file) === queued) queues.delete(file) })
+      waiting.finish('joined')
     }
   }
   async function prepare(pathname, init) {
@@ -65,6 +73,7 @@ export function createMcpStorageRequests(directory) {
         const winner = JSON.parse(await readFile(`${scope.file}.prepared`, 'utf8'))
         if (winner.intentDigest !== scope.intentDigest) throw Object.assign(new Error('REQUEST_ID_REUSED'), { code: 'REQUEST_ID_REUSED', reasonCode: 'REQUEST_ID_REUSED' })
         scope.record = winner
+        scope.deadlineAt = winner.deadlineAt ?? scope.deadlineAt
         scope.canonicalResponse = true
       }
     } finally { await rm(temporary, { force: true }) }

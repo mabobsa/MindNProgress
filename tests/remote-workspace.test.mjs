@@ -267,7 +267,14 @@ test('봉인 전에 접수된 대기 중 chunk는 완료 시 거절되고 정리
   const sealed = await f.remote.command(f.remote.state.leases[lease.leaseId], 'seal', { checkpointRound: 1 })
   const chunk = await f.remote.artifacts.chunk(lease.leaseId, 'result', 0)
   let resume, cleanupStarted
-  f.remote.artifactQueues.set(`${lease.leaseId}:result`, new Promise((resolve) => { resume = resolve }))
+  // 큐 구현의 변경에 맞춰 접수 직후 스케줄러를 정지한다. 기한 시험은 storage-budgets가 맡고
+  // 여기서는 기존의 완료 후 재검증·파일 재생성 금지 판정을 그대로 확인한다.
+  const acquire = f.remote.artifactLocks.acquire
+  f.remote.artifactLocks.acquire = (key, ...args) => {
+    if (key !== `state:remote-artifact/${lease.leaseId}:result`) return acquire(key, ...args)
+    f.remote.artifactLocks.acquire = acquire
+    return new Promise((resolve) => { resume = () => resolve(acquire(key, ...args)) })
+  }
   const cleaning = new Promise((resolve) => { cleanupStarted = resolve })
   const cleanup = f.remote.cleanupCompletedLease.bind(f.remote)
   f.remote.cleanupCompletedLease = (stored) => { cleanupStarted(); return cleanup(stored) }

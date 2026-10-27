@@ -16,6 +16,7 @@ import { claudeAccountRequestId, claudeAccountRoleForPurpose, createAiClaudeAcco
   formatAiAuthorName, normalizeClaudeAccounts, resolveClaudeAccountSelection } from './lib/aiClaudeAccounts.mjs'
 import { createAiDialogPreferences } from './lib/aiDialogPreferences.mjs'
 import { createStorageResources, storageResourceError } from './lib/storageResources.mjs'
+import { createStorageBudget, currentStorageBudget, withStorageBudget, detachedStorageBudget, readBoundedBody } from './lib/storageBudget.mjs'
 import { createStorageChanges } from './lib/storageChanges.mjs'
 import { createStorageJournal, storageDigest, storagePhase, storageRequestError } from './lib/storageJournal.mjs'
 import { backfillDailyBackupHistory } from './lib/dailyBackupHistory.mjs'
@@ -338,7 +339,7 @@ function scheduleAttributionPersistence() {
   if (!storageChanges.afterCommit(schedule)) schedule()
 }
 function trackStorageBackground(operation, label) {
-  return runtimeLifecycle.track(() => storageResources.detached(() => storageChanges.detached(operation)), label)
+  return runtimeLifecycle.track(() => detachedStorageBudget(() => storageResources.detached(() => storageChanges.detached(operation))), label)
 }
 const distDirectory = path.join(projectDirectory, 'dist')
 const port = Number(process.env.MNP_API_PORT ?? 4176)
@@ -1203,14 +1204,7 @@ async function resolveDoorayComment(parsed, task, config) {
 
 async function readBinaryBody(request, maxBytes) {
   if (requestBinaryBodies.has(request)) return requestBinaryBodies.get(request)
-  const chunks = []
-  let size = 0
-  for await (const chunk of request) {
-    size += chunk.length
-    if (size > maxBytes) throw new Error('PAYLOAD_TOO_LARGE')
-    chunks.push(chunk)
-  }
-  const content = Buffer.concat(chunks)
+  const content = await readBoundedBody(request, maxBytes, runtimeLifecycle.signal)
   requestBinaryBodies.set(request, content)
   return content
 }
@@ -1933,9 +1927,13 @@ let completedHistoryCleanup = null
 function cleanupCompletedAiHistory() {
   if (process.env.MNP_COMPLETED_AI_CLEANUP_DISABLED === '1') return Promise.resolve({ disabled: true })
   if (completedHistoryCleanup) return completedHistoryCleanup
-  completedHistoryCleanup = withResources(sharedAiStateFiles.map(resourceForFile), async () => {
+  const keys = sharedAiStateFiles.map(resourceForFile)
+  const fingerprint = () => storageDigest({ delegations: [...aiDelegations.values()], instructions: [...groupDocumentInstructions.values()],
+    local: localWorkspacePoolManager.state, remote: remoteWorkspacePool.state })
+  completedHistoryCleanup = (async () => {
+    const snapshot = await withResources(keys, async () => {
       const leases = { ...localWorkspacePoolManager.state?.leases, ...remoteWorkspacePool.state?.leases }
-      const records = [...aiDelegations.values()]
+      const records = structuredClone([...aiDelegations.values()])
       const unfinishedLeases = Object.values(leases).filter((lease) => !['completed', 'cancelled'].includes(lease.status))
       const occupiedLeaseIds = referencedHistoryIds(unfinishedLeases, new Set(Object.keys(leases)))
       for (const state of [localWorkspacePoolManager.state, remoteWorkspacePool.state]) {
@@ -1952,6 +1950,9 @@ function cleanupCompletedAiHistory() {
       const remoteIds = completedWorkspaceLeaseIds(remoteWorkspacePool.state, { protectedLeaseIds, remote: true })
       const localLeases = structuredClone(Object.fromEntries([...localIds].map((id) => [id, localWorkspacePoolManager.state.leases[id]])))
       const remoteLeases = structuredClone(Object.fromEntries([...remoteIds].map((id) => [id, remoteWorkspacePool.state.leases[id]])))
+      return { ids, records, protectedLeaseIds, localIds, remoteIds, localLeases, remoteLeases, fingerprint: fingerprint() }
+    })
+      const { ids, records, protectedLeaseIds, localIds, remoteIds, localLeases, remoteLeases } = snapshot
       const backups = path.join(dataDirectory, '_completed-ai-cleanup-backups')
       if (ids.size || localIds.size || remoteIds.size) {
         const localResultFiles = await readCompletedJobResults(localWorkspacePoolManager.registry?.sharedRoot, localLeases)
@@ -1959,6 +1960,8 @@ function cleanupCompletedAiHistory() {
           delegations: records.filter((item) => ids.has(item.id)), localLeases, remoteLeases, localResultFiles,
         })
       }
+      const confirmed = await withResources(keys, async () => {
+      if (fingerprint() !== snapshot.fingerprint) return false
       if (ids.size) {
         await aiDelegationRequestFailures.preserveResolutionsBeforeCleanup(ids, aiDelegations)
         const nextReceipts = new Map(aiRequestReceipts)
@@ -1975,6 +1978,9 @@ function cleanupCompletedAiHistory() {
         }
         for (const id of ids) aiDelegationWaitPolls.delete(id)
       }
+      return true
+      })
+      if (!confirmed) return { deferred: true, reasonCode: 'CLEANUP_STATE_CHANGED' }
       const local = await localWorkspacePoolManager.pruneCompletedLeases({ protectedLeaseIds,
         allowedLeaseIds: localIds, expectedLeases: localLeases })
       const remote = await remoteWorkspacePool.pruneCompletedLeases({ protectedLeaseIds,
@@ -1985,7 +1991,7 @@ function cleanupCompletedAiHistory() {
         resultFilesFailed: local.resultFilesFailed,
       }))
       return { delegations: ids.size, local, remote }
-  }).finally(() => { completedHistoryCleanup = null })
+  })().finally(() => { completedHistoryCleanup = null })
   return completedHistoryCleanup
 }
 
@@ -2371,6 +2377,14 @@ async function fetchAionUi(pathname, { timeoutMs = 8_000, method = 'GET', body, 
 // 메인은 기존과 같이 루프백으로 직접 호출하고, 서브는 Runner가 가져갈 오퍼레이션 큐에 넣는다.
 // 서브 머신의 AionUi는 inbound 주소를 열지 않으므로 메인에서 직접 호출할 수 없다.
 function fetchAionUiOn(machineId, pathname, options = {}) {
+  const budget = currentStorageBudget()
+  if (!budget || budget.preparing) return fetchAionUiOnUnbounded(machineId, pathname, options)
+  return budget.wait(() => fetchAionUiOnUnbounded(machineId, pathname, {
+    ...options, timeoutMs: Math.max(1, Math.min(options.timeoutMs ?? 8_000, budget.remaining())),
+  }))
+}
+
+function fetchAionUiOnUnbounded(machineId, pathname, options = {}) {
   if (runtimeLifecycle.signal.aborted) return Promise.reject(runtimeLifecycle.signal.reason)
   if (options.method === 'POST' && pathname === '/api/internal/external-conversation-dispatches'
     && [options.body?.targetConversationId, options.body?.actorConversationId].some((id) => aiConversationRemoval.isRemoving(id))) {
@@ -6468,8 +6482,8 @@ async function resolveConversationAttribution(
   }
 }
 
-async function refreshConversationAttribution(mapId, cardId, conversationId, startedBy = null, fallback = null, { makeCurrent = true } = {}) {
-  const attribution = await resolveConversationAttribution(mapId, cardId, conversationId, startedBy, fallback)
+async function refreshConversationAttribution(mapId, cardId, conversationId, startedBy = null, fallback = null, { makeCurrent = true, resolvedAttribution } = {}) {
+  const attribution = resolvedAttribution ?? await resolveConversationAttribution(mapId, cardId, conversationId, startedBy, fallback)
   return withAiResources([mapId], async () => {
   const current = await readMap(mapId)
   if (!current || current.trashedAt || current.archivedAt || !current.nodes.some((node) => node.id === cardId)) throw storageResourceError('CARD_NOT_FOUND', '귀속을 보정할 현재 카드를 찾을 수 없습니다.')
@@ -8048,6 +8062,10 @@ function freshMapId() { return `map-${Date.now().toString(36)}-${randomBytes(3).
 
 async function requestStoragePlan(request, url, body) {
   const write = !['GET', 'HEAD', 'OPTIONS'].includes(request.method)
+  // 표시 메타데이터와 Runner 전송은 콘텐츠 RMW가 아니다. callback은 아래에서 별도 예약·확정한다.
+  if (url.pathname === '/api/integrations/aionui/conversation-display/resolve'
+    || /^\/api\/integrations\/aionui\/launches\/[^/]+\/conversation$/.test(url.pathname)
+    || url.pathname.startsWith('/api/machines/') || url.pathname.startsWith('/api/ai-workspaces')) return { keys: [] }
   // 대화 보관은 외부 확인 뒤 withAiResources에서 최신 연결을 재검증·확정한다.
   if (request.method === 'DELETE' && /^\/api\/maps\/[^/]+\/cards\/[^/]+\/ai-conversations\/[^/]+$/.test(url.pathname)) return { keys: [] }
   const matched = url.pathname.match(/^\/api\/maps\/([^/]+)(\/.*)?$/)
@@ -8163,7 +8181,44 @@ async function requestStoragePlan(request, url, body) {
   return { catalog, keys, newMapId, transactional }
 }
 
+const storageRequestDeadlines = new Map()
+const launchCallbackReservations = new Map()
 async function withStorageRequest(request, response, operation) {
+  const pathname = new URL(request.url ?? '/', 'http://localhost').pathname
+  const multi = /\/document-reconstructions(?:\/|$)|\/cards\/[^/]+\/move$/.test(pathname)
+  const lifecycle = multi || /\/archive$|\/trash$|\/restore$|^\/api\/groups(?:\/|$)/.test(pathname)
+  const id = String(request.headers['idempotency-key'] ?? '')
+  const resultOnly = request.headers['x-mnp-result-only'] === '1'
+  const recorded = /^mnpw:\d{13}:[a-f0-9]{32}$/.test(id) && storageJournal.records.has(storageJournal.transactionId(id))
+  const supplied = Number(request.headers['x-mnp-deadline-at'])
+  let admission = resultOnly || recorded ? null : storageRequestDeadlines.get(id)
+  const budget = createStorageBudget({ multi, waitMs: lifecycle ? 10_000 : 5_000, requestId: /^mnpw:\d{13}:[a-f0-9]{32}$/.test(id) ? id : '',
+    deadlineAt: resultOnly || recorded ? undefined : Math.min(admission?.deadlineAt ?? Infinity, supplied > 0 ? supplied : Infinity) })
+  if (!resultOnly && !recorded && /^mnpw:\d{13}:[a-f0-9]{32}$/.test(id)) {
+    admission ??= { deadlineAt: budget.deadlineAt, queueWaitMs: 0 }
+    budget.queueWaitMs = admission.queueWaitMs
+    storageRequestDeadlines.set(id, admission)
+    for (const [key, value] of storageRequestDeadlines) {
+      if (value.deadlineAt < Date.now() - 86_400_000) storageRequestDeadlines.delete(key)
+      else break
+    }
+  }
+  const cancel = () => { if (!response.writableFinished) budget.cancel() }
+  request.once('aborted', cancel); response.once('close', cancel)
+  const timer = setTimeout(() => {
+    if (budget.preparing && id && !response.headersSent && !response.destroyed) {
+      sendJson(response, 202, { requestId: id, outcome: 'processing', code: 'REQUEST_PROCESSING', retryAfterMs: 250 })
+    }
+  }, budget.remaining())
+  try { return await withStorageBudget(budget, () => executeStorageRequest(request, response, operation)) }
+  finally {
+    if (admission) admission.queueWaitMs = Math.max(admission.queueWaitMs, budget.queueWaitMs)
+    clearTimeout(timer); request.off('aborted', cancel); response.off('close', cancel)
+    budget.finish(budget.preparing ? 'committed-or-recovering' : response.statusCode >= 400 ? 'not-applied' : 'read-or-external')
+  }
+}
+
+async function executeStorageRequest(request, response, operation) {
   const timing = request.storageTiming = startRequestTiming(request, response)
   const acquire = (keys, action) => {
     const started = performance.now()
@@ -8173,6 +8228,7 @@ async function withStorageRequest(request, response, operation) {
     })
   }
   const url = new URL(request.url ?? '/', 'http://localhost')
+  const budget = currentStorageBudget()
   try {
     const write = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)
     const body = write && String(request.headers['content-type'] ?? '').includes('application/json') ? await readJsonBody(request) : null
@@ -8224,10 +8280,11 @@ async function withStorageRequest(request, response, operation) {
       }
     }
     const initial = await requestStoragePlan(request, url, body)
+    if (budget && (initial.catalog || (initial.keys?.length ?? 0) > 1)) budget.waitMs = 10_000
     const execute = async () => {
       // Ref 집합은 잠금 전후 대조한다. 늦게 발견한 키를 보유 중인 키 뒤에 추가하지 않는다.
-      for (let attempt = 0; attempt < 3; attempt++) {
         const plan = await requestStoragePlan(request, url, body)
+        if (budget && (plan.keys?.length ?? 0) > 1) budget.waitMs = 10_000
         const result = await acquire(plan.keys ?? [], async (scope) => {
           const verified = await requestStoragePlan(request, url, body)
           if ((verified.keys ?? []).some((item) => !storageResources.holds(typeof item === 'string' ? item : item.key, typeof item === 'string' ? 'write' : item.mode))) return { retry: true }
@@ -8239,18 +8296,25 @@ async function withStorageRequest(request, response, operation) {
           let reply
           const value = await storageChanges.run(async (change) => { const value = await operation(); reply = () => change.response?.(); return value },
             { request: request.storageLogicalRequest })
-          reply?.()
+          if (!response.headersSent && !response.destroyed) reply?.()
           return { value }
         })
-        if (!result.retry) return result.value
-      }
-      throw storageResourceError('RESOURCE_SET_CHANGED', '문서 참조 집합이 변경되었습니다. 최신 상태를 다시 조회하세요.')
+        return result
     }
-    return initial.catalog ? await acquire([{ key: 'catalog', mode: initial.catalog }], execute) : await execute()
+    for (let attempt = 0; attempt < 3; attempt++) {
+      budget?.assert()
+      if (budget) budget.retries = Math.min(2, Math.max(0, Number(request.headers['x-mnp-retry-count']) || 0)) + attempt
+      const result = initial.catalog ? await acquire([{ key: 'catalog', mode: initial.catalog }], execute) : await execute()
+      if (!result.retry) return result.value
+    }
+    throw storageResourceError('RESOURCE_SET_CHANGED', '문서 참조 집합이 변경되었습니다. 최신 상태를 다시 조회하세요.')
   } catch (error) {
-    console.error('[Storage request]', error)
-    if (!response.headersSent) sendJson(response, error.status ?? (error.message === 'PAYLOAD_TOO_LARGE' ? 413 : error instanceof SyntaxError ? 400 : 500), {
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    console.error('[Storage request]', JSON.stringify({ requestId: budget?.requestId, code: error.code ?? 'STORAGE_WRITE_FAILED', phase: budget?.phase }))
+    if (!response.headersSent && !response.destroyed) sendJson(response, error.status ?? (error.message === 'PAYLOAD_TOO_LARGE' ? 413 : error instanceof SyntaxError ? 400 : 500), {
       error: error.storageResourceError ? error.message : '요청을 저장하지 못했습니다.', code: error.code ?? 'STORAGE_WRITE_FAILED',
+      ...(error.storageResourceError ? { outcome: error.outcome ?? 'not-applied', retryable: error.retryable ?? false,
+        reasonCode: error.code, ...(error.retryAfterMs ? { retryAfterMs: error.retryAfterMs } : {}) } : {}),
       ...(request.headers['idempotency-key'] ? { requestId: request.headers['idempotency-key'],
         outcome: error.outcome ?? (error.code === 'RECOVERY_REQUIRED' ? 'processing' : 'not-applied'),
         reasonCode: error.code ?? 'STORAGE_WRITE_FAILED', retryable: error.retryable ?? false,
@@ -9532,7 +9596,27 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         return sendLaunchResult(400, { error: '올바르지 않은 AionUi 대화 ID입니다.' })
       }
 
+      let reservation
+      const withLaunchResources = (action) => withResources([{ key: 'catalog', mode: 'read' }], () => withResources([
+        ...(launch.mapId ? [`doc:${launch.mapId}`] : []), ...sharedAiStateFiles.map(resourceForFile),
+        ...(launch.cardLayoutRequestId ? ['state:_card-layout-requests.json'] : []),
+        ...(launch.reconstructionRequestId ? ['state:_document-reconstruction-requests.json'] : []),
+      ], action))
       try {
+        reservation = await withLaunchResources(async () => {
+          if (launchCallbackReservations.has(tokenKey)) throw storageResourceError('LAUNCH_CONFIRMATION_PENDING', '같은 시작 요청을 확인 중입니다.')
+          const actor = launch.startedBy === integrationUser.id ? integrationUser
+            : users.find((candidate) => candidate.id === launch.startedBy && candidate.active !== false)
+          if (!actor || !canEdit(actor)) throw storageRequestError('REQUEST_FORBIDDEN', 403)
+          if (aiConversationLaunches.get(tokenKey) !== launch || launch.expiresAt <= Date.now()) throw storageRequestError('LAUNCH_EXPIRED', 409)
+          const map = launch.mapId ? await readMap(launch.mapId) : null
+          if (launch.mapId) documentReconstruction.assertWritable(launch.mapId)
+          const value = { token: randomUUID(), launchHash: storageDigest(launch), version: map?.version,
+            lifecycle: storageDigest(documentReconstruction.metadata(launch.mapId)),
+            attributionHash: storageDigest(aiAttributions.get(launch.attributionKey) ?? null) }
+          launchCallbackReservations.set(tokenKey, value)
+          return value
+        })
         const conversation = await fetchAionUiOn(
           launch.homeMachineId,
           `/api/conversations/${encodeURIComponent(conversationId)}`,
@@ -9540,6 +9624,21 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         if (!conversation || conversation.id !== conversationId) {
           return sendLaunchResult(409, { error: '생성된 AionUi 대화를 확인할 수 없습니다.' })
         }
+        const resolvedAttribution = await resolveConversationAttribution(launch.mapId, launch.cardId, conversationId,
+          launch.startedBy, aiAttributions.get(launch.attributionKey), { inferStartedBy: false }).catch(() => null)
+        return await withLaunchResources(async () => {
+        currentStorageBudget()?.assert()
+        const actorNow = launch.startedBy === integrationUser.id ? integrationUser
+          : users.find((candidate) => candidate.id === launch.startedBy && candidate.active !== false)
+        if (!actorNow || !canEdit(actorNow)) throw storageRequestError('REQUEST_FORBIDDEN', 403)
+        if (launchCallbackReservations.get(tokenKey)?.token !== reservation.token || aiConversationLaunches.get(tokenKey) !== launch
+          || launch.expiresAt <= Date.now() || storageDigest(launch) !== reservation.launchHash
+          || storageDigest(aiAttributions.get(launch.attributionKey) ?? null) !== reservation.attributionHash
+          || storageDigest(documentReconstruction.metadata(launch.mapId)) !== reservation.lifecycle
+          || (launch.mapId ? (await readMap(launch.mapId))?.version : undefined) !== reservation.version) {
+          throw storageResourceError('LAUNCH_RESERVATION_CHANGED', '대화 시작 이후 문서·권한·예약 상태가 변경되었습니다. 다시 확인하세요.')
+        }
+        if (launch.mapId) documentReconstruction.assertWritable(launch.mapId)
         if (launch.purpose === 'dooray-response') {
           const actualWorkspace = aiConversationLinkFromAionUiConversation(conversation)?.workspace
           assertDoorayExecutionWorkspace(actualWorkspace)
@@ -9637,7 +9736,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         await persistAiConversationOrigins()
         if (attribution) {
           try {
-            await refreshConversationAttribution(launch.mapId, launch.cardId, conversationId, launch.startedBy, attribution)
+            if (!resolvedAttribution) throw new Error('AIONUI_ATTRIBUTION_NOT_FOUND')
+            await refreshConversationAttribution(launch.mapId, launch.cardId, conversationId, launch.startedBy, attribution, { resolvedAttribution })
           } catch (error) {
             const fallbackAttribution = {
               mapId: launch.mapId,
@@ -9679,10 +9779,13 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           console.warn('[AI conversation runtime link refresh]', error)
         })
         return sendLaunchResult(200, { conversationId, homeMachineId: launch.homeMachineId })
+        })
       } catch (error) {
         throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         console.error('[AionUi conversation completion]', error)
         return sendLaunchResult(error.status ?? 503, { error: error.status ? error.message : '생성된 AionUi 대화를 확인하지 못했습니다.' })
+      } finally {
+        if (reservation && launchCallbackReservations.get(tokenKey)?.token === reservation.token) launchCallbackReservations.delete(tokenKey)
       }
     }
 
@@ -12054,12 +12157,15 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       response.once('finish', () => { delivered = true })
       response.once('close', releaseClaimed)
 
+      if (currentStorageBudget()) currentStorageBudget().phase = 'runner-long-poll'
+      const pollStarted = performance.now()
       claimed = await machineOperationQueue.waitForClaim(machine.machineId, {
         limit: Number(body?.limit) || 1,
         waitMs,
         // 토큰 재발급·폐기 중 깨어난 구 Runner가 새 작업을 가져가지 못하게 한다.
         shouldClaim: () => verifyMachineToken(machineRegistry, machine.machineId, runnerToken),
       })
+      request.storageTiming?.addDuration('runnerLongPollMs', performance.now() - pollStarted)
       // 대기 중에 이미 close가 발생했다면 위 핸들러는 빈 목록을 보았으므로 여기서 되돌린다.
       // 요청 스트림은 본문을 다 읽으면 정상적으로 destroy되므로 판단 근거로 쓸 수 없다.
       if (response.destroyed || response.writableEnded || request.socket?.destroyed === true) {

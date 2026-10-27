@@ -10,7 +10,7 @@ import { newStorageRequestId } from '../server/lib/storageJournal.mjs'
 
 test('실제 stdio MCP는 동시 재전송·응답 유실·프로세스 재접속에 같은 ID와 최초 의도를 유지한다', { timeout: 90_000 }, async (t) => {
   const api = await storageApi(t, { documents: 3 }), mapId = api.ids[0]
-  let drop = false, suppress = false
+  let drop = 0, suppress = 0
   const writes = []
   const proxy = createServer(async (request, response) => {
     try {
@@ -18,10 +18,10 @@ test('실제 stdio MCP는 동시 재전송·응답 유실·프로세스 재접�
       const body = Buffer.concat(chunks)
       const writing = !['GET', 'HEAD'].includes(request.method)
       if (writing) writes.push({ body: body.toString(), id: request.headers['idempotency-key'] })
-      if (writing && suppress) { suppress = false; response.destroy(); return }
+      if (writing && suppress > 0) { suppress--; response.destroy(); return }
       const upstream = await fetch(api.base + request.url, { method: request.method, headers: request.headers, ...(body.length ? { body } : {}) })
       const text = await upstream.text()
-      if (writing && drop) { drop = false; response.destroy(); return }
+      if (writing && drop > 0) { drop--; response.destroy(); return }
       response.writeHead(upstream.status, { 'Content-Type': 'application/json' }); response.end(text)
     } catch { response.destroy() }
   })
@@ -56,7 +56,7 @@ test('실제 stdio MCP는 동시 재전송·응답 유실·프로세스 재접�
   const empty = await invoke('mindnprogress_update_card', { requestId: newStorageRequestId(), resultOnly: true })
   assert.equal(empty.data.outcome, 'unknown'); assert.equal(writes.length, 1)
 
-  drop = true
+  drop = 3
   const lostId = newStorageRequestId()
   const commentArgs = { requestId: lostId, mapId, operation: { action: 'add', cardId: 'card-1', summary: '[진행] 응답 유실' } }
   const lost = await invoke('mindnprogress_manage_comment', commentArgs)
@@ -69,7 +69,7 @@ test('실제 stdio MCP는 동시 재전송·응답 유실·프로세스 재접�
   assert.equal((await api.read(`_comments/${mapId}.json`)).length, 1)
 
   // 최초 전송이 도달하지 않은 동안 다른 작성자가 변경했다. 재시도는 최초 read-set으로 충돌해야 한다.
-  suppress = true
+  suppress = 3
   const staleArgs = { requestId: newStorageRequestId(), mapId, cardId: 'card-2', data: { label: '최초 의도' } }
   assert.equal((await invoke('mindnprogress_update_card', staleArgs)).data.outcome, 'unknown')
   const first = writes.at(-1)

@@ -14,7 +14,7 @@ export const fixture = (id) => ({ id, title: `격리 검증 ${id}`, version: 1, 
       kind: i ? 'branch' : 'root', status: 'planned', progress: 0, isWork: false } })),
   edges: Array.from({ length: 19 }, (_, i) => ({ id: `edge-${i}`, source: 'card-0', target: `card-${i + 1}`, data: { relation: 'hierarchy' } })) })
 
-export async function storageApi(t, { documents = 96, seed = async () => {}, mockAion } = {}) {
+export async function storageApi(t, { documents = 96, seed = async () => {}, mockAion, env = {} } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'mnp-storage-02-'))
   assert.ok(path.resolve(directory).startsWith(path.resolve(tmpdir()) + path.sep))
   const data = path.join(directory, 'data')
@@ -46,7 +46,7 @@ export async function storageApi(t, { documents = 96, seed = async () => {}, moc
       MNP_MACHINE_ID: 'isolated-storage', MNP_MCP_USAGE_DISABLED: '1', MNP_COMPLETED_AI_CLEANUP_DISABLED: '1',
       MNP_WORKSPACE_POOL_REGISTRY: path.join(directory, 'no-pool.json'), MNP_AIONUI_URL: `http://127.0.0.1:${fakeAion.address().port}`,
       MNP_AIONUI_DISCOVERY_FILE: path.join(directory, 'no-discovery.json'), MNP_AIONUI_USAGE_FILE: path.join(directory, 'no-usage.json'),
-      AIONUI_CONVERSATION_ID: '', MNP_ADMIN_EMAIL: 'isolated@mind.local', MNP_ADMIN_PASSWORD: 'IsolatedOnly!2026' },
+      AIONUI_CONVERSATION_ID: '', MNP_ADMIN_EMAIL: 'isolated@mind.local', MNP_ADMIN_PASSWORD: 'IsolatedOnly!2026', ...env },
   }
   let child, exited
   const launch = () => {
@@ -112,5 +112,9 @@ export function storageControl(child, data) {
     child.send({ id, action: 'tick', delay })
     assert.ok((await ticked).count > 0, `예약 주기 ${delay} 등록 확인`)
   }
-  return { barrier, tick }
+  const enableCleanup = async () => {
+    const id = ++sequence, ready = message(id, 'cleanup-enabled')
+    child.send({ id, action: 'enable-cleanup' }); await ready
+  }
+  return { barrier, tick, enableCleanup }
 }

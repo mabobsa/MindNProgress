@@ -4,8 +4,7 @@ import { createDocumentReadStore } from './lib/documentReadStore.mjs'
 import { createDocumentTrashReview, DocumentTrashReviewError } from './lib/documentTrashReview.mjs'
 import { completedDelegationIds, completedRequestReceipt, completedWorkspaceLeaseIds, referencedHistoryIds } from './lib/completedAiHistory.mjs'
 import { saveHistoryCleanupBackup, pruneHistoryCleanupBackups, readCompletedJobResults } from './lib/historyCleanupBackup.mjs'
-import { startRequestTiming, stringifyTimedResponse } from './lib/requestTiming.mjs'
-import { createApiDiagnostics } from './lib/apiDiagnostics.mjs'
+import { startRequestTiming } from './lib/requestTiming.mjs'
 import { normalizeUntrackedMetaRecovery } from './lib/workspaceMetaRecovery.mjs'
 import { createIntegrationRecoveryQueue, integrationRecoveryPending, integrationRecoveryPublicView } from './lib/aiIntegrationRecovery.mjs'
 import { createAiDelegationRequestFailures, safeDelegationFailureMessage, withDelegationTaskCompletion } from './lib/aiDelegationRequestFailures.mjs'
@@ -256,10 +255,8 @@ installRuntimeShutdown(async () => {
     for (const response of eventClients.keys()) response.end()
     eventClients.clear()
   })
-  await apiDiagnostics.close()
 })
 const dataDirectory = path.resolve(String(process.env.MNP_DATA_DIR ?? '').trim() || path.join(serverDirectory, 'data'))
-const apiDiagnostics = createApiDiagnostics(path.join(dataDirectory, '_api-diagnostics'))
 let documentReconstruction = null
 const historyDirectory = path.join(dataDirectory, '_history')
 const dailyBackupDirectory = path.join(dataDirectory, '_daily-backups')
@@ -603,7 +600,7 @@ function sendJson(response, statusCode, body, headers = {}) {
     'X-Frame-Options': 'DENY',
     ...headers,
   })
-  response.end(stringifyTimedResponse(response, body))
+  response.end(JSON.stringify(body))
 }
 
 function sendSharedKnowledgeMaintenanceError(response, error) {
@@ -7907,8 +7904,7 @@ await removeLegacyAiCompletionNotifications().catch((error) => console.warn('[AI
 await cleanupCompletedAiHistory().catch((error) => console.warn('[AI history cleanup deferred]', error))
 
 const server = createServer(runtimeLifecycle.request(async (request, response) => {
-  const requestTiming = startRequestTiming(request, response, { diagnostics: apiDiagnostics })
-  try {
+  const requestTiming = startRequestTiming(request, response)
   const loopbackLocation = localLoopbackRedirectLocation(request)
   if (loopbackLocation) {
     response.writeHead(307, {
@@ -13418,7 +13414,6 @@ const server = createServer(runtimeLifecycle.request(async (request, response) =
     releaseDocumentMutation?.()
     if (delegationActionId) aiDelegationActions.delete(delegationActionId)
   }
-  } finally { requestTiming.complete() }
 }))
 
 runtimeLifecycle.interval(() => {
@@ -13448,7 +13443,6 @@ runtimeLifecycle.interval(() => {
 
 server.listen(port, host, () => {
   resolveRuntimeReady()
-  console.log(`[API diagnostics] ${apiDiagnostics.file}`)
   console.log(`[Mind & Progress API] http://${host}:${port}`)
   console.log(`[Mind & Progress Public] ${publicBaseUrl}`)
   if (workspacePoolStartupRecoveryReady) {

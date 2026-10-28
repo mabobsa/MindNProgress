@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-28T04:37:10.721Z",
+  "generatedAt": "2026-10-28T05:36:00.465Z",
   "context": {
     "mapId": "map-mszsv4fs-a9ccf4",
     "cardId": "node-mvq4frno-95acee",
@@ -46,13 +46,15 @@
       "path": ".tmp/validation07-20261028/preparation.json",
       "bytes": 242006,
       "sha256": "865295aaf4d3749fe00ac293442c4a4afd499b8a0a329f93949599f9e6594247"
-    }
+    },
+    "finalCandidateSha": "99d6d8759cc437f87bcaef10079f36b049d7df6f",
+    "candidateShaMeaning": "candidateSha는 최초 전체 비교·부하 시험의 후보다. 최종 판정 대상은 finalCandidateSha이며 변경 영향 검수는 checks.followup을 따른다."
   },
   "status": {
-    "overall": "미충족",
-    "completedChecklist": 3,
+    "overall": "통과",
+    "completedChecklist": 4,
     "totalChecklist": 4,
-    "reason": "일반 저장·복구·조회 비교는 통과했으나 승인 대화 callback의 카드·승인 기록 연결 회귀가 독립 재현되어 전체 목표를 인수할 수 없다.",
+    "reason": "최초 1~3 통과 근거를 보존하고 99d6d87의 변경 영향·승인 연결 회귀를 직접 검증해 07-F01을 해소했다. 원래 07 조건 4개 모두 충족했다.",
     "requirements": [
       {
         "id": "mnp-api-07-1",
@@ -62,7 +64,8 @@
         "evidence": [
           "core-01",
           "concurrency-alone-01",
-          "write-final-01"
+          "write-final-01",
+          "followup: api-01/budget-01/related-01/joint-01/browser-04"
         ]
       },
       {
@@ -72,7 +75,8 @@
         "verdict": "통과",
         "evidence": [
           "core-01",
-          "external-02"
+          "external-02",
+          "followup: api-01/budget-01/related-01/joint-01/browser-04"
         ]
       },
       {
@@ -83,24 +87,26 @@
         "evidence": [
           "read-final-01 첫 18셀",
           "read-final-02 24셀",
-          "write-final-01 90셀"
+          "write-final-01 90셀",
+          "followup: 소스 영향 대조·기존 수치 재사용"
         ]
       },
       {
         "id": "mnp-api-07-4",
         "text": "자동 및 실제 화면 회귀 검증, 남은 제한·미검증 범위와 요구사항별 최종 판정이 근거와 연결된다.",
-        "done": false,
-        "verdict": "미충족",
+        "done": true,
+        "verdict": "통과",
         "evidence": [
           "regression-01",
           "browser-01 첫 시험",
           "browser-04",
           "mcp-02",
-          "launch-candidate-01"
+          "launch-candidate-01",
+          "followup: api-01/budget-01/related-01/joint-01/browser-04"
         ]
       }
     ],
-    "scope": "원래 지정된 258faef 통합 후보의 판정이다. 이후 통합된 46cf362의 전체 검수 결과가 아니다."
+    "scope": "99d6d8759cc437f87bcaef10079f36b049d7df6f의 07 독립 검수 완료. 성능 측정값은 10afee7 대비 258faef의 기존 실행이며 운영·문서·제품 전체 완료를 뜻하지 않는다."
   },
   "checks": {
     "functional": [
@@ -54104,7 +54110,602 @@
           ]
         }
       }
-    ]
+    ],
+    "followup": {
+      "candidateSha": "99d6d8759cc437f87bcaef10079f36b049d7df6f",
+      "productionRepairSha": "46cf362073db04f31b9823a765838d0a53747379",
+      "sourceManifest": ".tmp/validation07-followup-20261028/preparation.json",
+      "trackedFiles": 706,
+      "productionSourceMatches": true,
+      "additionalTestSources": {
+        "tests/helpers/approval-integration-fixture-07.mjs": {
+          "bytes": 2728,
+          "sha256": "28bbb6412a886d61262f9ad3cb2a744751ed7bbc4272a869257ed64486a771e9"
+        },
+        "tests/storage-approval-integration-api.test.mjs": {
+          "bytes": 7406,
+          "sha256": "a27cc6e892c521281a01feace8e01c7de1f8ff570eefea3a2f1754e2121a04dd"
+        },
+        "tests/storage-approval-integration-browser.test.mjs": {
+          "bytes": 15585,
+          "sha256": "7a840a9d008f162539b0449fb1c139937266edf34905e43ca031b7d6d9c58fe4"
+        }
+      },
+      "unchangedCore": [
+        {
+          "file": "server/lib/storageResources.mjs",
+          "sha256": "88c992d69d6e462c4203b289d0942708274a23f1dccd45c5e5110175a8a69e5c"
+        },
+        {
+          "file": "server/lib/storageChanges.mjs",
+          "sha256": "484ab758cd40f119e6aafbc322724f0b60c27019d8bfbaca9dd94f1afcde67c0"
+        },
+        {
+          "file": "server/lib/storageJournal.mjs",
+          "sha256": "850b2b957be10080dc37c9cb1d4e1ebfdef9c8ea6cbd343a54c33a5b8eb7beb0"
+        },
+        {
+          "file": "server/lib/storageBudget.mjs",
+          "sha256": "a1d3fb2d3074659bbc67ea83b2e5ddf33d0cdc355a1e987d4c382e16bdcca6c1"
+        },
+        {
+          "file": "server/lib/contentPreconditions.mjs",
+          "sha256": "671fc582ace11c226d9b82c73e7c2611e2b24495309f6a6ecb91ba705378b02d"
+        },
+        {
+          "file": "server/lib/documentReadStore.mjs",
+          "sha256": "67d16fd77db5e2b15d05d5d8e209de1bd628a7fa83829ffd1070f1491de19f95"
+        },
+        {
+          "file": "server/lib/readProjections.mjs",
+          "sha256": "04a58a4b06fdc7b131cd3713a50d68888ba185abc0904db1ba13374cd593ed1c"
+        },
+        {
+          "file": "server/lib/documentGroupMetadata.mjs",
+          "sha256": "677ff71885102f7f2e8d224f5864696292888d56a751f4785d37260d1edaacf4"
+        },
+        {
+          "file": "server/lib/sharedKnowledgeMaintenance.mjs",
+          "sha256": "08a81694f658705fe429fa9ec5cfda2eb7ee08c4bd3cb29a8ee150881ea18e6f"
+        },
+        {
+          "file": "server/lib/remoteWorkspacePool.mjs",
+          "sha256": "a404f6aa94c197667f449d37084ac0bb237f3f2a70276ca33b90c12cf1ad6357"
+        },
+        {
+          "file": "mcp/server.mjs",
+          "sha256": "263222c2ebf6d104a82375707584c338c24798f2fc4b20f67d7412f1a2122bd6"
+        },
+        {
+          "file": "mcp/storageRequests.mjs",
+          "sha256": "2ef4fb25754d2e7f622f54b403747901ba063dda565f058a684ef5690f81514a"
+        },
+        {
+          "file": "mcp/requestRetry.mjs",
+          "sha256": "145e4dee2f8c40f58ee637a420e2c2b23975b0502e50fc78ec8fada9f84f4c9a"
+        },
+        {
+          "file": "mcp/documentViews.mjs",
+          "sha256": "4856af97c72bd6150baaa081913570c4c82c65b51530c17f3f383628ca8430c1"
+        },
+        {
+          "file": "src/utils/conditionalRefresh.mjs",
+          "sha256": "e2d1eea112c28286a57684474eb88673b8530223f5276b3f37c2b54669dc8583"
+        }
+      ],
+      "originalEvidencePreserved": {
+        "files": 1332,
+        "mismatches": []
+      },
+      "runs": {
+        "api-01": {
+          "startedAt": "2026-10-28T05:17:51.370Z",
+          "finishedAt": "2026-10-28T05:18:58.942Z",
+          "root": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\candidate",
+          "command": [
+            "C:\\Program Files\\nodejs\\node.exe",
+            "--test",
+            "--test-reporter=tap",
+            "--test-concurrency=1",
+            "tests/storage-integration-launch-api.test.mjs",
+            "tests/dooray-approval-locks.test.mjs",
+            "tests/dooray-approval-storage-api.test.mjs",
+            "tests/dooray-responses.test.mjs",
+            "tests/dooray-responses-api.test.mjs",
+            "tests/aionui-launch-tracking.test.mjs",
+            "tests/ai-conversation-connection-api.test.mjs",
+            "tests/ai-conversation-connection.test.mjs"
+          ],
+          "environment": {
+            "node": "v24.13.0",
+            "executable": "C:\\Program Files\\nodejs\\node.exe",
+            "platform": "win32",
+            "release": "10.0.26200",
+            "cpu": "Intel(R) Core(TM) i7-14700",
+            "cores": 28
+          },
+          "exit": {
+            "code": 0,
+            "signal": null
+          },
+          "summary": {
+            "tests": 87,
+            "pass": 87,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0,
+            "duration_ms": 66747.3751
+          },
+          "sources": {
+            "tests/storage-integration-launch-api.test.mjs": "73c71ebd3dd6e5e2b4991a2f9b100b46d7dcd104cff3695371ceaa024d898025",
+            "tests/dooray-approval-locks.test.mjs": "af7a035834190d888be9ab5f09223d075aeb51e73e082f917d9e0dc1478e60cb",
+            "tests/dooray-approval-storage-api.test.mjs": "e5dab229173c244d02305735bb49440103683dd2730032a0e9fd9acf0262fcb3",
+            "tests/dooray-responses.test.mjs": "1f9d6c11288d3262bd02ad759d256d4a5f67cf05c8065f76b88b4cda61e1abd1",
+            "tests/dooray-responses-api.test.mjs": "f443c5ecf96b003e3bd978a876416837429a574240add0549e249bc21a2a1ffb",
+            "tests/aionui-launch-tracking.test.mjs": "897541c673c2e83f096f8cf227f0134af2dcb0b422de0474c356fe17d59cea68",
+            "tests/ai-conversation-connection-api.test.mjs": "bd60aeb7ddb70c6ec839f8919e706b76b24543394b10a363d663182d9f99440b",
+            "tests/ai-conversation-connection.test.mjs": "750e863a4f2bc593f3996e62c9490b1498c52ee4494b68bd9e6ecdf1721011a8"
+          },
+          "log": {
+            "path": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\api-01\\tests.log",
+            "sha256": "6c35c2a5aca2ca87327e7a2826c5c6d6873c674778c7449d5bb8097064582979",
+            "bytes": 24755
+          },
+          "explicitEnvironment": {
+            "MNP_LAUNCH_EVIDENCE_DIR": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\launch-authority"
+          }
+        },
+        "budget-01": {
+          "startedAt": "2026-10-28T05:19:48.307Z",
+          "finishedAt": "2026-10-28T05:19:52.548Z",
+          "root": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\candidate",
+          "command": [
+            "C:\\Program Files\\nodejs\\node.exe",
+            "--test",
+            "--test-reporter=tap",
+            "--test-concurrency=1",
+            "--test-name-pattern",
+            "launch callback",
+            "tests/storage-budgets-api.test.mjs"
+          ],
+          "environment": {
+            "node": "v24.13.0",
+            "executable": "C:\\Program Files\\nodejs\\node.exe",
+            "platform": "win32",
+            "release": "10.0.26200",
+            "cpu": "Intel(R) Core(TM) i7-14700",
+            "cores": 28
+          },
+          "exit": {
+            "code": 0,
+            "signal": null
+          },
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0,
+            "duration_ms": 3342.2876
+          },
+          "sources": {
+            "tests/storage-budgets-api.test.mjs": "cf9c7b7e04e7c851ad1234f8557e7cd3d950c6eeed8483bbdc0e884d88edafdb"
+          },
+          "log": {
+            "path": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\budget-01\\tests.log",
+            "sha256": "9854db05a81ffca911e19b4d76ee225e55db58684f13cc8f83919bb5323e0ec5",
+            "bytes": 456
+          },
+          "explicitEnvironment": {
+            "MNP_TEST_NAME_PATTERN": "launch callback"
+          }
+        },
+        "related-01": {
+          "startedAt": "2026-10-28T05:20:26.762Z",
+          "finishedAt": "2026-10-28T05:21:19.435Z",
+          "root": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\candidate",
+          "command": [
+            "C:\\Program Files\\nodejs\\node.exe",
+            "--test",
+            "--test-reporter=tap",
+            "--test-concurrency=1",
+            "tests/ai-conversation-role-browser.test.mjs",
+            "tests/local-backup-notice-browser.test.mjs",
+            "tests/map-local-cache.test.mjs",
+            "tests/mobile-push.test.mjs",
+            "tests/mobile-push-api.test.mjs",
+            "tests/storage-integration-browser.test.mjs"
+          ],
+          "environment": {
+            "node": "v24.13.0",
+            "executable": "C:\\Program Files\\nodejs\\node.exe",
+            "platform": "win32",
+            "release": "10.0.26200",
+            "cpu": "Intel(R) Core(TM) i7-14700",
+            "cores": 28
+          },
+          "exit": {
+            "code": 0,
+            "signal": null
+          },
+          "summary": {
+            "tests": 22,
+            "pass": 22,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0,
+            "duration_ms": 51074.6791
+          },
+          "sources": {
+            "tests/ai-conversation-role-browser.test.mjs": "c2ee77c7102c285b79e22bcb45136c17a90219e6062e3c6285426a0949a100e4",
+            "tests/local-backup-notice-browser.test.mjs": "7d46df896a2579fb3458ce4c89c64396101103dcc55ad8ef72ea6d7794547dbe",
+            "tests/map-local-cache.test.mjs": "8b9b193e849914df8359437f5603c0ddab1f9f3d24d548d6db7deec42b0496bf",
+            "tests/mobile-push.test.mjs": "0276fb5951d713911ffe17f1829784e8fed2a771a2167eed4898890aa0ae3fb6",
+            "tests/mobile-push-api.test.mjs": "8259077e1e4d1218ccdd9eb00033d83386fac9c1a4a5363fda96a7b595f1be55",
+            "tests/storage-integration-browser.test.mjs": "857b17da4a1fa4174fef457fc958e0612f2c4af1cdf2d4d4ddf6eacf8bde76ec"
+          },
+          "log": {
+            "path": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\related-01\\tests.log",
+            "sha256": "a6e6e23e5ad58df6639087d7d82eb33f29019cd8640f58a5cfdfdc2d46d7747d",
+            "bytes": 7063
+          },
+          "explicitEnvironment": {
+            "MNP_BROWSER_TEST": "1"
+          }
+        },
+        "joint-01": {
+          "startedAt": "2026-10-28T05:26:23.791Z",
+          "finishedAt": "2026-10-28T05:27:50.645Z",
+          "root": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\candidate",
+          "command": [
+            "C:\\Program Files\\nodejs\\node.exe",
+            "--test",
+            "--test-reporter=tap",
+            "--test-concurrency=1",
+            "tests/storage-approval-integration-api.test.mjs"
+          ],
+          "environment": {
+            "node": "v24.13.0",
+            "executable": "C:\\Program Files\\nodejs\\node.exe",
+            "platform": "win32",
+            "release": "10.0.26200",
+            "cpu": "Intel(R) Core(TM) i7-14700",
+            "cores": 28
+          },
+          "exit": {
+            "code": 0,
+            "signal": null
+          },
+          "summary": {
+            "tests": 10,
+            "pass": 10,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0,
+            "duration_ms": 85292.3256
+          },
+          "sources": {
+            "tests/storage-approval-integration-api.test.mjs": "a27cc6e892c521281a01feace8e01c7de1f8ff570eefea3a2f1754e2121a04dd"
+          },
+          "log": {
+            "path": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\joint-01\\tests.log",
+            "sha256": "327290256879c8d33591920eac5284299af997528decb9028a308c6546b70044",
+            "bytes": 2053
+          },
+          "explicitEnvironment": {
+            "MNP_APPROVAL_API_ARTIFACTS": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\joint-authority-01"
+          }
+        },
+        "browser-01": {
+          "startedAt": "2026-10-28T05:22:30.596Z",
+          "finishedAt": "2026-10-28T05:23:08.565Z",
+          "root": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\candidate",
+          "command": [
+            "C:\\Program Files\\nodejs\\node.exe",
+            "--test",
+            "--test-reporter=tap",
+            "--test-concurrency=1",
+            "tests/storage-approval-integration-browser.test.mjs"
+          ],
+          "environment": {
+            "node": "v24.13.0",
+            "executable": "C:\\Program Files\\nodejs\\node.exe",
+            "platform": "win32",
+            "release": "10.0.26200",
+            "cpu": "Intel(R) Core(TM) i7-14700",
+            "cores": 28
+          },
+          "exit": {
+            "code": 1,
+            "signal": null
+          },
+          "summary": {
+            "tests": 2,
+            "pass": 0,
+            "fail": 2,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0,
+            "duration_ms": 37143.8772
+          },
+          "sources": {
+            "tests/storage-approval-integration-browser.test.mjs": "6705441c11967390fa2e6c40048e67e0a010cf9f078dbbe6235df7a0bed293b0"
+          },
+          "log": {
+            "path": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\browser-01\\tests.log",
+            "sha256": "c0b26f7252707cc62a7e597d6ab685f1bba4865b975e67506167f68105ddc337",
+            "bytes": 2509
+          },
+          "explicitEnvironment": {
+            "MNP_BROWSER_TEST": "1",
+            "MNP_APPROVAL_BROWSER_ARTIFACTS": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\approval-browser-01"
+          }
+        },
+        "browser-02": {
+          "startedAt": "2026-10-28T05:23:48.409Z",
+          "finishedAt": "2026-10-28T05:24:38.703Z",
+          "root": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\candidate",
+          "command": [
+            "C:\\Program Files\\nodejs\\node.exe",
+            "--test",
+            "--test-reporter=tap",
+            "--test-concurrency=1",
+            "tests/storage-approval-integration-browser.test.mjs"
+          ],
+          "environment": {
+            "node": "v24.13.0",
+            "executable": "C:\\Program Files\\nodejs\\node.exe",
+            "platform": "win32",
+            "release": "10.0.26200",
+            "cpu": "Intel(R) Core(TM) i7-14700",
+            "cores": 28
+          },
+          "exit": {
+            "code": 1,
+            "signal": null
+          },
+          "summary": {
+            "tests": 2,
+            "pass": 0,
+            "fail": 2,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0,
+            "duration_ms": 48671.3954
+          },
+          "sources": {
+            "tests/storage-approval-integration-browser.test.mjs": "7279b13d182ff965ab78d6ab29fad6edcd7e4a154fe98436f350ebb1a6529420"
+          },
+          "log": {
+            "path": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\browser-02\\tests.log",
+            "sha256": "dd82ad37737f7b5115995ac8998ff2781e87402b7957e6fc9fa4e6d581e90dba",
+            "bytes": 2525
+          },
+          "explicitEnvironment": {
+            "MNP_BROWSER_TEST": "1",
+            "MNP_APPROVAL_BROWSER_ARTIFACTS": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\approval-browser-02"
+          }
+        },
+        "browser-03": {
+          "startedAt": "2026-10-28T05:25:09.641Z",
+          "finishedAt": "2026-10-28T05:25:47.872Z",
+          "root": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\candidate",
+          "command": [
+            "C:\\Program Files\\nodejs\\node.exe",
+            "--test",
+            "--test-reporter=tap",
+            "--test-concurrency=1",
+            "tests/storage-approval-integration-browser.test.mjs"
+          ],
+          "environment": {
+            "node": "v24.13.0",
+            "executable": "C:\\Program Files\\nodejs\\node.exe",
+            "platform": "win32",
+            "release": "10.0.26200",
+            "cpu": "Intel(R) Core(TM) i7-14700",
+            "cores": 28
+          },
+          "exit": {
+            "code": 1,
+            "signal": null
+          },
+          "summary": {
+            "tests": 2,
+            "pass": 1,
+            "fail": 1,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0,
+            "duration_ms": 36608.034
+          },
+          "sources": {
+            "tests/storage-approval-integration-browser.test.mjs": "c17a83c4f3601ca1ac199003ba567290bff31389fa88e0da7a2ce17453a9a2fe"
+          },
+          "log": {
+            "path": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\browser-03\\tests.log",
+            "sha256": "feb0eed3cb91e81e32bca7d3be4486907fab9ecb3f43b0be89be78abe9742083",
+            "bytes": 1744
+          },
+          "explicitEnvironment": {
+            "MNP_BROWSER_TEST": "1",
+            "MNP_APPROVAL_BROWSER_ARTIFACTS": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\approval-browser-03"
+          }
+        },
+        "browser-04": {
+          "startedAt": "2026-10-28T05:27:48.783Z",
+          "finishedAt": "2026-10-28T05:28:13.918Z",
+          "root": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\candidate",
+          "command": [
+            "C:\\Program Files\\nodejs\\node.exe",
+            "--test",
+            "--test-reporter=tap",
+            "--test-concurrency=1",
+            "tests/storage-approval-integration-browser.test.mjs"
+          ],
+          "environment": {
+            "node": "v24.13.0",
+            "executable": "C:\\Program Files\\nodejs\\node.exe",
+            "platform": "win32",
+            "release": "10.0.26200",
+            "cpu": "Intel(R) Core(TM) i7-14700",
+            "cores": 28
+          },
+          "exit": {
+            "code": 0,
+            "signal": null
+          },
+          "summary": {
+            "tests": 2,
+            "pass": 2,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0,
+            "duration_ms": 24216.2836
+          },
+          "sources": {
+            "tests/storage-approval-integration-browser.test.mjs": "7a840a9d008f162539b0449fb1c139937266edf34905e43ca031b7d6d9c58fe4"
+          },
+          "log": {
+            "path": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\browser-04\\tests.log",
+            "sha256": "124bb6716ced393133df40870dfc1a55171a479f8d0df19578307bb606fe66c7",
+            "bytes": 991
+          },
+          "explicitEnvironment": {
+            "MNP_BROWSER_TEST": "1",
+            "MNP_APPROVAL_BROWSER_ARTIFACTS": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\approval-browser-04"
+          }
+        }
+      },
+      "finalRuns": [
+        "api-01",
+        "budget-01",
+        "related-01",
+        "joint-01",
+        "browser-04"
+      ],
+      "finalTests": 122,
+      "static": {
+        "root": "C:\\Git\\MindNProgress\\MindNProgress\\.tmp\\validation07-followup-20261028\\candidate",
+        "results": [
+          {
+            "command": "npm run build",
+            "startedAt": "2026-10-28T05:29:12.202Z",
+            "finishedAt": "2026-10-28T05:29:41.796Z",
+            "code": 0,
+            "log": "build.log",
+            "bytes": 775,
+            "sha256": "f5daf778455f93ffcae037d05bdd3a1c3f0657a4cd05c1b27d9e488c95f05f2f"
+          },
+          {
+            "command": "npm run lint",
+            "startedAt": "2026-10-28T05:29:41.797Z",
+            "finishedAt": "2026-10-28T05:29:55.368Z",
+            "code": 0,
+            "log": "lint.log",
+            "bytes": 239,
+            "sha256": "c4cface9b7cc171a6d9530e95e885855bb1beb7cb274cf2a2a112596f9729821"
+          }
+        ]
+      },
+      "launch": {
+        "callback": {
+          "status": 200,
+          "body": {
+            "conversationId": "approved-launch",
+            "homeMachineId": "isolated-storage"
+          }
+        },
+        "confirmations": [
+          {
+            "httpStatus": 200,
+            "status": "completed",
+            "error": "",
+            "conversationId": "approved-launch"
+          },
+          {
+            "httpStatus": 200,
+            "status": "completed",
+            "error": "",
+            "conversationId": "approved-launch"
+          },
+          {
+            "httpStatus": 200,
+            "status": "completed",
+            "error": "",
+            "conversationId": "approved-launch"
+          }
+        ],
+        "cardConversationId": "approved-launch",
+        "approvalConversationId": "approved-launch",
+        "mapVersion": 2,
+        "mapSha256": "a892a29efb0dd0bcb16665a92c97eca092a2c4a616119f733ce3fe34ecf60350",
+        "approvalsSha256": "1d526c1e59ffe4added1c270887369b27b3b4ce44e746a536e89b769b8724689"
+      },
+      "permissionRevalidation": {
+        "independentSaveMs": 142.92869999998948,
+        "budgetMs": 5000,
+        "callbackStatus": 403,
+        "unchangedMapAndApproval": true
+      },
+      "jointCommit": {
+        "canonicalFiles": 6,
+        "crashBoundaries": 8,
+        "preCommit": "이전 정본 보존·연결 확인 409",
+        "postCommit": "version 2·연결 1·revision 1·completed 조회 200·재시작 중복 없음",
+        "authority": ".tmp/validation07-followup-20261028/joint-authority-01"
+      },
+      "browser": {
+        "realApp": true,
+        "realIsolatedApi": true,
+        "syntheticAion": true,
+        "fixtureEndpoints": [
+          "옵션",
+          "작업공간 문맥",
+          "빈 Dooray 참조/프로젝트 목록"
+        ],
+        "preparedPendingState": "합성 생성 대화 callback의 실제 저장 실패 뒤 sessionStorage에 기존 시작 정보를 준비했다. 실제 외부 생성은 하지 않았다.",
+        "confirmation": 200,
+        "restartFlow": [
+          "status 404",
+          "confirmation 200",
+          "팝업 닫힘",
+          "pending 제거"
+        ],
+        "newAttributions": 0,
+        "newExternalLaunches": 0,
+        "authentication": "실제 합성 편집자 로그인 및 rememberMe 유지. 임시 로그인은 재시작 후 401이며 이를 성공으로 우회하지 않는다.",
+        "screenshotsReviewed": [
+          ".tmp/validation07-followup-20261028/approval-browser-04/retry/confirmation-failed.png",
+          ".tmp/validation07-followup-20261028/approval-browser-04/restart/completed.png"
+        ]
+      },
+      "impact": {
+        "approval": "02 공동 확정·사용자 잠금·생성 대화 재확인: 07-1/2/4 직접 재실행",
+        "connection": "기존 대화 연결·삭제 경합: 기존 API/단위 직접 재실행",
+        "localBackup": "App·Ref·캐시와 저장/재시작 화면 직접 재실행",
+        "mobilePush": "격리 API/로직 권한 회귀만 실행, 실제 발송 없음",
+        "performance": "일반 저장/조회 핵심 15개 모듈 동일, 원래 42 읽기·90 쓰기 수치 재사용. 최신 후보 새 측정으로 간주하지 않음"
+      },
+      "reuse": [
+        "01~06 직접 reuse-first 카드의 최신 계약·근거",
+        "docs/api-storage/approval-link-repair-20261028.md",
+        "docs/api-storage/validation-02-approval-20261028.json",
+        ".tmp/review07-evidence-20261028.json"
+      ],
+      "notExecuted": [
+        "전체 부하·성능 비교 재측정",
+        "MCP 전체 도구 재실행",
+        "운영 승인 기록 복구",
+        "운영 재시작·배포",
+        "실제 AionUi·Dooray·Runner·push",
+        "추가 AI 위임·원격 push"
+      ]
+    }
   },
   "changes": {
     "productionCode": [],
@@ -54597,10 +55198,26 @@
         }
       ],
       "followupValidation": "46cf362의 승인 연결 보완이 통합된 사실을 확인했다. 지정 후보 258faef의 검수 결과와 구분하며 후속 통합본의 실행 검증은 이번 결과에 포함하지 않는다."
+    },
+    "followup": {
+      "ownedFiles": [
+        "tests/helpers/approval-integration-fixture-07.mjs",
+        "tests/storage-approval-integration-api.test.mjs",
+        "tests/storage-approval-integration-browser.test.mjs",
+        "docs/api-storage/validation-07-20261028.md",
+        "docs/api-storage/validation-07-20261028.json"
+      ],
+      "productionCode": [],
+      "fixedCandidateSha": "99d6d8759cc437f87bcaef10079f36b049d7df6f",
+      "originalWorkingTree": "?? .tmp/",
+      "checkpoint": "담당 커밋은 이 문서의 Git 이력 및 카드 결과 댓글·.tmp의 최종 체크포인트에 기록한다.",
+      "priorEvidence": "원래 1332개 근거와 최초 보고서·manifest 백업의 해시를 검증했다."
     }
   },
   "next": {
-    "required": [
+    "required": [],
+    "optional": [],
+    "resolved": [
       {
         "id": "07-F01",
         "ownerCardId": "node-mvq4frbw-836930",
@@ -54610,10 +55227,11 @@
         "reproduction": "MNP_STORAGE_TEST_SOURCE_ROOT에 후보 격리 사본을 지정하고 node --test tests/storage-integration-launch-api.test.mjs 실행",
         "exitCondition": "02 소유자가 자원 집합·공동 확정을 보완하고 05의 외부 대기 분리·예약·권한·버전 재검증을 보존한 통합 SHA에서 callback 200, 카드·승인 동일 대화, completed 조회와 기존 관련 회귀를 통과할 것.",
         "followupImplementationCommit": "46cf362",
-        "remaining": "후속 통합본에서 원래 AI 귀속·연결 회귀의 통과를 확인하는 검수가 남는다. 후속 커밋의 존재만으로 258faef에서 실패한 원래 조건을 완료 처리하지 않았다."
+        "remaining": "후속 통합본에서 원래 AI 귀속·연결 회귀의 통과를 확인하는 검수가 남는다. 후속 커밋의 존재만으로 258faef에서 실패한 원래 조건을 완료 처리하지 않았다.",
+        "resolvedCandidateSha": "99d6d8759cc437f87bcaef10079f36b049d7df6f",
+        "resolution": "callback 200·양쪽 동일 대화·completed·반복/복구/권한/버전/실제 App 회귀를 독립 재실행해 통과했다."
       }
-    ],
-    "optional": []
+    ]
   },
   "limits": [
     "지원 조건은 데이터 루트당 콘텐츠 작성 API 한 프로세스다. 강제 종료는 Node 프로세스 종료이며 정전·OS·디스크 손실 내구성은 검증하지 않았다.",
@@ -54622,7 +55240,8 @@
     "화면은 Windows Chrome headless의 실제 App을 조작했다. 저장 시험은 실제 격리 API·정본 파일을 대조했고, 위임 이벤트 유실 시험의 API·SSE는 모의 응답이다. 모바일·다른 브라우저·실제 외부 서비스는 검증하지 않았다.",
     "24개는 기존 관측 경로다. 전 작성 경로 또는 24개 모두의 성능 표본이라는 뜻이 아니다. 비교 API와 기능 회귀 범위는 개별 셀·명령으로 한정한다.",
     "2/5/10MB 별도 문서 업무, 웹 전체 경로의 부분 저장 전환, 새 SLA·전체 향상률은 완료 범위에 넣지 않았다.",
-    "읽기 최초 조회 및 RSS 증가, journal·잠금·후속 효과로 인한 쓰기 비용 증가를 숨기지 않는다. 유실·거부로 처리 수가 다른 셀의 지연을 단순 개선율로 해석하지 않는다."
+    "읽기 최초 조회 및 RSS 증가, journal·잠금·후속 효과로 인한 쓰기 비용 증가를 숨기지 않는다. 유실·거부로 처리 수가 다른 셀의 지연을 단순 개선율로 해석하지 않는다.",
+    "보완 통합본 99d6d87에서는 변경 영향만 재실행했다. 전체 성능·부하 수치는 258faef의 원래 측정이며 최신 후보 새 측정이 아니다. 실제 승인 팝업 시험의 외부 생성·옵션/참조 자료는 합성이고 승인·재확인 저장은 실제 격리 API다."
   ],
   "attemptHistory": [
     {
@@ -54648,6 +55267,27 @@
     {
       "run": "browser-01~03",
       "result": "시험의 PUT 요청 형식·입력 반영 대기·재연결 후 변경 내용 불러오기 동작을 보완했다. 실패 로그·화면을 보존했고 browser-04 실제 저장 시험은 통과했다."
+    },
+    {
+      "phase": "07 보완",
+      "attempts": [
+        {
+          "run": "browser-01",
+          "finding": "웹 승인 목록은 로그인 쿠키가 필요하며 MCP 인증만으로 401. 시험 인증 보완."
+        },
+        {
+          "run": "browser-02",
+          "finding": "새 페이지 초기 pending 주입 누락. 실제 App 준비 후 주입하도록 시험 순서 보완."
+        },
+        {
+          "run": "browser-03",
+          "finding": "일반 재확인 통과, 재시작은 임시 로그인 소멸 401. 기존 rememberMe 계약 사용."
+        },
+        {
+          "run": "browser-04",
+          "finding": "2/2 통과. 생산 코드 변경 없음."
+        }
+      ]
     }
   ],
   "evidence": [
@@ -61310,6 +61950,522 @@
       "path": "docs/api-storage/regression-baseline.md",
       "bytes": 13751,
       "sha256": "d6aef39a1f5786632a9d35e10f9e1c9e1596312f2c3d9a42a06e4b310fbc7c37"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/preparation.json",
+      "bytes": 115388,
+      "sha256": "67e0cc51b3270991ee86c37377732e102c246a45e3654ac373fc57e47d6baab2"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/source-diff.patch",
+      "bytes": 101504,
+      "sha256": "4c2d78d06ba2ce7366a09e1c304ea3e4c8b746efcb9bebf1d519739714fc3b0f"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/preservation-audit.json",
+      "bytes": 110480,
+      "sha256": "6b18c2fdc2f1646d3a6e9e839f3b958e91aa090e52baa58fe6d89b3dcf3722a8"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/cards-before.json",
+      "bytes": 157553,
+      "sha256": "d37d16ad90cfb65bc23dc29d3297a7d6ca9d886afb8618175bff2bc88f8e7020"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/api-01/result.json",
+      "bytes": 2280,
+      "sha256": "3398d317a12f815befe01607cb038ded8180da9d7ebbb723099d0ea00a2966e4"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/api-01/tests.log",
+      "bytes": 24755,
+      "sha256": "6c35c2a5aca2ca87327e7a2826c5c6d6873c674778c7449d5bb8097064582979"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/budget-01/result.json",
+      "bytes": 1184,
+      "sha256": "93ffbfe30d82121d5a2a007540639910776383f31cce928abc875ce7923224b2"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/budget-01/tests.log",
+      "bytes": 456,
+      "sha256": "9854db05a81ffca911e19b4d76ee225e55db58684f13cc8f83919bb5323e0ec5"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/related-01/result.json",
+      "bytes": 1917,
+      "sha256": "cebb1c91aae9ddfa1a9d5cd396f63a32e5d38a32392b0074b844edde553605f9"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/related-01/tests.log",
+      "bytes": 7063,
+      "sha256": "a6e6e23e5ad58df6639087d7d82eb33f29019cd8640f58a5cfdfdc2d46d7747d"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-01/result.json",
+      "bytes": 1163,
+      "sha256": "ecd36d5027070b08eaa379bdfc8a7cb3e10900aec2a392932a30db4c717a443e"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-01/tests.log",
+      "bytes": 2053,
+      "sha256": "327290256879c8d33591920eac5284299af997528decb9028a308c6546b70044"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-authority-01/after-applied-all.json",
+      "bytes": 758125,
+      "sha256": "f0900ab53f4ecc335617f0ac5669c9c8fee1c4249d556403e90f7687e182304a"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-authority-01/after-file-0.json",
+      "bytes": 758176,
+      "sha256": "8d1d2c8f890d70471129748fed792235b29cbe6ab5b00c478b5b830fc1c4ee11"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-authority-01/after-file-1.json",
+      "bytes": 758198,
+      "sha256": "69cb1f7c1ba486941abfa498a68a59adc3bc5a994fb486bd3daf2399a95b8fdf"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-authority-01/after-file-2.json",
+      "bytes": 758170,
+      "sha256": "b0c6b7ad07cf53d466779bb0d18dad5c0c634a90504b5db0d96d666dac4a742b"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-authority-01/after-file-3.json",
+      "bytes": 758184,
+      "sha256": "bda973a169dd794ee11c095805f5954f9c4329254c36efce58a970d821aeb0ca"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-authority-01/after-file-4.json",
+      "bytes": 758189,
+      "sha256": "0afbe22de951913742845366cbd40e7c772067d82b9bba02b569b193093f61d5"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-authority-01/after-file-5.json",
+      "bytes": 758188,
+      "sha256": "51c93b11b18f893e3fb7a9648b21244fa6c8773d733bdab7b48bd199c81ed52e"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-authority-01/before-commit-all.json",
+      "bytes": 373317,
+      "sha256": "a6f04430259f98dd96966393c56342a68f0ee7d345ff6de20605f126e5fa3ef4"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-authority-01/joint-transaction.json",
+      "bytes": 379459,
+      "sha256": "a81672d9477f6fbe7337e99582f5d0e892d85ac4e3a59c34ee8abef5c5c2bc81"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/joint-authority-01/permission-revalidation.json",
+      "bytes": 374982,
+      "sha256": "bbf5f20bd66ed9f51811cea3e41cc61819e0a5c3848deb7c07381b865d571cc2"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/launch-authority/approval.json",
+      "bytes": 1949,
+      "sha256": "fb0f315adbe78f4db7ad00b5be86863df5b4561c5b63a0644cf19798cf309143"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/launch-authority/map.json",
+      "bytes": 367242,
+      "sha256": "11e82c9680d6b8aa9ba29b8110e9fdee6be664acd9b22fffff87ae39756fb228"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/launch-authority/result.json",
+      "bytes": 837,
+      "sha256": "86fc37ce3bc203001f84036025ccaa6a1b84262d683230e7eb0c858d6790e04e"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/launch-authority/server.log",
+      "bytes": 3104,
+      "sha256": "6c08b6a321a2179eb238d741cbaaf493e996b584e669a5319e7a88d8626133ca"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/browser-01/result.json",
+      "bytes": 1171,
+      "sha256": "19fb176d9ebcbee0390128254e3550dca1fc7cc8cacd4409db1c46cf1c6035c7"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/browser-01/tests.log",
+      "bytes": 2509,
+      "sha256": "c0b26f7252707cc62a7e597d6ab685f1bba4865b975e67506167f68105ddc337"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/browser-02/result.json",
+      "bytes": 1171,
+      "sha256": "b63e7a2d296096977aeb4104cb4db644a286861b7f3cda393ad0b9e9604cd219"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/browser-02/tests.log",
+      "bytes": 2525,
+      "sha256": "dd82ad37737f7b5115995ac8998ff2781e87402b7957e6fc9fa4e6d581e90dba"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/browser-03/result.json",
+      "bytes": 1170,
+      "sha256": "80b80faee9ce64ca786b750faf46633079fd1f658510538b18f383d779def0d0"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/browser-03/tests.log",
+      "bytes": 1744,
+      "sha256": "feb0eed3cb91e81e32bca7d3be4486907fab9ecb3f43b0be89be78abe9742083"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/browser-04/result.json",
+      "bytes": 1170,
+      "sha256": "72aa82148135e6082510ca05afb2a19af1907e91e5b41d11a5fcabcdb458566e"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/browser-04/tests.log",
+      "bytes": 991,
+      "sha256": "124bb6716ced393133df40870dfc1a55171a479f8d0df19578307bb606fe66c7"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-01/restart/final.png",
+      "bytes": 150770,
+      "sha256": "123b4b17eb9c2e5488373917cf7b89292a34e6d47fd0b686a34bb83fd5c18df9"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-01/restart/page-final.json",
+      "bytes": 8586,
+      "sha256": "4c2aba7081789d7f974063e3390e2bd6cb112ce05b72db5f1d485e60d11a7705"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-01/restart/server-final.log",
+      "bytes": 9745,
+      "sha256": "621afdee039a6702d53e2cc9ec2791cbcf12e08e4f9552f863058d30f1dac6cc"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-01/retry/final.png",
+      "bytes": 150755,
+      "sha256": "550f6a55584fbdc59e0f28c6237e916141ee4636c4824bda02760d9a272f0019"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-01/retry/page-final.json",
+      "bytes": 8586,
+      "sha256": "22c19903d9cb1662cf0fd72b6a067a97695656fdde9da2eaa8a6e31edd799f8d"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-01/retry/server-final.log",
+      "bytes": 9745,
+      "sha256": "6245387f00ecec9094f3b51fc87ceb141fe83abe4cb335a742c67268818f4401"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-02/restart/final.png",
+      "bytes": 198524,
+      "sha256": "be41b17eea20a7f45621fe200290a3a58d03067d4b603debd03504674ea28c23"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-02/restart/page-final.json",
+      "bytes": 11043,
+      "sha256": "8a5c0f0ccb60e88b82fed70db8f7fed78cc283abede6d76009bf3b30f28f60f7"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-02/restart/server-final.log",
+      "bytes": 4770,
+      "sha256": "ad20b95d6e368f19d57c3cbe192a51c6876a763fe938ad6593d3c075ba4092d9"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-02/retry/final.png",
+      "bytes": 198519,
+      "sha256": "972e0ffda81c36bea5eed0915f1bc0c4db48813598ac7fab95d3d4ecfbdeb496"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-02/retry/page-final.json",
+      "bytes": 11043,
+      "sha256": "1326e9103fb21ae5ab05eeeb566f8c086e40b3d7e3fdfce2793354c9e6f7c3d4"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-02/retry/server-final.log",
+      "bytes": 4771,
+      "sha256": "c366bfe1536aecee108a8f44d8c94113250ba0da75746e4d150d61301a332864"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-03/restart/confirmation-failed.png",
+      "bytes": 212910,
+      "sha256": "8ac116c1f65a69ef1313c1079cbbc8cc181f0a683d6fecab4f840dfaa45f3eca"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-03/restart/final.png",
+      "bytes": 212463,
+      "sha256": "6566af4799eb9d608cf3b620e184173b773246a51731f35ea1d143b5ef4876f2"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-03/restart/page-final.json",
+      "bytes": 11972,
+      "sha256": "d667052f89b603f3012c9e2a5d7519823ea5c0474aa2a14eaa5c7f75cef1749a"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-03/restart/server-final.log",
+      "bytes": 5672,
+      "sha256": "711da9e4cb9a477bf9331bd0e22086762ea0c24676c2d48664145d1682807ce6"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-03/retry/authority.json",
+      "bytes": 374434,
+      "sha256": "73dc5e5781f0ed0a0c95c11714f8ba408a22088aff9f8f1b3372635f2d0fee96"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-03/retry/completed.png",
+      "bytes": 177512,
+      "sha256": "a90f5cd3b59d30c9a2e8faf03d695515d73648723961caccadb8603e2a632dad"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-03/retry/confirmation-failed.png",
+      "bytes": 212911,
+      "sha256": "35ee244cc0acd761f6ece766b52fbfbf96d99ab590fc5477fbe587610c9cf714"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-03/retry/final.png",
+      "bytes": 177512,
+      "sha256": "a90f5cd3b59d30c9a2e8faf03d695515d73648723961caccadb8603e2a632dad"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-03/retry/page-final.json",
+      "bytes": 10375,
+      "sha256": "61365f11ae55fa24512a453f121b751f860914916ba2350b9be6fdc5ba942778"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-03/retry/server-final.log",
+      "bytes": 5432,
+      "sha256": "77829c310d02377767eb07440b6a682bb8134b8b02b4a0af44092a5fa7391944"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/restart/authority.json",
+      "bytes": 374658,
+      "sha256": "8173c2ea7a00ee11c13a4c197a03bb085cb1218acfdbc8cd6c13e440661e38c2"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/restart/completed.png",
+      "bytes": 177464,
+      "sha256": "a0804713f653bc1953f9f72faf2241684d777ce361c60db4091ead48255b27ad"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/restart/confirmation-failed.png",
+      "bytes": 212860,
+      "sha256": "f94547131d48486e54c9680bd3a539b1a90862ec24a3f3776d8de8b0c9bfad43"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/restart/final.png",
+      "bytes": 177464,
+      "sha256": "a0804713f653bc1953f9f72faf2241684d777ce361c60db4091ead48255b27ad"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/restart/page-final.json",
+      "bytes": 10566,
+      "sha256": "614a4f2aa2b1f78b0b1775841621534937446d12ba7bd3eb76d1db9f324b1e29"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/restart/server-final.log",
+      "bytes": 5989,
+      "sha256": "cee165708e119e3650496d35e0a933268e44679030b1aaf030c6dc4446433057"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/retry/authority.json",
+      "bytes": 374434,
+      "sha256": "5b9d6421a21be07670e02c495fe2c2bdc8ef6b60dc4164ea6616a823a7a53960"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/retry/completed.png",
+      "bytes": 177464,
+      "sha256": "a0804713f653bc1953f9f72faf2241684d777ce361c60db4091ead48255b27ad"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/retry/confirmation-failed.png",
+      "bytes": 212860,
+      "sha256": "f94547131d48486e54c9680bd3a539b1a90862ec24a3f3776d8de8b0c9bfad43"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/retry/final.png",
+      "bytes": 177464,
+      "sha256": "a0804713f653bc1953f9f72faf2241684d777ce361c60db4091ead48255b27ad"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/retry/page-final.json",
+      "bytes": 10375,
+      "sha256": "8d5a242f3b5fb8e3dcaf0bf425c8d76d0839132ad39c013d7d58df72f82552e6"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/approval-browser-04/retry/server-final.log",
+      "bytes": 5432,
+      "sha256": "dd0bfe27fbf5070e338591b4f7270e86df02f2fffb9b9030e1503b60c5d5cf1c"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/static-01/build.log",
+      "bytes": 775,
+      "sha256": "f5daf778455f93ffcae037d05bdd3a1c3f0657a4cd05c1b27d9e488c95f05f2f"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/static-01/lint.log",
+      "bytes": 239,
+      "sha256": "c4cface9b7cc171a6d9530e95e885855bb1beb7cb274cf2a2a112596f9729821"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/static-01/result.json",
+      "bytes": 695,
+      "sha256": "a59bb30c6baa08f4f17abbe72bb3bfb39ae9de2d34718acbcee1f121381fb8ad"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/related-captures/mnp-ai-launch-pending-1793164837273.png",
+      "bytes": 100447,
+      "sha256": "20752f7d35a81ee4a4df21ef89df35eb9291261496143418d582a4ce35355419"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/related-captures/mnp-approval-repair-1793164837536.png",
+      "bytes": 105732,
+      "sha256": "4baf10a72dcf8447ba2c25c5bae57ef5e7c9b7b75cd8aed8448b4d21c7bb003a"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/related-captures/mnp-delegation-model-1440-light.png",
+      "bytes": 98995,
+      "sha256": "831e2897c1a2dfb4286bcc668b2c523280ca35bb961f6daeeb517877200bb7d7"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/related-captures/mnp-delegation-model-390-dark.png",
+      "bytes": 50818,
+      "sha256": "315770458e936aa886dc5d516a84a12c67c8ffa3e7e4c1d48d888257cb0d87e0"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/candidate/.tmp/storage-integration-browser/authority.json",
+      "bytes": 15793,
+      "sha256": "7636ee59093b78cc821bce01974984c7a0e00f4e07a23edabcba2af6328a69bd"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/candidate/.tmp/storage-integration-browser/comment.png",
+      "bytes": 121374,
+      "sha256": "ae1b959c913d563ca5987ac7e9d63ae556bd7bf9cd008d41bbe33a30f6fe2aca"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/candidate/.tmp/storage-integration-browser/final.png",
+      "bytes": 116951,
+      "sha256": "6a42031c882585fecf349bd512110dc314e1b281752ebe6cd0e791c0126eed44"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/candidate/.tmp/storage-integration-browser/page-final.json",
+      "bytes": 3303,
+      "sha256": "27f38c04d2e1ffd0812c6ce5019d8e3a2f3b68a0f467ba61b06674d5f9f11842"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/candidate/.tmp/storage-integration-browser/reconnected.png",
+      "bytes": 116951,
+      "sha256": "73dc0798646e49784cc806e027430b3a9f7b242c4a709ff125a3ce26abc155e8"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/candidate/.tmp/storage-integration-browser/requests.json",
+      "bytes": 1030,
+      "sha256": "e8dc225b073c3e56d03d7269a66807268998682354e0fb5b7717d7d388b84448"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/candidate/.tmp/storage-integration-browser/save-error.png",
+      "bytes": 116933,
+      "sha256": "d0acff3592d4f10f5c4eb07f0a15f48b894529ae16fee109e3d96fee48fc328a"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/candidate/.tmp/storage-integration-browser/saved.png",
+      "bytes": 117192,
+      "sha256": "a101a9fc52ef1fc0834837a48a2defb5ebbad81a05878f69fbcb681a3f07acfb"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/candidate/.tmp/storage-integration-browser/server-final.log",
+      "bytes": 13353,
+      "sha256": "46b353e86f8c001c96e6ce018ee084d675a62722e167218d2d710453163370cf"
+    },
+    {
+      "path": ".tmp/validation07-followup-20261028/candidate/.tmp/storage-integration-browser/server.log",
+      "bytes": 13353,
+      "sha256": "46b353e86f8c001c96e6ce018ee084d675a62722e167218d2d710453163370cf"
+    },
+    {
+      "path": "tests/helpers/approval-integration-fixture-07.mjs",
+      "bytes": 2728,
+      "sha256": "28bbb6412a886d61262f9ad3cb2a744751ed7bbc4272a869257ed64486a771e9"
+    },
+    {
+      "path": "tests/storage-approval-integration-api.test.mjs",
+      "bytes": 7406,
+      "sha256": "a27cc6e892c521281a01feace8e01c7de1f8ff570eefea3a2f1754e2121a04dd"
+    },
+    {
+      "path": "tests/storage-approval-integration-browser.test.mjs",
+      "bytes": 15585,
+      "sha256": "7a840a9d008f162539b0449fb1c139937266edf34905e43ca031b7d6d9c58fe4"
     }
-  ]
+  ],
+  "initialAssessment": {
+    "candidateSha": "258faefbb0d9cc87345ccd8075f490ec20ff361c",
+    "status": {
+      "overall": "미충족",
+      "completedChecklist": 3,
+      "totalChecklist": 4,
+      "reason": "일반 저장·복구·조회 비교는 통과했으나 승인 대화 callback의 카드·승인 기록 연결 회귀가 독립 재현되어 전체 목표를 인수할 수 없다.",
+      "requirements": [
+        {
+          "id": "mnp-api-07-1",
+          "text": "동시성·충돌·수명주기 시험에서 성공한 저장 전부가 남고 손상·교착·중복 반영이 없다.",
+          "done": true,
+          "verdict": "통과",
+          "evidence": [
+            "core-01",
+            "concurrency-alone-01",
+            "write-final-01"
+          ]
+        },
+        {
+          "id": "mnp-api-07-2",
+          "text": "응답 유실·취소·포화·재시작·외부 지연 시험에서 요청 결과가 확인되고 재시도가 유한하게 수렴한다.",
+          "done": true,
+          "verdict": "통과",
+          "evidence": [
+            "core-01",
+            "external-02"
+          ]
+        },
+        {
+          "id": "mnp-api-07-3",
+          "text": "동일 기준의 API별 성능 비교와 실제 저장 건수가 함께 기록되어 무결성 저하 없는 개선이 확인된다.",
+          "done": true,
+          "verdict": "통과",
+          "evidence": [
+            "read-final-01 첫 18셀",
+            "read-final-02 24셀",
+            "write-final-01 90셀"
+          ]
+        },
+        {
+          "id": "mnp-api-07-4",
+          "text": "자동 및 실제 화면 회귀 검증, 남은 제한·미검증 범위와 요구사항별 최종 판정이 근거와 연결된다.",
+          "done": false,
+          "verdict": "미충족",
+          "evidence": [
+            "regression-01",
+            "browser-01 첫 시험",
+            "browser-04",
+            "mcp-02",
+            "launch-candidate-01"
+          ]
+        }
+      ],
+      "scope": "원래 지정된 258faef 통합 후보의 판정이다. 이후 통합된 46cf362의 전체 검수 결과가 아니다."
+    },
+    "next": {
+      "required": [
+        {
+          "id": "07-F01",
+          "ownerCardId": "node-mvq4frbw-836930",
+          "requirement": "mnp-api-07-4 및 원래 필수 범위 5의 AI 귀속·연결 회귀",
+          "finding": "callback은 409 RESOURCE_ORDER_VIOLATION으로 실패하지만 카드에는 대화가 저장되고 승인 기록의 conversation은 비어 있다. 상태 조회 3회 모두 confirmation-failed다.",
+          "cause": "최초 잠금 자원 집합에 state:_dooray-responses/user-editor.json이 빠진 채 카드 연결 후 승인 기록을 저장한다.",
+          "reproduction": "MNP_STORAGE_TEST_SOURCE_ROOT에 후보 격리 사본을 지정하고 node --test tests/storage-integration-launch-api.test.mjs 실행",
+          "exitCondition": "02 소유자가 자원 집합·공동 확정을 보완하고 05의 외부 대기 분리·예약·권한·버전 재검증을 보존한 통합 SHA에서 callback 200, 카드·승인 동일 대화, completed 조회와 기존 관련 회귀를 통과할 것.",
+          "followupImplementationCommit": "46cf362",
+          "remaining": "후속 통합본에서 원래 AI 귀속·연결 회귀의 통과를 확인하는 검수가 남는다. 후속 커밋의 존재만으로 258faef에서 실패한 원래 조건을 완료 처리하지 않았다."
+        }
+      ],
+      "optional": []
+    },
+    "manifestBackup": ".tmp/validation07-followup-20261028/before/docs/api-storage/validation-07-20261028.json",
+    "manifestSha256": "ebb1f40ab8669b4eb32bdc675640b0616c6d5b71055997cd767399150d8a7bb6",
+    "reportSha256": "4cf7dda4f9e5e8207795d17f5a08456f5814422843db1c6fef5bb48c5e27a540"
+  }
 }

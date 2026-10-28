@@ -1,0 +1,256 @@
+{
+  "요구사항": "REQ-MNP-02 / mnp-api-02-4",
+  "판정": "구현·영향 회귀·지정 운영 승인 두 건 복구 완료",
+  "최초통합기준": "258faefbb0d9cc87345ccd8075f490ec20ff361c",
+  "최종부모": "2fa085b4efa33ac07e9788184eb524f02261fb22",
+  "기능커밋": "46cf362073db04f31b9823a765838d0a53747379",
+  "환경": {
+    "플랫폼": "win32",
+    "아키텍처": "x64",
+    "node": "v24.13.0",
+    "시험자료": "OS 임시 데이터 루트·독립 포트·모의 AionUi·시험 프로세스 전용 barrier 및 종료 주입",
+    "운영자료시험": false
+  },
+  "소스": [
+    {
+      "파일": "server/index.mjs",
+      "sha256": "454c94298df541ecc43195b4689a31ec92d6bf695795f4d3b2dd01d62dd6f002"
+    },
+    {
+      "파일": "server/lib/aionUiLaunchTracking.mjs",
+      "sha256": "4a102c107697ee3ac2fe5938b6488e8271b8efbfead90a22718f32f213208b1b"
+    },
+    {
+      "파일": "server/lib/doorayApprovalLinkRepair.mjs",
+      "sha256": "a9e1a3a7b78c696280cb24316cdc442c934dd05010aa5e27b71002c034686a4a"
+    },
+    {
+      "파일": "server/lib/doorayResponseIntegration.mjs",
+      "sha256": "8bdbd0ece0f7c313ff31d58b7da387d73e75b1ee5be5750e2c1cfc6413879f0e"
+    },
+    {
+      "파일": "server/lib/doorayResponses.mjs",
+      "sha256": "4d87ddc5f5efcd27df7b32132c4afe77043148d5f27f8d8963b9e6906455ca5d"
+    },
+    {
+      "파일": "src/components/AiConversationDialog.tsx",
+      "sha256": "ecea4253cecdec3833b3c4c0bf1ffd79dde1e6eaaf0d684fbc017a07e8a05155"
+    },
+    {
+      "파일": "src/components/useAiLaunchConfirmation.ts",
+      "sha256": "f47a338a5a6de9253eba763e4f76d814686bff253681058a389ec7fd930e0087"
+    },
+    {
+      "파일": "tests/ai-conversation-role-browser.test.mjs",
+      "sha256": "c2ee77c7102c285b79e22bcb45136c17a90219e6062e3c6285426a0949a100e4"
+    },
+    {
+      "파일": "tests/dooray-approval-locks.test.mjs",
+      "sha256": "af7a035834190d888be9ab5f09223d075aeb51e73e082f917d9e0dc1478e60cb"
+    },
+    {
+      "파일": "tests/dooray-approval-storage-api.test.mjs",
+      "sha256": "e5dab229173c244d02305735bb49440103683dd2730032a0e9fd9acf0262fcb3"
+    }
+  ],
+  "검증": [
+    {
+      "목적": "관련 승인·잠금·시작 상태·모바일 푸시·로컬 백업 회귀",
+      "통과": 96,
+      "기준": "5031c9b",
+      "로그": ".tmp/req-mnp02-approval-validation-20261028/integrated.log",
+      "sha256": "af8726c6726153a0b235ab45998f81147f8efe95c65f941eb80e8d17db6b9bbb"
+    },
+    {
+      "목적": "최신 대화 연결·승인 저장·잠금·07 callback 재현과 실제 연결 화면",
+      "통과": 20,
+      "기준": "46cf362073db04f31b9823a765838d0a53747379",
+      "로그": ".tmp/req-mnp02-approval-validation-20261028/latest-combined.log",
+      "sha256": "df9fe69ee7d41836ef8763aba71d91c1b44e7dba48bf146ca089026c42424200"
+    },
+    {
+      "목적": "실제 승인 재확인 팝업·로컬 백업 화면",
+      "통과": 2,
+      "기준": "5031c9b",
+      "로그": ".tmp/req-mnp02-approval-validation-20261028/integrated-browser.log",
+      "sha256": "68143ebf14608b05083bd7735383872d7ece95139d22794eb81bfa66750c7615"
+    },
+    {
+      "목적": "05 외부 대기·예약·버전 재검증·독립 저장",
+      "통과": 1,
+      "기준": "539d19f",
+      "로그": ".tmp/req-mnp02-approval-validation-20261028/boundary05.log",
+      "sha256": "cb299d7399410adbb48b23228fc944a06438bdbb44e0b931c06434a97848f9e3"
+    },
+    {
+      "목적": "최종 정적 검사",
+      "통과": true,
+      "기준": "46cf362073db04f31b9823a765838d0a53747379",
+      "로그": ".tmp/req-mnp02-approval-validation-20261028/latest-lint.log",
+      "sha256": "20d10110234dad72eefe57ebd88c21f6a143792a89843131f5b11ec5dd1d8fbf"
+    },
+    {
+      "목적": "최종 타입 검사·빌드",
+      "통과": true,
+      "기준": "46cf362073db04f31b9823a765838d0a53747379",
+      "로그": ".tmp/req-mnp02-approval-validation-20261028/latest-build.log",
+      "sha256": "3f07e5ae7950886576029752a2374b89ccc2bd40a2645b9e197740cb34597167"
+    }
+  ],
+  "시험수해석": "실행 사이 중복 시험이 있으므로 합산한 전체 통과 수로 표시하지 않는다. 최신 통합의 대화 연결 API 시험 안에 실제 브라우저 검증이 포함된다.",
+  "보존된실패": [
+    {
+      "로그": ".tmp/req-mnp02-approval-validation-20261028/regression.log",
+      "이유": "새 잠금 시험의 합성 자료에 settings 누락",
+      "해결": "합성 자료 보완 후 해당 시험 및 최종 통합 통과"
+    },
+    {
+      "로그": ".tmp/req-mnp02-approval-validation-20261028/connection-combined.log",
+      "이유": "다른 기능의 이전 시험이 확정 후 일시 오류 redo를 502로 기대",
+      "해결": "담당자의 2fa085b 시험 보완 재사용"
+    },
+    {
+      "로그": ".tmp/req-mnp02-approval-validation-20261028/connection-final.log",
+      "이유": "다른 기능 이전 사본의 병렬 후보 쓰기에서 실패 후 귀속 기록 잔존",
+      "해결": "담당자의 2fa085b 순차 준비 보완을 통합하고 latest-combined 통과"
+    }
+  ],
+  "운영": {
+    "기능소스": "46cf362073db04f31b9823a765838d0a53747379",
+    "예약작업": "\\MindNProgress",
+    "계정": "NHN",
+    "정상종료": true,
+    "강제종료": false,
+    "설정변경": false,
+    "명령": [
+      "scripts/mnp-runtime.ps1 -Action stop -StopTimeoutSeconds 60",
+      "scripts/mnp-runtime.ps1 -Action start -StartTimeoutSeconds 120"
+    ],
+    "API": {
+      "이전PID": 75388,
+      "이후PID": 113744,
+      "HTTP": 200
+    },
+    "웹": {
+      "이전PID": 76104,
+      "이후PID": 110476,
+      "HTTP": 200
+    },
+    "근거": [
+      {
+        "로그": ".tmp/req-mnp02-approval-validation-20261028/runtime-before.log",
+        "sha256": "ecd2b5a61cc2a38bb16ba9d5ac18825e41b86ad3498fbcca57a44a0a63b0be94"
+      },
+      {
+        "로그": ".tmp/req-mnp02-approval-validation-20261028/runtime-stop.log",
+        "sha256": "0f7b969581414b1cc80894a6131efd0357f176b2c0dcf41fccbe20a671183dcd"
+      },
+      {
+        "로그": ".tmp/req-mnp02-approval-validation-20261028/runtime-start.log",
+        "sha256": "4e5946bfdc7098131f602cf0b5e4a9fe6bf8df47a33563a8963eea8e6f2dd74d"
+      }
+    ]
+  },
+  "복구": {
+    "기록": ".tmp/req-mnp02-approval-validation-20261028/operational-apply-1793163259869.json",
+    "sha256": "d2bbb8576f633b03d338fbe1d76af6ee21b44376e147e17014e276bfcea336d2",
+    "시작": "2026-10-28T04:54:19.866Z",
+    "완료": "2026-10-28T04:54:21.294Z",
+    "변경범위전체대조": true,
+    "대상": [
+      {
+        "요청": "dooray-92b22ed25883454d9565f7e4",
+        "대화": "e962013a",
+        "문서": "map-muy2j5pz-ac1a48",
+        "카드": "root-9f52b0869547f5fa",
+        "revision": "213a9941870733183bb1ced972e90d6d60a93e0a80df27e5aaef31846a42a2ef",
+        "이전": {
+          "status": "completed",
+          "completionStatus": "approved",
+          "conversation": null,
+          "approvalHttp": 409,
+          "stateSha256": "6e99ad1c2d99127608a814870faf0e2b7788d3d0f1668eb4b6dfe8827ae8afb6"
+        },
+        "이후": {
+          "status": "completed",
+          "completionStatus": "approved",
+          "conversation": {
+            "conversationId": "e962013a",
+            "mapId": "map-muy2j5pz-ac1a48",
+            "cardId": "root-9f52b0869547f5fa",
+            "homeMachineId": "ad01616196",
+            "homeMachineRole": "main",
+            "linkedAt": "2026-10-28T03:39:08.159Z"
+          },
+          "approvalHttp": 200,
+          "confirmationHttp": 200,
+          "stateSha256": "69a98a8f8b72bc2942be8fc346ac471c62bc4922401f1c0e79a14b92cc8cda08"
+        },
+        "전체원문비교": true,
+        "백업바이트비교": true,
+        "백업": "_dooray-approval-link-backups/user-editor/dooray-92b22ed25883454d9565f7e4-6e99ad1c2d99127608a814870faf0e2b7788d3d0f1668eb4b6dfe8827ae8afb6.json",
+        "원본요청증거": {
+          "requestMessageId": "e283a242",
+          "requestSha256": "20c3f13ecb7f08ad27bcaf13ff92811153ca77c0ea35cd2ee2c83734ff1f20e7",
+          "conversationCreatedAt": 1793158747084
+        }
+      },
+      {
+        "요청": "dooray-9ba6b8c492d2de87bfcc70f2",
+        "대화": "363838dc",
+        "문서": "map-reorg-4c5406f5817c99760b5a",
+        "카드": "root",
+        "revision": "2696a0e1bd11fcb978ef734c6e851001d3007e8b9992556342f30eb7710ee327",
+        "이전": {
+          "status": "completed",
+          "completionStatus": "approved",
+          "conversation": null,
+          "approvalHttp": 409,
+          "stateSha256": "69a98a8f8b72bc2942be8fc346ac471c62bc4922401f1c0e79a14b92cc8cda08"
+        },
+        "이후": {
+          "status": "completed",
+          "completionStatus": "approved",
+          "conversation": {
+            "conversationId": "363838dc",
+            "mapId": "map-reorg-4c5406f5817c99760b5a",
+            "cardId": "root",
+            "homeMachineId": "ad01616196",
+            "homeMachineRole": "main",
+            "linkedAt": "2026-10-28T03:49:06.440Z"
+          },
+          "approvalHttp": 200,
+          "confirmationHttp": 200,
+          "stateSha256": "5c02b9bb90443696a9b00b778c37f43d9bf630bf82070de70ac566244c338f79"
+        },
+        "전체원문비교": true,
+        "백업바이트비교": true,
+        "백업": "_dooray-approval-link-backups/user-editor/dooray-9ba6b8c492d2de87bfcc70f2-69a98a8f8b72bc2942be8fc346ac471c62bc4922401f1c0e79a14b92cc8cda08.json",
+        "원본요청증거": {
+          "requestMessageId": "4ca3b3fe",
+          "requestSha256": "fd94ee0888e6a1556c690591582136687c61234f18be50fc28d2667111721b95",
+          "conversationCreatedAt": 1793159345955
+        }
+      }
+    ]
+  },
+  "원래체크리스트": {
+    "mnp-api-02-1": "이전 통과 근거 보존",
+    "mnp-api-02-2": "이전 통과 근거 보존",
+    "mnp-api-02-3": "이전 통과 근거 보존",
+    "mnp-api-02-4": "이번 보완·운영 두 건 복구 완료"
+  },
+  "미실행및경계": [
+    "원래 댓글·카드 10/20 전체 시험의 무관한 반복은 하지 않음",
+    "실제 Runner·대상 대화의 업무 실행 없음",
+    "07 독립 인수·전체 성능 비교와 상위 인수는 별도",
+    "전원 장애·파일시스템 내구성의 새 보장 없음"
+  ],
+  "필수미완료": [],
+  "선택개선": [],
+  "경고": [
+    "기존 브라우저 시험 no-unsafe-finally",
+    "기존 번들 chunk 크기"
+  ],
+  "생성시각": "2026-10-28T04:56:37.980Z"
+}

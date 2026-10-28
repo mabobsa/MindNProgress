@@ -66,6 +66,9 @@ description: >
 - 새로운 Dooray 업무가 필요하면 대상 프로젝트와 등록할 내용을 사용자에게 먼저 제안한다.
 - 사용자가 승인했거나 현재 요청에 Dooray 등록이 명시된 경우에만 업무를 생성하거나 수정한다.
 - Dooray에 상세 내용을 기록한 경우 MindNProgress에는 핵심 요약과 Dooray 링크를 기록한다.
+- 이미지는 `dooray_project_upload_attachment`로 해당 업무에 업로드하고, 반환된 `fileId`를 `![이미지 설명](/files/{fileId})`로 본문·댓글 또는 마크다운 표의 셀에 넣는다.
+- 새 업무는 생성 → 이미지 업로드 → 본문 수정 순서로 처리한다. 댓글 이미지도 해당 업무에 업로드하며, 댓글은 `text/x-markdown`으로 작성한다.
+- 기존 첨부는 `dooray_project_get_post`의 `files`에서 ID를 확인해 재사용한다. 업로드 경로와 허용 루트는 도구 설명을 따른다.
 - **Dooray 본문 수정은 전체 교체다.** `dooray_project_update_post`의 `body`는 지정하면 기존 본문 전체를 교체하고, `dooray_project_update_post_comment`의 `content`도 전체 교체다. 부분 수정 도구나 해시 조건 저장, MnP 같은 이력 복원 도구가 없다.
   1. 기존 본문에 덧붙일 진행·결과는 본문을 고치지 말고 댓글로 남기는 것을 우선한다.
   2. 본문을 고쳐야 하면 `dooray_project_get_post`로 원문을 받아 파일로 보존하고, 바꿀 범위를 최소화한다. 사람이 쓴 본문의 바꾸지 않을 부분은 원문 그대로 둔다.

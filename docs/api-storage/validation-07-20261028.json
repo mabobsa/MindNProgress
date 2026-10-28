@@ -99,7 +99,8 @@
           "launch-candidate-01"
         ]
       }
-    ]
+    ],
+    "scope": "원래 지정된 258faef 통합 후보의 판정이다. 이후 통합된 46cf362의 전체 검수 결과가 아니다."
   },
   "checks": {
     "functional": [
@@ -54442,7 +54443,161 @@
       "tests/mobile-push-api.test.mjs",
       "tests/mobile-push.test.mjs"
     ],
-    "headNote": "작업 중 다른 업무 커밋이 HEAD에 추가되었다. 검증 후보는 258faef 격리 사본으로 고정했으며 새 HEAD의 생산 변경을 검증 완료로 간주하지 않는다."
+    "headNote": "작업 중 다른 업무 커밋이 HEAD에 추가되었다. 검증 후보는 258faef 격리 사본으로 고정했으며 새 HEAD의 생산 변경을 검증 완료로 간주하지 않는다.",
+    "laterCheckpoint": {
+      "observedAt": "2026-10-28T04:58:48.658Z",
+      "head": "00a3a15c6ed3e0ccb780ebffbb2a484df64e3b21",
+      "reviewCommit": "8e5bc24c4d5fba0a22aee5f08bc40eee0d856356",
+      "commits": [
+        "00a3a15c6ed3e0ccb780ebffbb2a484df64e3b21 [김용민] 승인 연결 보완 검증과 두 운영 기록 복구 근거 확정",
+        "46cf362073db04f31b9823a765838d0a53747379 [김용민] 승인 대화 연결의 잠금 순서와 공동 확정 및 기존 연결 복구",
+        "2fa085b4efa33ac07e9788184eb524f02261fb22 [김용민] Aion 대화 ID 조회와 카드 재연결 기능 추가"
+      ],
+      "preservationSnapshotMeaning": "기존 preservation은 검수 산출물 커밋 직전 20/20 일치 시점이다. 이후 다른 업무의 통합으로 아래 현재 해시가 달라졌다. 착수 백업은 모두 보존했고 07은 해당 생산 파일을 수정하지 않았다.",
+      "files": [
+        {
+          "file": "README.md",
+          "initialSha256": "df635a6bee2dafd4aa03271f67fbab1ad8e6ea39839401cf45fbd20e06b69717",
+          "backupSha256": "df635a6bee2dafd4aa03271f67fbab1ad8e6ea39839401cf45fbd20e06b69717",
+          "currentSha256": "df635a6bee2dafd4aa03271f67fbab1ad8e6ea39839401cf45fbd20e06b69717",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "runner/index.mjs",
+          "initialSha256": "8c62f83cc02e540b80e3969d4679481859e88c24f47eba0840afc487e146efc7",
+          "backupSha256": "8c62f83cc02e540b80e3969d4679481859e88c24f47eba0840afc487e146efc7",
+          "currentSha256": "8c62f83cc02e540b80e3969d4679481859e88c24f47eba0840afc487e146efc7",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "server/index.mjs",
+          "initialSha256": "703c8c841a667aed48b9a4ed48511c5d71206efa90dfab67787089692d91a07d",
+          "backupSha256": "703c8c841a667aed48b9a4ed48511c5d71206efa90dfab67787089692d91a07d",
+          "currentSha256": "454c94298df541ecc43195b4689a31ec92d6bf695795f4d3b2dd01d62dd6f002",
+          "currentMatchesInitial": false
+        },
+        {
+          "file": "src/App.tsx",
+          "initialSha256": "d1cbeb723b9d19adf93c2461b8d043153da0d11685e8920f1ced19b8ff794a5d",
+          "backupSha256": "d1cbeb723b9d19adf93c2461b8d043153da0d11685e8920f1ced19b8ff794a5d",
+          "currentSha256": "d1cbeb723b9d19adf93c2461b8d043153da0d11685e8920f1ced19b8ff794a5d",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "src/utils/mapLocalCache.d.mts",
+          "initialSha256": "f57a83bbb7dfee1efd9c871d1d6b080be1a175e94b822ab0cf25ce3a84e2d4b4",
+          "backupSha256": "f57a83bbb7dfee1efd9c871d1d6b080be1a175e94b822ab0cf25ce3a84e2d4b4",
+          "currentSha256": "f57a83bbb7dfee1efd9c871d1d6b080be1a175e94b822ab0cf25ce3a84e2d4b4",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "src/utils/mapLocalCache.mjs",
+          "initialSha256": "7dc5d9ab33b0e70a016893018df270aab20ab930c923e47cc36443c6ec644059",
+          "backupSha256": "7dc5d9ab33b0e70a016893018df270aab20ab930c923e47cc36443c6ec644059",
+          "currentSha256": "7dc5d9ab33b0e70a016893018df270aab20ab930c923e47cc36443c6ec644059",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "tests/local-backup-notice-browser.test.mjs",
+          "initialSha256": "e1fc9c757973f08d20d1ad24df20638eadd88507db01a8a059438af2dc2e0660",
+          "backupSha256": "e1fc9c757973f08d20d1ad24df20638eadd88507db01a8a059438af2dc2e0660",
+          "currentSha256": "e1fc9c757973f08d20d1ad24df20638eadd88507db01a8a059438af2dc2e0660",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "tests/map-local-cache.test.mjs",
+          "initialSha256": "6bb34020d7a6d11680af390c552a0f2221a60740626f6f879fa001ff989f7fc2",
+          "backupSha256": "6bb34020d7a6d11680af390c552a0f2221a60740626f6f879fa001ff989f7fc2",
+          "currentSha256": "6bb34020d7a6d11680af390c552a0f2221a60740626f6f879fa001ff989f7fc2",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "docs/mobile-push.md",
+          "initialSha256": "9f45429802acf30c676419fdbc23d539dd9257ef578281b171520e8cb58a9adf",
+          "backupSha256": "9f45429802acf30c676419fdbc23d539dd9257ef578281b171520e8cb58a9adf",
+          "currentSha256": "9f45429802acf30c676419fdbc23d539dd9257ef578281b171520e8cb58a9adf",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "server/lib/aiConversationConnection.mjs",
+          "initialSha256": "c071e71355e7a2aa143357d7d5a14af579767dffe713497173b65150099f3202",
+          "backupSha256": "c071e71355e7a2aa143357d7d5a14af579767dffe713497173b65150099f3202",
+          "currentSha256": "c071e71355e7a2aa143357d7d5a14af579767dffe713497173b65150099f3202",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "server/lib/mobilePush.mjs",
+          "initialSha256": "e5ea1ddb6fed015cc10f14627659115b779e1c9f9b5e99c88e75725bcb5f263b",
+          "backupSha256": "e5ea1ddb6fed015cc10f14627659115b779e1c9f9b5e99c88e75725bcb5f263b",
+          "currentSha256": "e5ea1ddb6fed015cc10f14627659115b779e1c9f9b5e99c88e75725bcb5f263b",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "src/components/AiConversationLinkDialog.css",
+          "initialSha256": "01dc62d9c817e0d9f0a4ddad670a1a8709a0cfb7aacc87892006438774967ef7",
+          "backupSha256": "01dc62d9c817e0d9f0a4ddad670a1a8709a0cfb7aacc87892006438774967ef7",
+          "currentSha256": "01dc62d9c817e0d9f0a4ddad670a1a8709a0cfb7aacc87892006438774967ef7",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "src/components/AiConversationLinkDialog.tsx",
+          "initialSha256": "9dbde651903c15383445876c92535a1f9698e65ca42fc2e4a1fd4762e14f62e9",
+          "backupSha256": "9dbde651903c15383445876c92535a1f9698e65ca42fc2e4a1fd4762e14f62e9",
+          "currentSha256": "9dbde651903c15383445876c92535a1f9698e65ca42fc2e4a1fd4762e14f62e9",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "src/utils/referenceNodeFields.d.mts",
+          "initialSha256": "f7ffccbb830ec5ba1fd4b1c616b24aa289fa487480deea6be913f6344eb2febf",
+          "backupSha256": "f7ffccbb830ec5ba1fd4b1c616b24aa289fa487480deea6be913f6344eb2febf",
+          "currentSha256": "f7ffccbb830ec5ba1fd4b1c616b24aa289fa487480deea6be913f6344eb2febf",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "src/utils/referenceNodeFields.mjs",
+          "initialSha256": "2b610ba0c09842d86c97d554f59ab70f0072eda54eb43a5dbdecaa20c0b4862b",
+          "backupSha256": "2b610ba0c09842d86c97d554f59ab70f0072eda54eb43a5dbdecaa20c0b4862b",
+          "currentSha256": "2b610ba0c09842d86c97d554f59ab70f0072eda54eb43a5dbdecaa20c0b4862b",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "tests/ai-conversation-connection-api.test.mjs",
+          "initialSha256": "dd99fa87840f6263c3226b24d26a2af79e5379822f90b2b44f54cc2631b289c8",
+          "backupSha256": "dd99fa87840f6263c3226b24d26a2af79e5379822f90b2b44f54cc2631b289c8",
+          "currentSha256": "b1be9cbe4b989d01609c820abdc61ebd86191c01c08bd20659339532a0ff30fb",
+          "currentMatchesInitial": false
+        },
+        {
+          "file": "tests/ai-conversation-connection.test.mjs",
+          "initialSha256": "273479baf294065e2ac21a0b04b9847bb5a40e9d547e227059990c2378bd888f",
+          "backupSha256": "273479baf294065e2ac21a0b04b9847bb5a40e9d547e227059990c2378bd888f",
+          "currentSha256": "273479baf294065e2ac21a0b04b9847bb5a40e9d547e227059990c2378bd888f",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "tests/helpers/aiConversationLinkBrowser.mjs",
+          "initialSha256": "92afd8f68eda9711f84904a60bf0902a78f2dc5c59b7ac31a622fb868711c2a1",
+          "backupSha256": "92afd8f68eda9711f84904a60bf0902a78f2dc5c59b7ac31a622fb868711c2a1",
+          "currentSha256": "92afd8f68eda9711f84904a60bf0902a78f2dc5c59b7ac31a622fb868711c2a1",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "tests/mobile-push-api.test.mjs",
+          "initialSha256": "857f9ae412f94ad0f6553d1f819c5ffdb5568bbfd88a187ea84c0508731b6718",
+          "backupSha256": "857f9ae412f94ad0f6553d1f819c5ffdb5568bbfd88a187ea84c0508731b6718",
+          "currentSha256": "857f9ae412f94ad0f6553d1f819c5ffdb5568bbfd88a187ea84c0508731b6718",
+          "currentMatchesInitial": true
+        },
+        {
+          "file": "tests/mobile-push.test.mjs",
+          "initialSha256": "83a1621c14b8729f256cd89751c172e3df1d336533ff4c343310a3ce1a7b35a2",
+          "backupSha256": "83a1621c14b8729f256cd89751c172e3df1d336533ff4c343310a3ce1a7b35a2",
+          "currentSha256": "83a1621c14b8729f256cd89751c172e3df1d336533ff4c343310a3ce1a7b35a2",
+          "currentMatchesInitial": true
+        }
+      ],
+      "followupValidation": "46cf362의 승인 연결 보완이 통합된 사실을 확인했다. 지정 후보 258faef의 검수 결과와 구분하며 후속 통합본의 실행 검증은 이번 결과에 포함하지 않는다."
+    }
   },
   "next": {
     "required": [
@@ -54453,7 +54608,9 @@
         "finding": "callback은 409 RESOURCE_ORDER_VIOLATION으로 실패하지만 카드에는 대화가 저장되고 승인 기록의 conversation은 비어 있다. 상태 조회 3회 모두 confirmation-failed다.",
         "cause": "최초 잠금 자원 집합에 state:_dooray-responses/user-editor.json이 빠진 채 카드 연결 후 승인 기록을 저장한다.",
         "reproduction": "MNP_STORAGE_TEST_SOURCE_ROOT에 후보 격리 사본을 지정하고 node --test tests/storage-integration-launch-api.test.mjs 실행",
-        "exitCondition": "02 소유자가 자원 집합·공동 확정을 보완하고 05의 외부 대기 분리·예약·권한·버전 재검증을 보존한 통합 SHA에서 callback 200, 카드·승인 동일 대화, completed 조회와 기존 관련 회귀를 통과할 것."
+        "exitCondition": "02 소유자가 자원 집합·공동 확정을 보완하고 05의 외부 대기 분리·예약·권한·버전 재검증을 보존한 통합 SHA에서 callback 200, 카드·승인 동일 대화, completed 조회와 기존 관련 회귀를 통과할 것.",
+        "followupImplementationCommit": "46cf362",
+        "remaining": "후속 통합본에서 원래 AI 귀속·연결 회귀의 통과를 확인하는 검수가 남는다. 후속 커밋의 존재만으로 258faef에서 실패한 원래 조건을 완료 처리하지 않았다."
       }
     ],
     "optional": []

@@ -11,6 +11,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import '/src/index.css';
 import { DoorayMentionsPanel } from '/src/components/DoorayMentionsPanel.tsx';
+import { doorayResponseIdFromSearch } from '/src/utils/doorayResponseLink.mjs';
 import '/src/dark.css';
 import { applyUiTheme } from '/src/theme.ts';
 window.setTheme = applyUiTheme;
@@ -25,7 +26,7 @@ window.saved = {agentId:'agent-a',modelId:'model-old',thoughtLevel:'medium',mode
 window.failSave = false;
 window.failStart = false;
 window.delayOptions = false;
-let jobs = [];
+let jobs = JSON.parse(sessionStorage.getItem('push-link-jobs') || '[]');
 window.fetch = async (input, init = {}) => {
   const url = new URL(input, location.href), method = init.method || 'GET', body = init.body && JSON.parse(init.body);
   const reply = (value, status = 200) => new Response(JSON.stringify(value), {status,headers:{'Content-Type':'application/json'}});
@@ -39,7 +40,7 @@ window.fetch = async (input, init = {}) => {
   }
   if (url.pathname === '/api/integrations/aionui/options') {
     if (window.delayOptions) await new Promise(resolve => {window.releaseOptions = resolve});
-    return reply({machineId:'fixture',machines:[],agents:[
+    return reply({machineId:'fixture',machines:[],pushMachines:[{machineId:'phone-pc',label:'휴대폰 연결 PC'},{machineId:'other-pc',label:'다른 PC'}],agents:[
       {id:'agent-a',name:'검증 AI',models:[{id:'model-old',label:'기존 모델'},{id:'model-new',label:'변경 모델'}],
         thoughtLevels:[{id:'medium',label:'보통'},{id:'high',label:'높음'}],modes:[{id:'write',label:'작업'}],
         defaultModelId:'model-old',defaultThoughtLevel:'medium',defaultMode:'write'},
@@ -62,7 +63,7 @@ window.fetch = async (input, init = {}) => {
   throw Error('예상하지 못한 요청: ' + url.pathname);
 };
 createRoot(document.getElementById('root')).render(React.createElement(React.StrictMode,null,
-  React.createElement(DoorayMentionsPanel,{clientId:'fixture',userId:'fixture',onClose:()=>window.audit.closed++,
+  React.createElement(DoorayMentionsPanel,{clientId:'fixture',userId:'fixture',initialResponseId:doorayResponseIdFromSearch(location.search),onClose:()=>window.audit.closed++,
     onOpenConversation:()=>{},onOpenCard:()=>{},onLaunchCard:()=>{}})));
 `
 
@@ -189,6 +190,30 @@ test('AI 대응 제안은 모델 확인·취소·저장 실패·중복 클릭을
     await evaluate('document.querySelector(".dooray-mentions-ai-settings").click()')
     await waitFor(() => evaluate('Boolean(document.querySelector(".dooray-response-settings select"))'))
     assert.deepEqual(await evaluate('[...document.querySelectorAll(".dooray-response-settings select")].map(el=>el.value)'), ['agent-a', 'model-new', 'high'], '계정 설정에도 변경한 모델이 유지된다.')
+    await evaluate('document.querySelector(".dooray-response-push-toggle input").click()')
+    assert.equal(await evaluate('document.querySelector(".dooray-response-settings button[type=submit]").disabled'), true, '수신 PC가 없으면 알림 설정을 저장하지 않는다')
+    await evaluate(`(() => {const el=document.querySelector('select[aria-label="휴대폰이 연결된 PC"]');el.value='phone-pc';el.dispatchEvent(new Event('change',{bubbles:true}))})()`)
+    await evaluate('document.querySelector(".dooray-response-settings button[type=submit]").click()')
+    await waitFor(() => evaluate('!document.querySelector(".dooray-response-settings")'))
+    assert.equal(await evaluate('window.saved.pushEnabled'), true)
+    assert.equal(await evaluate('window.saved.pushMachineId'), 'phone-pc')
+    assert.equal(await evaluate('window.audit.starts.length'), 1, '알림 설정은 AI를 다시 실행하지 않는다')
+    await evaluate('document.querySelector(".dooray-mentions-ai-settings").click()')
+    await waitFor(() => evaluate('Boolean(document.querySelector(".dooray-response-push-toggle input")?.checked)'))
+    assert.equal(await evaluate('document.querySelector(\'select[aria-label="휴대폰이 연결된 PC"]\').value'), 'phone-pc')
+    await evaluate(`sessionStorage.setItem('push-link-jobs',JSON.stringify([
+      {id:'latest',subject:'다른 요청',status:'proposal',proposal:'다른 제안',createdAt:'2026-10-28',updatedAt:'2026-10-28',route:null},
+      {id:'dooray-target',subject:'알림에서 연 업무',status:'needs-input',proposal:'확인할 질문',createdAt:'2026-10-28',updatedAt:'2026-10-28',route:null,
+       decision:{kind:'input',reason:'대상 확인 필요',questions:['대상 화면은 어디인가요?'],approval:null},
+       pushNotification:{state:'queued',machineId:'phone-pc',attempts:1,error:'',errorCode:'',queuedAt:1}}
+    ]))`)
+    await send('Page.navigate', { url: `http://127.0.0.1:${server.httpServer.address().port}/options-check?doorayResponseId=dooray-target` })
+    await waitFor(() => evaluate('document.querySelector(".dooray-response-picker select")?.value === "dooray-target"'))
+    assert.ok(await evaluate('document.querySelector(".dooray-response-detail").textContent.includes("대상 화면은 어디인가요?")'))
+    assert.ok(await evaluate('document.querySelector(".dooray-response-push-status").textContent.includes("접수됨")'))
+    assert.equal(await evaluate('window.audit.starts.length'), 0, '알림을 열어도 AI 실행·승인을 하지 않는다')
+    await send('Page.navigate', { url: `http://127.0.0.1:${server.httpServer.address().port}/options-check?doorayResponseId=missing` })
+    await waitFor(() => evaluate('document.querySelector(".dooray-response-notice")?.textContent.includes("로그인 계정")'))
   } finally {
     if (send && socket?.readyState === WebSocket.OPEN) await send('Browser.close').catch(() => {})
     for (const entry of pending.values()) clearTimeout(entry.timer)

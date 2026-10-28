@@ -29,6 +29,7 @@ console.log(response.status, await response.json());
 ## 권한과 경로
 
 - 편집자는 본인 소유 서브 머신, 관리자는 관리 가능한 머신으로 보낸다. 메인 머신은 기존 머신 관리 정책에 따라 관리자만 사용할 수 있다.
+- 서버 운영자가 `MNP_MOBILE_PUSH_MAIN_USER_ID`에 계정 ID 한 개를 지정하면 해당 편집자도 메인 PC의 푸시 발송만 사용할 수 있다. 머신 관리·Runner 토큰 발급 권한은 추가되지 않으며 요청 본문으로 이 권한을 지정할 수 없다.
 - 메인 PC에서는 사용자 로컬 `%LOCALAPPDATA%/AionUiPush/mobile-push-relay.json`을 읽어 루프백 중계로 보낸다. 다른 계정으로 MnP를 실행하면 같은 사용자 프로필의 중계에 연결할 수 없다.
 - 서브 PC는 기존 오퍼레이션 큐와 Runner를 사용한다. AionUi 내장 Runner와 독립 CLI Runner 모두 `/api/internal/mobile-push/mnp` 요청을 해당 PC의 로컬 중계로 전달한다. LAN 수신 포트는 열지 않는다.
 - 비표준 설치는 양쪽에 같은 `AIONUI_PUSH_RELAY_FILE`을 설정할 수 있다. 파일의 실행별 중계 토큰은 비공개로 취급한다. Firebase 서비스 계정·FCM 토큰은 MnP에 저장하지 않는다.
@@ -42,10 +43,20 @@ console.log(response.status, await response.json());
 
 Android는 별도 업무 아이콘, `[MnP]` 제목, 청록 강조색, **MnP 업무 알림** 채널과 앱 내부 MnP 배지를 사용한다. 소리·진동은 Android 채널 설정에서 따로 바꿀 수 있다. 알림 열람·삭제는 MnP 승인·완료 처리와 별개다. 후속 개정은 무음이며 이미 읽거나 없앤 알림을 다시 띄우지 않는다.
 
+## Dooray AI 대응 단계 알림
+
+‘AI 대응 제안 설정’의 ‘추가 정보 필요·승인 대기 시 푸시 받기’를 켜고 ‘휴대폰이 연결된 PC’를 선택한다. 알림 PC는 AI 실행 머신과 달라도 된다. 계정별로 저장하며 새 제안과 다시 제안받기부터 적용한다.
+
+서버는 `needs-input`·`needs-approval`로 전환할 때 대응 기록과 발송 대기를 함께 저장한다. 기존 대기 기록의 조회나 배포만으로 과거 알림을 일괄 발송하지 않는다. 실제 전송은 저장 잠금과 AI 진행 큐 밖에서 최대 두 건씩 처리한다. 같은 발송은 동일한 이벤트 ID·개정 번호를 사용하며 재제안 회차나 제안 내용이 바뀌면 새 이벤트로 알린다.
+
+외부 연결 실패는 15초·1분·3분·10분 간격으로 최대 5회, 최초 기록부터 30분 안에서 재시도한다. 전송 중 재시작하면 1분 뒤 동일 이벤트로 재시도한다. 권한·설정 오류는 즉시 실패로 남긴다. 이미 답변·승인·완료한 요청의 대기 알림은 취소하며, 외부로 이미 전달 중인 알림은 회수할 수 없다. ‘푸시 접수됨’은 휴대폰 수신 완료가 아니다.
+
+공개 주소가 HTTPS이면 `/?doorayResponseId=요청ID` 링크로 로그인한 사용자의 해당 대응을 연다. 알림을 여는 동작은 AI 실행이나 승인이 아니다. HTTP 공개 주소에서는 링크 없이 업무 제목과 질문·승인 범위를 보낸다. 실제 휴대폰 표시 내용은 AionUi의 미리보기 설정과 전송 용량 제한을 따른다.
+
 ## 집중 검증
 
 ```powershell
-node --test tests/mobile-push.test.mjs tests/mobile-push-api.test.mjs
+node --test tests/mobile-push.test.mjs tests/mobile-push-api.test.mjs tests/dooray-response-push.test.mjs tests/dooray-response-push-api.test.mjs
 ```
 
 API 검증은 임시 데이터 디렉터리·임시 포트의 격리 서버와 가짜 로컬 중계를 사용한다. 운영 MnP를 재시작하거나 실제 Firebase·휴대폰으로 발송하지 않는다. 자동 발송할 업무 이벤트의 선택은 이 API를 호출하는 기능에서 결정한다.

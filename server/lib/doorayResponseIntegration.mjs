@@ -141,6 +141,7 @@ export function createDoorayResponseIntegration(d) {
     }
   }
   const resolveSettings = async (user, requested = {}) => {
+    if (requested.pushEnabled === true) d.validatePushTarget?.(user, requested.pushMachineId)
     const { machineId } = d.resolveTargetMachineForUser(user, requested.machineId)
     const proposalWorkspace = doorayResponseWorkspace(d.dataDirectory, d.mainMachineId, { ...requested, machineId }, user.id)
     const [rawAgents, providers, servers] = await Promise.all([call(machineId, '/api/agents/management'), call(machineId, '/api/providers'), call(machineId, '/api/mcp/servers')])
@@ -162,6 +163,8 @@ export function createDoorayResponseIntegration(d) {
       return requestedId || (list.some((entry) => entry.id === defaultId) ? defaultId : list[0]?.id) || null
     }
     return { machineId, proposalWorkspace, machineRole: machineId === d.mainMachineId ? 'main' : 'sub', agentId: agent.id, agentName: agent.name, modelId: model.id, modelName: model.label, modelPolicy, mcpServers,
+      ...(typeof requested.pushEnabled === 'boolean' ? { pushEnabled: requested.pushEnabled } : {}),
+      ...(requested.pushMachineId ? { pushMachineId: requested.pushMachineId } : {}),
       mode: option(agent.modes, requested.mode, agent.defaultMode),
       thoughtLevel: option(agent.thoughtLevels, requested.thoughtLevel, agent.defaultThoughtLevel),
       // Claude 멀티 계정: 저장된 선택을 따르고, 없으면 '그 외' 용도 정책 계정을 쓴다.
@@ -185,6 +188,7 @@ export function createDoorayResponseIntegration(d) {
   const service = createDoorayResponseService({
     directory: path.join(d.dataDirectory, '_dooray-responses'), read: d.readStoredRecord, write: d.writeStoredRecord,
     withMutation: d.withMutation, withRead: d.withRead,
+    sendPush: d.sendPush, publicBaseUrl: d.publicBaseUrl,
     user: d.user, resolveSettings, loadMaps,
     getSettings: (user) => d.responsePreferences.get(user.id),
     rememberSettings: (user, settings, saved) => d.responsePreferences.put(user.id, doorayResponseSettingsFromResolved(settings), { expectedSettings: saved ?? null }),

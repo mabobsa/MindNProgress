@@ -5,6 +5,7 @@ import { createDoorayRequester, plainDoorayText } from './doorayMentions.mjs'
 import { aiConversationLinksFromData } from '../../src/utils/aiConversations.mjs'
 import { assertDoorayApproval, buildDoorayApprovalRequest, doorayDecisionInstructions, doorayProposalRevision, readDoorayDecision } from './doorayResponseDecision.mjs'
 import { buildDoorayExecutionHandoff, currentDoorayExecution, doorayExecutionTargets } from './doorayExecutionHandoff.mjs'
+import { buildDoorayResponsePush, claimDoorayPush, doorayPushDue, doorayPushEventId, finishDoorayPush, publicDoorayPush, reconcileDoorayPush } from './doorayResponsePush.mjs'
 
 const activeStates = new Set(['routing', 'reviewing', 'waiting-target'])
 const finishableStates = new Set(['proposal', 'needs-input', 'needs-approval', 'approved', 'failed'])
@@ -13,6 +14,7 @@ const maxAnalysisPromptChars = 100_000
 const maxAnalysisPromptBytes = 250_000
 const unlinkedConversationError = 'AI가 선택한 대화가 담당 카드에 연결되어 있지 않습니다.'
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+const responseSnapshot = ({ pushNotification: _notification, ...job }) => JSON.stringify(job)
 const text = (value) => typeof value === 'string' ? value : ''
 const clip = (value, limit = 3000) => text(value).length > limit ? `${value.slice(0, limit)}\n[이후 내용 생략]` : text(value)
 const error = (message, status = 400) => Object.assign(new Error(message), { status, doorayResponseError: true })
@@ -217,6 +219,7 @@ export function publicDoorayResponse(job) {
   return { id: job.id, itemKey: job.source.item.key, postId: job.source.item.postId, sourceUrl: job.source.item.url,
     subject: job.source.subject, status: job.status, route: job.route ?? null, proposal: job.proposal ?? '', error: job.error ?? '',
     routingWarning: job.routingWarning ?? null, proposalSource: job.proposalSource ?? null,
+    pushNotification: publicDoorayPush(job),
     settings: { machineId: job.settings.machineId, agentId: job.settings.agentId, modelId: job.settings.modelId,
       mode: job.settings.mode, thoughtLevel: job.settings.thoughtLevel, proposalWorkspace: job.settings.proposalWorkspace,
       ...(job.settings.claudeAccountId ? { claudeAccountId: job.settings.claudeAccountId } : {}) },
@@ -272,6 +275,7 @@ export function createDoorayResponseService(deps) {
   const reviewOwners = new Map()
   const checkedAt = new Map()
   const resultCheckedAt = new Map()
+  const pushRunning = new Set()
   const userFile = (userId) => {
     if (!/^[a-zA-Z0-9_-]{1,120}$/.test(userId)) throw error('사용자 ID가 올바르지 않습니다.')
     return path.join(deps.directory, `${userId}.json`)
@@ -284,7 +288,10 @@ export function createDoorayResponseService(deps) {
   function update(userId, change) {
     const apply = async () => {
       const state = await read(userId)
+      const previousEvents = new Map(state.jobs.map(job => [job.id, doorayPushEventId(job)]))
       const result = await change(state)
+      const now = deps.now?.() ?? Date.now()
+      for (const job of state.jobs) reconcileDoorayPush(job, previousEvents.get(job.id), now)
       await deps.write(userFile(userId), state)
       return result
     }
@@ -295,6 +302,32 @@ export function createDoorayResponseService(deps) {
     writes.set(userId, next)
     void next.finally(() => { if (writes.get(userId) === next) writes.delete(userId) }).catch(() => {})
     return next
+  }
+  async function deliverPush(userId, id) {
+    const key = `${userId}:${id}`
+    if (!deps.sendPush || pushRunning.has(key) || pushRunning.size >= 2) return
+    pushRunning.add(key)
+    try {
+      const claimed = await update(userId, state => {
+        const job = state.jobs.find(entry => entry.id === id)
+        return job ? claimDoorayPush(job, deps.now?.() ?? Date.now()) : null
+      })
+      if (!claimed) return
+      // 외부 전송은 저장 잠금과 AI 진행 큐 밖에서 수행한다.
+      let failure
+      try {
+        const user = await deps.user(userId)
+        if (!user) throw Object.assign(new Error('알림 수신 계정을 확인할 수 없습니다.'), { status: 403, code: 'FORBIDDEN' })
+        await deps.sendPush(user, buildDoorayResponsePush(claimed, deps.publicBaseUrl))
+      } catch (error) { failure = error }
+      await update(userId, state => {
+        const job = state.jobs.find(entry => entry.id === id)
+        if (job) finishDoorayPush(job, claimed.pushNotification, failure, deps.now?.() ?? Date.now())
+      })
+    } catch (failure) {
+      // 전송 결과 저장에 실패하면 같은 이벤트 ID로 다시 확인한다. AI 요청은 실패로 바꾸지 않는다.
+      console.warn('[Dooray push]', failure.code ?? 'PUSH_RECORD_FAILED')
+    } finally { pushRunning.delete(key) }
   }
   async function patch(userId, id, changes) {
     return update(userId, (state) => {
@@ -834,7 +867,7 @@ export function createDoorayResponseService(deps) {
       const job = await update(userId, async (state) => {
         const current = state.jobs.find((entry) => entry.id === id)
         if (!current) throw error('AI 대응 요청을 찾을 수 없습니다.', 404)
-        if (JSON.stringify(current) !== JSON.stringify(captured)) throw error('실행 옵션 확인 중 제안이 변경되었습니다. 다시 확인해 주세요.', 409)
+        if (responseSnapshot(current) !== responseSnapshot(captured)) throw error('실행 옵션 확인 중 제안이 변경되었습니다. 다시 확인해 주세요.', 409)
         if (current.completedAt) throw error('완료된 대응입니다. 완료 내역에서 제안을 확인해 주세요.', 409)
         if (current.approval?.conversation) throw error('이미 시작한 승인 대화에서 변경 사항을 검토해 주세요.', 409)
         if (activeStates.has(current.status)) throw error('현재 검토가 끝난 뒤 추가 정보를 전달해 주세요.', 409)
@@ -870,6 +903,7 @@ export function createDoorayResponseService(deps) {
         for (const file of files.filter((file) => /^[a-zA-Z0-9_-]+\.json$/.test(file))) {
           const userId = file.slice(0, -5)
           for (const job of (await read(userId)).jobs) {
+            if (doorayPushDue(job, now)) void deliverPush(userId, job.id)
             if (activeStates.has(job.status) || storedRestartInterruption(job)) {
               tasks.push([userId, job.id, Boolean(job.operation?.kind === 'review'), job.createdAt])
             } else if (canRecoverDoorayResult(job)) {

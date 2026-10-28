@@ -41,6 +41,18 @@ test('계정별 선택은 분리되어 저장되고 브라우저와 서버를 �
   assert.equal(restarted.get('new-user'), null)
 })
 
+test('알림 사용과 수신 PC를 계정 설정에 보존하고 잘못된 입력을 거부한다', async t => {
+  const directory = await fixture(t)
+  const store = await createDoorayResponsePreferences({ dataDirectory: directory })
+  const selected = { ...first, pushEnabled: true, pushMachineId: 'windows' }
+  await store.put('user1', selected)
+  assert.deepEqual((await createDoorayResponsePreferences({ dataDirectory: directory })).get('user1'), selected)
+  assert.deepEqual(doorayResponseSettingsFromResolved({ ...selected, mcpServers: [] }), selected)
+  for (const invalid of [{ pushEnabled: 'true' }, { pushEnabled: true }, { pushMachineId: 3 }, { mainUserId: 'forged' }]) {
+    assert.throws(() => validateDoorayResponseSettings({ ...first, ...invalid }), { status: 400 })
+  }
+})
+
 test('동시에 가져온 예전 브라우저 설정은 이미 저장한 새 계정 설정을 덮어쓰지 않는다', async (t) => {
   const directory = await fixture(t)
   const store = await createDoorayResponsePreferences({ dataDirectory: directory })

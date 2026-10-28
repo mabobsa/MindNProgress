@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { sendMobilePush, MOBILE_PUSH_PATH } from '../server/lib/mobilePush.mjs'
-import { normalizeMachineRegistry } from '../server/lib/subMachines.mjs'
+import { sendMobilePush, MOBILE_PUSH_PATH, mobilePushTargets } from '../server/lib/mobilePush.mjs'
+import { machineManageableBy, normalizeMachineRegistry } from '../server/lib/subMachines.mjs'
 
 const registry = normalizeMachineRegistry([
   { machineId: 'main', role: 'main', enabled: true },
@@ -34,6 +34,18 @@ test('메인 머신은 로컬 중계를 사용하고 서브 경로를 호출하�
   assert.equal(result.machineId, 'main')
   assert.equal(result.delivery, 'queued')
   assert.equal(MOBILE_PUSH_PATH, '/api/internal/mobile-push/mnp')
+})
+
+test('서버가 지정한 계정만 메인 PC 푸시를 허용하며 머신 관리 권한은 바꾸지 않는다', async () => {
+  const mainBody = { ...body, machineId: 'main' }
+  await assert.rejects(sendMobilePush({ ...options, body: mainBody, sendLocal: () => assert.fail('권한 없는 발송') }), { status: 403 })
+  const sent = await sendMobilePush({ ...options, body: mainBody, mainUserId: 'owner', sendLocal: async () => ({ state: 'queued' }) })
+  assert.equal(sent.machineId, 'main')
+  await assert.rejects(sendMobilePush({ ...options, body: { ...mainBody, mainUserId: 'owner' }, mainUserId: 'someone-else' }), { status: 403 })
+  await assert.rejects(sendMobilePush({ ...options, body: mainBody, user: { id: 'owner', role: 'viewer' }, mainUserId: 'owner' }), { status: 403 })
+  assert.equal(machineManageableBy(registry, 'main', { userId: 'owner', isAdmin: false }), false)
+  assert.deepEqual(mobilePushTargets(user, registry, { mainUserId: 'owner' }).map(m => m.machineId), ['main', 'mine'])
+  assert.deepEqual(mobilePushTargets(user, registry).map(m => m.machineId), ['mine'])
 })
 
 test('잘못된 개정 번호·과대 본문·외부 링크를 거부한다', async () => {

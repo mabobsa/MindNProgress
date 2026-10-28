@@ -34,14 +34,29 @@ export async function sendLocalMobilePush(body, {
   return result
 }
 
-export async function sendMobilePush({ user, body, registry, originUrl, sendLocal = sendLocalMobilePush, sendRemote, now = Date.now() }) {
+export function resolveMobilePushTarget(user, registry, requestedMachineId, { mainUserId = '' } = {}) {
   if (!user || !['admin', 'editor'].includes(user.role)) fail(403, 'FORBIDDEN', '편집자만 푸시 알림을 보낼 수 있습니다.')
-  const machineId = normalizeMachineId(body?.machineId)
+  const machineId = normalizeMachineId(requestedMachineId)
   const machine = findMachine(registry, machineId)
   if (!machine) fail(404, 'MACHINE_NOT_FOUND', '수신할 머신을 찾지 못했습니다.')
-  if (!machineManageableBy(registry, machineId, { userId: user.id, isAdmin: user.role === 'admin' }))
+  const namedMainRecipient = machineId === registry.mainMachineId && mainUserId && user.id === mainUserId
+  if (!namedMainRecipient && !machineManageableBy(registry, machineId, { userId: user.id, isAdmin: user.role === 'admin' }))
     fail(403, 'FORBIDDEN', '본인 소유 머신에만 푸시 알림을 보낼 수 있습니다.')
   if (!machine.enabled) fail(409, 'MACHINE_DISABLED', '수신 머신이 비활성화되어 있습니다.')
+  return { machineId, machine }
+}
+
+export function mobilePushTargets(user, registry, options) {
+  return registry.machines.flatMap(machine => {
+    try {
+      resolveMobilePushTarget(user, registry, machine.machineId, options)
+      return [{ machineId: machine.machineId, label: machine.label, platform: machine.platform }]
+    } catch { return [] }
+  })
+}
+
+export async function sendMobilePush({ user, body, registry, originUrl, mainUserId = '', sendLocal = sendLocalMobilePush, sendRemote, now = Date.now() }) {
+  const { machineId, machine } = resolveMobilePushTarget(user, registry, body?.machineId, { mainUserId })
   if (machineId !== registry.mainMachineId) {
     if (!machine.tokenHash) fail(409, 'RUNNER_NOT_CONFIGURED', '수신 머신의 Runner 연결을 먼저 설정해 주세요.')
     if (!machine.lastSeenAt || now - Date.parse(machine.lastSeenAt) > 150_000)

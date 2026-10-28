@@ -4,11 +4,11 @@ import path from 'node:path'
 import { replaceFileWithRetry } from './replaceFileWithRetry.mjs'
 
 const fields = new Map([['agentId', 160], ['modelId', 160], ['thoughtLevel', 160], ['mode', 160], ['machineId', 120], ['proposalWorkspace', 2000],
-  ['claudeAccountId', 120]])
+  ['claudeAccountId', 120], ['pushMachineId', 120]])
 const invalid = () => Object.assign(new Error('제안 AI 설정의 종류·모델·사고 레벨을 확인해 주세요.'), { status: 400 })
 
 export function validateDoorayResponseSettings(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !fields.has(key))) throw invalid()
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !fields.has(key) && key !== 'pushEnabled')) throw invalid()
   const result = {}
   for (const [key, limit] of fields) {
     if (value[key] == null) continue
@@ -16,11 +16,16 @@ export function validateDoorayResponseSettings(value) {
     if (value[key].trim()) result[key] = value[key].trim()
   }
   if (!result.agentId || !result.modelId) throw invalid()
+  if (value.pushEnabled !== undefined) {
+    if (typeof value.pushEnabled !== 'boolean') throw invalid()
+    result.pushEnabled = value.pushEnabled
+  }
+  if (result.pushEnabled && !result.pushMachineId) throw invalid()
   return result
 }
 
 export function doorayResponseSettingsFromResolved(settings) {
-  return validateDoorayResponseSettings(Object.fromEntries([...fields.keys()].map((key) => [key, settings[key]])))
+  return validateDoorayResponseSettings(Object.fromEntries([...fields.keys(), 'pushEnabled'].map((key) => [key, settings[key]])))
 }
 
 export async function createDoorayResponsePreferences({ dataDirectory, replaceFile = replaceFileWithRetry }) {

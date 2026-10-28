@@ -224,7 +224,7 @@ import {
   verifyMachineToken,
 } from './lib/subMachines.mjs'
 import { MachineOperationError, MachineOperationQueue } from './lib/machineOperations.mjs'
-import { MOBILE_PUSH_PATH, sendMobilePush } from './lib/mobilePush.mjs'
+import { MOBILE_PUSH_PATH, mobilePushTargets, resolveMobilePushTarget, sendMobilePush } from './lib/mobilePush.mjs'
 import { authorizeRunnerMcpRequest } from './lib/runnerMcpAccess.mjs'
 import {
   MachinePairingError,
@@ -8230,6 +8230,13 @@ const aiWorkspaceSettings = await createAiWorkspaceSettings({
 
 const doorayResponsePreferences = await createDoorayResponsePreferences({ dataDirectory, replaceFile: replaceFileWithRetry })
 const aiClaudeAccountPolicy = await createAiClaudeAccountPolicy({ dataDirectory, replaceFile: replaceFileWithRetry })
+// 지정 계정에는 메인 PC 푸시만 허용한다. 머신 관리·Runner 토큰 권한은 바꾸지 않는다.
+const mobilePushAccess = { mainUserId: String(process.env.MNP_MOBILE_PUSH_MAIN_USER_ID ?? '').trim() }
+const sendUserMobilePush = (user, body) => sendMobilePush({ user, body, registry: machineRegistry, originUrl: publicBaseUrl, ...mobilePushAccess,
+  sendRemote: (machineId, payload) => machineOperationQueue.enqueue(machineId, {
+    method: 'POST', pathname: MOBILE_PUSH_PATH, body: payload, timeoutMs: 20_000,
+  }).completion,
+})
 const doorayResponses = createDoorayResponseIntegration({
   dataDirectory, readStoredRecord, writeStoredRecord, getDoorayApiConfig, listMaps, readMap, readDocumentLayout, groupProjects,
   withMutation: (file, action) => withResources([resourceForFile(file)], () => storageChanges.run(action)),
@@ -8238,6 +8245,8 @@ const doorayResponses = createDoorayResponseIntegration({
   conversationHomeMachineId, machineAccessibleByUser, listComments, saveMap, broadcastEvent, publicUser,
   rememberAiConversationOrigin, persistAiConversationOrigins, readAionUiMessageContent,
   mainMachineId: machineRegistry.mainMachineId,
+  publicBaseUrl, sendPush: sendUserMobilePush,
+  validatePushTarget: (user, machineId) => resolveMobilePushTarget(user, machineRegistry, machineId, mobilePushAccess),
   // 제안 AI 설정은 기존 독립 큐가 소유한다. 승인 파일의 공동 변경에 섞지 않는다.
   responsePreferences: { ...doorayResponsePreferences,
     put: (...args) => storageChanges.detached(() => doorayResponsePreferences.put(...args)) },
@@ -8258,6 +8267,7 @@ async function requestStoragePlan(request, url, body) {
   const write = !['GET', 'HEAD', 'OPTIONS'].includes(request.method)
   // 표시 메타데이터와 Runner 전송은 콘텐츠 RMW가 아니다. callback은 아래에서 별도 예약·확정한다.
   if (url.pathname === '/api/integrations/aionui/conversation-display/resolve'
+    || url.pathname === '/api/integrations/aionui/push-notifications'
     || /^\/api\/integrations\/aionui\/launches\/[^/]+\/(conversation|confirm)$/.test(url.pathname)
     || /^\/api\/integrations\/dooray\/response-approvals\/[^/]+\/repair-link$/.test(url.pathname)
     || url.pathname.startsWith('/api/machines/') || url.pathname.startsWith('/api/ai-workspaces')) return { keys: [] }
@@ -12759,12 +12769,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!user) return
       if (request.method !== 'POST') return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
       try {
-        const result = await sendMobilePush({ user, body: await readJsonBody(request), registry: machineRegistry,
-          originUrl: publicBaseUrl,
-          sendRemote: (machineId, body) => machineOperationQueue.enqueue(machineId, {
-            method: 'POST', pathname: MOBILE_PUSH_PATH, body, timeoutMs: 20_000,
-          }).completion,
-        })
+        const result = await sendUserMobilePush(user, await readJsonBody(request))
         return sendJson(response, 202, result)
       } catch (error) {
         return sendJson(response, error.status ?? 503, { error: '푸시 알림을 접수하지 못했습니다.',
@@ -12937,6 +12942,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           machineLabel: machine.label,
           machineRole: machine.role,
           machines: targets.machines,
+          ...(url.searchParams.get('purpose') === 'dooray-response' ? { pushMachines: mobilePushTargets(user, machineRegistry, mobilePushAccess) } : {}),
           aionUiUrl: machine.role === 'main' ? activeAionUiBaseUrl : null,
           protocol: 'aionui://conversation/new',
           ...workspaceOptions,

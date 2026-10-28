@@ -165,15 +165,15 @@ function postGroupForItem(item: DoorayMentionItem, key = item.postId): PostGroup
   }
 }
 
-export function DoorayMentionsPanel({ clientId, userId, aiRequestOpen = false, onClose, onOpenConversation, onOpenCard, onLaunchCard }: {
-  clientId: string; userId: string; onClose: () => void
+export function DoorayMentionsPanel({ clientId, userId, initialResponseId = '', aiRequestOpen = false, onClose, onOpenConversation, onOpenCard, onLaunchCard }: {
+  clientId: string; userId: string; initialResponseId?: string; onClose: () => void
   /** 담당 카드의 AI 옵션이 열린 동안 아래 팝업의 상태와 닫기 동작을 보존합니다. */
   aiRequestOpen?: boolean
   onOpenConversation: (job: DoorayResponseJob) => void
   onOpenCard: (mapId: string, cardId: string) => void
   onLaunchCard: (launch: DoorayHandoffLaunch) => void
 }) {
-  const responses = useDoorayResponses(clientId, userId)
+  const responses = useDoorayResponses(clientId, userId, initialResponseId)
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false)
   const [proposalItem, setProposalItem] = useState<DoorayMentionItem | null>(null)
   const today = useMemo(() => toLocalDateInputValue(new Date()), [])

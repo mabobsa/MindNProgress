@@ -10,11 +10,12 @@ type DoorayApproval = { revision: string; approvedAt: string; approvedBy: { id: 
     conversation?: { conversationId: string; homeMachineRole: 'main' | 'sub'; linkedAt: string } }[] }
 
 export type ResponseSettings = { agentId?: string; modelId?: string; mode?: string; thoughtLevel?: string; machineId?: string; proposalWorkspace?: string
-  claudeAccountId?: string }
+  claudeAccountId?: string; pushEnabled?: boolean; pushMachineId?: string }
 type Option = { id: string; label: string }
 type Agent = { id: string; name: string; models: Option[]; modes: Option[]; thoughtLevels: Option[]; defaultModelId: string; defaultMode: string; defaultThoughtLevel: string
   claudeAccounts?: { id: string; number: number; label: string }[] }
 export type Options = { machineId: string; machineRole?: 'main' | 'sub'; machines: { machineId: string; label: string }[]; agents: Agent[]
+  pushMachines?: { machineId: string; label: string; platform?: string }[]
   claudeAccountPolicy?: { coordinator?: string; others?: string } }
 export type DoorayResponseJob = {
   id: string; itemKey: string; postId: string; subject: string; sourceUrl: string; status: string; proposal: string; error: string
@@ -25,6 +26,8 @@ export type DoorayResponseJob = {
   routingWarning?: { code: string; conversationId: string; message: string } | null
   completedAt?: string | null; archiveStatus?: 'pending' | 'done' | 'warning' | null; archiveError?: string
   decision?: DoorayDecision | null; proposalRevision?: string; approval?: DoorayApproval | null; approvalHistory?: DoorayApproval[]
+  pushNotification?: { state: 'pending' | 'sending' | 'queued' | 'failed' | 'cancelled'; machineId: string;
+    attempts: number; error: string; errorCode: string; queuedAt: number | null } | null
   route: { action: string; mapId: string; cardId: string; documentTitle: string; cardTitle: string; reason: string; requestSummary: string } | null
 }
 export const doorayResponseStatus: Record<string, string> = {
@@ -44,7 +47,7 @@ function legacySettings(userId: string): ResponseSettings {
   return {}
 }
 
-export function useDoorayResponses(clientId: string, userId: string) {
+export function useDoorayResponses(clientId: string, userId: string, initialResponseId = '') {
   const [jobs, setJobs] = useState<DoorayResponseJob[]>([])
   const [error, setError] = useState('')
   const [selectedId, setSelectedId] = useState('')
@@ -59,6 +62,7 @@ export function useDoorayResponses(clientId: string, userId: string) {
   const controllerRef = useRef<AbortController | null>(null)
   const sequence = useRef(0)
   const pending = useRef(new Set<string>())
+  const linkedResponseOpened = useRef('')
   const settingsSequence = useRef(0)
   const requestJson = useCallback(async <T,>(url: string, init: RequestInit = {}): Promise<T> => {
     const response = await fetch(url, { ...init, credentials: 'include', signal: controllerRef.current?.signal,
@@ -72,11 +76,20 @@ export function useDoorayResponses(clientId: string, userId: string) {
     const current = ++sequence.current
     try {
       const body = await requestJson<{ jobs: DoorayResponseJob[] }>(base)
-      if (!signal?.aborted && current === sequence.current) { setJobs(body.jobs); setError('') }
+      if (!signal?.aborted && current === sequence.current) {
+        setJobs(body.jobs); setError('')
+        if (initialResponseId && linkedResponseOpened.current !== initialResponseId) {
+          linkedResponseOpened.current = initialResponseId
+          const linked = body.jobs.find(job => job.id === initialResponseId)
+          setOpen(true)
+          if (linked) { setSelectedId(linked.id); setShowCompleted(Boolean(linked.completedAt)) }
+          else setNotice('알림의 대응 기록을 찾을 수 없습니다. 로그인 계정과 완료 내역을 확인해 주세요.')
+        }
+      }
     } catch (failure) {
       if (!signal?.aborted && current === sequence.current) setError(failure instanceof Error ? failure.message : 'AI 대응 조회에 실패했습니다.')
     }
-  }, [requestJson])
+  }, [requestJson, initialResponseId])
   const cacheSettings = useCallback((next: ResponseSettings) => {
     setSettings(next)
     try { localStorage.setItem(`mindnprogress-dooray-response-ai:${userId}`, JSON.stringify(next)) } catch { /* 서버의 계정 설정이 원본이다. */ }
@@ -122,6 +135,7 @@ export function useDoorayResponses(clientId: string, userId: string) {
     return () => { controller.abort(); if (controllerRef.current === controller) controllerRef.current = null }
   }, [load, loadSettings])
   const needsRefresh = jobs.some((job) => (!job.completedAt && (active.has(job.status) || job.conversationId))
+    || ['pending', 'sending'].includes(job.pushNotification?.state ?? '')
     || job.approval?.handoffs?.some((entry) => !entry.conversation))
   useEffect(() => {
     if (!needsRefresh) return

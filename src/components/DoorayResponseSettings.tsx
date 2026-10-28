@@ -24,6 +24,7 @@ export function DoorayResponseSettings({ response, onClose, onConfirm }: {
       const agent = result.agents.find((entry) => entry.id === saved.agentId) ?? result.agents[0]
       if (!agent) { setError('자동 요청에 사용할 허용 모델이 없습니다. AionUi 모델 목록을 확인해 주세요.'); return }
       setDraft({ ...saved, machineId: result.machineId, agentId: agent.id,
+        pushMachineId: saved.pushMachineId || (result.pushMachines?.length === 1 ? result.pushMachines[0].machineId : ''),
         modelId: availableAiRuntimeOptionId(agent.models, saved.modelId, agent.defaultModelId),
         thoughtLevel: availableAiRuntimeOptionId(agent.thoughtLevels, saved.thoughtLevel, agent.defaultThoughtLevel),
         mode: availableAiRuntimeOptionId(agent.modes, saved.agentId === agent.id ? saved.mode : '', agent.defaultMode) })
@@ -36,6 +37,7 @@ export function DoorayResponseSettings({ response, onClose, onConfirm }: {
   const claudeAccountId = resolveDialogClaudeAccountId(agent?.claudeAccounts, draft.claudeAccountId, options?.claudeAccountPolicy?.others)
   const disabled = loading || response.settingsSaving || submitting
   const canSubmit = !disabled && !error && agent?.models.some((model) => model.id === draft.modelId)
+    && (!draft.pushEnabled || options?.pushMachines?.some(machine => machine.machineId === draft.pushMachineId))
   const submit = async () => {
     if (!canSubmit || submittingRef.current) return
     submittingRef.current = true
@@ -74,6 +76,17 @@ export function DoorayResponseSettings({ response, onClose, onConfirm }: {
         {agent.thoughtLevels.length ? agent.thoughtLevels.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>) : <option value="">지원하지 않음</option>}
       </select></label>
     </>}
+    {agent && <fieldset className="dooray-response-push-settings" disabled={disabled}>
+      <legend>휴대폰 알림</legend>
+      <label className="dooray-response-push-toggle"><input type="checkbox" checked={draft.pushEnabled === true}
+        onChange={event => setDraft({ ...draft, pushEnabled: event.target.checked })} />추가 정보 필요·승인 대기 시 푸시 받기</label>
+      {draft.pushEnabled && <label>휴대폰이 연결된 PC<select aria-label="휴대폰이 연결된 PC" value={draft.pushMachineId ?? ''}
+        onChange={event => setDraft({ ...draft, pushMachineId: event.target.value })}>
+        <option value="">PC 선택</option>
+        {options?.pushMachines?.map(machine => <option key={machine.machineId} value={machine.machineId}>{machine.label}</option>)}
+      </select></label>}
+      <p className="dooray-response-settings-help">선택한 PC의 AionUi에서 ‘휴대폰 푸시 사용’과 ‘MnP 알림 받기’를 켜 주세요. AI 실행 머신과 달라도 됩니다.</p>
+    </fieldset>}
     <div className="dooray-response-settings-actions">
       <button type="submit" disabled={!canSubmit}>{onConfirm ? (submitting ? '요청 준비 중…' : '확인하고 제안받기') : (submitting ? '저장 중…' : '저장')}</button>
       <button type="button" disabled={response.settingsSaving || submitting} onClick={onClose}>{onConfirm ? '취소' : '닫기'}</button>

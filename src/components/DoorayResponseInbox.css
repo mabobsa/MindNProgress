@@ -18,6 +18,10 @@
 .dooray-response-detail .dooray-response-error { margin: 8px 0; }
 .dooray-response-settings { display: flex; flex: none; flex-wrap: wrap; align-items: end; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--theme-border, #e8e4ec); font-size: 12px; max-height: 45vh; overflow-y: auto; }
 .dooray-response-settings label { display: grid; gap: 4px; max-width: 280px; }
+.dooray-response-push-settings { flex-basis: 100%; min-width: 0; display: grid; gap: 10px; padding: 10px; border: 1px solid var(--theme-border, #ddd); border-radius: 6px; }
+.dooray-response-settings .dooray-response-push-toggle { display: flex; align-items: center; max-width: none; gap: 7px; }
+.dooray-response-push-toggle input { flex: none; width: auto; }
+.dooray-response-push-status { color: var(--theme-text-muted, #837c92); overflow-wrap: anywhere; }
 .dooray-response-settings select { min-width: 0; max-width: 100%; padding: 5px; background: var(--theme-surface, #fff); color: inherit; border: 1px solid var(--theme-border, #ddd); border-radius: 6px; }
 .dooray-response-settings-actions { display: flex; gap: 8px; }
 .dooray-response-settings button { border: 1px solid var(--theme-border, #ded7e7); border-radius: 6px; padding: 5px 9px; color: inherit; background: var(--theme-surface, #fff); cursor: pointer; font: inherit; }

@@ -46,6 +46,7 @@ import { AiConversationLinkDialog, type AiConversationLookup } from './component
 import { AiConversationActivityIndicator } from './components/AiConversationRuntimeBadge'
 import { DailyBackupPreviewDialog, type DailyBackupPreview } from './components/DailyBackupPreviewDialog'
 import { DoorayMentionsPanel } from './components/DoorayMentionsPanel'
+import { doorayResponseIdFromSearch } from './utils/doorayResponseLink.mjs'
 import { ImagePreviewDialog } from './components/ImagePreviewDialog'
 import { SharedKnowledgeReviewDialog, type SharedKnowledgeReviewApplied } from './components/SharedKnowledgeReviewDialog'
 import { GlobalSearchDialog } from './components/GlobalSearchDialog'
@@ -2444,7 +2445,17 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const [historyOpen, setHistoryOpen] = useState(false)
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false)
   const [sharedKnowledgeReviewOpen, setSharedKnowledgeReviewOpen] = useState(false)
-  const [doorayMentionsOpen, setDoorayMentionsOpen] = useState(false)
+  const [linkedDoorayResponseId, setLinkedDoorayResponseId] = useState(() => doorayResponseIdFromSearch(window.location.search))
+  const [doorayMentionsOpen, setDoorayMentionsOpen] = useState(() => Boolean(doorayResponseIdFromSearch(window.location.search)))
+  const closeDoorayMentions = () => {
+    setDoorayMentionsOpen(false)
+    setLinkedDoorayResponseId('')
+    const url = new URL(window.location.href)
+    if (url.searchParams.has('doorayResponseId')) {
+      url.searchParams.delete('doorayResponseId')
+      window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
+    }
+  }
   const [historyTab, setHistoryTab] = useState<'changes' | 'daily'>('changes')
   const [mapRevisions, setMapRevisions] = useState<MapRevisionSummary[]>([])
   const [dailyBackups, setDailyBackups] = useState<DailyBackupSummary[]>([])
@@ -9148,14 +9159,14 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         </div>
       )}
       {doorayMentionsOpen && mode === 'editor' && (
-        <DoorayMentionsPanel clientId={CLIENT_ID} userId={user.id} onClose={() => setDoorayMentionsOpen(false)}
+        <DoorayMentionsPanel clientId={CLIENT_ID} userId={user.id} initialResponseId={linkedDoorayResponseId} onClose={closeDoorayMentions}
           aiRequestOpen={Boolean(aiConversationTarget)}
           onLaunchCard={setAiConversationLaunch}
           onOpenConversation={(job) => {
             if (job.conversationId) openAiConversation(job.conversationId, job.route?.cardId ?? '', job.route?.mapId ?? '', job.homeMachineRole)
           }}
           onOpenCard={(mapId, cardId) => {
-            setDoorayMentionsOpen(false)
+            closeDoorayMentions()
             selectCardAndReveal(mapId, cardId)
           }} />
       )}

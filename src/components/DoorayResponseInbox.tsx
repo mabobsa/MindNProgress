@@ -57,6 +57,12 @@ export function DoorayResponseInbox({ response, onOpenConversation, onOpenCard, 
             {job.proposal && <DoorayResponseDecision key={`${job.id}:${job.proposalRevision}`} job={job} response={response}
               disabled={completing || refining} onLaunchCard={onLaunchCard} />}
             {job.error && <p className="dooray-response-error">{job.error}</p>}
+            {job.pushNotification && job.pushNotification.state !== 'cancelled' && <p className="dooray-response-push-status" role="status">
+              {job.pushNotification.state === 'queued' ? '휴대폰 푸시 접수됨 · 실제 수신 여부는 휴대폰에서 확인해 주세요.'
+                : job.pushNotification.state === 'failed' ? `휴대폰 푸시 실패: ${job.pushNotification.error}`
+                  : job.pushNotification.state === 'sending' ? '휴대폰 푸시 전송 중…'
+                    : job.pushNotification.error ? `휴대폰 푸시 재시도 대기: ${job.pushNotification.error}` : '휴대폰 푸시 전송 대기 중…'}
+            </p>}
             {job.completedAt && <p>완료: {new Date(job.completedAt).toLocaleString('ko-KR')} · 제안과 완료 기록은 대화 삭제 후에도 보존됩니다.</p>}
             {job.archiveError && <p className="dooray-response-error">{job.archiveError}</p>}
             <div className="dooray-response-actions">

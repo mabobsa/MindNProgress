@@ -20,6 +20,7 @@ import { claudeAccountRequestId, claudeAccountRoleForPurpose, createAiClaudeAcco
   formatAiAuthorName, normalizeClaudeAccounts, resolveClaudeAccountSelection } from './lib/aiClaudeAccounts.mjs'
 import { createAiDialogPreferences } from './lib/aiDialogPreferences.mjs'
 import { createStorageResources, storageResourceError } from './lib/storageResources.mjs'
+import { verifiedDoorayApprovalLink } from './lib/doorayApprovalLinkRepair.mjs'
 import { createStorageBudget, currentStorageBudget, withStorageBudget, detachedStorageBudget, readBoundedBody } from './lib/storageBudget.mjs'
 import { createStorageChanges } from './lib/storageChanges.mjs'
 import { createStorageJournal, storageDigest, storagePhase, storageRequestError } from './lib/storageJournal.mjs'
@@ -8231,10 +8232,15 @@ const doorayResponsePreferences = await createDoorayResponsePreferences({ dataDi
 const aiClaudeAccountPolicy = await createAiClaudeAccountPolicy({ dataDirectory, replaceFile: replaceFileWithRetry })
 const doorayResponses = createDoorayResponseIntegration({
   dataDirectory, readStoredRecord, writeStoredRecord, getDoorayApiConfig, listMaps, readMap, readDocumentLayout, groupProjects,
+  withMutation: (file, action) => withResources([resourceForFile(file)], () => storageChanges.run(action)),
+  withRead: (file, action) => withResources([{ key: resourceForFile(file), mode: 'read' }], action),
   aionUiCandidateBaseUrls, fetchAionUiOn, resolveTargetMachineForUser, normalizeAionUiAgent, normalizeAiConversationRuntime,
   conversationHomeMachineId, machineAccessibleByUser, listComments, saveMap, broadcastEvent, publicUser,
   rememberAiConversationOrigin, persistAiConversationOrigins, readAionUiMessageContent,
-  mainMachineId: machineRegistry.mainMachineId, responsePreferences: doorayResponsePreferences,
+  mainMachineId: machineRegistry.mainMachineId,
+  // 제안 AI 설정은 기존 독립 큐가 소유한다. 승인 파일의 공동 변경에 섞지 않는다.
+  responsePreferences: { ...doorayResponsePreferences,
+    put: (...args) => storageChanges.detached(() => doorayResponsePreferences.put(...args)) },
   claudeAccountPolicy: aiClaudeAccountPolicy,
   user: (id) => users.find((user) => user.id === id && user.active !== false && canEdit(user)),
   activeDelegations: (mapId, cardId) => [...aiDelegations.values()].some((delegation) => delegation.mapId === mapId
@@ -8252,7 +8258,8 @@ async function requestStoragePlan(request, url, body) {
   const write = !['GET', 'HEAD', 'OPTIONS'].includes(request.method)
   // 표시 메타데이터와 Runner 전송은 콘텐츠 RMW가 아니다. callback은 아래에서 별도 예약·확정한다.
   if (url.pathname === '/api/integrations/aionui/conversation-display/resolve'
-    || /^\/api\/integrations\/aionui\/launches\/[^/]+\/conversation$/.test(url.pathname)
+    || /^\/api\/integrations\/aionui\/launches\/[^/]+\/(conversation|confirm)$/.test(url.pathname)
+    || /^\/api\/integrations\/dooray\/response-approvals\/[^/]+\/repair-link$/.test(url.pathname)
     || url.pathname.startsWith('/api/machines/') || url.pathname.startsWith('/api/ai-workspaces')) return { keys: [] }
   // 대화 보관은 외부 확인 뒤 withAiResources에서 최신 연결을 재검증·확정한다.
   if (request.method === 'DELETE' && /^\/api\/maps\/[^/]+\/cards\/[^/]+\/ai-conversations\/[^/]+$/.test(url.pathname)) return { keys: [] }
@@ -8360,6 +8367,10 @@ async function requestStoragePlan(request, url, body) {
   for (const target of body?.plan?.targets ?? []) for (const node of target.nodes ?? []) add(node.data?.reference?.mapId)
   const aiMutation = write && (/\/ai-|\/integrations\/aionui\/|group-document-instructions/.test(url.pathname) || moving || deleting)
   if (aiMutation) for (const file of sharedAiStateFiles) states.add(resourceForFile(file))
+  if (write && ['/api/integrations/aionui/attributions', '/api/integrations/aionui/external-conversation-launches'].includes(url.pathname)) {
+    const user = getCurrentUser(request)
+    if (user) states.add(`state:_dooray-responses/${user.id}.json`)
+  }
   if (moving || deleting || write && request.method === 'DELETE' && /\/comments\/[^/]+$/.test(url.pathname)) {
     for (const user of users) notifications.add(`notification:${user.id}`)
     for (const file of await readdir(notificationsDirectory).catch((error) => { if (error.code === 'ENOENT') return []; throw error })) {
@@ -9266,6 +9277,97 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       return sendJson(response, 200, doorayMentionResponse(state, user.id))
     }
 
+    const approvalConfirmationRoute = url.pathname.match(/^\/api\/integrations\/dooray\/response-approvals\/([a-zA-Z0-9_-]+)\/confirmation$/)
+    if (approvalConfirmationRoute && request.method === 'GET') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 자신의 승인 연결을 확인할 수 있습니다.' })
+      response.setHeader('Cache-Control', 'no-store')
+      try { return sendJson(response, 200, await doorayResponses.approvalConfirmation(user.id, approvalConfirmationRoute[1], url.searchParams.get('revision'), url.searchParams.get('handoffId'))) }
+      catch (error) { return sendJson(response, error.status ?? 503, { error: error.message }) }
+    }
+
+    const approvalLinkRepairRoute = url.pathname.match(/^\/api\/integrations\/dooray\/response-approvals\/([a-zA-Z0-9_-]+)\/repair-link$/)
+    if (approvalLinkRepairRoute && request.method === 'POST') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 자신의 기존 승인 연결을 복구할 수 있습니다.' })
+      const input = await readJsonBody(request)
+      if (!input || typeof input.mapId !== 'string' || !isValidMapId(input.mapId) || typeof input.cardId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(input.conversationId ?? '')
+        || !/^[a-f0-9]{64}$/.test(input.proposalRevision ?? '')
+        || input.dryRun !== true && (!/^[a-f0-9]{64}$/.test(input.expectedStateSha256 ?? '') || !Number.isInteger(input.expectedMapVersion))) {
+        return sendJson(response, 400, { error: '복구 대상과 확인한 원문 해시·문서 버전이 필요합니다.' })
+      }
+      const responseId = approvalLinkRepairRoute[1]
+      const file = path.join(dataDirectory, '_dooray-responses', `${user.id}.json`)
+      const backupFile = input.dryRun === true ? null : path.join(dataDirectory, '_dooray-approval-link-backups', user.id, `${responseId}-${input.expectedStateSha256}.json`)
+      const protect = action => withResources([{ key: 'catalog', mode: 'read' }], () => withResources([
+        `doc:${input.mapId}`, ...sharedAiStateFiles.map(resourceForFile), resourceForFile(file),
+        ...(backupFile ? [resourceForFile(backupFile)] : []),
+      ], action))
+      const snapshot = async () => {
+        if (!users.some(actor => actor.id === user.id && actor.active !== false && canEdit(actor))) throw storageRequestError('REQUEST_FORBIDDEN', 403)
+        documentReconstruction.assertWritable(input.mapId)
+        const raw = await readFile(file, 'utf8').catch(error => {
+          if (error.code === 'ENOENT') throw Object.assign(new Error('기존 승인 기록을 찾을 수 없습니다.'), { status: 404 })
+          throw error
+        }), state = JSON.parse(raw)
+        const job = state.jobs?.find(value => value.id === responseId)
+        if (!job || job.userId !== user.id) throw Object.assign(new Error('기존 승인 기록을 찾을 수 없습니다.'), { status: 404 })
+        if (job.route?.mapId !== input.mapId || job.route?.cardId !== input.cardId) throw storageResourceError('APPROVAL_ROUTE_CHANGED', '승인 대상이 복구 요청과 다릅니다.')
+        const map = await readMap(input.mapId)
+        const origin = structuredClone(aiConversationOrigins.get(input.conversationId))
+        const attributions = [...aiAttributions].filter(([, value]) => value.conversationId === input.conversationId)
+          .map(([tokenHash, value]) => ({ ...structuredClone(value), tokenHash }))
+        return { raw, state, job, map, origin, attributions, sha256: createHash('sha256').update(raw).digest('hex') }
+      }
+      try {
+        const before = await protect(snapshot)
+        const homeMachineId = before.origin?.homeMachineId
+        if (!homeMachineId || !machineAccessibleByUser(user, homeMachineId)) return sendJson(response, 403, { error: '기존 대화 머신의 접근 권한을 확인할 수 없습니다.' })
+        const conversation = await fetchAionUiOn(homeMachineId, `/api/conversations/${encodeURIComponent(input.conversationId)}`, { strictJson: true })
+        const messages = []
+        let cursor = ''
+        for (let page = 0; page < 20; page++) {
+          const query = new URLSearchParams({ limit: '100', content_mode: 'full', ...(cursor ? { before: cursor } : {}) })
+          const result = await fetchAionUiOn(homeMachineId, `/api/conversations/${encodeURIComponent(input.conversationId)}/messages?${query}`, { strictJson: true })
+          if (!Array.isArray(result?.items)) throw new Error('APPROVAL_REQUEST_MESSAGES_UNAVAILABLE')
+          messages.push(...result.items.map(message => ({ ...message, content: readAionUiMessageContent(message) })))
+          if (!result.has_more_before) break
+          if (!result.oldest_cursor || result.oldest_cursor === cursor || page === 19) throw new Error('APPROVAL_REQUEST_MESSAGES_INCOMPLETE')
+          cursor = result.oldest_cursor
+        }
+        return await protect(async () => {
+          const current = await snapshot()
+          if (current.sha256 !== before.sha256 || current.map?.version !== before.map?.version
+            || storageDigest([current.origin, current.attributions]) !== storageDigest([before.origin, before.attributions])) {
+            throw storageResourceError('APPROVAL_REPAIR_CHANGED', '증거 확인 중 승인·카드·귀속이 변경되었습니다. 다시 조회하세요.')
+          }
+          const verified = verifiedDoorayApprovalLink({ ...current, userId: user.id, revision: input.proposalRevision,
+            conversationId: input.conversationId, conversation, messages, mainMachineId: machineRegistry.mainMachineId })
+          if (input.dryRun === true) return sendJson(response, 200, { ready: true, expectedStateSha256: current.sha256,
+            expectedMapVersion: current.map.version, connection: verified.connection, evidence: verified.evidence })
+          if (current.map.version !== input.expectedMapVersion || !current.job.approval.conversation && current.sha256 !== input.expectedStateSha256) {
+            throw storageResourceError('APPROVAL_REPAIR_CHANGED', '복구 준비 후 원문 해시 또는 문서 버전이 변경되었습니다.')
+          }
+          if (current.job.approval.conversation) return sendJson(response, 200, { repaired: true, replayed: true, conversationId: input.conversationId })
+          let reply
+          await storageChanges.run(async change => {
+            await storageChanges.stage(backupFile, current.raw)
+            current.job.approval.conversation = verified.connection
+            await writeStoredRecord(file, current.state)
+            sendJson(response, 200, { repaired: true, replayed: false, conversationId: input.conversationId,
+              backup: path.relative(dataDirectory, backupFile).replaceAll('\\', '/'), evidence: verified.evidence })
+            reply = () => change.response?.()
+          })
+          if (!response.headersSent && !response.destroyed) reply?.()
+        })
+      } catch (error) {
+        return sendJson(response, error.status ?? 503, { error: error.status ? error.message : '복구 증거 조회 또는 저장을 완료하지 못했습니다.',
+          ...(error.code ? { code: error.code } : {}), ...(error.outcome ? { outcome: error.outcome } : {}) })
+      }
+    }
+
     const doorayApprovalContextRoute = url.pathname.match(/^\/api\/integrations\/dooray\/response-approvals\/([a-zA-Z0-9_-]+)$/)
     if (doorayApprovalContextRoute && request.method === 'GET') {
       const user = requireUser(request, response)
@@ -9774,7 +9876,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
     }
 
-    const aionUiLaunchCompletionRoute = url.pathname.match(/^\/api\/integrations\/aionui\/launches\/([^/]+)\/conversation$/)
+    const aionUiLaunchCompletionRoute = url.pathname.match(/^\/api\/integrations\/aionui\/launches\/([^/]+)\/(conversation|confirm)$/)
     if (aionUiLaunchCompletionRoute && request.method === 'POST') {
       const tokenKey = sessionTokenKey(decodeURIComponent(aionUiLaunchCompletionRoute[1]))
       const launch = aiConversationLaunches.get(tokenKey)
@@ -9783,12 +9885,21 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         return sendJson(response, 404, { error: 'AI 대화 시작 정보를 찾을 수 없습니다.' })
       }
       const sendLaunchResult = (status, result) => {
-        aiLaunchTracking.finish(tokenKey, status, result)
-        console.log('[AionUi launch confirmation]', JSON.stringify({ status, mapId: launch.mapId, cardId: launch.cardId, conversationId: result.conversationId ?? null }))
+        const finish = () => {
+          aiLaunchTracking.finish(tokenKey, status, result)
+          console.log('[AionUi launch confirmation]', JSON.stringify({ status, mapId: launch.mapId, cardId: launch.cardId, conversationId: result.conversationId ?? null }))
+        }
+        if (status >= 400 || !storageChanges.afterCommit(finish)) finish()
         return sendJson(response, status, result)
       }
       const body = await readJsonBody(request)
-      const conversationId = String(body.conversationId ?? '').trim()
+      let conversationId = String(body.conversationId ?? '').trim()
+      if (aionUiLaunchCompletionRoute[2] === 'confirm') {
+        const user = requireUser(request, response)
+        if (!user) return
+        if (!canEdit(user) || user.id !== launch.startedBy) return sendJson(response, 403, { error: '이 대화를 시작한 편집자만 연결을 다시 확인할 수 있습니다.' })
+        conversationId = aiLaunchTracking.read(tokenKey, user.id).createdConversationId ?? ''
+      }
       if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(conversationId)) {
         return sendLaunchResult(400, { error: '올바르지 않은 AionUi 대화 ID입니다.' })
       }
@@ -9798,6 +9909,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         ...(launch.mapId ? [`doc:${launch.mapId}`] : []), ...sharedAiStateFiles.map(resourceForFile),
         ...(launch.cardLayoutRequestId ? ['state:_card-layout-requests.json'] : []),
         ...(launch.reconstructionRequestId ? ['state:_document-reconstruction-requests.json'] : []),
+        ...(launch.doorayApproval ? [`state:_dooray-responses/${launch.startedBy}.json`] : []),
       ], action))
       try {
         reservation = await withLaunchResources(async () => {
@@ -9824,6 +9936,12 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         const resolvedAttribution = await resolveConversationAttribution(launch.mapId, launch.cardId, conversationId,
           launch.startedBy, aiAttributions.get(launch.attributionKey), { inferStartedBy: false }).catch(() => null)
         return await withLaunchResources(async () => {
+        let reply
+        const result = await storageChanges.run(async (change) => {
+        reply = () => change.response?.()
+        const stores = [aiAttributions, aiConversationAttributions, aiConversationOrigins, aiConversationLaunches]
+        const snapshots = stores.map((store) => structuredClone([...store]))
+        storageChanges.onRollback(() => stores.forEach((store, index) => { store.clear(); for (const [key, value] of snapshots[index]) store.set(key, value) }))
         currentStorageBudget()?.assert()
         const actorNow = launch.startedBy === integrationUser.id ? integrationUser
           : users.find((candidate) => candidate.id === launch.startedBy && candidate.active !== false)
@@ -9840,12 +9958,13 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           const actualWorkspace = aiConversationLinkFromAionUiConversation(conversation)?.workspace
           assertDoorayExecutionWorkspace(actualWorkspace)
           if (!sameExecutionWorkspace(aiAttributions.get(launch.attributionKey)?.selection?.workspace, actualWorkspace)) return sendLaunchResult(409, { error: '생성된 대화의 작업공간이 시작 요청과 다릅니다.' })
-          const approvalOptions = { handoffId: launch.doorayApproval.handoffId }
+          const approvalOptions = { handoffId: launch.doorayApproval.handoffId, existingConversationId: conversationId }
           const context = await doorayResponses.approvalContext(launch.startedBy, launch.doorayApproval.responseId, launch.doorayApproval.proposalRevision, approvalOptions)
           if (context.linkedConversation && context.linkedConversation.conversationId !== conversationId) return sendLaunchResult(409, { error: '이미 연결된 승인 대화가 있습니다.' })
           // 담당이 없을 때만 구성용 대화로 연결한다. 담당이 있으면 아래 공통 카드
           // 연결·시작 카드 저장을 모두 마친 뒤 승인 실행을 허용한다.
           if (!launch.mapId && !launch.cardId) {
+            aiLaunchTracking.observeConversation(tokenKey, conversationId)
             await doorayResponses.linkApprovalConversation(launch.startedBy, launch.doorayApproval.responseId, launch.doorayApproval.proposalRevision,
               { conversationId, homeMachineId: launch.homeMachineId, homeMachineRole: launch.homeMachineId === machineRegistry.mainMachineId ? 'main' : 'sub', linkedAt: new Date().toISOString() }, approvalOptions)
             const attribution = aiAttributions.get(launch.attributionKey)
@@ -9862,6 +9981,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         const attribution = aiAttributions.get(launch.attributionKey)
         const origin = aiConversationOrigins.get(conversationId)
         if (origin && (origin.mapId !== launch.mapId || origin.cardId !== launch.cardId)) return sendLaunchResult(409, { error: '다른 카드에서 시작한 대화의 소속을 변경할 수 없습니다.' })
+        aiLaunchTracking.observeConversation(tokenKey, conversationId)
         if (attribution) {
           attribution.conversationId = conversationId
           await persistAiAttributions()
@@ -9972,10 +10092,15 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           updatedAt: updatedMap.updatedAt,
           updatedBy: publicUser(actor),
         })
-        void trackStorageBackground(() => refreshAiConversationRuntimeForMap(launch.mapId)).catch((error) => {
-          console.warn('[AI conversation runtime link refresh]', error)
+        storageChanges.afterCommit(() => {
+          void trackStorageBackground(() => refreshAiConversationRuntimeForMap(launch.mapId)).catch((error) => {
+            console.warn('[AI conversation runtime link refresh]', error)
+          })
         })
         return sendLaunchResult(200, { conversationId, homeMachineId: launch.homeMachineId })
+        })
+        if (!response.headersSent && !response.destroyed) reply?.()
+        return result
         })
       } catch (error) {
         throwIfRuntimeStopping(error, runtimeLifecycle.signal)

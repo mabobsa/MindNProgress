@@ -43,15 +43,17 @@ window.fetch = async (url, init = {}) => {
   else if (url === '/api/integrations/aionui/attributions') body = {editorId:'fixture',attributionToken:'fixture',completionUrl:'http://fixture.invalid/completion',statusUrl:'/api/integrations/aionui/launches/'+ 'A'.repeat(43) +'/status',approvalRequest:a.approvalRequest};
   else if (url.endsWith('/status')) {
     if (a.statusHttp) return new Response(JSON.stringify({error:'시작 상태 조회 실패'}),{status:a.statusHttp});
-    body = {status:a.launchStatus || 'completed',conversationId:a.launchStatus ? null : 'fixture-conversation',launchUrl:'about:blank',error:a.confirmationError || ''};
+    body = {status:a.launchStatus || 'completed',conversationId:a.launchStatus ? null : 'fixture-conversation',launchUrl:'about:blank',error:a.confirmationError || '',createdConversationId:a.createdConversationId,canRetry:a.canRetry};
   }
+  else if (url.endsWith('/confirm')) { a.launchStatus=null; a.confirmationError=''; a.canRetry=false; body={conversationId:a.createdConversationId}; }
+  else if (url.includes('/response-approvals/') && url.includes('/confirmation?')) body={status:'completed',conversationId:'fixture-conversation'};
   else if (url === '/api/integrations/aionui/external-conversation-launches') body = {launchUrl:'about:blank'};
   else throw new Error('예상하지 않은 테스트 요청: '+url);
   return new Response(JSON.stringify(body),{headers:{'Content-Type':'application/json'}});
 };
 let sequence = 0;
 window.renderDialog = (input = {}, flags = {}) => {
-  Object.assign(window.audit,{calls:[],fail:false,hold:false,closed:0,launchStatus:null,statusHttp:0,confirmationError:'',approvalRequest:null,context:{map:{id:'map-coordinator',nodes:[{id:'root',data:{kind:'root'}},{id:'child',data:{kind:'task'}}],edges:[{source:'root',target:'child'}]},groupProject:{groupId:'group-manager',role:'coordinator',coordinatorMapId:'map-coordinator'}},...flags});
+  Object.assign(window.audit,{calls:[],fail:false,hold:false,closed:0,launchStatus:null,statusHttp:0,confirmationError:'',createdConversationId:null,canRetry:false,approvalRequest:null,context:{map:{id:'map-coordinator',nodes:[{id:'root',data:{kind:'root'}},{id:'child',data:{kind:'task'}}],edges:[{source:'root',target:'child'}]},groupProject:{groupId:'group-manager',role:'coordinator',coordinatorMapId:'map-coordinator'}},...flags});
   window.audit.userId = input.userId || 'fixture';
   flushSync(()=>root.render(React.createElement(AiConversationDialog,{key:++sequence,userId:'fixture',documentId:'map-coordinator',documentTitle:'총괄 문서',cardId:'root',cardTitle:'총괄 루트',purpose:'card',knowledgeSources:[],launchInWebUi:true,onClose:()=>window.audit.closed++,...input})));
 };
@@ -353,7 +355,13 @@ test('실제 대화 팝업의 총괄 전문·선택적 위임 모델·전달 목
     await evaluate('window.audit.statusHttp=0;window.audit.launchStatus="confirmation-failed";window.audit.confirmationError="작업공간 연결 검증 실패";Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="상태 다시 확인").click()')
     await waitFor(() => evaluate('document.querySelector(".ai-launch-error")?.textContent.includes("작업공간 연결 검증 실패")'))
     assert.equal(await evaluate('window.audit.closed'), 0)
-    await evaluate('window.audit.launchStatus=null;window.audit.confirmationError="";Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="상태 다시 확인").click()')
+    await evaluate('window.audit.createdConversationId="fixture-conversation";window.audit.canRetry=true;Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="상태 다시 확인").click()')
+    await waitFor(() => evaluate('document.querySelector(".ai-launch-confirmation strong")?.textContent==="대화 연결 확인 중…"'))
+    const repairScreenshot = await send('Page.captureScreenshot', { format: 'png' })
+    const repairScreenshotPath = path.join(tmpdir(), `mnp-approval-repair-${Date.now()}.png`)
+    await writeFile(repairScreenshotPath, Buffer.from(repairScreenshot.data, 'base64'))
+    console.log(`승인 연결 재확인 UI: ${repairScreenshotPath}`)
+    await evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="기존 대화 연결 다시 확인").click()')
     await waitFor(() => evaluate('window.audit.closed === 1'))
     assert.equal(await evaluate('Object.keys(sessionStorage).some(k=>k.startsWith("mindnprogress-ai-launch:"))'), false)
 
@@ -367,6 +375,14 @@ test('실제 대화 팝업의 총괄 전문·선택적 위임 모델·전달 목
     await evaluate('window.confirm=()=>true;Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="대화 목록 확인 후 새로 준비").click()')
     await waitFor(() => evaluate('!document.querySelector(".ai-launch-confirmation")'))
     assert.equal(await evaluate('window.audit.calls.filter(c=>c.url.endsWith("/external-conversation-launches")).length'), 1, '초기화는 자동 재시작하지 않는다')
+
+    await open({ purpose: 'dooray-response', doorayApproval: { responseId: 'repair-approval', proposalRevision: 'a'.repeat(64) } }, { launchStatus: 'pending', approvalRequest: '저장된 승인 전문' })
+    await evaluate('document.querySelector(".ai-dialog footer .primary").click()')
+    await waitFor(() => evaluate('Boolean(document.querySelector(".ai-launch-confirmation")) && !document.querySelector(".ai-dialog header button").disabled'))
+    await evaluate('window.audit.statusHttp=404;Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="상태 다시 확인").click()')
+    await waitFor(() => evaluate('window.audit.closed===1'))
+    assert.equal(await evaluate('window.audit.calls.filter(c=>c.url.includes("/confirmation?")).length'), 1)
+    assert.equal(await evaluate('window.audit.calls.filter(c=>c.url.endsWith("/external-conversation-launches")).length'), 1, '만료 후 실제 승인 연결 조회도 새 대화를 만들지 않는다')
 
     await evaluate('localStorage.removeItem("mindnprogress-ai-delegation-runtime:fixture:fixture");window.renderDialog({}, {hold:true})')
     await waitFor(() => evaluate('document.querySelector(".ai-dialog [role=status]")?.textContent.includes("대화 역할")'))

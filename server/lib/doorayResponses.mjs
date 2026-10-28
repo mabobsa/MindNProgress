@@ -277,16 +277,21 @@ export function createDoorayResponseService(deps) {
     return path.join(deps.directory, `${userId}.json`)
   }
   const read = async (userId) => {
-    const stored = await deps.read(userFile(userId))
+    const file = userFile(userId)
+    const stored = await (deps.withRead ? deps.withRead(file, () => deps.read(file)) : deps.read(file))
     return { jobs: Array.isArray(stored.jobs) ? stored.jobs : [] }
   }
   function update(userId, change) {
-    const next = (writes.get(userId) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    const apply = async () => {
       const state = await read(userId)
       const result = await change(state)
       await deps.write(userFile(userId), state)
       return result
-    })
+    }
+    // 공통 자원 보호가 있으면 사용자 큐를 별도로 선점하지 않는다.
+    // callback의 보유 잠금 → 사용자 큐 → 같은 잠금 재획득의 역순 대기를 막는다.
+    if (deps.withMutation) return deps.withMutation(userFile(userId), apply)
+    const next = (writes.get(userId) ?? Promise.resolve()).catch(() => {}).then(apply)
     writes.set(userId, next)
     void next.finally(() => { if (writes.get(userId) === next) writes.delete(userId) }).catch(() => {})
     return next
@@ -354,13 +359,13 @@ export function createDoorayResponseService(deps) {
     const existing = (await read(user.id)).jobs.find(outstanding)
     if (existing) return { job: publicDoorayResponse(existing), repeated: true }
     const source = await deps.loadSource(item)
+    const saved = await deps.getSettings?.(user)
+    const resolved = await deps.resolveSettings(user, saved ?? settings ?? {})
     const result = await update(user.id, async (state) => {
       // 원문을 조회하는 사이 다른 탭에서 접수됐을 수 있으므로 쓰기 잠금 안에서 재확인한다.
       const previous = state.jobs.find(outstanding) ?? state.jobs.find((job) => job.source.fingerprint === source.fingerprint)
       if (previous) return { job: previous, repeated: true }
       if (state.jobs.filter((job) => activeStates.has(job.status)).length >= 10) throw error('진행 중인 AI 대응이 많습니다. 기존 요청이 끝난 뒤 다시 시도해 주세요.', 409)
-      const saved = await deps.getSettings?.(user)
-      const resolved = await deps.resolveSettings(user, saved ?? settings ?? {})
       await deps.rememberSettings?.(user, resolved, saved)
       const now = new Date().toISOString()
       const job = { id: `dooray-${randomBytes(12).toString('hex')}`, userId: user.id, source, settings: resolved,
@@ -650,13 +655,15 @@ export function createDoorayResponseService(deps) {
       const target = doorayExecutionTargets(await deps.loadMaps()).find((entry) => entry.mapId === handoff.target.mapId)
       if (!target || target.cardId !== handoff.target.cardId) throw error('인계 대상의 활성 루트 카드가 변경됐습니다.', 409)
     }
-    const validation = handoff && !options.execution ? { execution: true, conversationId: handoff.sourceConversationId } : options
+    const existing = options.existingConversationId && (handoff?.conversation ?? job.approval?.conversation)?.conversationId === options.existingConversationId
+    const validation = existing ? { execution: true, conversationId: options.existingConversationId }
+      : handoff && !options.execution ? { execution: true, conversationId: handoff.sourceConversationId } : options
     assertDoorayApproval(job, revision, validation)
     const target = handoff?.target ?? job.route
     return { job: publicDoorayResponse(job), linkedConversation: handoff?.conversation ?? (!handoff ? job.approval.conversation : null),
       launch: { purpose: 'dooray-response', mapId: target?.mapId ?? '', cardId: target?.cardId ?? '',
       cardTitle: target?.cardTitle ?? job.approval.title, documentTitle: target?.documentTitle ?? job.source.subject,
-      initialRequest: handoff?.request ?? buildDoorayApprovalRequest(job, options), fullInitialRequest: true,
+      initialRequest: handoff?.request ?? buildDoorayApprovalRequest(job, validation), fullInitialRequest: true,
       doorayApproval: { responseId: id, proposalRevision: revision, ...(handoff ? { handoffId: handoff.id } : {}) } } }
   }
   async function executionHandoffOptions(userId, id, mapId) {
@@ -676,6 +683,13 @@ export function createDoorayResponseService(deps) {
   }
   return {
     start, complete, approvalContext, executionHandoffOptions, recoverResult,
+    async approvalConfirmation(userId, id, revision, handoffId) {
+      const job = (await read(userId)).jobs.find(entry => entry.id === id)
+      if (!job || job.userId !== userId) throw error('승인 기록을 찾을 수 없습니다.', 404)
+      const conversation = handoffId ? job.approval?.handoffs?.find(entry => entry.id === handoffId)?.conversation : job.approval?.conversation
+      assertDoorayApproval(job, revision, { execution: true, conversationId: conversation?.conversationId })
+      return { status: 'completed', conversationId: conversation.conversationId, createdConversationId: conversation.conversationId, error: '' }
+    },
     async prepareExecutionHandoff(userId, id, input) {
       if (input.confirmApprovedScope !== true) throw error('인계 대상·전문과 기존 승인 범위를 확인해 주세요.', 409)
       const { preview } = await executionHandoffOptions(userId, id, input.mapId)
@@ -698,7 +712,7 @@ export function createDoorayResponseService(deps) {
       return approvalContext(userId, id, input.proposalRevision, { handoffId })
     },
     async linkApprovalConversation(userId, id, revision, conversation, options = {}) {
-      const context = await approvalContext(userId, id, revision, options)
+      const context = await approvalContext(userId, id, revision, { ...options, existingConversationId: conversation.conversationId })
       if (context.linkedConversation) {
         if (context.linkedConversation.conversationId !== conversation.conversationId) throw error('이미 연결된 승인 대화가 있습니다.', 409)
         return context.job
@@ -813,15 +827,18 @@ export function createDoorayResponseService(deps) {
       await refreshDeleted(userId, (job) => job.id === id, true)
       const user = await deps.user(userId)
       if (!user) throw error('사용자를 확인할 수 없습니다.', 403)
+      const captured = (await read(userId)).jobs.find(entry => entry.id === id)
+      if (!captured) throw error('AI 대응 요청을 찾을 수 없습니다.', 404)
+      const saved = await deps.getSettings?.(user)
+      const settings = await deps.resolveSettings(user, saved ?? captured.settings)
       const job = await update(userId, async (state) => {
         const current = state.jobs.find((entry) => entry.id === id)
         if (!current) throw error('AI 대응 요청을 찾을 수 없습니다.', 404)
+        if (JSON.stringify(current) !== JSON.stringify(captured)) throw error('실행 옵션 확인 중 제안이 변경되었습니다. 다시 확인해 주세요.', 409)
         if (current.completedAt) throw error('완료된 대응입니다. 완료 내역에서 제안을 확인해 주세요.', 409)
         if (current.approval?.conversation) throw error('이미 시작한 승인 대화에서 변경 사항을 검토해 주세요.', 409)
         if (activeStates.has(current.status)) throw error('현재 검토가 끝난 뒤 추가 정보를 전달해 주세요.', 409)
         if (current.operation?.createAttempted && !current.operation.conversationId) throw error('이전 AI 대화 생성 여부를 먼저 확인해야 합니다.', 409)
-        const saved = await deps.getSettings?.(user)
-        const settings = await deps.resolveSettings(user, saved ?? current.settings)
         await deps.rememberSettings?.(user, settings, saved)
         const history = current.proposal ? [{ request: current.route?.requestSummary ?? current.source.subject, route: current.route,
           proposal: clip(current.proposal, 12_000), decision: current.decision ?? null }, ...(current.history ?? [])].slice(0, 3) : current.history

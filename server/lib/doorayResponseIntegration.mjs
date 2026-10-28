@@ -184,6 +184,7 @@ export function createDoorayResponseIntegration(d) {
   }
   const service = createDoorayResponseService({
     directory: path.join(d.dataDirectory, '_dooray-responses'), read: d.readStoredRecord, write: d.writeStoredRecord,
+    withMutation: d.withMutation, withRead: d.withRead,
     user: d.user, resolveSettings, loadMaps,
     getSettings: (user) => d.responsePreferences.get(user.id),
     rememberSettings: (user, settings, saved) => d.responsePreferences.put(user.id, doorayResponseSettingsFromResolved(settings), { expectedSettings: saved ?? null }),

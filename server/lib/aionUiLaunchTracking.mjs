@@ -22,6 +22,8 @@ export function createAionUiLaunchTracking({ now = Date.now } = {}) {
       const entry = find(key)
       if (entry.ownerId !== ownerId) throw fail('시작 확인 정보를 찾을 수 없습니다.', 404)
       return { status: entry.status, error: entry.error, conversationId: entry.conversationId,
+        createdConversationId: entry.createdConversationId ?? null,
+        canRetry: entry.status === 'confirmation-failed' && Boolean(entry.createdConversationId),
         expiresAt: entry.expiresAt, launchUrl: entry.ticket?.launchUrl ?? null, desktopLaunchUrl: entry.ticket?.desktopLaunchUrl ?? null }
     },
     issue(key, payload, create) {
@@ -37,6 +39,11 @@ export function createAionUiLaunchTracking({ now = Date.now } = {}) {
         })
       }
       return entry.issuing
+    },
+    observeConversation(key, conversationId) {
+      const entry = find(key)
+      if (entry.createdConversationId && entry.createdConversationId !== conversationId) throw fail('이미 확인한 대화와 다른 대화를 연결할 수 없습니다.')
+      entry.createdConversationId = conversationId
     },
     finish(key, status, body) {
       const entry = entries.get(key)

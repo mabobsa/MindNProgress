@@ -5,6 +5,8 @@ type LaunchStatus = {
   status: 'pending' | 'completed' | 'delivery-unknown' | 'confirmation-failed'
   error?: string
   conversationId?: string
+  createdConversationId?: string | null
+  canRetry?: boolean
   launchUrl?: string | null
   desktopLaunchUrl?: string | null
 }
@@ -19,13 +21,14 @@ function readPending(key: string): PendingLaunch | null {
 }
 
 // 팝업을 닫거나 새로고침해도 접수 불명확 요청을 자동으로 다시 시작하지 않는다.
-export function useAiLaunchConfirmation(scope: string, onCompleted: () => void) {
+export function useAiLaunchConfirmation(scope: string, onCompleted: () => void, approvalStatusUrl?: string) {
   const key = `mindnprogress-ai-launch:${scope}`
   const [pending, setPending] = useState(() => readPending(key))
   const [status, setStatus] = useState<LaunchStatus | null>(null)
   const [checkError, setCheckError] = useState('')
   const [revision, setRevision] = useState(0)
   const [delayed, setDelayed] = useState(false)
+  const [retrying, setRetrying] = useState(false)
   const completedRef = useRef(onCompleted)
   useEffect(() => { completedRef.current = onCompleted }, [onCompleted])
   useEffect(() => { setPending(readPending(key)); setStatus(null); setCheckError(''); setDelayed(false) }, [key])
@@ -51,7 +54,10 @@ export function useAiLaunchConfirmation(scope: string, onCompleted: () => void) 
       checking = true
       setDelayed(Date.now() - pending.requestedAt >= 30_000)
       try {
-        const response = await fetch(pending.statusUrl, { credentials: 'include', cache: 'no-store',
+        let response = await fetch(pending.statusUrl, { credentials: 'include', cache: 'no-store',
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) })
+        // 서버 재시작으로 시작 ticket이 사라져도 영속된 승인 연결만 조회한다. 새 실행은 요청하지 않는다.
+        if (response.status === 404 && approvalStatusUrl) response = await fetch(approvalStatusUrl, { credentials: 'include', cache: 'no-store',
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) })
         const result = await response.json() as LaunchStatus
         if (controller.signal.aborted) return
@@ -74,7 +80,7 @@ export function useAiLaunchConfirmation(scope: string, onCompleted: () => void) 
     void check()
     const interval = window.setInterval(() => { void check() }, 2000)
     return () => { controller.abort(); window.clearInterval(interval) }
-  }, [key, pending, revision])
+  }, [key, pending, revision, approvalStatusUrl])
 
   const reopen = () => {
     const url = pending?.useWeb ? status?.launchUrl : status?.desktopLaunchUrl
@@ -94,7 +100,22 @@ export function useAiLaunchConfirmation(scope: string, onCompleted: () => void) 
     setDelayed(false)
     return true
   }
-  return { pending, begin, reopen, check: () => setRevision(value => value + 1),
+  const check = async () => {
+    if (retrying) return
+    if (pending && status?.canRetry) {
+      setRetrying(true)
+      try {
+        const response = await fetch(pending.statusUrl.replace(/\/status$/, '/confirm'), { method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(30_000) })
+        const result = await response.json() as LaunchStatus
+        if (!response.ok) throw new Error(result.error || '기존 대화 연결을 다시 확인하지 못했습니다.')
+        setCheckError('')
+      } catch (error) { setCheckError(error instanceof Error ? error.message : '기존 대화 연결을 다시 확인하지 못했습니다.') }
+      finally { setRetrying(false) }
+    }
+    setRevision(value => value + 1)
+  }
+  return { pending, begin, reopen, check, retrying, canRetry: Boolean(status?.canRetry), created: Boolean(status?.createdConversationId),
     reset, canReset: delayed || Boolean(checkError || status?.error),
     canReopen: Boolean(pending?.useWeb ? status?.launchUrl : status?.desktopLaunchUrl),
     error: checkError || status?.error || '' }

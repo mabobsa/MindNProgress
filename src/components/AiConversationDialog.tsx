@@ -154,7 +154,9 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   const launchBusy = useRef(false)
   const confirmation = useAiLaunchConfirmation(JSON.stringify([userId, documentId, cardId, purpose,
     doorayApproval?.responseId, doorayApproval?.proposalRevision, doorayApproval?.handoffId,
-    reconstructionRequestId, cardLayoutRequestId]), onClose)
+    reconstructionRequestId, cardLayoutRequestId]), onClose, doorayApproval
+      ? `/api/integrations/dooray/response-approvals/${encodeURIComponent(doorayApproval.responseId)}/confirmation?${new URLSearchParams({ revision: doorayApproval.proposalRevision, ...(doorayApproval.handoffId ? { handoffId: doorayApproval.handoffId } : {}) })}`
+      : undefined)
   const dialogSections = useAiDialogSections(userId)
   const roleInput = useMemo(() => ({ mapId: documentId, cardId, purpose, groupId, initialRequest, fullInitialRequest }), [documentId, cardId, purpose, groupId, initialRequest, fullInitialRequest])
   const [roleResult, setRoleResult] = useState<{ input: typeof roleInput; role?: AiConversationRole; error?: string } | null>(null)
@@ -785,9 +787,9 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
         )}
         {(launchError || confirmation.error) && <div className="ai-launch-error" role="alert">{confirmation.error || launchError}</div>}
         {confirmation.pending && <div className="ai-launch-confirmation" role="status">
-          <strong>대화 생성 확인 중…</strong>
-          <span>AionUi에서 실제 대화가 생성·연결되면 자동으로 닫힙니다. 지연되면 AionUi 실행·로그인 상태와 대화 목록을 확인하세요. 새 대화를 자동으로 재요청하지 않습니다.</span>
-          <div><button type="button" onClick={confirmation.check}>상태 다시 확인</button>{confirmation.canReopen && <button type="button" onClick={confirmation.reopen} disabled={launching}>같은 시작 정보로 AionUi 다시 열기</button>}{confirmation.canReset && <button type="button" disabled={launching} onClick={() => { if (confirmation.reset()) setLaunchError('') }}>대화 목록 확인 후 새로 준비</button>}</div>
+          <strong>{confirmation.created ? '대화 연결 확인 중…' : '대화 생성 확인 중…'}</strong>
+          <span>{confirmation.created ? 'AionUi 대화는 생성됐습니다. 기존 대화의 카드·승인 연결이 확정되면 자동으로 닫힙니다.' : 'AionUi에서 실제 대화가 생성·연결되면 자동으로 닫힙니다. 지연되면 AionUi 실행·로그인 상태와 대화 목록을 확인하세요.'} 새 대화를 자동으로 재요청하지 않습니다.</span>
+          <div><button type="button" onClick={() => { void confirmation.check() }} disabled={confirmation.retrying}>{confirmation.canRetry ? '기존 대화 연결 다시 확인' : '상태 다시 확인'}</button>{confirmation.canReopen && <button type="button" onClick={confirmation.reopen} disabled={launching}>같은 시작 정보로 AionUi 다시 열기</button>}{confirmation.canReset && <button type="button" disabled={launching || confirmation.retrying} onClick={() => { if (confirmation.reset()) setLaunchError('') }}>대화 목록 확인 후 새로 준비</button>}</div>
         </div>}
         <footer><span>응답은 {options?.machineLabel ?? '선택한 머신'}의 AionUi에서만 처리됩니다.</span><div><button type="button" onClick={onClose} disabled={launching}>{confirmation.pending ? '닫기' : '취소'}</button><button type="button" className="primary" onClick={() => { void launch() }} disabled={roleLoading || Boolean(roleError) || loading || launching || Boolean(confirmation.pending) || Boolean(error) || !selectedAgent || !modelId}>{launching ? '준비 중…' : confirmation.pending ? '대화 생성 확인 중…' : 'AionUi에서 시작'}</button></div></footer>
       </section>

@@ -19,6 +19,7 @@ if (process.send) {
     return { ...loaded, source: source.replace(marker, `${marker}\n  globalThis.__mnpReadMetrics?.reference(map)`) }
   } })
   const stringify = JSON.stringify, parse = JSON.parse, clone = globalThis.structuredClone, read = fs.readFile
+  const commentTexts = new Set()
   const interval = globalThis.setInterval
   // 양 버전 모두 동일한 background 비활성 조건. fixture의 실제 AI 실행을 금지한다.
   globalThis.setInterval = () => ({ unref() { return this }, ref() { return this } })
@@ -37,12 +38,16 @@ if (process.send) {
       const file = String(args[0]).replaceAll('\\', '/')
       const category = /\/_comments\/[^/]+\.json$/.test(file) ? 'commentRead' : /\/map-[^/]+\.json$/.test(file) ? 'documentRead' : null
       if (category) { add(`${category}Count`); add(`${category}Bytes`, typeof result === 'string' ? Buffer.byteLength(result) : result.byteLength) }
+      if (category === 'commentRead') {
+        commentTexts.add(String(result))
+        while (commentTexts.size > 32) commentTexts.delete(commentTexts.values().next().value)
+      }
     }
     return result
   }
   JSON.parse = function (text, ...args) {
     const value = parse(text, ...args)
-    if (enabled && Array.isArray(value) && value[0]?.nodeId && value[0]?.mapId && value[0]?.createdAt) {
+    if (enabled && commentTexts.has(String(text))) {
       add('commentParseCount'); add('commentParseBytes', Buffer.byteLength(text))
     }
     return value

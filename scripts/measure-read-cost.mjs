@@ -40,7 +40,13 @@ const canonical = (value) => {
 }
 const stats = (times) => { const sorted = [...times].sort((a, b) => a - b); return { n: times.length, p50: sorted[Math.ceil(sorted.length * .5) - 1], p95: sorted[Math.ceil(sorted.length * .95) - 1], max: sorted.at(-1) } }
 const fingerprints = new Map()
-const scenarios = ['card', 'ref-card', 'outline', 'review', 'delegations', 'notifications-empty', 'notifications-schedule']
+const allScenarios = ['card', 'ref-card', 'outline', 'review', 'delegations', 'notifications-empty', 'notifications-schedule']
+const scenarios = process.env.MNP_MEASURE_SCENARIOS?.split(',') ?? allScenarios
+assert.ok(scenarios.length && scenarios.every((name) => allScenarios.includes(name)), '측정 시나리오 확인')
+result.instrumentationFiles = Object.fromEntries(await Promise.all([
+  ['scripts/measure-read-cost.mjs', new URL(import.meta.url)],
+  ['tests/helpers/read-cost-metrics.mjs', new URL('../tests/helpers/read-cost-metrics.mjs', import.meta.url)],
+].map(async ([name, file]) => [name, hash(await readFile(file))])))
 let sequence = 0
 for (const scenario of scenarios) for (const concurrency of [1, 10, 20]) {
   const order = sequence++ % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate']

@@ -6,7 +6,7 @@ import path from 'node:path'
 import { storageApi, fixture, knowledge, actor } from './helpers/storage-api-harness.mjs'
 
 test('댓글·검토 1/10/20 동시 요청의 성공 효과와 권위 파일·새 조회가 일치한다', { timeout: 300_000 }, async (t) => {
-  const api = await storageApi(t, { seed: async ({ data, ids }) => {
+  const api = await storageApi(t, { readyTimeoutMs: 60000, seed: async ({ data, ids }) => {
     const ref = fixture(ids[1])
     for (let i = 1; i < 20; i++) ref.nodes[i].data.reference = { mapId: ids[2 + i % 5], nodeId: `card-${i}` }
     await writeFile(path.join(data, `${ids[1]}.json`), JSON.stringify(ref))

@@ -67,6 +67,7 @@ import { splitImageFileName, uniqueImageFileName } from './utils/imageFileNames.
 import { copiedImagePlacementOverrides } from './utils/imageClipboard.mjs'
 import { isSameWebLinkUrl, parseWebLinkUrl } from './utils/webLinks.mjs'
 import { shouldReconnectEventStream } from './utils/eventStreamHealth.mjs'
+import { createConditionalRefresh } from './utils/conditionalRefresh.mjs'
 import { aiConversationLinksFromData } from './utils/aiConversations.mjs'
 import { revisionReasonLabel, shouldRefreshMapContentForAction } from './utils/mapChangeMetadata.mjs'
 import { mapContentsEqual, reconcileRemoteMapContent } from './utils/mapDocumentSync.mjs'
@@ -3801,39 +3802,35 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     if (!activeMapId || mode !== 'editor' || documentArchived) return
 
     const controller = new AbortController()
-    let inFlight = false
-    const refresh = async () => {
-      if (controller.signal.aborted || inFlight) return
-      inFlight = true
-      try {
-        const result = await apiRequest<{ delegations: AiDelegationSummary[]; requestFailures?: AiDelegationSummary[] }>(
-          `/api/maps/${encodeURIComponent(activeMapId)}/ai-delegations`,
-          { signal: controller.signal },
-        )
-        if (!controller.signal.aborted) {
-          setAiDelegationStatuses(aiDelegationStatusByCard([...result.delegations, ...(result.requestFailures ?? [])], activeMapId))
-        }
-      } catch {
-        // 일시적인 조회 실패로 이미 확인한 복구 표시를 지우지 않는다.
-      } finally {
-        inFlight = false
-      }
-    }
+    const refreshQueue = createConditionalRefresh<{ delegations: AiDelegationSummary[]; requestFailures?: AiDelegationSummary[] }>(
+      (etag) => fetch(`/api/maps/${encodeURIComponent(activeMapId)}/ai-delegations`, {
+        signal: controller.signal, credentials: 'include',
+        headers: { 'X-MNP-Client': CLIENT_ID, ...(etag ? { 'If-None-Match': etag } : {}) },
+      }),
+      (result) => {
+        if (!controller.signal.aborted) setAiDelegationStatuses(aiDelegationStatusByCard(
+          [...result.delegations, ...(result.requestFailures ?? [])], activeMapId))
+      },
+    )
+    const refresh = () => refreshQueue.request().catch(() => undefined)
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') void refresh()
     }
 
     void refresh()
-    const timer = window.setInterval(refreshWhenVisible, 5_000)
+    const timer = window.setInterval(refreshWhenVisible, 30_000)
+    window.addEventListener('mnp-delegations-refresh', refreshWhenVisible)
     window.addEventListener('focus', refreshWhenVisible)
     document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       controller.abort()
+      refreshQueue.dispose()
       window.clearInterval(timer)
+      window.removeEventListener('mnp-delegations-refresh', refreshWhenVisible)
       window.removeEventListener('focus', refreshWhenVisible)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [activeMapId, documentArchived, mode])
+  }, [activeMapId, documentArchived, mode, user.id])
 
   useEffect(() => {
     setAiConversationRuntimes({})
@@ -3898,6 +3895,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       lastEventAt = Date.now()
       try {
         const event = JSON.parse(message.data) as MapChangeEvent | PresenceEvent | CursorEvent | CommentChangeEvent | AiConversationLinkedEvent | AiConversationRuntimeEvent | AiConversationRuntimeSnapshotEvent | AiConversationRuntimeSummaryEvent | AiConversationRuntimeSummarySnapshotEvent | AiConversationSelectionRequestedEvent | NotificationEvent | NotificationsReadEvent | NotificationsRemovedEvent | HeartbeatEvent | { type: 'connected' }
+        if (event.type.startsWith('ai-delegation') || event.type === 'map-changed') {
+          window.dispatchEvent(new Event('mnp-delegations-refresh'))
+        }
         if (event.type === 'heartbeat') return
         if (event.type === 'ai-conversation-selection-requested') {
           selectCardAndReveal(event.mapId, event.cardId)
@@ -4045,6 +4045,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       nextEventSource.onopen = () => {
         if (disposed || eventSource !== nextEventSource) return
         lastEventAt = Date.now()
+          window.dispatchEvent(new Event('mnp-delegations-refresh'))
         void synchronizeAfterReconnect()
       }
     }

@@ -298,10 +298,12 @@ test('documentEtag는 응답 형식을 반영해 형식 변경 전에 받은 eta
       map: documentResult.map,
       referenceCommentStats: documentResult.referenceCommentStats ?? {},
       unresolvedReferenceNodeIds: documentResult.unresolvedReferenceNodeIds ?? [],
+      documentGroups: documentResult.documentGroups ?? [],
+      groupProject: documentResult.groupProject ?? null,
     }
     return `v${documentResult.map.version}-${viewName}-${sha256(JSON.stringify(payload)).slice(0, 32)}`
   }
-  assert.equal(DOCUMENT_VIEW_FORMAT, 2, 'outline waitingItems.note 원문 포함(M7) 형식')
+  assert.equal(DOCUMENT_VIEW_FORMAT, 3, '현재 그룹 소속을 포함한 조건부 조회 형식')
   for (const [viewName, cardIds] of [['compact'], ['outline'], ['outline', ['task-a']], ['version']]) {
     const current = view(documentResult, { view: viewName, ...(cardIds ? { cardIds } : {}) })
     assert.equal(current.documentEtag, etagFor(viewName, cardIds, DOCUMENT_VIEW_FORMAT), '현재 형식 식별자가 etag 해시에 들어간다')

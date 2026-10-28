@@ -1,6 +1,9 @@
 import { createServer } from 'node:http'
 import { createAiConversationRemoval, conversationRemovalError } from './lib/aiConversationRemoval.mjs'
 import { createDocumentReadStore } from './lib/documentReadStore.mjs'
+import { mapFields, referenceTargets, reviewMap, commentProjection, commentPage } from './lib/readProjections.mjs'
+import { buildDocumentView, DOCUMENT_VIEWS } from '../mcp/documentViews.mjs'
+import { imageCardLocalAccess } from '../mcp/imageAccess.mjs'
 import { createDocumentTrashReview, DocumentTrashReviewError } from './lib/documentTrashReview.mjs'
 import { completedDelegationIds, completedRequestReceipt, completedWorkspaceLeaseIds, referencedHistoryIds } from './lib/completedAiHistory.mjs'
 import { saveHistoryCleanupBackup, pruneHistoryCleanupBackups, readCompletedJobResults } from './lib/historyCleanupBackup.mjs'
@@ -296,7 +299,16 @@ function resourceForFile(file) {
   if (relative.startsWith('_notifications/')) return `notification:${path.basename(file, '.json')}`
   return `state:${relative}`
 }
-const invalidateStorageFile = (file) => { const key = resourceForFile(file); if (key.startsWith('doc:')) documentReads.invalidate(key.slice(4)) }
+let scheduleRevision = 0
+const scheduleChecks = new Map()
+const invalidateStorageFile = (file) => {
+  const key = resourceForFile(file)
+  if (key.startsWith('doc:')) {
+    documentReads.invalidate(key.slice(4))
+    commentReads.invalidate(key.slice(4))
+    scheduleRevision++
+  } else if (['_document-lifecycle.json', '_users.json'].includes(path.basename(file))) scheduleRevision++
+}
 const storageJournal = createStorageJournal({ root: dataDirectory, resources: storageResources, keyForFile: resourceForFile,
   invalidate: (file) => invalidateStorageFile(file) })
 const storageChanges = createStorageChanges({
@@ -679,7 +691,7 @@ async function reviewDependencies(map, cardId, comments) {
   const sources = []
   for (const node of map.nodes.filter((n) => related.has(n.id) && n.data?.reference)) {
     const reference = node.data.reference
-    const source = await readMap(reference.mapId)
+    const source = await readMapProjection(reference.mapId, {}, ({ map }) => ({ ...mapFields(map), nodes: map.nodes.filter((node) => node.id === reference.nodeId) }))
     const sourceCard = source?.nodes.find((n) => n.id === reference.nodeId)
     sources.push({ localCardId: node.id, reference, lifecycleVersion: source?.lifecycleVersion ?? 0,
       unavailable: !source || Boolean(source.trashedAt || source.archivedAt),
@@ -1468,11 +1480,11 @@ function mapSummary(map) {
 
 const documentReads = createDocumentReadStore({ fileForId: mapFileForId })
 
-async function readMapProjection(mapId, options = {}, select = (value) => value.map) {
+async function readMapProjection(mapId, options = {}, select = (value) => value.map, selectionKey) {
   if (storageResources.isQuarantined(`doc:${mapId}`)) throw storageResourceError('RECOVERY_REQUIRED', '저장 복구가 필요한 문서입니다.')
   if (storageJournal.isApplying(`doc:${mapId}`) && !storageResources.holds(`doc:${mapId}`, 'read')
     && [...(storageResources.current()?.held.keys() ?? [])].every((key) => key === 'catalog')) {
-    return withResources([{ key: `doc:${mapId}`, mode: 'read' }], () => readMapProjection(mapId, options, select))
+    return withResources([{ key: `doc:${mapId}`, mode: 'read' }], () => readMapProjection(mapId, options, select, selectionKey))
   }
   const assertVisible = () => {
     if (storageJournal.isApplying(`doc:${mapId}`)) throw Object.assign(storageResourceError('STORAGE_PROCESSING', '문서 저장을 반영 중입니다.'), { status: 503, outcome: 'processing' })
@@ -1500,7 +1512,7 @@ async function readMapProjection(mapId, options = {}, select = (value) => value.
     try { return structuredClone(select(project(JSON.parse(await readFile(mapFileForId(mapId), 'utf8'))))) }
     catch (error) { if (error.code === 'ENOENT') return null; throw error }
   }
-  const result = await documentReads.select(mapId, key, project, select)
+  const result = await documentReads.select(mapId, key, project, select, selectionKey)
   assertVisible()
   return result
 }
@@ -6762,18 +6774,22 @@ async function runDoorayMentionScan(userId, options) {
   }
 }
 
+const commentReads = createDocumentReadStore({ fileForId: commentFileForMap })
+async function readCommentProjection(mapId, select) {
+  if (storageResources.isQuarantined(`doc:${mapId}`)) throw storageResourceError('RECOVERY_REQUIRED', '저장 복구가 필요한 문서입니다.')
+  if (!storageResources.holds(`doc:${mapId}`, 'read')) return withResources([{ key: `doc:${mapId}`, mode: 'read' }], () => readCommentProjection(mapId, select))
+  if (storageChanges.has(commentFileForMap(mapId))) return structuredClone(select(commentProjection(await readStoredArray(commentFileForMap(mapId)), mapId)))
+  return await commentReads.select(mapId, 'comments-v1', (items) => commentProjection(items, mapId), select)
+    ?? select(commentProjection([], mapId))
+}
 async function listComments(mapId, nodeId) {
-  const comments = await readStoredArray(commentFileForMap(mapId))
-  return comments
-    .filter((comment) => comment?.mapId === mapId && (!nodeId || comment.nodeId === nodeId))
-    .map((comment) => ({
-      ...comment,
-      parentId: typeof comment.parentId === 'string' ? comment.parentId : null,
-      resolvedAt: typeof comment.resolvedAt === 'string' ? comment.resolvedAt : null,
-      resolvedBy: comment.resolvedBy?.id ? comment.resolvedBy : null,
-      reactions: comment.reactions && typeof comment.reactions === 'object' ? comment.reactions : {},
-    }))
-    .sort((first, second) => String(first.createdAt).localeCompare(String(second.createdAt)))
+  return readCommentProjection(mapId, (value) => nodeId ? value.byNode[nodeId] ?? [] : value.comments)
+}
+async function readCommentPage(mapId, nodeId, options, includeDetail) {
+  return readCommentProjection(mapId, (value) => {
+    const selected = commentPage(nodeId ? value.byNode[nodeId] ?? [] : value.comments, options)
+    return { ...selected, items: selected.items.map((comment) => commentForResponse(comment, includeDetail)) }
+  })
 }
 
 function buildNodeCommentStats(comments) {
@@ -6832,10 +6848,13 @@ async function resolveReferencesForMap(map) {
   const referencesByMap = new Map(await Promise.all(
     [...new Set(targets.map((target) => target.mapId))].map(async (mapId) => {
       try {
-        const referencedMap = await readMap(mapId)
+        const ids = new Set(targets.filter((target) => target.mapId === mapId).map((target) => target.nodeId))
+        const referencedMap = await readMapProjection(mapId, {}, ({ map }) => ({
+          ...mapFields(map), nodes: map.nodes.filter((node) => ids.has(node.id)),
+        }))
         if (!referencedMap || referencedMap.trashedAt) return [mapId, { map: null, stats: {} }]
-        const comments = await listComments(mapId)
-        return [mapId, { map: referencedMap, stats: buildNodeCommentStats(comments) }]
+        const stats = await readCommentProjection(mapId, (value) => Object.fromEntries([...ids].map((id) => [id, value.stats[id]])))
+        return [mapId, { map: referencedMap, stats }]
       } catch {
         return [mapId, { map: null, stats: {} }]
       }
@@ -6868,6 +6887,54 @@ async function resolveReferencesForMap(map) {
     referenceCommentStats,
     unresolvedReferenceNodeIds,
   }
+}
+
+async function readSelectedDocument(request, response, mapId, url) {
+  const readCard = url.searchParams.get('readCard')
+  const view = url.searchParams.get('mcpView') ?? 'full'
+  const cardIds = url.searchParams.has('cardId') ? url.searchParams.getAll('cardId') : undefined
+  if (!DOCUMENT_VIEWS.includes(view) || (cardIds && (view !== 'outline' || cardIds.length > 50)) || readCard === '' || readCard?.length > 120) {
+    return sendJson(response, 400, { error: '조회 범위를 확인하세요.', reasonCode: 'DOCUMENT_VIEW_ARGUMENT_INVALID' })
+  }
+  const metadata = await readMapProjection(mapId, {}, ({ map }) => ({ fields: mapFields(map),
+    nodeIds: map.nodes.map((node) => node.id), targets: referenceTargets(map, readCard) }))
+  if (!metadata || metadata.fields.trashedAt) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
+  if (readCard && !metadata.nodeIds.includes(readCard)) return sendJson(response, 404, { error: `카드를 찾을 수 없습니다: ${readCard}` })
+  if (cardIds?.some((id) => !metadata.nodeIds.includes(id))) return sendJson(response, 400, {
+    error: 'cardIds에 문서에 없는 카드 ID가 있습니다.', reasonCode: 'DOCUMENT_CARD_NOT_FOUND',
+    details: { mapId, missingCardIds: cardIds.filter((id) => !metadata.nodeIds.includes(id)) },
+  })
+  const resolved = await resolveReferencesForMap({ nodes: metadata.targets.map((target) => ({
+    id: target.localNodeId, data: { reference: { mapId: target.mapId, nodeId: target.nodeId } },
+  })) })
+  const resolvedById = new Map(resolved.map.nodes.map((node) => [node.id, node]))
+  const unresolved = new Set(resolved.unresolvedReferenceNodeIds)
+  const documentGroups = await readDocumentGroupsSnapshot([mapId])
+  const delegationOrigin = await resolveOrRememberDelegationSource(integrationRequestScope(request), mapId,
+    { nodes: metadata.nodeIds.map((id) => ({ id })) })
+  const fields = { ...documentGroupFields(documentGroups[0]), documentGroups,
+    referenceCommentStats: resolved.referenceCommentStats, unresolvedReferenceNodeIds: resolved.unresolvedReferenceNodeIds,
+    ...(delegationOrigin ? { delegationOrigin } : {}) }
+  const options = { view, cardIds, publicBaseUrl,
+    ...(url.searchParams.has('knownVersion') ? { knownVersion: Number(url.searchParams.get('knownVersion')) } : {}),
+    ...(url.searchParams.has('ifNoneMatch') ? { ifNoneMatch: url.searchParams.get('ifNoneMatch') } : {}),
+    imageAccessOf: (id, node) => imageCardLocalAccess(dataDirectory, id, node) }
+  const selectionKey = createHash('sha256').update(JSON.stringify([readCard, view, cardIds, fields, options, resolved.map])).digest('hex')
+  const result = await readMapProjection(mapId, {}, ({ map }) => {
+    const nodes = (readCard ? map.nodes.filter((node) => node.id === readCard) : map.nodes).map((node) => {
+      const source = resolvedById.get(node.id)
+      return source && !unresolved.has(node.id) ? { ...node, data: projectReferenceNodeData(node.data, source.data) } : node
+    })
+    const selected = { map: { ...map, nodes, ...(readCard ? { edges: [] } : {}) }, ...fields }
+    return readCard ? selected : buildDocumentView(selected, options)
+  }, selectionKey)
+  if (!readCard) return sendJson(response, 200, result)
+  const page = await readCommentPage(mapId, readCard, {
+    offset: Math.max(0, Number.parseInt(url.searchParams.get('commentOffset') ?? '0', 10) || 0),
+    limit: Math.max(1, Math.min(100, Number.parseInt(url.searchParams.get('commentLimit') ?? '20', 10) || 20)),
+    order: url.searchParams.get('commentOrder') === 'asc' ? 'asc' : 'desc',
+  }, url.searchParams.get('includeCommentDetail') === 'true')
+  return sendJson(response, 200, { ...result, publicBaseUrl, comments: page.items, commentsPage: page.page })
 }
 
 function mentionedUsers(text) {
@@ -6937,6 +7004,23 @@ function dateSerial(dateValue) {
 
 async function ensureScheduleNotifications(user) {
   if (user.role !== 'editor' || user.active === false) return
+  const key = () => `${scheduleRevision}:${seoulDateString()}:${user.role}:${user.active}`
+  for (let retry = 0; retry < 3; retry++) {
+    const stamp = key()
+    const existing = scheduleChecks.get(user.id)
+    if (existing?.stamp === stamp) { await existing.pending; if (stamp === key()) return; continue }
+    const pending = scanScheduleNotifications(user)
+    const entry = { stamp, pending }
+    scheduleChecks.delete(user.id); scheduleChecks.set(user.id, entry)
+    while (scheduleChecks.size > 128) scheduleChecks.delete(scheduleChecks.keys().next().value)
+    try { await pending } catch (error) { if (scheduleChecks.get(user.id) === entry) scheduleChecks.delete(user.id); throw error }
+    if (stamp === key()) return
+  }
+  throw Object.assign(storageResourceError('STORAGE_PROCESSING', '일정 변경 중입니다. 다시 조회하세요.'), { status: 503, outcome: 'processing' })
+}
+
+async function scanScheduleNotifications(user) {
+  if (user.role !== 'editor' || user.active === false) return
   const today = seoulDateString()
   const todaySerial = dateSerial(today)
   const notifications = await listNotifications(user.id)
@@ -6945,7 +7029,11 @@ async function ensureScheduleNotifications(user) {
 
   for (const summary of maps) {
     await withDocument(summary.id, async () => {
-    const map = await readMap(summary.id)
+    const map = await readMapProjection(summary.id, {}, ({ map }) => ({
+      ...mapFields(map), nodes: map.nodes.filter((node) => node.data?.isWork && node.data.assigneeId === user.id)
+        .map((node) => ({ id: node.id, data: { label: node.data.label, dueDate: node.data.dueDate,
+          progress: node.data.progress, status: node.data.status, isWork: node.data.isWork, assigneeId: node.data.assigneeId } })),
+    }))
     if (!map || map.trashedAt || map.archivedAt) return
     for (const node of map.nodes) {
       const dueSerial = dateSerial(node.data?.dueDate)
@@ -8027,8 +8115,26 @@ const groupProjects = createGroupProjects({
   documentInstructions: groupDocumentInstructions, publicDocumentInstruction: groupDocumentInstructionPublicView,
 })
 const readDocumentGroups = createDocumentGroupMetadata({
-  listMaps, listMapIds: listActiveMapIds, readMap, readLayout: readDocumentLayout, readProject: groupProjects.read,
+  listMaps, listMapIds: listActiveMapIds, readMap: (id) => readMapProjection(id, {}, ({ map }) => mapFields(map)), readLayout: readDocumentLayout, readProject: groupProjects.read,
 })
+
+async function readDocumentGroupsSnapshot(mapIds) {
+  // 대상 문서 잠금은 요청이 보유한다. 그룹 설정만 잠그고 배치 원문을 재검증해
+  // 다른 문서의 수명주기 전환 때문에 단일 문서 조회가 대기하지 않게 한다.
+  for (let retry = 0; retry < 3; retry++) {
+    const activeIds = await listActiveMapIds()
+    const layout = await readDocumentLayout(activeIds)
+    const keys = layout.groups.filter((group) => group.mapIds.some((id) => mapIds.includes(id)))
+      .map((group) => ({ key: `state:_group-projects/${group.id}.json`, mode: 'read' }))
+    const result = await withResources(keys, async () => {
+      const groups = await readDocumentGroups(mapIds, { layout })
+      const current = await readDocumentLayout(await listActiveMapIds())
+      return JSON.stringify(current) === JSON.stringify(layout) ? groups : null
+    })
+    if (result) return result
+  }
+  throw Object.assign(storageResourceError('STORAGE_PROCESSING', '그룹 소속 변경 중입니다. 다시 조회하세요.'), { status: 503, outcome: 'processing' })
+}
 
 const aiDialogPreferences = await createAiDialogPreferences({ dataDirectory, replaceFile: replaceFileWithRetry })
 const aiWorkspaceSettings = await createAiWorkspaceSettings({
@@ -8106,6 +8212,11 @@ async function requestStoragePlan(request, url, body) {
     const delegation = action ? aiDelegations.get(decodeURIComponent(action[1])) : null
     if (delegation) { add(delegation.mapId); add(delegation.parentMapId) }
   }
+  if (!write && route?.[2] === '/ai-delegations') {
+    states.add(resourceForFile(aiDelegationsFile))
+    states.add('state:_ai-delegation-request-failures.json')
+    for (const item of aiDelegations.values()) if (item.mapId === mapId || item.parentMapId === mapId) add(item.mapId)
+  }
   const group = url.pathname.match(/^\/api\/groups\/([^/]+)/)
   if (group && write) states.add(`state:_group-projects/${decodeURIComponent(group[1])}.json`)
   if (group && !write) {
@@ -8150,8 +8261,9 @@ async function requestStoragePlan(request, url, body) {
     }
   }
   for (const id of [...ids]) {
-    const map = await readMap(id)
-    for (const node of map?.nodes ?? []) add(node.data?.reference?.mapId)
+    const selectedCard = !write && !route?.[2] ? url.searchParams.get('readCard') : null
+    const targets = await readMapProjection(id, {}, ({ map }) => referenceTargets(map, selectedCard))
+    for (const target of targets ?? []) add(target.mapId)
   }
   for (const node of [...(body?.map?.nodes ?? []), ...(patch?.nodeAdds ?? [])]) add(node.data?.reference?.mapId)
   for (const node of patch?.nodeChanges ?? []) add(node.dataSet?.reference?.mapId)
@@ -10916,7 +11028,9 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           && (!targetCardId || delegation.targetCardId === targetCardId))
         .sort((first, second) => String(second.createdAt).localeCompare(String(first.createdAt)))
       const maps = new Map(await Promise.all([...new Set(listed.map(item => item.mapId))]
-        .map(async id => [id, await readMap(id)])))
+        .map(async id => [id, await readMapProjection(id, {}, ({ map }) => ({ nodes: map.nodes.map((node) => ({
+          id: node.id, data: { label: node.data.label, isWork: node.data.isWork, status: node.data.status, progress: node.data.progress },
+        })) }))])))
       const delegations = listed.map(item => withDelegationTaskCompletion(
         delegationPublicView(item, url.searchParams.get('includeResult') === 'true', {
           includeFullResult: url.searchParams.get('includeFullResult') === 'true',
@@ -10926,7 +11040,15 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         return { ...item, targetCardLabel, retryVerification: { ...item.retryVerification,
           replacement: item.retryVerification.replacement ? { ...item.retryVerification.replacement, targetCardLabel } : null } }
       })
-      return sendJson(response, 200, { mapId, delegations, requestFailures })
+      const body = { mapId, delegations, requestFailures }
+      const serialized = JSON.stringify(body)
+      const etag = `"${createHash('sha256').update(JSON.stringify([user.id, user.role, user.active])).update(serialized).digest('hex')}"`
+      if (request.headers['if-none-match'] === etag) {
+        response.writeHead(304, { ETag: etag, 'Cache-Control': 'private, no-cache' }); return response.end()
+      }
+      response.writeHead(200, { ETag: etag, 'Cache-Control': 'private, no-cache', 'Content-Type': 'application/json; charset=utf-8',
+        'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY' })
+      return response.end(serialized)
     }
 
     if (aiDelegationsRoute && request.method === 'POST') {
@@ -12911,7 +13033,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
       const user = requireUser(request, response)
       if (!user) return
-      const map = await readMap(mapId)
+      const map = await readMapProjection(mapId, {}, ({ map }) => reviewMap(map, cardId))
       if (!map || map.trashedAt) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
       const rawCommentLimit = url.searchParams.get('commentLimit')
       const commentLimit = rawCommentLimit === null ? 10 : Number(rawCommentLimit)
@@ -12931,6 +13053,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
             ...context,
             reviewContextToken: dependencies.token,
             sources: dependencies.sources,
+            documentGroups: await readDocumentGroupsSnapshot([mapId]),
             accessUrl: `${publicBaseUrl}/mindmap/${encodeURIComponent(mapId)}/${encodeURIComponent(cardId)}`,
             comments,
             commentsPage: {
@@ -13757,12 +13880,15 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const user = requireUser(request, response)
       if (!user) return
 
+      if (request.method === 'GET' && (url.searchParams.has('readCard') || url.searchParams.has('mcpView'))) {
+        return readSelectedDocument(request, response, mapId, url)
+      }
       if (request.method === 'GET') {
         const map = await requestTiming.measure('readMapMs', () => readMap(mapId))
         if (!map || map.trashedAt) return sendJson(response, 404, { error: '마인드맵을 찾을 수 없습니다.' })
         const resolved = await requestTiming.measure('referencesMs', () => resolveReferencesForMap(map))
         const delegationOrigin = await resolveOrRememberDelegationSource(integrationRequestScope(request), mapId, map)
-        const documentGroups = await requestTiming.measure('groupsMs', () => readDocumentGroups([mapId]))
+        const documentGroups = await requestTiming.measure('groupsMs', () => readDocumentGroupsSnapshot([mapId]))
         return sendJson(response, 200, {
           map: resolved.map,
           ...documentGroupFields(documentGroups[0]),

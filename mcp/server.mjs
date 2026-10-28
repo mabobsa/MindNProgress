@@ -23,7 +23,7 @@ import {
 } from './cardTextPatch.mjs'
 import { imageCardLocalAccess } from './imageAccess.mjs'
 import { withDocumentGroupMetadata } from './documentGroupMetadata.mjs'
-import { DOCUMENT_VIEW_CARD_ID_LIMIT, DOCUMENT_VIEWS, buildDocumentView, cardAccessUrl, documentAccessUrl, updateCardFullEdge, updateCardFullNode } from './documentViews.mjs'
+import { DOCUMENT_VIEW_CARD_ID_LIMIT, DOCUMENT_VIEWS, cardAccessUrl, documentAccessUrl, updateCardFullEdge, updateCardFullNode } from './documentViews.mjs'
 import { preserveOmittedWaitingItemNotes } from './waitingItemNotes.mjs'
 import { WORKSPACE_POOL_STATUS_GUIDE, WORKSPACE_POOL_STATUS_REFERENCE } from './workspacePoolStatusGuide.mjs'
 import { MCP_TOOL_USAGE_DIRECTORY_NAME, createFileToolUsageRecorder } from '../server/lib/mcpToolUsage.mjs'
@@ -852,23 +852,6 @@ function focusedDocument(map, publicBaseUrl) {
       targetId: edge.target,
       policy: knowledgePolicyOf(edge),
     })),
-  }
-}
-
-function paginateComments(comments, { offset = 0, limit = 50, order = 'desc' } = {}) {
-  const ordered = order === 'asc' ? comments : [...comments].reverse()
-  const items = ordered.slice(offset, offset + limit)
-  const nextOffset = offset + items.length
-  return {
-    items,
-    page: {
-      total: comments.length,
-      offset,
-      limit,
-      order,
-      hasMore: nextOffset < comments.length,
-      nextOffset: nextOffset < comments.length ? nextOffset : null,
-    },
   }
 }
 
@@ -1714,18 +1697,21 @@ async function main() {
   }, async ({ groupId, ...body }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}/documents`, { method: 'POST', body: JSON.stringify(body) }))
 
   registerTool(server, 'mindnprogress_get_document', '문서의 모든 카드와 연결 관계, 외부 접근 URL 및 이미지 카드의 로컬 원본 경로를 조회합니다. view를 생략하면 기존과 같은 full 전체 응답입니다. compact는 모든 카드 원문·관계·안전 메타데이터를 유지하고 AI 대화 상세·렌더링 전용 값·카드별 접근 URL 목록만 줄입니다. outline은 카드 원문 대신 구조·상태·관계·요구사항 필드·본문 길이와 textIntegrity를 주고 cardIds로 고른 카드만 전문을 함께 주며, 생략 범위와 회수 도구를 omitted에 표기합니다. version은 문서 version과 documentEtag만 확인합니다. 같은 view·cardIds로 받은 응답의 documentEtag를 ifNoneMatch로 전달하면 그 응답 이후 문서가 바뀌지 않았을 때만 본문을 생략하고, knownVersion은 version 일치 여부만 freshness로 알려 주며 본문을 생략하지 않습니다(view를 생략한 full 응답에는 freshness가 없습니다). 재구성 계획·의미 보존 검토, restore_history 직전 백업, 요구사항 전수 감사와 지식선 전역 점검에는 full을 사용하세요.', getDocumentSchema, async ({ mapId, view = 'full', cardIds, knownVersion, ifNoneMatch }) => {
-    const [documentResult, health] = await Promise.all([
-      apiRequest(`/api/maps/${encodeURIComponent(mapId)}`),
-      apiRequest('/api/health'),
-    ])
-    return buildDocumentView(documentResult, {
-      view,
-      cardIds,
-      knownVersion,
-      ifNoneMatch,
-      publicBaseUrl: health.publicBaseUrl,
-      imageAccessOf: (documentId, node) => imageCardLocalAccess(dataDirectory, documentId, node),
-    })
+    const query = new URLSearchParams({ mcpView: view })
+    for (const id of cardIds ?? []) query.append('cardId', id)
+    if (cardIds && view !== 'outline') throw Object.assign(new Error("cardIds는 view='outline'에서만 사용할 수 있습니다."), { reasonCode: 'DOCUMENT_VIEW_ARGUMENT_INVALID' })
+    if (knownVersion !== undefined) query.set('knownVersion', String(knownVersion))
+    if (ifNoneMatch !== undefined) query.set('ifNoneMatch', ifNoneMatch)
+    const result = await apiRequest(`/api/maps/${encodeURIComponent(mapId)}?${query}`)
+    // 이미지 경로는 서버 머신이 아니라 현재 MCP의 원본 접근 경로를 유지한다.
+    const nodes = result.map?.nodes ?? result.cards ?? []
+    const byId = new Map(nodes.map((node) => [node.id, node]))
+    for (const card of [...(result.access?.cards ?? []), ...(result.access?.imageCards ?? []), ...(result.selectedCards ?? [])]) {
+      const node = card.data ? card : byId.get(card.cardId)
+      const access = imageCardLocalAccess(dataDirectory, mapId, node)
+      if (access) card.imageAccess = access
+    }
+    return result
   })
 
   registerTool(server, 'mindnprogress_get_ai_work_states', '카드에 연결된 AionUi 대화의 현재 작업 상태를 조회합니다. 형제·하위·선행 카드 등 선택 카드 밖의 관련 카드를 수정하기 전에 호출해 다른 AI와의 동시 작업 충돌을 확인하세요. 이 조회는 문서 데이터, 버전과 변경 이력을 수정하지 않습니다.', {
@@ -1939,18 +1925,11 @@ async function main() {
     commentOrder: z.enum(['asc', 'desc']).default('desc'),
     includeCommentDetail: z.boolean().default(false).describe('true이면 댓글 상세 본문을 함께 반환. 요약만으로 작업 판단이 어려울 때 사용'),
   }, async ({ mapId, cardId, commentOffset, commentLimit, commentOrder, includeCommentDetail }) => {
-    const [documentResult, commentsResult, health] = await Promise.all([
-      apiRequest(`/api/maps/${encodeURIComponent(mapId)}`),
-      apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments?nodeId=${encodeURIComponent(cardId)}&includeDetail=${includeCommentDetail}`),
-      apiRequest('/api/health'),
-    ])
+    const query = new URLSearchParams({ readCard: cardId, commentOffset: String(commentOffset),
+      commentLimit: String(commentLimit), commentOrder, includeCommentDetail: String(includeCommentDetail) })
+    const documentResult = await apiRequest(`/api/maps/${encodeURIComponent(mapId)}?${query}`)
     const card = documentResult.map.nodes.find((node) => node.id === cardId)
     if (!card) throw new Error(`카드를 찾을 수 없습니다: ${cardId}`)
-    const commentPage = paginateComments(commentsResult.comments ?? [], {
-      offset: commentOffset,
-      limit: commentLimit,
-      order: commentOrder,
-    })
     return {
       documentGroups: documentResult.documentGroups,
       document: {
@@ -1961,9 +1940,9 @@ async function main() {
         updatedBy: documentResult.map.updatedBy,
       },
       card: contentCard(card, mapId),
-      accessUrl: cardAccessUrl(health.publicBaseUrl, documentResult.map.id, card.id),
-      comments: commentPage.items,
-      commentsPage: commentPage.page,
+      accessUrl: cardAccessUrl(documentResult.publicBaseUrl, documentResult.map.id, card.id),
+      comments: documentResult.comments,
+      commentsPage: documentResult.commentsPage,
     }
   })
 

@@ -14,7 +14,7 @@ export const fixture = (id) => ({ id, title: `격리 검증 ${id}`, version: 1, 
       kind: i ? 'branch' : 'root', status: 'planned', progress: 0, isWork: false } })),
   edges: Array.from({ length: 19 }, (_, i) => ({ id: `edge-${i}`, source: 'card-0', target: `card-${i + 1}`, data: { relation: 'hierarchy' } })) })
 
-export async function storageApi(t, { documents = 96, seed = async () => {}, mockAion, env = {} } = {}) {
+export async function storageApi(t, { documents = 96, seed = async () => {}, mockAion, env = {}, readyTimeoutMs = 15000 } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'mnp-storage-02-'))
   assert.ok(path.resolve(directory).startsWith(path.resolve(tmpdir()) + path.sep))
   const data = path.join(directory, 'data')
@@ -65,7 +65,7 @@ export async function storageApi(t, { documents = 96, seed = async () => {}, moc
   })
   async function waitReady() {
   let ready = false
-  for (let attempt = 0; attempt < 300; attempt++) {
+  for (let attempt = 0; attempt < Math.ceil(readyTimeoutMs / 50); attempt++) {
     assert.equal(child.exitCode, null, output)
     try { if ((await fetch(`${base}/api/health`)).ok) { ready = true; break } } catch { /* 시작 대기 */ }
     await new Promise((resolve) => setTimeout(resolve, 50))
@@ -116,5 +116,9 @@ export function storageControl(child, data) {
     const id = ++sequence, ready = message(id, 'cleanup-enabled')
     child.send({ id, action: 'enable-cleanup' }); await ready
   }
-  return { barrier, tick, enableCleanup }
+  const readMetrics = async (reset = false) => {
+    const id = ++sequence, ready = message(id, 'read-metrics')
+    child.send({ id, action: 'read-metrics', reset }); return (await ready).value
+  }
+  return { barrier, tick, enableCleanup, readMetrics }
 }

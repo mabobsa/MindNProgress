@@ -191,9 +191,9 @@ function representationCardIds(view, cardIds) {
 /**
  * Response representation format of the projected views. Bump it whenever a view's response shape or
  * wording changes, so an etag issued for an older response body never yields notModified.
- * 2: outline waitingItems carry the note text (M7).
+ * 3: 현재 그룹 소속도 조건부 응답의 의존성에 포함한다.
  */
-export const DOCUMENT_VIEW_FORMAT = 2
+export const DOCUMENT_VIEW_FORMAT = 3
 
 /**
  * Content token for re-fetch avoidance. It covers the resolved map (including Ref projections),
@@ -209,6 +209,8 @@ export function documentEtag(documentResult, { view = 'full', cardIds } = {}) {
     map: documentResult.map,
     referenceCommentStats: documentResult.referenceCommentStats ?? {},
     unresolvedReferenceNodeIds: documentResult.unresolvedReferenceNodeIds ?? [],
+    documentGroups: documentResult.documentGroups ?? [],
+    groupProject: documentResult.groupProject ?? null,
   }), 'utf8').digest('hex').slice(0, 32)
   return `v${documentResult.map.version}-${view}-${digest}`
 }

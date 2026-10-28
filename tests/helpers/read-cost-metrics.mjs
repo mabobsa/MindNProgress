@@ -6,7 +6,14 @@ if (process.send) {
   registerHooks({ load(url, context, nextLoad) {
     const loaded = nextLoad(url, context)
     if (!url.endsWith('/server/index.mjs')) return loaded
-    const source = String(loaded.source)
+    let source = String(loaded.source)
+    // listen 뒤 비동기 귀속 보정의 전체 문서 스캔이 cold/warm에 섞이지 않게 한다.
+    // fixture에는 복구할 실제 대화가 없으며 양 버전에 같은 조건을 적용한다.
+    for (const name of ['recoverLinkedConversationAttributions', 'reconcileAiDelegationWorkspaceLeasesAfterListen']) {
+      const start = `async function ${name}() {`
+      if (!source.includes(start)) throw new Error(`시작 작업 계측 지점을 찾지 못했습니다: ${name}`)
+      source = source.replace(start, `${start}\n  return`)
+    }
     const marker = 'async function resolveReferencesForMap(map) {'
     if (!source.includes(marker)) throw new Error('Ref 조회 계측 지점을 찾지 못했습니다.')
     return { ...loaded, source: source.replace(marker, `${marker}\n  globalThis.__mnpReadMetrics?.reference(map)`) }

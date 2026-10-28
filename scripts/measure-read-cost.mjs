@@ -21,7 +21,7 @@ const result = { startedAt: new Date().toISOString(), baselineSha: '2e8f969ecd7a
     memoryBytes: os.totalmem(), node: process.version, nodeExecutable: process.execPath,
     cpuBasis: '프로세스 user/system CPU 밀리초, 코어 하나가 100%인 누적 시간',
     bytesBasis: '응답 본문 UTF-8 bytes; 헤더·TCP 프레이밍 제외',
-    background: '양 버전의 반복 타이머 중단, 모의 AionUi, 실제 AI·Runner 없음',
+    background: '양 버전의 반복 타이머와 listen 뒤 귀속·lease 복구 중단, 시작 migration은 유지, 모의 AionUi, 실제 AI·Runner 없음',
     instrumentation: '격리 --import에서 FS read·JSON parse·structuredClone bytes 계수 및 10ms RSS 표본; Ref 함수 진입 계수. 동일 계측의 CPU 비용 포함.',
     samples: { cold: 1, warmup: 5, warm: 60 }, commentPage: { cardId: 'card-1', offset: 1, limit: 2, order: 'desc', includeDetail: false },
   }, sourceFiles: {}, fixtures: {}, cells: [] }

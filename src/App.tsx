@@ -7407,8 +7407,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                   <button
                     type="button"
                     className="dooray-mentions-trigger"
-                    aria-label="Dooray 참조"
-                    title="Dooray 참조 — 나를 멘션한 업무와 댓글"
+                    aria-label="Dooray 업무 대응"
+                    title="Dooray 업무 대응 — 나를 멘션한 내용과 담당·참조 업무를 확인하고, 필요한 대응을 진행합니다."
                     onClick={(event) => {
                       setDoorayMentionsOpen(true)
                       event.currentTarget.blur()

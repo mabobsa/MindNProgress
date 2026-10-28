@@ -133,7 +133,7 @@ async function mentionRequest<T>(clientId: string, pathname: string, init?: Requ
     },
   })
   const body = await response.json().catch(() => ({})) as T & { error?: string }
-  if (!response.ok) throw new Error(body.error ?? 'Dooray 참조 요청을 처리하지 못했습니다.')
+  if (!response.ok) throw new Error(body.error ?? 'Dooray 업무 대응 요청을 처리하지 못했습니다.')
   return body
 }
 
@@ -543,14 +543,14 @@ export function DoorayMentionsPanel({ clientId, userId, aiRequestOpen = false, o
         className="dooray-mentions-panel"
         role="dialog"
         aria-modal="true"
-        aria-label="Dooray 참조"
+        aria-label="Dooray 업무 대응"
         aria-busy={loading}
         onClick={(event) => event.stopPropagation()}
       >
         <header className="dooray-mentions-header">
           <div>
-            <h2>Dooray 참조</h2>
-            <p>기간 안에 나를 멘션했거나 내가 담당·참조로 걸린 업무 활동을 모읍니다.</p>
+            <h2>Dooray 업무 대응</h2>
+            <p>나를 멘션한 내용과 담당·참조 업무를 확인하고, 필요한 대응을 진행합니다.</p>
           </div>
           <div className="dooray-mentions-header-actions">
             <button type="button" className="dooray-mentions-ai-settings" aria-expanded={aiSettingsOpen} aria-controls="dooray-response-settings"

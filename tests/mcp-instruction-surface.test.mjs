@@ -58,7 +58,11 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
       const original = baselineDescriptions.get(tool.name)
       if (!original) continue // 배열로 등록되는 복구 도구는 아래 의미 검사에서 검증한다.
       const currentDescription = storageWriteTools.has(tool.name) ? tool.description.split(' requestId를 보존해 재전송하세요.')[0] : tool.description
-      assert.equal(currentDescription, original.slice(1, -1), `${tool.name}의 기준선 상세 설명이 달라졌습니다.`)
+      // 과거 기준선은 보존하고 사용자가 변경한 화면 명칭만 현재 이름으로 대조한다.
+      const expectedDescription = tool.name === 'mindnprogress_get_dooray_response_approval'
+        ? original.slice(1, -1).replace(/^Dooray 참조에서/, 'Dooray 업무 대응에서')
+        : original.slice(1, -1)
+      assert.equal(currentDescription, expectedDescription, `${tool.name}의 기준선 상세 설명이 달라졌습니다.`)
     }
 
     const descriptions = new Map(tools.map(({ name, description }) => [name, description]))

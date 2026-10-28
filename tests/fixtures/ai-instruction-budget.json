@@ -7,9 +7,9 @@
   "serverInstructionsChars": 922,
   "serverInstructionsSha256": "8b9f506f7079ef160331fdfecdc0cd3ab77d9a4814c087c97389c43a6da74844",
   "toolNameChars": 2022,
-  "toolDescriptionChars": 17133,
+  "toolDescriptionChars": 17136,
   "inputSchemaJsonChars": 54298,
-  "rawRegisteredSurfaceChars": 74375,
+  "rawRegisteredSurfaceChars": 74378,
   "rawRegisteredSurfaceMeaning": "initialize instructions와 도구 이름·설명·inputSchema JSON 문자열 길이의 합계입니다. 전송 JSON이나 호스트 총주입량이 아닙니다.",
   "hostMetadata": {
     "measured": false,
@@ -20,7 +20,7 @@
     "perToolWrapperChars": 35,
     "note": "과거 캡처·상수이며 이번 전체 주입량 실측값이 아닙니다."
   },
-  "dynamicTotalChars": 41982,
+  "dynamicTotalChars": 41985,
   "maxDynamicChars": 4804,
   "repetitionCounts": {
     "contextBootstrap": 12,
@@ -139,8 +139,8 @@
     },
     {
       "name": "dooray-proposal",
-      "chars": 2351,
-      "sha256": "063c8a6d59e88cc9c4b68aa2fb43255d2abf0ffe25d98cd85da26d714b179748"
+      "chars": 2354,
+      "sha256": "8b344fabe2d1d8d67684e02f0a12bae3bc54e9f3a79f71fde2048f2ba2477ad1"
     },
     {
       "name": "dooray-approval",

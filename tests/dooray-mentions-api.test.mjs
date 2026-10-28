@@ -22,7 +22,7 @@ async function waitForServer(baseUrl, timeoutMs = 15_000) {
     }
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
-  throw new Error('Dooray 참조 검증 서버가 제한 시간 안에 시작되지 않았습니다.')
+  throw new Error('Dooray 업무 대응 검증 서버가 제한 시간 안에 시작되지 않았습니다.')
 }
 
 function createUpstream(state) {
@@ -62,10 +62,10 @@ async function waitForScan(baseUrl, headers, timeoutMs = 20_000) {
     if (body.scan.status !== 'running') return body
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
-  throw new Error('Dooray 참조 수집이 제한 시간 안에 끝나지 않았습니다.')
+  throw new Error('Dooray 업무 대응 수집이 제한 시간 안에 끝나지 않았습니다.')
 }
 
-test('기간을 지정해 Dooray 참조를 수집하고 확인 상태를 저장한다', { timeout: 60_000 }, async () => {
+test('기간을 지정해 Dooray 업무 대응 항목을 수집하고 확인 상태를 저장한다', { timeout: 60_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mindnprogress-dooray-mentions-'))
   const state = {
     paths: [],

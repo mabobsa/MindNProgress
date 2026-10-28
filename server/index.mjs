@@ -6850,7 +6850,7 @@ async function runDoorayMentionScan(userId, options) {
   } catch (error) {
     updateDoorayMentionScan(userId, {
       status: 'failed',
-      error: error instanceof DoorayTaskError ? error.message : 'Dooray 참조를 수집하지 못했습니다.',
+      error: error instanceof DoorayTaskError ? error.message : 'Dooray 업무 대응 항목을 수집하지 못했습니다.',
       finishedAt: new Date().toISOString(),
     })
     if (!(error instanceof DoorayTaskError)) console.error('[dooray-mentions] 수집 실패', error)
@@ -9272,7 +9272,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     if (request.method === 'GET' && url.pathname === '/api/integrations/dooray/mentions') {
       const user = requireSignedInUser(request, response)
       if (!user) return
-      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 참조는 계정 사용자만 확인할 수 있습니다.' })
+      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 업무 대응은 계정 사용자만 확인할 수 있습니다.' })
       const state = await readDoorayMentionState(user.id)
       return sendJson(response, 200, doorayMentionResponse(state, user.id))
     }
@@ -9457,7 +9457,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     if (url.pathname === '/api/integrations/dooray/mentions/projects') {
       const user = requireSignedInUser(request, response)
       if (!user) return
-      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 참조는 계정 사용자만 확인할 수 있습니다.' })
+      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 업무 대응은 계정 사용자만 확인할 수 있습니다.' })
 
       if (request.method === 'GET') {
         try {
@@ -9502,7 +9502,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     if (request.method === 'PUT' && url.pathname === '/api/integrations/dooray/mentions/preferences') {
       const user = requireSignedInUser(request, response)
       if (!user) return
-      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 참조는 계정 사용자만 확인할 수 있습니다.' })
+      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 업무 대응은 계정 사용자만 확인할 수 있습니다.' })
       const preferences = normalizeDoorayMentionPreferences(await readJsonBody(request))
       if (!preferences) return sendJson(response, 400, { error: '저장할 조회 조건이 올바르지 않습니다.' })
       await updateDoorayMentionState(user.id, (state) => ({ ...state, preferences }))
@@ -9512,7 +9512,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     if (request.method === 'POST' && url.pathname === '/api/integrations/dooray/mentions/scan') {
       const user = requireSignedInUser(request, response)
       if (!user) return
-      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 참조는 계정 사용자만 확인할 수 있습니다.' })
+      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 업무 대응은 계정 사용자만 확인할 수 있습니다.' })
       if (doorayMentionScanState(user.id).status === 'running') {
         return sendJson(response, 409, { error: '이미 수집이 진행 중입니다.', code: 'SCAN_RUNNING' })
       }
@@ -9569,7 +9569,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     if (request.method === 'POST' && url.pathname === '/api/integrations/dooray/mentions/acknowledgements') {
       const user = requireSignedInUser(request, response)
       if (!user) return
-      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 참조는 계정 사용자만 확인할 수 있습니다.' })
+      if (isPublicViewer(user)) return sendJson(response, 403, { error: 'Dooray 업무 대응은 계정 사용자만 확인할 수 있습니다.' })
       const body = await readJsonBody(request)
       const keys = Array.isArray(body.keys)
         ? [...new Set(body.keys.map((value) => String(value ?? '').trim()).filter(Boolean))]

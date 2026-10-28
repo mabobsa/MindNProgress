@@ -156,7 +156,7 @@ for (const restart of [false, true]) test(`실제 App 승인 팝업은 생성된
     await send('Page.navigate',{url:base+'/mindmap/map-bench-0/card-1'})
     await until(()=>evaluate('!!document.querySelector(".description-field textarea")'),'실제 App 준비')
     await evaluate('sessionStorage.setItem('+JSON.stringify('mindnprogress-ai-launch:'+scope)+','+JSON.stringify(JSON.stringify(pendingValue))+')')
-    await evaluate(`document.querySelector('[aria-label="Dooray 참조"]').click()`)
+    await evaluate(`document.querySelector('[aria-label="Dooray 업무 대응"]').click()`)
     await until(()=>evaluate('document.querySelector(".dooray-response-toolbar button")?.textContent.includes("1건")'),'합성 승인 기록 조회')
     await evaluate('document.querySelector(".dooray-response-toolbar button").click()')
     await until(()=>evaluate('[...document.querySelectorAll("button")].some(b=>b.textContent==="승인한 제안으로 AI 대화 시작")'),'승인 시작 버튼')

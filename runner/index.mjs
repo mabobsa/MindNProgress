@@ -25,6 +25,7 @@ import {
   runnerResultUrl,
 } from './lib/runnerConfig.mjs'
 import { createRunnerLoop } from './lib/runnerLoop.mjs'
+import { MOBILE_PUSH_PATH, sendLocalMobilePush } from '../server/lib/mobilePush.mjs'
 import { createAionUiCaller } from './lib/aionUiClient.mjs'
 import { startCompletionRelay } from './lib/completionRelay.mjs'
 import { createWorkspaceAgent, workspaceRuntimeIdle } from './lib/workspaceAgent.mjs'
@@ -114,6 +115,9 @@ const workspaceAgent = await createWorkspaceAgent({ registryFile: process.env.MN
 
 async function callRunner(request) {
   try {
+    if (request.pathname === MOBILE_PUSH_PATH && request.method === 'POST') {
+      return { ok: true, data: await sendLocalMobilePush(request.body) }
+    }
     if (request.pathname === '/mnp/workspaces' && request.method === 'POST') {
       if (!workspaceAgent) throw Object.assign(new Error('원격 workspace agent 설정이 없습니다.'), { code: 'REMOTE_WORKSPACE_AGENT_UNAVAILABLE' })
       return { ok: true, data: await workspaceAgent.execute(request.body) }

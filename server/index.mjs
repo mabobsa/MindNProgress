@@ -222,6 +222,7 @@ import {
   verifyMachineToken,
 } from './lib/subMachines.mjs'
 import { MachineOperationError, MachineOperationQueue } from './lib/machineOperations.mjs'
+import { MOBILE_PUSH_PATH, sendMobilePush } from './lib/mobilePush.mjs'
 import { authorizeRunnerMcpRequest } from './lib/runnerMcpAccess.mjs'
 import {
   MachinePairingError,
@@ -12515,6 +12516,24 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
 
       return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
+    }
+
+    if (url.pathname === '/api/integrations/aionui/push-notifications') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (request.method !== 'POST') return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
+      try {
+        const result = await sendMobilePush({ user, body: await readJsonBody(request), registry: machineRegistry,
+          originUrl: publicBaseUrl,
+          sendRemote: (machineId, body) => machineOperationQueue.enqueue(machineId, {
+            method: 'POST', pathname: MOBILE_PUSH_PATH, body, timeoutMs: 20_000,
+          }).completion,
+        })
+        return sendJson(response, 202, result)
+      } catch (error) {
+        return sendJson(response, error.status ?? 503, { error: '푸시 알림을 접수하지 못했습니다.',
+          code: error.code ?? error.reasonCode ?? 'PUSH_FAILED' })
+      }
     }
 
     if (url.pathname === '/api/integrations/aionui/dialog-preferences') {

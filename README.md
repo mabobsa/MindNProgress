@@ -636,3 +636,5 @@ npm run usage:mcp -- --json # 집계 JSON 출력
 ## 라이선스
 
 이 프로젝트는 [MIT License](LICENSE)로 배포됩니다.
+
+휴대폰 푸시 연동: [Aion Android 알리미 푸시 발송 API](docs/mobile-push.md)

@@ -1,5 +1,6 @@
 import { createServer } from 'node:http'
 import { createAiConversationRemoval, conversationRemovalError } from './lib/aiConversationRemoval.mjs'
+import { createAiConversationConnection, conversationConnectionError } from './lib/aiConversationConnection.mjs'
 import { createDocumentReadStore } from './lib/documentReadStore.mjs'
 import { mapFields, referenceTargets, reviewMap, commentProjection, commentPage } from './lib/readProjections.mjs'
 import { buildDocumentView, DOCUMENT_VIEWS } from '../mcp/documentViews.mjs'
@@ -5724,8 +5725,88 @@ function fetchAiConversationRuntimeSnapshot(machineId = machineRegistry.mainMach
   return request
 }
 
+const aiConversationConnection = createAiConversationConnection({
+  async readContext(_user, mapId, cardId) {
+    documentReconstruction.assertWritable(mapId)
+    const map = await readMap(mapId)
+    const card = map?.nodes.find((node) => node.id === cardId)
+    if (!map || map.trashedAt || !card) throw conversationConnectionError('카드를 찾을 수 없습니다.', 404)
+    if (map.archivedAt || card.data.kind === 'image' || card.data.reference) {
+      throw conversationConnectionError('편집 가능한 원본 카드에만 대화를 연결할 수 있습니다.')
+    }
+    return { map, card }
+  },
+  machinesForUser: (user) => machineRegistry.machines.filter((machine) => machineAccessibleByUser(user, machine.machineId))
+    .map((machine) => ({ machineId: machine.machineId, label: machine.label,
+      online: machine.machineId === machineRegistry.mainMachineId
+        || Boolean(machine.lastSeenAt && Date.now() - Date.parse(machine.lastSeenAt) <= runnerOnlineWithinMs) })),
+  async findBinding(conversationId, machineId, mapId, cardId) {
+    const origin = aiConversationOrigins.get(conversationId)
+    if (origin && (origin.mapId !== mapId || origin.cardId !== cardId || origin.homeMachineId !== machineId)) {
+      const source = await readMap(origin.mapId)
+      return { mapId: origin.mapId, cardId: origin.cardId, documentTitle: source?.title ?? origin.mapId,
+        cardTitle: source?.nodes.find((node) => node.id === origin.cardId)?.data.label ?? origin.cardId,
+        homeMachineLabel: machineLabel(origin.homeMachineId) }
+    }
+    // 구형 연결에는 origin이 없을 수 있다. 문서 본문 대신 필요한 연결 정보만 읽는다.
+    const documents = await listMaps({ includeArchived: true, includeTrashed: true, includePending: true })
+    for (const { id } of documents) {
+      const other = await readMapProjection(id, {}, ({ map }) => ({ id: map.id, title: map.title,
+        nodes: map.nodes.filter((node) => !node.data.reference && isAiConversationLinked(node.data, conversationId))
+          .map((node) => ({ id: node.id, label: node.data.label, links: aiConversationLinksFromData(node.data) })) }))
+      for (const node of other?.nodes ?? []) {
+        const sourceMachineId = conversationHomeMachineId(conversationId, node.links.find((item) => item.conversationId === conversationId))
+        if (other.id !== mapId || node.id !== cardId || sourceMachineId !== machineId) {
+          return { mapId: other.id, cardId: node.id, documentTitle: other.title, cardTitle: node.label,
+            homeMachineLabel: machineLabel(sourceMachineId) }
+        }
+      }
+    }
+    return null
+  },
+  call: fetchAionUiOn,
+  isRemoving: (id) => aiConversationRemoval.isRemoving(id),
+  withMutation: (mapId, action) => withAiResources([mapId], () => storageChanges.run(async () => {
+    const stores = [aiConversationAttributions, aiConversationOrigins]
+    const snapshots = stores.map((store) => structuredClone([...store]))
+    storageChanges.onRollback(() => stores.forEach((store, index) => { store.clear(); for (const [key, value] of snapshots[index]) store.set(key, value) }))
+    return action()
+  })),
+  async link({ map, card }, conversation, homeMachineId, user) {
+    const conversationId = conversation.id
+    const existing = aiConversationLinksFromData(card.data).find((item) => item.conversationId === conversationId)
+    const selection = aiConversationLinkFromAionUiConversation(conversation)
+    const conversationLink = normalizeAiConversationLink({ ...existing, ...selection, homeMachineId,
+      workspacePoolId: workspacePoolManager.poolForWorkspace(selection?.workspace)?.poolId ?? null,
+      startedBy: existing?.startedBy ?? { id: user.id, label: user.name },
+      startedAt: normalizedIsoDate(conversation.created_at, existing?.startedAt ?? null),
+      linkedAt: existing?.linkedAt ?? new Date().toISOString() })
+    const updatedMap = await saveMap(map.id, {
+      nodes: map.nodes.map((node) => node.id === card.id ? { ...node, data: { ...node.data,
+        aiConversationId: conversationId, aiConversations: appendAiConversationLink(node.data, conversationLink) } } : node),
+      edges: map.edges,
+    }, user, map.title, map.color, 'content', { expectedVersion: map.version })
+    rememberAiConversationOrigin({ ...conversationLink, mapId: map.id, cardId: card.id,
+      startedBy: conversationLink.startedBy?.id ?? user.id })
+    const key = conversationAttributionKey(map.id, card.id)
+    if (conversationLink.agent?.id && conversationLink.model?.id) {
+      aiConversationAttributions.set(key, { mapId: map.id, cardId: card.id, conversationId, homeMachineId,
+        agentId: conversationLink.agent.id, agentName: conversationLink.agent.label,
+        modelId: conversationLink.model.id, modelName: conversationLink.model.label,
+        authorName: formatAiAuthorName(conversationLink.agent.label, conversationLink.model.label),
+        providerId: conversationLink.providerId ?? null, startedBy: conversationLink.startedBy?.id ?? user.id,
+        linkedAt: conversationLink.linkedAt, refreshedAt: new Date().toISOString() })
+    } else aiConversationAttributions.delete(key)
+    // 하나가 실패한 뒤 다른 쓰기가 롤백 범위를 벗어나 완료되지 않도록 순서대로 준비한다.
+    await persistAiConversationOrigins()
+    await persistAiConversationAttributions()
+    return { map: updatedMap, card: updatedMap.nodes.find((node) => node.id === card.id), conversation: conversationLink }
+  },
+})
+
 const aiConversationRemoval = createAiConversationRemoval({
   async readContext(user, mapId, cardId, conversationId) {
+    if (aiConversationConnection.isLinking(conversationId)) throw conversationRemovalError('이 대화의 연결을 처리 중입니다. 잠시 후 다시 시도해 주세요.')
     documentReconstruction.assertWritable(mapId)
     const map = await readMap(mapId)
     const card = map?.nodes.find((node) => node.id === cardId)
@@ -8175,6 +8256,8 @@ async function requestStoragePlan(request, url, body) {
     || url.pathname.startsWith('/api/machines/') || url.pathname.startsWith('/api/ai-workspaces')) return { keys: [] }
   // 대화 보관은 외부 확인 뒤 withAiResources에서 최신 연결을 재검증·확정한다.
   if (request.method === 'DELETE' && /^\/api\/maps\/[^/]+\/cards\/[^/]+\/ai-conversations\/[^/]+$/.test(url.pathname)) return { keys: [] }
+  if ((request.method === 'GET' || request.method === 'POST')
+    && /^\/api\/maps\/[^/]+\/cards\/[^/]+\/ai-conversations\/(lookup|connect)$/.test(url.pathname)) return { keys: [] }
   const matched = url.pathname.match(/^\/api\/maps\/([^/]+)(\/.*)?$/)
   const mapId = matched ? decodeURIComponent(matched[1]) : null
   const route = mapId && isValidMapId(mapId) && !['trash', 'archive', 'layout', 'order'].includes(mapId)
@@ -11950,6 +12033,34 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         }
         console.error('[AionUi conversation open URL]', error)
         return sendJson(response, 503, { error: 'AionUi 대화 주소를 만들지 못했습니다.' })
+      }
+    }
+
+    const cardAiConversationConnectionRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/cards\/([^/]+)\/ai-conversations\/(lookup|connect)$/)
+    if (cardAiConversationConnectionRoute && ((request.method === 'GET' && cardAiConversationConnectionRoute[3] === 'lookup')
+      || (request.method === 'POST' && cardAiConversationConnectionRoute[3] === 'connect'))) {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 AI 대화를 연결할 수 있습니다.' })
+      const mapId = decodeURIComponent(cardAiConversationConnectionRoute[1])
+      const cardId = decodeURIComponent(cardAiConversationConnectionRoute[2])
+      if (!isValidMapId(mapId) || !cardId || cardId.length > 120) return sendJson(response, 400, { error: '문서 또는 카드 ID가 올바르지 않습니다.' })
+      response.setHeader('Cache-Control', 'no-store')
+      try {
+        if (request.method === 'GET') return sendJson(response, 200, await aiConversationConnection.preview(user, mapId, cardId, String(url.searchParams.get('conversationId') ?? '').trim()))
+        const body = await readJsonBody(request)
+        const result = await aiConversationConnection.connect(user, mapId, cardId, body.previewToken)
+        broadcastMapChange(request, mapId, 'content', user)
+        broadcastEvent({ type: 'ai-conversation-linked', mapId, nodeId: cardId,
+          conversationId: result.conversation.conversationId, conversation: result.conversation,
+          sourceClientId: null, updatedAt: result.map.updatedAt, updatedBy: publicUser(user) })
+        return sendJson(response, 200, result)
+      } catch (error) {
+        console.warn('[AI conversation connection failed]', { mapId, cardId, code: error.code, status: error.status })
+        return sendJson(response, error.conversationConnectionError ? error.status : (error.status === 409 ? 409 : 502), {
+          error: error.conversationConnectionError ? error.message : '대화를 연결하지 못했습니다. 조회와 연결을 다시 시도해 주세요. 보관함 복원이 먼저 완료되었을 수 있습니다.',
+          code: error.code ?? 'AI_CONVERSATION_CONNECTION_FAILED',
+        })
       }
     }
 

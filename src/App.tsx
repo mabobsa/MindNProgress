@@ -42,6 +42,7 @@ import { AiConversationDialog } from './components/AiConversationDialog'
 import { WorkspaceSettingsDialog } from './components/WorkspaceSettingsDialog'
 import { AiDelegationRecovery, type AiDelegationPreview } from './components/AiDelegationRecovery'
 import { AiConversationPickerDialog } from './components/AiConversationPickerDialog'
+import { AiConversationLinkDialog, type AiConversationLookup } from './components/AiConversationLinkDialog'
 import { AiConversationActivityIndicator } from './components/AiConversationRuntimeBadge'
 import { DailyBackupPreviewDialog, type DailyBackupPreview } from './components/DailyBackupPreviewDialog'
 import { DoorayMentionsPanel } from './components/DoorayMentionsPanel'
@@ -2411,6 +2412,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const [aiDialogOpen, setAiDialogOpen] = useState(false)
   const [aiConversationLaunch, setAiConversationLaunch] = useState<AiConversationExplicitTarget & { initialRequest: string } | null>(null)
   const [aiConversationPicker, setAiConversationPicker] = useState<{ mapId: string; cardId: string; cardTitle: string; launch?: GroupAiTarget } | null>(null)
+  const [aiConversationLinkTarget, setAiConversationLinkTarget] = useState<{ mapId: string; cardId: string; cardTitle: string } | null>(null)
   const [documentAiConversations, setDocumentAiConversations] = useState<{ mapId: string; title: string } | null>(null)
   const [aionUiWebNavigation, setAionUiWebNavigation] = useState(() => ({
     baseUrl: defaultAionUiWebBaseUrl(),
@@ -4560,13 +4562,20 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     setDocumentContextMenu(null)
     setAiConversationContextMenu({
       x: Math.min(event.clientX, window.innerWidth - 230),
-      y: Math.min(event.clientY, window.innerHeight - 110),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 175)),
     })
   }
 
   const startNewAiConversation = () => {
     setAiConversationContextMenu(null)
     setAiDialogOpen(true)
+  }
+
+  const showAiConversationLinkDialog = () => {
+    setAiConversationContextMenu(null)
+    if (!selectedNode || documentArchived) return
+    setAiConversationLinkTarget({ mapId: selectedCommentMapId,
+      cardId: selectedCommentNodeId ?? selectedNode.id, cardTitle: selectedNode.data.label })
   }
 
   const showAiEditorOnlyAlert = () => {
@@ -8426,7 +8435,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                         else showAiEditorOnlyAlert()
                       }}
                       onContextMenu={mode === 'editor' ? openAiConversationContextMenu : undefined}
-                      title={mode === 'editor' ? '좌클릭: 기존 대화 열기 · 우클릭: 새 대화 시작' : '편집자만 사용 가능'}
+                      title={mode === 'editor' ? '좌클릭: 기존 대화 열기 · 우클릭: 새 대화 시작 또는 연결' : '편집자만 사용 가능'}
                     >
                       <Icon name="sparkles" size={15} /><span>AI 대화 열기</span>
                       {aiConversationLinksFromData(selectedNode.data).length > 1 && <b>{aiConversationLinksFromData(selectedNode.data).length}</b>}
@@ -8438,7 +8447,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                         if (mode === 'editor') setAiDialogOpen(true)
                         else showAiEditorOnlyAlert()
                       }}
-                      title={mode === 'editor' ? 'AI 대화 시작' : '편집자만 사용 가능'}
+                      onContextMenu={mode === 'editor' ? openAiConversationContextMenu : undefined}
+                      title={mode === 'editor' ? '좌클릭: AI 대화 시작 · 우클릭: 기존 대화 연결' : '편집자만 사용 가능'}
                     >
                       <Icon name="sparkles" size={15} /><span>AI 대화 시작</span>
                     </button>
@@ -9212,6 +9222,23 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           onClose={closeAiConversationDialog}
         />
       )}
+      {aiConversationLinkTarget && mode === 'editor' && (
+        <AiConversationLinkDialog
+          key={`${aiConversationLinkTarget.mapId}:${aiConversationLinkTarget.cardId}`}
+          cardTitle={aiConversationLinkTarget.cardTitle}
+          onLookup={(conversationId, signal) => apiRequest<AiConversationLookup>(
+            `/api/maps/${encodeURIComponent(aiConversationLinkTarget.mapId)}/cards/${encodeURIComponent(aiConversationLinkTarget.cardId)}/ai-conversations/lookup?conversationId=${encodeURIComponent(conversationId)}`, { signal })}
+          onConnect={async (previewToken) => {
+            const target = aiConversationLinkTarget
+            const result = await apiRequest<MapDocumentResponse>(
+              `/api/maps/${encodeURIComponent(target.mapId)}/cards/${encodeURIComponent(target.cardId)}/ai-conversations/connect`, {
+                method: 'POST', body: JSON.stringify({ previewToken }),
+              })
+            reconcileRemoteMap(result.map)
+          }}
+          onClose={() => setAiConversationLinkTarget(null)}
+        />
+      )}
       {aiConversationPicker && (
         <AiConversationPickerDialog
           key={`${aiConversationPicker.mapId}:${aiConversationPicker.cardId}`}
@@ -9409,6 +9436,10 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           <button role="menuitem" onClick={startNewAiConversation}>
             <span className="context-icon"><Icon name="sparkles" size={15} /></span>
             <span><strong>AI 대화를 새로 시작</strong><small>현재 카드를 기준으로 옵션 선택</small></span>
+          </button>
+          <button role="menuitem" onClick={showAiConversationLinkDialog} disabled={documentArchived}>
+            <span className="context-icon"><Icon name="link" size={15} /></span>
+            <span><strong>AI 대화 연결</strong><small>대화 ID로 조회한 뒤 현재 카드에 연결</small></span>
           </button>
         </div>
       )}

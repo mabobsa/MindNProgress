@@ -11,6 +11,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from '/src/App.tsx';
 import { applyMapContentPatch } from '/src/utils/mapContentPatch.mjs';
+import { tryWriteMapCache, MAP_CACHE_RETENTION_MS } from '/src/utils/mapLocalCache.mjs';
 import '/src/index.css';
 import '/src/dark.css';
 const user = {id:'backup-test',name:'백업 경고 검증',email:'backup@example.test',role:'editor'};
@@ -18,11 +19,12 @@ const makeMap = id => ({id,title:id,color:'violet',version:1,updatedAt:'2026-10-
   nodes:[{id:'root',type:'mind',position:{x:100,y:100},data:{label:id,kind:'root',description:'원본 설명',sharedKnowledge:'',status:'planned',progress:0}}],edges:[]});
 const maps = [makeMap('map-a'),makeMap('map-b')];
 const summary = map => ({...map,nodeCount:1,rootProgress:0,rootStatus:'planned',waitingCount:0});
-window.failLocalBackup = true;
+window.failLocalBackup = sessionStorage.getItem('backup-recovery-mode') !== '1';
 window.failServerSave = false;
 window.backupAttempts = 0;
 window.saveAttempts = 0;
 window.fixtureLoadId = crypto.randomUUID();
+window.cacheTools = { retention:MAP_CACHE_RETENTION_MS, write:(id,content,synced,now)=>tryWriteMapCache(localStorage,id,content,{serverMap:synced?{id,version:1,...content}:null,now}) };
 const originalSetItem = Storage.prototype.setItem;
 Storage.prototype.setItem = function(key,value) {
   if (key.startsWith('mindnprogress-map-cache-v1:')) {
@@ -43,6 +45,7 @@ window.fetch = async (url,init={}) => {
     if (window.failServerSave) {status=503;body={error:'검증용 서버 저장 실패'};}
     else {Object.assign(target,applyMapContentPatch(target,JSON.parse(init.body).patch));target.version++;body={map:target,summary:summary(target)};}
   }
+  else if (pathname==='/api/maps/legacy-reference') body={map:window.legacyReferenceRemote};
   else if (pathname==='/api/auth/me') body={user};
   else if (pathname==='/api/maps') body={maps:maps.map(summary),documentLayout:{version:1,items:maps.map(map=>({type:'map',id:map.id})),groups:[]}};
   else if (['/api/maps/archive','/api/maps/trash'].includes(pathname)) body={maps:[]};
@@ -228,6 +231,36 @@ test('휴대폰의 로컬 백업 단독 경고는 숨기고 서버 실패 경고
     await evaluate('window.failServerSave=false')
     await edit('휴대폰 서버만 복구되면 단독 경고는 다시 숨김'); await visible(false)
     console.log('[백업 경고 검증] 휴대폰 서버 실패 경고 유지·복구 후 자동 숨김')
+
+    await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+    await evaluate(`(() => {
+      window.failLocalBackup=false;window.failServerSave=false;
+      sessionStorage.setItem('backup-recovery-mode','1');
+      for(const key of Object.keys(localStorage))if(key.startsWith('mindnprogress-map-cache-v1:'))localStorage.removeItem(key);
+      const data={nodes:[{id:'root',data:{label:'별도 백업',description:'보존할 내용'}}],edges:[]};
+      const old=Date.now()-window.cacheTools.retention-1000;
+      window.cacheTools.write('expired-synced',data,true,old);
+      window.cacheTools.write('offline-pending',data,false,old);
+      const legacy={nodes:[{id:'ref',position:{x:0,y:0},data:{reference:{mapId:'source',nodeId:'source'},label:'구형 Ref',description:'x'.repeat(5*1024*1024-8192)}}],edges:[]};
+      window.legacyReferenceRemote={...legacy,nodes:legacy.nodes.map(n=>({...n,data:{...n.data,label:'새 원본 제목',description:'새 원본 본문'}}))};
+      localStorage.setItem('mindnprogress-map-cache-v1:legacy-reference',JSON.stringify(legacy));
+    })()`)
+    assert.ok(await evaluate(`Object.keys(localStorage).reduce((n,k)=>n+k.length+localStorage.getItem(k).length,0) > 5_200_000`), '실제 Chrome 저장 공간을 가득 채운다.')
+    const nextMap = await evaluate(`location.pathname.includes('/map-a')?'map-b':'map-a'`)
+    await evaluate(`document.querySelector('.map-item[data-library-menu-id="${nextMap}"]').click()`)
+    await until(() => evaluate(`location.pathname.startsWith('/mindmap/${nextMap}') && Boolean(document.querySelector('.description-field textarea'))`), '복구 검증 문서 열기')
+    assert.equal(await evaluate(`localStorage.getItem('mindnprogress-map-cache-v1:expired-synced')`), null, '7일 지난 서버 저장 백업 자동 삭제')
+    await edit('용량 복구 검증 '.repeat(2000))
+    await until(() => evaluate(`localStorage.getItem('mindnprogress-map-cache-v1:legacy-reference')===null`), 'Ref 표시값 차이가 있는 구형 백업 회수')
+    await until(() => evaluate(`Boolean(JSON.parse(localStorage.getItem('mindnprogress-map-cache-v1:${nextMap}'))?.localBackup?.serverVersion)`), '실제 서버 저장 응답 이후 백업 확인 기록')
+    await visible(false)
+    assert.notEqual(await evaluate(`localStorage.getItem('mindnprogress-map-cache-v1:offline-pending')`), null, '7일 지난 미저장 백업은 보존')
+    const recoveredLoadId = await evaluate('window.fixtureLoadId')
+    await send('Page.reload')
+    await until(() => evaluate(`window.fixtureLoadId && window.fixtureLoadId!==${JSON.stringify(recoveredLoadId)} && window.backupAttempts>0`), '복구 이후 새로고침')
+    await settle(); await visible(false)
+    assert.notEqual(await evaluate(`localStorage.getItem('mindnprogress-map-cache-v1:offline-pending')`), null)
+    console.log('[백업 경고 검증] 실제 용량 부족에서 Ref 백업 회수·7일 자동 삭제·미저장 보존·새로고침 복구')
     assert.deepEqual(errors, [], '처리되지 않은 브라우저 예외 없음')
   } catch (error) {
     console.error('[백업 경고 검증 실패]', error)

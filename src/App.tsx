@@ -72,7 +72,8 @@ import { aiConversationLinksFromData } from './utils/aiConversations.mjs'
 import { revisionReasonLabel, shouldRefreshMapContentForAction } from './utils/mapChangeMetadata.mjs'
 import { mapContentsEqual, reconcileRemoteMapContent } from './utils/mapDocumentSync.mjs'
 import { createMapContentPatch } from './utils/mapContentPatch.mjs'
-import { mapCacheKey, reclaimSynchronizedMapCaches, tryWriteMapCache } from './utils/mapLocalCache.mjs'
+import { mapCacheKey, pruneExpiredMapCaches, reclaimSynchronizedMapCaches, tryWriteMapCache } from './utils/mapLocalCache.mjs'
+import { REFERENCE_MANAGED_DATA_KEYS } from './utils/referenceNodeFields.mjs'
 import { createLocalBackupNotice, localBackupNoticeReducer } from './utils/localBackupNotice.mjs'
 import { mergeMapContent } from './utils/mergeMapContent.mjs'
 import { MINDMAP_GRID_SIZE, snapMindMapPosition } from './utils/mindMapGrid.mjs'
@@ -892,27 +893,6 @@ function mergeResolvedReferenceNodes(currentNodes: MindMapNode[], resolvedNodes:
   })
   return changed ? nextNodes : currentNodes
 }
-
-const REFERENCE_MANAGED_DATA_KEYS = new Set<keyof MindNodeData>([
-  'label',
-  'description',
-  'sharedKnowledge',
-  'sharedKnowledgeUpdatedAt',
-  'sharedKnowledgeUpdatedBy',
-  'sharedKnowledgeReview',
-  'progress',
-  'status',
-  'taskUrl',
-  'externalLink',
-  'webLink',
-  'aiConversationId',
-  'aiConversations',
-  'isWork',
-  'assigneeId',
-  'dueDate',
-  'checklist',
-  'waitingItems',
-])
 
 function editableReferencePatch(patch: Partial<MindNodeData>) {
   const editablePatch = { ...patch } as Record<string, unknown>
@@ -2658,7 +2638,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const suppressTouchContextMenu = useRef<{ nodeId: string; until: number } | null>(null)
   const suppressMobileInspectorSelection = useRef<string | null>(null)
   const serverBaseline = useRef<MapDocument | null>(null)
-  const pendingMapCacheWrite = useRef<{ mapId: string; content: Pick<MapDocument, 'nodes' | 'edges'> } | null>(null)
+  const pendingMapCacheWrite = useRef<{ mapId: string; content: Pick<MapDocument, 'nodes' | 'edges'>; serverMap: MapDocument | null } | null>(null)
   const mapCacheRecovery = useRef<Promise<void> | null>(null)
   const pastedNodeNotificationSuppressions = useRef<Map<string, Set<string>>>(new Map())
   const cursorSendAt = useRef(0)
@@ -2690,6 +2670,16 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     updateLocalBackupNotice({ type: 'open', mapId: activeMapId })
   }, [activeMapId, mapReloadToken, selectedGroupId])
 
+  useEffect(() => {
+    const prune = () => {
+      try { pruneExpiredMapCaches(window.localStorage, { keepMapId: activeMapIdRef.current }) }
+      catch { /* 저장소 오류는 실제 백업 쓰기 시점에 안내한다. */ }
+    }
+    prune()
+    const timer = window.setInterval(prune, 5 * 60 * 1000)
+    return () => window.clearInterval(timer)
+  }, [activeMapId])
+
   const saveMapCache = useCallback((mapId: string, content: Pick<MapDocument, 'nodes' | 'edges'>) => {
     let storage: Storage
     try {
@@ -2698,8 +2688,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       if (activeMapIdRef.current === mapId) updateLocalBackupNotice({ type: 'backup-failed', mapId })
       return false
     }
-    pendingMapCacheWrite.current = { mapId, content }
-    const result = tryWriteMapCache(storage, mapId, content)
+    const serverMap = serverBaseline.current?.id === mapId ? serverBaseline.current : null
+    pendingMapCacheWrite.current = { mapId, content, serverMap }
+    const result = tryWriteMapCache(storage, mapId, content, { serverMap })
     if (result.saved) {
       pendingMapCacheWrite.current = null
       if (activeMapIdRef.current === mapId) updateLocalBackupNotice({ type: 'backup-saved', mapId })
@@ -2714,7 +2705,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       const retryWrite = () => {
         const pending = pendingMapCacheWrite.current
         if (!pending) return true
-        const retry = tryWriteMapCache(storage, pending.mapId, pending.content)
+        const retry = tryWriteMapCache(storage, pending.mapId, pending.content, { serverMap: pending.serverMap })
         if (retry.saved) {
           pendingMapCacheWrite.current = null
           if (activeMapIdRef.current === pending.mapId) {

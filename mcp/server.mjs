@@ -25,9 +25,10 @@ import { imageCardLocalAccess } from './imageAccess.mjs'
 import { withDocumentGroupMetadata } from './documentGroupMetadata.mjs'
 import { DOCUMENT_VIEW_CARD_ID_LIMIT, DOCUMENT_VIEWS, cardAccessUrl, documentAccessUrl, finalizeResponseBudget, updateCardFullEdge, updateCardFullNode } from './documentViews.mjs'
 import { preserveOmittedWaitingItemNotes } from './waitingItemNotes.mjs'
-import { adjustedCardSummaries, changedCardIds, compactRequestedCardData, referenceProjectedNode } from './affectedCards.mjs'
+import { adjustedCardSummaries, compactRequestedCardData, referenceProjectedNode } from './affectedCards.mjs'
 import { applyContextBudget } from './contextBudget.mjs'
 import { applyDelegationBudget } from './delegationBudget.mjs'
+import { applyCardReadBudget, applyCommentListBudget } from './cardReadBudget.mjs'
 import { WORKSPACE_POOL_STATUS_GUIDE, WORKSPACE_POOL_STATUS_REFERENCE } from './workspacePoolStatusGuide.mjs'
 import { MCP_TOOL_USAGE_DIRECTORY_NAME, createFileToolUsageRecorder } from '../server/lib/mcpToolUsage.mjs'
 import { formatAiConversationDisplay } from '../server/lib/aiConversationDisplay.mjs'
@@ -800,20 +801,20 @@ function updateCardOmitted(mapId, cardId, omittedFields, affectedCards) {
 
 const affectedFirstResponseModeDescription = 'affected가 기본이며 변경된 카드와 문서·Root 요약만 반환합니다. 변경 전과 같은 API 원본 전체 문서가 필요할 때만 full을 지정하거나 mindnprogress_get_document를 호출하세요.'
 
-function affectedCardsOf(previousMap, savedMap, mapId, requestedCardIds, rootCardId, excludedCardIds = []) {
-  const requested = new Set(requestedCardIds)
-  const excluded = new Set(excludedCardIds)
-  const affectedIds = new Set([...requested, ...changedCardIds(previousMap, savedMap)])
-  const previousById = new Map(previousMap.nodes.map((node) => [node.id, node]))
-  return savedMap.nodes
-    .filter((item) => affectedIds.has(item.id) && !excluded.has(item.id))
-    .map((item) => ({
-      reason: requested.has(item.id) ? 'requested' : item.id === rootCardId ? 'root-rollup' : 'server-adjusted',
-      card: {
-        ...contentCard(referenceProjectedNode(item, previousById.get(item.id), savedMap), mapId),
-        position: item.position,
-      },
-    }))
+// add·move·delete affected 응답의 생략 안내. update_card처럼 서버가 함께 조정한 카드는 상태 요약만 준다.
+function affectedCardsOmitted(mapId, affectedCards, { cardId = '<cardId>', cardOmittedFields = [] } = {}) {
+  return {
+    fields: {
+      ...(cardOmittedFields.length > 0 ? {
+        'card.data': '이동한 카드의 바뀌지 않은 1,000자 초과 필드(card.omittedFields)는 원문을 생략했습니다. description·sharedKnowledge의 길이·SHA-256은 card.textIntegrity에 있습니다.',
+      } : {}),
+      ...(affectedCards.length > 0 ? {
+        'affectedCards[].card': '서버가 함께 조정한 카드(상위 진행률·Root 집계 등)는 상태 요약과 바뀐 키(changedKeys)만 줍니다.',
+      } : {}),
+    },
+    rule: '생략된 원문을 추측하거나 생략을 삭제로 해석하지 말고, 원문이 필요하면 retrieval의 도구로 조회하세요.',
+    retrieval: { tool: 'mindnprogress_get_card', arguments: { mapId, cardId } },
+  }
 }
 
 function deletedRelationsOf(map, deletedCardIds, targetCardId) {
@@ -1971,7 +1972,7 @@ async function main() {
     finalizeResult: (result, { mapId, delegationId }) => (delegationId ? result : applyDelegationBudget(result, { mapId })),
   })
 
-  registerTool(server, 'mindnprogress_get_card', '한 카드의 설명, 공유 지식, 업무 필드와 댓글을 선택적으로 조회합니다. description과 sharedKnowledge의 길이·SHA-256은 textIntegrity로 반환하며 이미지 카드는 로컬 원본 경로도 반환합니다. get_context의 fallback 카드 또는 간략 개요에서 원문이 필요할 때 사용하세요. fields로 필요한 data 필드만, includeComments=false로 댓글 없이 받을 수 있으며 get_context의 omitted.retrieval이 이 인자를 안내합니다. textIntegrity는 fields와 무관하게 항상 description·sharedKnowledge 전체 기준입니다.', {
+  registerTool(server, 'mindnprogress_get_card', '한 카드의 설명, 공유 지식, 업무 필드와 댓글을 선택적으로 조회합니다. description과 sharedKnowledge의 길이·SHA-256은 textIntegrity로 반환하며 이미지 카드는 로컬 원본 경로도 반환합니다. get_context의 fallback 카드 또는 간략 개요에서 원문이 필요할 때 사용하세요. fields로 필요한 data 필드만, includeComments=false로 댓글 없이 받을 수 있으며 get_context의 omitted.retrieval이 이 인자를 안내합니다. textIntegrity는 fields와 무관하게 항상 description·sharedKnowledge 전체 기준입니다. 응답이 약 4만 자를 넘으면 댓글 페이지를 먼저 줄이고(남은 댓글은 list_comments의 nextOffset으로 조회), 그래도 넘으면 fields로 고르지 않은 2,000자 초과 보조 필드와 description·sharedKnowledge 원문(큰 것부터)을 생략해 card.omittedFields와 응답 앞쪽 responseBudget·omitted에 표기합니다. 생략한 필드는 fields로 한 필드씩 조회하세요.', {
     mapId: z.string().min(1),
     cardId: z.string().min(1),
     commentOffset: z.number().int().nonnegative().default(0),
@@ -2004,6 +2005,10 @@ async function main() {
         ...page, offset: 0, limit: 0, hasMore: page.total > 0, nextOffset: page.total > 0 ? 0 : null,
       },
     }
+  }, {
+    // 카드와 댓글이 클라이언트 출력 한도를 넘으면 댓글 페이지부터 줄인다. fields로 고른 필드는 줄이지 않는다.
+    finalizeResult: (result, { mapId, cardId, fields, includeComments, commentLimit, includeCommentDetail }) =>
+      applyCardReadBudget(result, { mapId, cardId, fields, includeComments, commentLimit, includeCommentDetail }),
   })
 
   registerTool(server, 'mindnprogress_get_shared_knowledge_review_context', '정리 후보 한 카드의 sharedKnowledge 원문, 무결성 해시, 검토 신호, 계층·지식선 관계와 최근 댓글을 조회합니다. 후보 목록에서 선택한 카드만 호출하고 반환된 document.version, card.textIntegrity.sha256과 reviewContextToken을 저장 요청에 그대로 사용하세요. 검토 의존성이 변경되면 충돌로 거부하며 기대값을 자동 교체하지 않습니다.', {
@@ -2042,7 +2047,7 @@ async function main() {
     }
   })
 
-  registerTool(server, 'mindnprogress_add_card', '문서에 새 카드 또는 하위 카드를 추가합니다. 실제로 실행할 카드에 독립적으로 판정할 구현·검증 조건이 2개 이상이면 결과 중심 checklist를 작성하되 별도 하위 카드의 작업은 중복하지 마세요. 비어 있지 않은 checklist를 보내면 완료 비율로 progress와 status를 자동 계산합니다. 외부 전달물이나 결정 대기는 제목이 아니라 waitingItems로 기록합니다. 기본 affected 응답은 추가한 카드와 문서 요약만 반환하며, full은 변경 전과 같은 API 원본 전체 문서를 반환합니다.', {
+  registerTool(server, 'mindnprogress_add_card', '문서에 새 카드 또는 하위 카드를 추가합니다. 실제로 실행할 카드에 독립적으로 판정할 구현·검증 조건이 2개 이상이면 결과 중심 checklist를 작성하되 별도 하위 카드의 작업은 중복하지 마세요. 비어 있지 않은 checklist를 보내면 완료 비율로 progress와 status를 자동 계산합니다. 외부 전달물이나 결정 대기는 제목이 아니라 waitingItems로 기록합니다. 기본 affected 응답은 추가한 카드와 문서 요약만 반환하며, full은 변경 전과 같은 API 원본 전체 문서를 반환합니다. affected의 affectedCards에는 서버가 함께 조정한 카드(상위 진행률·Root 집계 등)의 상태 요약과 changedKeys만 있습니다.', {
     mapId: z.string().min(1),
     parentCardId: z.string().min(1).optional().describe('새 카드를 추가할 상위 카드 ID. 최상위 카드를 추가할 때는 생략'),
     parentId: z.string().min(1).optional().describe('기존 대화 호환용 상위 카드 ID. 새 호출에서는 parentCardId 사용'),
@@ -2105,6 +2110,8 @@ async function main() {
     const createdCard = savedMap.nodes.find((item) => item.id === nodeId)
     if (!createdCard) throw new Error('저장 후 추가한 카드를 찾을 수 없습니다.')
     const rootCard = rootCardOf(savedMap)
+    // 추가한 카드는 보낸 원문과 대조하도록 그대로 두고, 서버가 함께 조정한 카드(상위 진행률 등)는 update_card처럼 요약만 준다.
+    const affectedCards = adjustedCardSummaries(previousMap, savedMap, { rootCardId: rootCard?.id, excludedCardIds: [nodeId] })
     return {
       responseMode,
       document: saved.summary,
@@ -2114,7 +2121,8 @@ async function main() {
       },
       parentCardId: resolvedParentCardId ?? null,
       root: rootRollup(rootCard),
-      affectedCards: affectedCardsOf(previousMap, savedMap, mapId, [], rootCard?.id, [nodeId]),
+      affectedCards,
+      ...(affectedCards.length > 0 ? { omitted: affectedCardsOmitted(mapId, affectedCards) } : {}),
     }
   })
 
@@ -2335,7 +2343,7 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_move_card', '카드와 모든 하위 카드를 유지한 채 다른 카드의 하위로 이동합니다. targetMapId를 생략하면 같은 문서 안에서 이동하고, 다른 문서를 지정하면 카드 ID·댓글·AI 대화·완료된 위임 이력·이미지와 Ref 연결을 보존해 실제로 이동합니다. 문서 경계를 가로지르는 지식선·선행 관계나 실행 중인 AI 작업이 있으면 손상 없이 거부합니다. 기본 affected 응답은 이동 결과와 관계 변화만 반환하며, full은 관련 원본 문서 전체를 반환합니다.', {
+  registerTool(server, 'mindnprogress_move_card', '카드와 모든 하위 카드를 유지한 채 다른 카드의 하위로 이동합니다. targetMapId를 생략하면 같은 문서 안에서 이동하고, 다른 문서를 지정하면 카드 ID·댓글·AI 대화·완료된 위임 이력·이미지와 Ref 연결을 보존해 실제로 이동합니다. 문서 경계를 가로지르는 지식선·선행 관계나 실행 중인 AI 작업이 있으면 손상 없이 거부합니다. 기본 affected 응답은 이동 결과와 관계 변화만 반환하며, full은 관련 원본 문서 전체를 반환합니다. 같은 문서 안 이동의 affected 응답에서 card는 바뀌지 않은 1,000자 초과 필드를 card.omittedFields와 textIntegrity로만 표시하고, affectedCards에는 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다.', {
     mapId: z.string().min(1),
     targetMapId: z.string().min(1).optional().describe('다른 문서로 실제 이동할 때 지정하는 대상 문서 ID. 생략하거나 mapId와 같으면 기존 문서 내부 이동'),
     cardId: z.string().min(1).optional().describe('이동할 카드 ID. 새 호출에서는 이 필드를 사용'),
@@ -2409,23 +2417,34 @@ async function main() {
     const movedCard = savedMap.nodes.find((item) => item.id === resolvedCardId)
     if (!movedCard) throw new Error('저장 후 이동한 카드를 찾을 수 없습니다.')
     const rootCard = rootCardOf(savedMap)
+    // 이동은 카드 내용을 바꾸지 않으므로 저장 중 바뀐 필드만 원문으로 두고, 서버 조정 카드는 요약만 준다.
+    const previousCard = previousMap.nodes.find((item) => item.id === resolvedCardId)
+    const projectedCard = referenceProjectedNode(movedCard, previousCard, savedMap)
+    const shownCard = contentCard(projectedCard, mapId)
+    const { data: cardData, omittedFields } = compactRequestedCardData(previousCard?.data, projectedCard.data, shownCard.data, [])
+    const affectedCards = adjustedCardSummaries(previousMap, savedMap, { rootCardId: rootCard?.id, excludedCardIds: [resolvedCardId] })
     return {
       responseMode,
       document: saved.summary,
       card: {
-        ...contentCard(movedCard, mapId),
+        ...shownCard,
+        data: cardData,
         position: movedCard.position,
+        ...(omittedFields.length > 0 ? { omittedFields } : {}),
       },
       hierarchy: {
         previousParentCardId,
         newParentCardId: resolvedParentCardId,
       },
       root: rootRollup(rootCard),
-      affectedCards: affectedCardsOf(previousMap, savedMap, mapId, [], rootCard?.id, [resolvedCardId]),
+      affectedCards,
+      ...(omittedFields.length > 0 || affectedCards.length > 0
+        ? { omitted: affectedCardsOmitted(mapId, affectedCards, { cardId: resolvedCardId, cardOmittedFields: omittedFields }) }
+        : {}),
     }
   })
 
-  registerTool(server, 'mindnprogress_delete_card', '카드를 삭제합니다. 일반 카드는 기본적으로 모든 하위 카드도 함께 삭제합니다. 최상위 카드는 직계 자식이 정확히 하나일 때만 삭제할 수 있고 해당 자식이 새 최상위 카드로 승격되며, 직계 자식이 없거나 여러 개면 삭제하지 않습니다. 기본 affected 응답은 삭제한 카드 ID와 끊어진 계층·지식선 관계 및 함께 조정된 카드만 반환하며, full은 변경 전과 같은 API 원본 전체 문서를 반환합니다.', {
+  registerTool(server, 'mindnprogress_delete_card', '카드를 삭제합니다. 일반 카드는 기본적으로 모든 하위 카드도 함께 삭제합니다. 최상위 카드는 직계 자식이 정확히 하나일 때만 삭제할 수 있고 해당 자식이 새 최상위 카드로 승격되며, 직계 자식이 없거나 여러 개면 삭제하지 않습니다. 기본 affected 응답은 삭제한 카드 ID와 끊어진 계층·지식선 관계 및 함께 조정된 카드만 반환하며, full은 변경 전과 같은 API 원본 전체 문서를 반환합니다. affectedCards에는 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다.', {
     mapId: z.string().min(1),
     cardId: z.string().min(1).optional().describe('삭제할 카드 ID. 새 호출에서는 이 필드를 사용'),
     nodeId: z.string().min(1).optional().describe('기존 대화 호환용 카드 ID. 새 호출에서는 cardId 사용'),
@@ -2478,6 +2497,7 @@ async function main() {
       }
     }
     const rootCard = rootCardOf(savedMap)
+    const affectedCards = adjustedCardSummaries(previousMap, savedMap, { rootCardId: rootCard?.id })
     return {
       responseMode,
       document: saved.summary,
@@ -2485,7 +2505,8 @@ async function main() {
       relationChanges,
       promotedRootCardId,
       root: rootRollup(rootCard),
-      affectedCards: affectedCardsOf(previousMap, savedMap, mapId, [], rootCard?.id),
+      affectedCards,
+      ...(affectedCards.length > 0 ? { omitted: affectedCardsOmitted(mapId, affectedCards) } : {}),
     }
   })
 
@@ -2653,7 +2674,7 @@ async function main() {
 
   registerTool(server, 'mindnprogress_list_users', '담당자로 지정할 수 있는 편집자 계정 목록을 조회합니다. active=false인 계정은 기존 담당자 표시용이며 새 담당자로 지정하지 마세요.', {}, async () =>
     apiRequest('/api/assignees'))
-  registerTool(server, 'mindnprogress_list_comments', '문서 또는 특정 카드의 댓글과 답글을 페이지 단위로 조회합니다. 기본 응답은 요약과 상세 존재 여부만 포함하며, 작업 근거나 검증 내용이 더 필요할 때 includeDetail=true를 사용하세요. 다음 댓글이 있으면 nextOffset을 offset으로 전달하세요.', {
+  registerTool(server, 'mindnprogress_list_comments', '문서 또는 특정 카드의 댓글과 답글을 페이지 단위로 조회합니다. 기본 응답은 요약과 상세 존재 여부만 포함하며, 작업 근거나 검증 내용이 더 필요할 때 includeDetail=true를 사용하세요. 다음 댓글이 있으면 nextOffset을 offset으로 전달하세요. 응답이 약 4만 자를 넘으면 요청 순서의 앞쪽 댓글부터 예산에 드는 만큼만 반환하고 limit·nextOffset을 반환한 댓글 기준으로 맞추며, 응답 앞쪽 responseBudget과 omitted에 표기합니다. 반환한 댓글의 상세는 줄이지 않고 건너뛴 댓글도 없으니 hasMore가 true이면 nextOffset으로 이어서 조회하세요.', {
     mapId: z.string().min(1),
     cardId: z.string().min(1).optional().describe('댓글을 조회할 카드 ID. 생략하면 문서 전체 댓글 조회'),
     nodeId: z.string().min(1).optional().describe('기존 대화 호환용 카드 ID. 새 호출에서는 cardId 사용'),
@@ -2675,6 +2696,9 @@ async function main() {
     })
     if (resolvedCardId) query.set('nodeId', resolvedCardId)
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/comments?${query}`)
+  }, {
+    // 한 페이지가 클라이언트 출력 한도를 넘으면 앞쪽 댓글부터 예산에 드는 만큼만 주고 nextOffset으로 이어 받게 한다.
+    finalizeResult: (result, { mapId, cardId, nodeId, includeDetail }) => applyCommentListBudget(result, { mapId, cardId: cardId ?? nodeId, includeDetail }),
   })
   registerTool(server, 'mindnprogress_manage_comment', '댓글 또는 답글을 추가·수정·삭제하거나 스레드 해결 상태와 이모지 반응을 변경합니다. operation.action별 입력 스키마를 따르세요. add의 summary는 [진행], [차단], [결과]로 시작하는 240자 이하의 1~2문장으로 작성하고 긴 내용은 detail에 기록합니다. update는 기존 작성자·시각·답글 관계를 유지하며 expectedText로 동시 수정을 막을 수 있습니다. delete는 연결된 답글도 삭제합니다.', {
     mapId: z.string().min(1),

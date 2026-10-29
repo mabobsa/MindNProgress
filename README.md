@@ -414,7 +414,7 @@ node runner/index.mjs
 | `mindnprogress_search_content` | 열람 가능한 활성 문서 전체의 사용자 콘텐츠를 관련도순으로 검색하거나, 정확성 보완이 필요할 때 모든 카드를 커서 기반 카탈로그로 순회합니다. 결과는 후보이므로 최종 판단 전에 `mindnprogress_get_card`로 최신 원문을 확인합니다. |
 | `mindnprogress_get_context` | 선택 카드와 문서 구조, 관계, 댓글, 담당자, 업무 링크 및 선행 지식을 작업 문맥으로 조회합니다. `detailLevel`은 `focused` 또는 `full`을 사용합니다. `focused` 응답이 약 4만 자를 넘으면 `guide` 등 규칙은 그대로 두고 덜 중요한 데이터부터 줄이며, 생략한 경로와 회수 도구를 응답 앞쪽 `contextBudget`·`omitted`에 표기합니다([응답 크기 예산](docs/mcp-response-budget-20261029.md)). |
 | `mindnprogress_get_document` | 문서의 모든 카드와 연결 관계 및 외부 접근 URL을 조회합니다. `view`를 생략하면 기존 full 응답이며, `compact`(카드 원문 유지·AI 대화 상세와 렌더링 값 축약), `outline`(구조·상태·관계·본문 길이와 `textIntegrity`, `cardIds`로 고른 카드만 전문), `version`(version과 `documentEtag`만)을 선택할 수 있습니다. 같은 `view`·`cardIds`로 받은 응답의 `documentEtag`를 `ifNoneMatch`로 전달했고 그 뒤 문서가 바뀌지 않았으면 본문을 생략하고 `notModified=true`를 반환합니다. `knownVersion`은 version 일치 여부만 `freshness`로 알려 주며 본문을 생략하지 않습니다(`view`를 생략한 full 응답에는 `freshness`가 없습니다). `outline` 응답이 약 4만 자를 넘으면 구조·상태·계층과 `cardIds` 카드 전문은 두고 큰 비원문 필드부터 단계적으로 줄이며, 줄인 범위와 회수 경로를 `responseBudget`·`omitted`에 표기합니다. |
-| `mindnprogress_get_card` | 특정 카드의 설명, 공유 지식, 업무 필드와 댓글을 페이지 단위로 조회합니다. `fields`로 필요한 data 필드만, `includeComments=false`로 댓글 없이 받을 수 있습니다. |
+| `mindnprogress_get_card` | 특정 카드의 설명, 공유 지식, 업무 필드와 댓글을 페이지 단위로 조회합니다. `fields`로 필요한 data 필드만, `includeComments=false`로 댓글 없이 받을 수 있습니다. 응답이 4만 자를 넘으면 댓글 페이지를 먼저 줄이고, 그래도 넘으면 `fields`로 고르지 않은 큰 보조 필드와 description·sharedKnowledge 원문(큰 것부터)을 생략해 `card.omittedFields`·`responseBudget`·`omitted`에 표기합니다. |
 | `mindnprogress_list_shared_knowledge_candidates` | 정리가 필요한 공유 지식 후보의 우선순위·길이·SHA-256·검토 상태를 원문 없이 페이지 단위로 조회합니다. |
 | `mindnprogress_get_shared_knowledge_review_context` | 후보 한 카드의 공유 지식 원문과 관계·최근 댓글·검토 기준을 조회합니다. |
 | `mindnprogress_get_ai_work_states` | 지정한 카드 또는 문서 전체에서 연결된 AI 대화의 현재 작업·승인 대기·유휴·확인 불가 상태를 조회합니다. 문서 버전은 변경하지 않습니다. |
@@ -438,12 +438,12 @@ node runner/index.mjs
 | 명령어 | 설명 |
 | --- | --- |
 | `mindnprogress_create_mindmap` | 루트 한 건부터 여러 카드까지 새 문서와 계층 구조를 한 번에 생성하고 자동 배치합니다. |
-| `mindnprogress_add_card` | 새 카드 또는 지정한 상위 카드의 하위 카드를 추가합니다. 기본 `responseMode=affected`는 추가한 카드와 문서·Root 요약만, `full`은 변경 전과 같은 API 원본 전체 문서를 반환합니다. |
+| `mindnprogress_add_card` | 새 카드 또는 지정한 상위 카드의 하위 카드를 추가합니다. 기본 `responseMode=affected`는 추가한 카드와 문서·Root 요약만, `full`은 변경 전과 같은 API 원본 전체 문서를 반환합니다. affected의 `affectedCards`에는 서버가 함께 조정한 카드의 상태 요약과 `changedKeys`만 있습니다. |
 | `mindnprogress_update_card` | 전달한 필드만 부분 병합하여 카드 제목, 설명, 공유 지식, 상태, 진행률과 업무 관리 필드를 수정합니다. 일반 카드에서 생략한 필드와 위치는 보존됩니다. 기본 `responseMode=full`은 저활용 필드를 제외한 최신 전체 문서를, `affected`는 직접·간접 변경 카드와 문서·Root 요약을 반환합니다. `affected`의 요청 카드는 바꾸지 않은 1,000자 초과 필드를 `omittedFields`로만 표시하고, 서버가 함께 조정한 카드는 상태 요약과 `changedKeys`로 줍니다. |
 | `mindnprogress_patch_card_text` | 조회한 SHA-256이 유지된 경우에만 설명 또는 공유 지식의 유일 문자열·경계 내부를 교체하거나 뒤에 추가합니다. 장문 필드 전체를 다시 생성하지 않습니다. |
 | `mindnprogress_apply_shared_knowledge_review` | 문서 버전과 카드별 SHA-256이 모두 일치할 때만 최대 20개 카드의 정리 결과와 검토 기록을 한 번에 저장합니다. |
-| `mindnprogress_move_card` | 카드와 전체 하위 구조를 다른 카드 아래로 이동합니다. `targetMapId`를 지정하면 카드 ID와 댓글·AI 대화·완료 위임·이미지·Ref 연결을 유지한 채 다른 문서로 실제 이동합니다. 기본 `responseMode=affected`는 이동 결과와 이전·새 상위 관계만, `full`은 관련 원본 문서 전체를 반환합니다. |
-| `mindnprogress_delete_card` | 카드와 선택적으로 전체 하위 카드를 삭제합니다. Root 카드는 삭제할 수 없습니다. 기본 `responseMode=affected`는 삭제한 카드 ID와 끊어진 계층·지식선 관계 및 함께 조정된 카드만, `full`은 변경 전과 같은 API 원본 전체 문서를 반환합니다. |
+| `mindnprogress_move_card` | 카드와 전체 하위 구조를 다른 카드 아래로 이동합니다. `targetMapId`를 지정하면 카드 ID와 댓글·AI 대화·완료 위임·이미지·Ref 연결을 유지한 채 다른 문서로 실제 이동합니다. 기본 `responseMode=affected`는 이동 결과와 이전·새 상위 관계만, `full`은 관련 원본 문서 전체를 반환합니다. 같은 문서 안 이동의 affected는 바뀌지 않은 1,000자 초과 필드를 `card.omittedFields`로, 서버 조정 카드는 상태 요약과 `changedKeys`로만 줍니다. |
+| `mindnprogress_delete_card` | 카드와 선택적으로 전체 하위 카드를 삭제합니다. Root 카드는 삭제할 수 없습니다. 기본 `responseMode=affected`는 삭제한 카드 ID와 끊어진 계층·지식선 관계 및 함께 조정된 카드만, `full`은 변경 전과 같은 API 원본 전체 문서를 반환합니다. 함께 조정된 카드는 상태 요약과 `changedKeys`로만 줍니다. |
 | `mindnprogress_manage_knowledge_line` | `operation.action=add/update/delete`로 지식선을 추가하거나 정책을 변경하거나 삭제합니다. add는 중복·순환을 거부하고 update는 중복 관계를 거부합니다. |
 | `mindnprogress_update_document_info` | 문서 이름 또는 아이콘 색상을 변경합니다. |
 
@@ -521,7 +521,7 @@ AI 정리는 `mindnprogress_list_shared_knowledge_candidates`로 원문 없는 �
 
 | 명령어 | 설명 |
 | --- | --- |
-| `mindnprogress_list_comments` | 문서 전체 또는 특정 카드의 댓글과 답글을 페이지 조회합니다. `includeDetail=true`이면 상세 본문을 포함합니다. |
+| `mindnprogress_list_comments` | 문서 전체 또는 특정 카드의 댓글과 답글을 페이지 조회합니다. `includeDetail=true`이면 상세 본문을 포함합니다. 한 페이지가 4만 자를 넘으면 앞쪽 댓글부터 예산에 드는 만큼만 주고 `limit`·`nextOffset`을 반환한 댓글 기준으로 맞추므로, `hasMore`가 true이면 `nextOffset`으로 이어서 조회합니다. |
 | `mindnprogress_manage_comment` | `operation.action=add/update/delete/set-resolved/toggle-reaction`으로 댓글을 변경합니다. action별로 작성 대상·본문·댓글 ID·해결 상태·이모지 입력을 분리해 검증합니다. |
 
 `mindnprogress_list_comments` 응답에 `nextOffset`이 있으면 다음 호출의 `offset`으로 전달합니다. AI 댓글의 `summary`는 의미 있는 진행, 차단과 완료 결과에 따라 `[진행]`, `[차단]`, `[결과]` 머리말로 시작하는 1~2문장으로 작성합니다. `detail`에는 다른 세션이 작업을 이어가거나 검증하는 데 필요한 수행 내용, 판단, 변경 범위, 검증 방법과 실제 결과, 산출물, 제한사항과 다음 단계 중 해당 내용을 충실하게 기록합니다. 요약 때문에 상세를 축약하지 않으며 개별 도구 호출과 의미 없는 반복만 제외합니다.

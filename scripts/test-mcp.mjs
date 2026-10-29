@@ -2187,6 +2187,9 @@ async function main() {
       addedCardResult.affectedCards.every((entry) => entry.card.id !== addedCardResult.card.id),
       'affected 응답은 card와 affectedCards에 같은 카드를 중복해서 담지 않아야 합니다.',
     )
+    const isAdjustedSummary = (entry) => Array.isArray(entry.card.changedKeys)
+      && Object.keys(entry.card.data).every((key) => ['label', 'kind', 'status', 'progress', 'isWork'].includes(key))
+    assert.ok(addedCardResult.affectedCards.every(isAdjustedSummary), 'add_card affectedCards는 서버 조정 카드의 상태 요약만 담아야 합니다.')
     const addedCard = addedCardResult.card
     assert.ok(addedCard)
     assert.equal(addedCard.data.label, '추가 카드')
@@ -2447,6 +2450,7 @@ async function main() {
     assert.equal(movedCardResult.hierarchy.newParentCardId, 'branch-b')
     assert.equal(movedCardResult.hierarchy.previousParentCardId, 'root')
     assert.ok(movedCardResult.affectedCards.every((entry) => entry.card.id !== addedCard.id))
+    assert.ok(movedCardResult.affectedCards.every(isAdjustedSummary), 'move_card affectedCards는 서버 조정 카드의 상태 요약만 담아야 합니다.')
 
     const movedBackResult = await invoke('mindnprogress_move_card', {
       mapId, cardId: addedCard.id, newParentCardId: 'root', responseMode: 'full',
@@ -2487,6 +2491,7 @@ async function main() {
     }])
     assert.equal(deletedCardResult.root.progress, 30)
     assert.ok(deletedCardResult.affectedCards.every((entry) => entry.card.id !== addedCard.id))
+    assert.ok(deletedCardResult.affectedCards.every(isAdjustedSummary), 'delete_card affectedCards는 서버 조정 카드의 상태 요약만 담아야 합니다.')
 
     const fullDeletedCardResult = await invoke('mindnprogress_delete_card', {
       mapId, nodeId: secondAddedCard.id, includeDescendants: true, responseMode: 'full',

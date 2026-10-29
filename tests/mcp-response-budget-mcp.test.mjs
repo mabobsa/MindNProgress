@@ -210,3 +210,92 @@ test('실제 MCP의 list_ai_delegations는 정리된 이력만 줄이고 delegat
   assert.equal(recovery.result, '복구 대기 위임의 중간 보고')
   assert.equal(recovery.summary, undefined)
 })
+
+// 문서 0: card-3은 설명 30,000자·공유 지식 14,000자(저장 한도 15,000자 안)에 상세 댓글 45건이 있고, card-5~9에 상세 댓글 30건이 더 있다.
+const longComment = (mapId, nodeId, index) => ({ id: `comment-${nodeId}-${String(index).padStart(2, '0')}`, mapId, nodeId, contentFormat: 'summary-detail',
+  summary: `[결과] ${nodeId} ${index}번째 검증`, text: `[결과] ${nodeId} ${index}번째 검증`, detail: `${nodeId} ${index}번째 상세 근거. `.repeat(200).slice(0, 2500),
+  parentId: null, resolvedAt: null, resolvedBy: null, reactions: {}, createdAt: new Date(Date.UTC(2026, 9, 1) + index * 3_600_000).toISOString(),
+  author: { id: 'user-editor', name: '김용민' } })
+async function seedCardRead({ data, ids }) {
+  const [mapId] = ids
+  const mapPath = path.join(data, `${mapId}.json`)
+  const map = JSON.parse(await readFile(mapPath, 'utf8'))
+  const heavy = map.nodes.find((node) => node.id === 'card-3')
+  heavy.data = { ...heavy.data, description: '큰 카드의 요구사항 설명. '.repeat(2400).slice(0, 30000), sharedKnowledge: '큰 카드의 결론. '.repeat(2000).slice(0, 14000) }
+  await writeFile(mapPath, JSON.stringify(map))
+  const comments = [...Array.from({ length: 45 }, (_, index) => longComment(mapId, 'card-3', index)),
+    ...Array.from({ length: 30 }, (_, index) => longComment(mapId, `card-${5 + (index % 5)}`, index))]
+  await writeFile(path.join(data, '_comments', `${mapId}.json`), JSON.stringify(comments))
+}
+
+test('실제 MCP의 get_card·list_comments는 예산을 넘으면 댓글 페이지와 큰 원문을 줄이고 빠짐없이 회수하게 한다', { timeout: 120000 }, async (t) => {
+  const api = await storageApi(t, { documents: 1, seed: seedCardRead })
+  const client = new Client({ name: 'card-read-budget-test', version: '1' })
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['mcp/server.mjs'],
+    cwd: process.env.MNP_STORAGE_TEST_SOURCE_ROOT || path.resolve(import.meta.dirname, '..'), env: api.env, stderr: 'pipe' })
+  t.after(async () => { await client.close() })
+  await client.connect(transport)
+  const invoke = async (name, args) => {
+    const result = await client.callTool({ name: `mindnprogress_${name}`, arguments: args })
+    assert.notEqual(result.isError, true, JSON.stringify(result))
+    const text = result.content.find((part) => part.type === 'text').text
+    return { value: JSON.parse(text), chars: text.length }
+  }
+  const [mapId] = api.ids
+  await invoke('get_context', { mapId, cardId: 'card-0', editorId: 'user-editor', aiType: 'Fixture AI', aiModel: 'fixture' })
+  const stored = JSON.parse(await readFile(path.join(api.data, `${mapId}.json`), 'utf8')).nodes.find((node) => node.id === 'card-3').data
+  const { value: card, chars } = await invoke('get_card', { mapId, cardId: 'card-3', commentLimit: 50, includeCommentDetail: true })
+  assert.ok(card.responseBudget, `get_card가 예산을 넘어야 합니다(${chars}자).`)
+  assert.equal(card.responseBudget.returnedChars, chars, 'MCP가 덧붙인 그룹 메타데이터까지 포함한 최종 크기여야 합니다.')
+  assert.ok(chars <= 40000, `get_card ${chars}자`)
+  assert.deepEqual(card.card.omittedFields, ['description'], '큰 원문 하나만 생략한다')
+  assert.equal(card.card.data.sharedKnowledge, stored.sharedKnowledge)
+  assert.equal(card.card.textIntegrity.description.length, stored.description.length)
+  // 생략한 원문은 fields로 그대로 회수하고 textIntegrity와 맞는지 확인한다.
+  const { value: description } = await invoke('get_card', { ...card.omitted.retrieval.cardFields.arguments, fields: ['description'] })
+  assert.equal(description.card.data.description, stored.description)
+  assert.equal(description.card.textIntegrity.description.sha256, card.card.textIntegrity.description.sha256)
+  // 댓글은 get_card가 준 앞쪽부터 retrieval.comments로 이어 받으면 45건을 빠짐없이 최신순으로 받는다.
+  const received = card.comments.map((item) => item.id)
+  let next = card.omitted.retrieval.comments?.arguments
+  assert.ok(next, '댓글 페이지를 줄였으면 이어 받을 인자가 있어야 합니다.')
+  while (next) {
+    const { value: page, chars: pageChars } = await invoke('list_comments', next)
+    assert.ok(pageChars <= 40000, `list_comments ${pageChars}자`)
+    assert.ok(page.comments.every((item) => item.detail?.length === 2500), '반환한 댓글의 상세는 줄이지 않는다')
+    received.push(...page.comments.map((item) => item.id))
+    next = page.hasMore ? { ...next, offset: page.nextOffset } : null
+  }
+  assert.deepEqual(received, Array.from({ length: 45 }, (_, index) => `comment-card-3-${String(44 - index).padStart(2, '0')}`))
+  // 문서 전체 상세 조회도 페이지를 줄이고 nextOffset으로 75건을 모두 받는다.
+  let offset = 0
+  const all = []
+  for (let guard = 0; guard < 20; guard++) {
+    const { value: page, chars: pageChars } = await invoke('list_comments', { mapId, offset, limit: 100, includeDetail: true })
+    assert.ok(pageChars <= 40000, `문서 전체 list_comments ${pageChars}자`)
+    if (offset === 0) assert.ok(page.responseBudget && page.limit < 100 && page.limit === page.comments.length)
+    all.push(...page.comments.map((item) => item.id))
+    if (!page.hasMore) break
+    offset = page.nextOffset
+  }
+  assert.equal(new Set(all).size, 75)
+  assert.equal(all.length, 75)
+
+  // add·move·delete affected 응답의 서버 조정 카드는 상태 요약만 준다.
+  const isSummary = (entry) => Object.keys(entry.card.data).every((key) => ['label', 'kind', 'status', 'progress', 'isWork'].includes(key)) && Array.isArray(entry.card.changedKeys)
+  const { value: added } = await invoke('add_card', { mapId, parentCardId: 'card-3', data: { label: '완료된 하위 검증', status: 'done', progress: 100, isWork: true } })
+  assert.ok(added.affectedCards.length > 0, JSON.stringify(added.affectedCards))
+  assert.ok(added.affectedCards.every(isSummary), JSON.stringify(added.affectedCards))
+  assert.ok(added.affectedCards.every((entry) => entry.card.id !== added.card.id))
+  assert.match(added.omitted.fields['affectedCards[].card'], /상태 요약과 바뀐 키/)
+  assert.equal(added.card.data.label, '완료된 하위 검증', '추가한 카드는 그대로 준다')
+  const { value: moved, chars: movedChars } = await invoke('move_card', { mapId, cardId: 'card-3', newParentCardId: 'card-4' })
+  assert.deepEqual(moved.card.omittedFields?.sort(), ['description', 'sharedKnowledge'], '이동한 카드의 바뀌지 않은 큰 필드는 생략한다')
+  assert.equal(moved.card.textIntegrity.description.sha256, card.card.textIntegrity.description.sha256)
+  assert.ok(moved.affectedCards.every(isSummary))
+  assert.equal(moved.omitted.retrieval.arguments.cardId, 'card-3')
+  assert.ok(movedChars < 10000, `move_card ${movedChars}자`)
+  const { value: deleted } = await invoke('delete_card', { mapId, cardId: added.card.id })
+  assert.deepEqual(deleted.deletedCardIds, [added.card.id])
+  assert.ok(deleted.affectedCards.every(isSummary))
+})

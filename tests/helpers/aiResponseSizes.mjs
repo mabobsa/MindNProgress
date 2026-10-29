@@ -7,13 +7,15 @@ import { captureInitialResponses } from '../../scripts/capture-guidance-evidence
 // 고정 지침 부담이며 실제 운영 문서·위임 결과가 더하는 동적 크기는 포함하지 않는다.
 // 상한은 2026-10-21 측정값에 약 15% 여유를 둔 경고선이다. 넘으면 축약하지 말고
 // 중복 삽입 여부를 먼저 확인한다(docs/ai-guidance-rollback-2026-10-01/rollback-cause-record.md).
+// get_group_context 경고선은 2026-10-29 요약 기본값의 원문 회수 안내(detail)를 더한 8,547자에 같은 여유를 둔 값이다.
+// 같은 날 루트 textIntegrity·생략 ID·회수 경로 정정을 더해 9,485자가 됐고, 경고선 안이라 올리지 않았다.
 // get_document 응답 형태는 별도 조사 대상이라 여기서 재지 않는다.
 export const AI_RESPONSE_SIZE_LIMITS = Object.freeze({
   'read-me-first': 20_000,
   'leaf:get_context': 27_000,
   'document-coordinator:get_context': 27_000,
   'group-coordinator:get_context': 32_500,
-  'group:get_group_context': 8_000,
+  'group:get_group_context': 9_800,
 })
 
 export const AI_RESPONSE_SIZE_METHOD = 'scripts/capture-guidance-evidence.mjs의 captureInitialResponses로 실제 MCP 핸들러를 격리 fixture API에 연결해 호출하고 응답 text 문자 수를 잽니다. 토큰 수나 호스트 총주입량이 아닙니다.'

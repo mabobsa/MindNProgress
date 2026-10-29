@@ -617,6 +617,37 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     const repliedInstruction = instructionList.body.instructions.find((item) => item.id === 'group-instruction-first')
     assert.equal(repliedInstruction.response, assistantResult)
     assert.match(repliedInstruction.responseHash, /^[a-f0-9]{64}$/)
+    const singleInstruction = await api(`${instructionUrl}?instructionId=group-instruction-first&includeContent=true`)
+    assert.equal(singleInstruction.status, 200)
+    assert.deepEqual(singleInstruction.body.instructions, [repliedInstruction])
+    const missingInstruction = await api(`${instructionUrl}?instructionId=group-instruction-missing`)
+    assert.equal(missingInstruction.status, 404)
+    assert.equal(missingInstruction.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_NOT_FOUND')
+
+    // 화면용 기본 응답은 그대로 두고, AI용 요약은 원문 대신 회수 경로를 준다.
+    const fullGroupContext = (await api(`/api/groups/${groupId}`)).body
+    assert.equal(fullGroupContext.view, undefined)
+    assert.equal(fullGroupContext.documentInstructions.find((item) => item.id === 'group-instruction-first').response, assistantResult)
+    assert.ok(fullGroupContext.documents.every((document) => Array.isArray(document.waitingDetails)))
+    const coordinatorSummary = await api(`/api/groups/${groupId}?view=summary&mapId=${coordinatorId}`)
+    assert.equal(coordinatorSummary.status, 200)
+    assert.equal(coordinatorSummary.body.role, 'coordinator')
+    assert.deepEqual(coordinatorSummary.body.project, fullGroupContext.project)
+    assert.deepEqual(coordinatorSummary.body.guide, fullGroupContext.guide)
+    const summarizedInstruction = coordinatorSummary.body.documentInstructions.find((item) => item.id === 'group-instruction-first')
+    assert.equal(summarizedInstruction.state, 'replied')
+    for (const field of ['instruction', 'approvalEvidence', 'response']) assert.equal(summarizedInstruction[field], undefined)
+    assert.equal(coordinatorSummary.body.documentInstructionCounts.total, fullGroupContext.documentInstructions.length)
+    for (const document of fullGroupContext.documents) {
+      const summarized = coordinatorSummary.body.documents.find((item) => item.id === document.id)
+      assert.equal(summarized.waitingDetails, undefined)
+      assert.equal(summarized.root?.textIntegrity.description.length ?? 0, document.root?.data.description?.length ?? 0)
+      assert.equal(summarized.root?.data.description, undefined)
+    }
+    const documentSummary = (await api(`/api/groups/${groupId}?view=summary&mapId=${instructionDocument.id}`)).body
+    assert.equal(documentSummary.role, 'document')
+    assert.ok(documentSummary.documentInstructions.length > 0)
+    assert.ok(documentSummary.documentInstructions.every((item) => item.targetMapId === instructionDocument.id))
 
     const latestInstructionTarget = (await api(`/api/maps/${instructionDocument.id}`)).body.map
     const queuedInstructionArgs = {
@@ -681,7 +712,13 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     Object.assign(dispatches.get('changed-plan'), { state: 'failed', errorMessage: "You've hit your usage limit" })
     await until(async () => (await api(delegateUrl)).body.delegations.find((item) => item.id === 'changed-plan').state === 'waiting-usage-limit', '기준 변경 검사 전 대기에 들어가지 못했습니다.')
     const beforeChanged = (await api(`/api/groups/${groupId}`)).body
-    assert.equal((await api(`/api/groups/${groupId}`, 'PATCH', { baseVersion: beforeChanged.project.version, sourceVersion: 'v0.5' })).status, 200)
+    // MCP 기준 저장은 요약 응답을 받는다. 화면용 기본 PATCH 응답은 아래 대기 분류 시험에서 확인한다.
+    const changedSummary = await api(`/api/groups/${groupId}?view=summary&mapId=${coordinatorId}`, 'PATCH', { baseVersion: beforeChanged.project.version, sourceVersion: 'v0.5' })
+    assert.equal(changedSummary.status, 200)
+    assert.equal(changedSummary.body.view, 'summary')
+    assert.equal(changedSummary.body.project.version, beforeChanged.project.version + 1)
+    assert.equal(changedSummary.body.project.sourceVersion, 'v0.5')
+    assert.deepEqual(changedSummary.body.guide, beforeChanged.guide)
     const changedRecovery = await api(`${delegateUrl}/changed-plan/recover`, 'POST', { sourceRevision: parent.version, instruction: '기존 작업 재개' }, sourceHeaders)
     assert.equal(changedRecovery.status, 409)
     assert.match(changedRecovery.body.error, /기획 기준이 변경/)

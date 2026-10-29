@@ -488,7 +488,7 @@ AI 정리는 `mindnprogress_list_shared_knowledge_candidates`로 원문 없는 �
 | --- | --- |
 | `mindnprogress_reorder_documents` | 좌측 문서 목록의 순서를 변경합니다. |
 | `mindnprogress_save_document_layout` | 그룹, 그룹 내부 문서 순서와 그룹·개별 문서가 섞인 최상위 순서를 저장합니다. |
-| `mindnprogress_get_group_context` | 그룹의 기획 기준, 총괄 문서, 소속 문서 루트, 문서 지시와 과거 그룹 위임 결과를 조회합니다. |
+| `mindnprogress_get_group_context` | 그룹의 기획 기준, 총괄 문서, 소속 문서 루트, 문서 지시와 과거 그룹 위임 결과를 조회합니다. 기본 `summary`는 기획 기준·지침 전문과 나머지 요약·원문 회수 경로를, `detailLevel=full`은 모든 원문을 반환합니다. |
 | `mindnprogress_update_group_project` | 그룹의 기획 기준과 총괄 문서 연결을 버전 조건부로 수정합니다. |
 | `mindnprogress_create_group_document` | 그룹에 기능 문서와 담당 범위·완료 조건을 담은 집계 루트를 만듭니다. |
 | `mindnprogress_send_group_document_instruction` | 총괄 루트 AI가 같은 그룹의 문서 루트 AI에 승인된 지시 전문을 전달합니다. 기존 루트 대화를 이어갈 때는 최신 `contextHealth.assessmentId`가 필요합니다. |

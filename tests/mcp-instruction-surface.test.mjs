@@ -39,8 +39,9 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
     assert.deepEqual(tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), fixture)
     assert.equal(tools.length, 60)
     // REQ-MNP-04: 기존 변경 도구의 requestId/resultOnly 호환 확장. 도구 개수는 유지한다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'ed8fe7a10b0970ec5f87d29e59143ed193be4cb545569b4cf8887d985b8b1a9c')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 208)
+    // 2026-10-29: get_group_context의 detailLevel·mapId와 list_group_document_instructions의 instructionId를 추가했다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '97e623697270ed842f595ae353ec0361fe16d6b59c54003dcce8a431685a1258')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 211)
     for (const tool of tools.filter((tool) => storageWriteTools.has(tool.name))) {
       assert.ok(tool.inputSchema.properties.requestId.pattern || tool.inputSchema.properties.proposalRequestId)
       assert.equal(tool.inputSchema.properties.resultOnly.type, 'boolean')
@@ -58,6 +59,14 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
       const original = baselineDescriptions.get(tool.name)
       if (!original) continue // 배열로 등록되는 복구 도구는 아래 의미 검사에서 검증한다.
       const currentDescription = storageWriteTools.has(tool.name) ? tool.description.split(' requestId를 보존해 재전송하세요.')[0] : tool.description
+      // 그룹 문맥 요약 기본값(2026-10-29)은 기준선 설명을 그대로 두고 summary·full 안내만 뒤에 덧붙였다.
+      if (tool.name === 'mindnprogress_get_group_context') {
+        assert.ok(currentDescription.startsWith(original.slice(1, -1)), `${tool.name}의 기준선 설명 문장을 그대로 유지한다.`)
+        assert.match(currentDescription.slice(original.length - 2), /^ 기본 detailLevel=summary는 project·guide 전문.*회수 경로를 detail.*판단하기 전에는 그 경로로 해당 원문을 읽으세요.*full.*도구 출력 한도/s)
+        // 코드로 필드를 꺼내는 AI가 summary에 없는 경로를 조용히 빈 값으로 읽지 않도록 생략 필드를 이름으로 밝힌다.
+        assert.match(currentDescription, /root\.data에는 description·sharedKnowledge가 없고 길이·SHA-256만 root\.textIntegrity에 있으며, documentInstructions에는 지시·응답 원문이 없습니다/)
+        continue
+      }
       // 과거 기준선은 보존하고 사용자가 변경한 화면 명칭만 현재 이름으로 대조한다.
       const expectedDescription = tool.name === 'mindnprogress_get_dooray_response_approval'
         ? original.slice(1, -1).replace(/^Dooray 참조에서/, 'Dooray 업무 대응에서')
@@ -90,6 +99,14 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
     assert.match(groupInstruction, /첫 응답 턴만 replied 상태와 response로 기록.*자동 재개하거나 이후 턴의 보고를 전달하지 않습니다.*session-message로 회신 대상 대화에 직접.*기본 대상은 현재 총괄 대화.*replyTarget을 explicit/s)
     assert.doesNotMatch(groupInstruction, /완료 보고는 기본적으로 현재 총괄 대화로 돌아오며/)
     assert.match(groupInstruction, /queued·delivered·replied 상태를 업무 완료로 해석하지 마세요/)
+    const groupContextSchema = tools.find((tool) => tool.name === 'mindnprogress_get_group_context').inputSchema
+    assert.deepEqual(groupContextSchema.required, ['groupId'])
+    assert.deepEqual(groupContextSchema.properties.detailLevel.enum, ['summary', 'full'])
+    assert.equal(groupContextSchema.properties.detailLevel.default, 'summary')
+    assert.match(groupContextSchema.properties.mapId.description, /생략하면 get_context로 연결한 문서/)
+    const instructionListSchema = tools.find((tool) => tool.name === 'mindnprogress_list_group_document_instructions').inputSchema
+    assert.deepEqual(instructionListSchema.required, ['mapId'])
+    assert.match(instructionListSchema.properties.instructionId.description, /한 건만.*GROUP_DOCUMENT_INSTRUCTION_NOT_FOUND/)
     const listSchema = tools.find((tool) => tool.name === 'mindnprogress_list_ai_delegations').inputSchema.properties
     assert.match(listSchema.includeResult.description, /resultHash는 반환된 result 문자열\(절단 표시 포함\) 기준.*resultTruncated=true/s)
     assert.match(listSchema.includeFullResult.description, /resultFull.*수신 확인에는 resultFullHash가 아니라 resultHash/s)

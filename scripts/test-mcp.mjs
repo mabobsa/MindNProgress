@@ -2829,12 +2829,17 @@ async function main() {
     const managedGroup = await invoke('mindnprogress_update_group_project', {
       groupId: groupTestId, baseVersion: 0, source: '기획 원본 경로', sourceVersion: 'v1', objective: '요구사항 전체 구현', createCoordinator: true,
     })
-    assert.ok(managedGroup.coordinator.root.id)
-    assert.equal(managedGroup.coordinator.root.data.isWork, false)
+    // MCP 그룹 저장 응답은 요약이라 총괄 루트는 rootId로 받고, 루트 data는 full 조회로 확인한다.
+    assert.equal(managedGroup.view, 'summary')
+    assert.ok(managedGroup.coordinator.rootId)
+    const managedGroupFull = await invoke('mindnprogress_get_group_context', { groupId: groupTestId, detailLevel: 'full' })
+    assert.equal(managedGroupFull.view, undefined)
+    assert.equal(managedGroupFull.coordinator.root.id, managedGroup.coordinator.rootId)
+    assert.equal(managedGroupFull.coordinator.root.data.isWork, false)
     const groupDocument = await invoke('mindnprogress_create_group_document', {
       groupId: groupTestId, baseVersion: managedGroup.project.version, title: '기능 문서', description: '원본 분석 후 하위 업무를 구성합니다.',
     })
-    const groupCoordinatorContext = await invoke('mindnprogress_get_context', { mapId: managedGroup.coordinator.id, cardId: managedGroup.coordinator.root.id })
+    const groupCoordinatorContext = await invoke('mindnprogress_get_context', { mapId: managedGroup.coordinator.id, cardId: managedGroup.coordinator.rootId })
     const savedGroup = await invoke('mindnprogress_get_group_context', { groupId: groupTestId })
     assert.ok(savedGroup.documents.some((document) => document.id === groupDocument.map.id))
     assert.equal(savedGroup.delegations.length, 0)
@@ -2902,12 +2907,12 @@ async function main() {
     assert.equal(groupDocumentRoleContext.guide.documentCoordinator, DOCUMENT_COORDINATOR_INSTRUCTION)
     assert.equal(groupDocumentRoleContext.guide.approval, GROUP_APPROVAL_INSTRUCTION)
     assert.match(groupDocumentContext.selection.aiWorkCoordination.childDelegation.instruction, /같은 문서의 계층상 하위 카드/)
-    const coordinatorAgain = await invoke('mindnprogress_get_context', { mapId: managedGroup.coordinator.id, cardId: managedGroup.coordinator.root.id, detailLevel: 'full' })
+    const coordinatorAgain = await invoke('mindnprogress_get_context', { mapId: managedGroup.coordinator.id, cardId: managedGroup.coordinator.rootId, detailLevel: 'full' })
     assert.equal(coordinatorAgain.selection.workflow, undefined)
     const coordinatorRoleContext = await invoke('mindnprogress_get_group_context', { groupId: groupTestId })
     assert.equal(coordinatorRoleContext.guide.executionApproval, AI_EXECUTION_APPROVAL_INSTRUCTION)
     assert.equal(coordinatorRoleContext.guide.approval, GROUP_APPROVAL_INSTRUCTION)
-    const coordinatorChild = await invoke('mindnprogress_add_card', { mapId: managedGroup.coordinator.id, parentCardId: managedGroup.coordinator.root.id, data: { label: '총괄 문서의 일반 하위 카드', kind: 'task', isWork: false } })
+    const coordinatorChild = await invoke('mindnprogress_add_card', { mapId: managedGroup.coordinator.id, parentCardId: managedGroup.coordinator.rootId, data: { label: '총괄 문서의 일반 하위 카드', kind: 'task', isWork: false } })
     const coordinatorChildContext = await invoke('mindnprogress_get_context', { mapId: managedGroup.coordinator.id, cardId: coordinatorChild.card.id, detailLevel: 'full' })
     assert.doesNotMatch(JSON.stringify(coordinatorChildContext.guide), /# 사용자 승인과 실행 범위/)
     assert.equal(coordinatorChildContext.selection.role, undefined)

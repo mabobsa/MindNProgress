@@ -30,6 +30,20 @@
 
 그룹 부가 정보 조회만 실패했다면 MCP는 기존 성공 결과를 유지하고 `documentGroupsStatus: unavailable`과 `documentGroupsWarning`을 붙인다. 문서 목록 API도 그룹 설정 읽기 실패로 목록 전체를 차단하지 않는다. 저장·위임을 반복하지 말고 조회 도구로 소속만 재확인한다. 최초 문서 조회 자체가 실패한 경우까지 성공으로 바꾸지는 않는다.
 
+## 그룹 문맥 요약
+
+`mindnprogress_get_group_context`의 기본값은 `detailLevel=summary`다. 그룹 문맥 전체는 문서 지시 전문·루트 원문·대기 원문이 쌓이면 수십만~백만 자가 되어 AI 클라이언트의 도구 출력 한도를 넘기 때문이다. 화면이 쓰는 `GET /api/groups/:id` 기본 응답은 바꾸지 않았고, `?view=summary&mapId=`를 붙인 요청만 `server/lib/groupContextSummary.mjs`가 요약한다.
+
+- **전문 유지**: `project`(기획서 목록·목표·공통 지침), `guide`. `guide`는 기준선과 같은 원문이다.
+- **요약**: 문서별 루트는 `get_document(view=outline)`과 같은 방식으로 `data`에서 `description`·`sharedKnowledge`를 빼고 `textIntegrity`(길이·SHA-256)만 준다. 이 값은 `get_card`의 `textIntegrity`와 같아서 회수한 원문과 대조하거나 담당 범위 변경을 감지할 수 있다. 대기는 카드별 대기 제목과 건수, 문서 지시와 과거 위임은 상태·시각 등 메타데이터만 준다. 지시 미리보기는 현재 소속 문서별 최신 지시와 `queued`·`delivered` 지시에만 붙인다.
+- **역할**: `mapId`가 총괄 문서면 그룹 전체, 소속 문서면 그 문서가 대상인 지시·위임만 담는다. 문서 담당 관점의 지시에는 전달 시점의 유효 회신 대상(`replyTarget.mode`·`effectiveConversationId`)을 붙인다. MCP는 `mapId`를 생략하면 `get_context`로 연결한 문서를 쓴다.
+- **상한과 생략 표시**: 지시는 최신 20건(문서별 최신·대기 지시는 상한과 무관하게 포함), 위임은 20건, 대기 카드는 문서당 20장까지 담는다. 생략한 대기 카드는 `omittedCardIds`, 생략한 지시는 `documentInstructionCounts.omittedByTarget`에 대상 문서별 수로 남긴다. 생략 지시 ID 전체는 지시가 많은 그룹에서 수천 자를 더하므로 넣지 않는다.
+- **응답 순서**: `detail`은 `view`·`role`·`mapId` 바로 뒤에 둔다. AI가 코드로 일부만 출력하거나 클라이언트가 긴 출력의 중간을 잘라도 생략 안내는 앞에, `guide`는 끝에 남는다.
+- **원문 회수**: 루트 원문은 `get_card`, 대기 원문은 카드별 `get_card`다. `get_document(view=outline)`도 대기 원문을 주지만 요구사항 필드가 큰 문서에서는 도구 출력 한도를 넘는다. 지시 전문은 `list_group_document_instructions`의 `instructionId`+`includeContent` 단건 조회, 위임 결과는 `list_ai_delegations(includeResult)`. 대기 분류의 항목별 유효 여부는 `detailLevel=full`의 `waitingDetails[].review`에만 있다. 모든 원문이 필요하면 `detailLevel=full`을 쓴다.
+- `mindnprogress_update_group_project`의 저장 결과도 같은 요약으로 받는다.
+
+검증은 `tests/group-context-summary.test.mjs`(요약 변환), `tests/group-context-mcp.test.mjs`(실제 MCP 요청 경로와 `get_card` 대조), `tests/group-project-api.test.mjs`(라우트·단건 조회), `npm run test:mcp`(저장 응답 요약과 full 조회)로 실행한다. 도구 설명을 바꾼 개정이므로 병합 전에 `docs/ai-guidance-rollback-2026-10-01/behavior-evaluation-checklist.md`의 행동 평가 대상이다. 2026-10-29 평가 결과는 [group-context-summary-behavior-evaluation-20261029.md](group-context-summary-behavior-evaluation-20261029.md)에 있다.
+
 ## 적용과 검증
 
 서버 재시작과 기존 MCP 연결의 재연결이 필요하다. 기존 대화 전문·카드·댓글·승인·위임 기록은 자동 수정하지 않는다. 재시작은 사용자와 조율해 수행한다.

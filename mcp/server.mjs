@@ -1679,9 +1679,19 @@ async function main() {
     }
   })
 
-  registerTool(server, 'mindnprogress_get_group_context', '그룹의 최신 기획서 목록(project.sources: 이름·주소·개별 버전), 목표·공통 지침, 통합 관리 문서, 소속 문서의 루트 업무 설명·대화, 그룹 문서 지시와 과거 그룹 위임 현황을 조회합니다. source/sourceVersion은 첫 항목의 호환 별칭이며 모든 기획서는 sources와 guide.sources를 확인하세요. 총괄 AI는 guide.approval에 있는 전체 방향·문서별 실행 계획의 두 단계 사용자 승인을 확인하세요. 미승인 상태에서는 읽기 전용 분석과 제안만 합니다. 이 문맥을 먼저 읽고 원본 전수 분석, 요구사항 주 소유권, 문서 경계와 실행 순서를 관리하세요. 지시 전달 상태와 카드 완료 수는 기획 구현률이 아닙니다.', {
+  registerTool(server, 'mindnprogress_get_group_context', '그룹의 최신 기획서 목록(project.sources: 이름·주소·개별 버전), 목표·공통 지침, 통합 관리 문서, 소속 문서의 루트 업무 설명·대화, 그룹 문서 지시와 과거 그룹 위임 현황을 조회합니다. source/sourceVersion은 첫 항목의 호환 별칭이며 모든 기획서는 sources와 guide.sources를 확인하세요. 총괄 AI는 guide.approval에 있는 전체 방향·문서별 실행 계획의 두 단계 사용자 승인을 확인하세요. 미승인 상태에서는 읽기 전용 분석과 제안만 합니다. 이 문맥을 먼저 읽고 원본 전수 분석, 요구사항 주 소유권, 문서 경계와 실행 순서를 관리하세요. 지시 전달 상태와 카드 완료 수는 기획 구현률이 아닙니다. 기본 detailLevel=summary는 project·guide 전문과 문서·지시·위임·대기의 요약을 반환하고, 생략한 원문의 회수 경로를 detail에 담습니다. summary의 documents[].root.data에는 description·sharedKnowledge가 없고 길이·SHA-256만 root.textIntegrity에 있으며, documentInstructions에는 지시·응답 원문이 없습니다. 실행 범위·문서 경계·완료를 판단하기 전에는 그 경로로 해당 원문을 읽으세요. full은 모든 원문을 반환하지만 AI 클라이언트의 도구 출력 한도를 넘을 수 있습니다.', {
     groupId: z.string().min(1),
-  }, async ({ groupId }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}`))
+    detailLevel: z.enum(['summary', 'full']).default('summary').describe('summary는 project·guide 전문과 요약·원문 회수 경로(detail), full은 소속 문서 루트·대기·지시·위임 원문 전체'),
+    mapId: z.string().min(1).optional().describe('summary의 역할 판정에 쓸 현재 문서 ID. 생략하면 get_context로 연결한 문서. 총괄 문서는 그룹 전체, 소속 문서는 그 문서가 대상인 지시·위임만 요약'),
+  }, async ({ groupId, detailLevel, mapId }) => {
+    const query = new URLSearchParams()
+    if (detailLevel === 'summary') {
+      query.set('view', 'summary')
+      if (mapId ?? activeMapId) query.set('mapId', mapId ?? activeMapId)
+    }
+    const suffix = query.size > 0 ? `?${query}` : ''
+    return apiRequest(`/api/groups/${encodeURIComponent(groupId)}${suffix}`)
+  })
 
   registerTool(server, 'mindnprogress_update_group_project', '사용자가 승인한 설정·정비 범위에서만 그룹의 기획서 목록, 목표와 공통 지침을 부분 수정합니다. 미승인 방향을 설정에 확정하려고 호출하지 마세요. get_group_context의 project.version을 baseVersion으로 전달하세요. sources는 전체 목록 교체이며 기존 항목·ID를 보존하고 승인된 추가·수정·제거만 반영하세요. 생략하면 목록 유지, 빈 배열은 전체 제거입니다. source/sourceVersion은 첫 항목만 수정하는 구버전 호환 필드로 sources와 함께 전달하지 마세요. createCoordinator=true는 총괄 문서가 없을 때 통합 관리 문서와 집계 루트를 만들며 AI 실행을 시작하지 않습니다. 기존 문서는 coordinatorMapId로 연결합니다. 장문은 원문을 보존하고 수정 후 재조회해 비교하세요.', {
     groupId: z.string().min(1), baseVersion: z.number().int().nonnegative(),
@@ -1689,7 +1699,12 @@ async function main() {
     sources: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), title: z.string().max(120), source: z.string().max(4096), sourceVersion: z.string().max(240) }).strict()).max(50).optional(),
     objective: z.string().max(10000).optional(), instructions: z.string().max(20000).optional(),
     coordinatorMapId: z.string().min(1).optional(), createCoordinator: z.boolean().optional(),
-  }, async ({ groupId, ...body }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}`, { method: 'PATCH', body: JSON.stringify(body) }))
+  }, async ({ groupId, ...body }) => {
+    // 저장 결과도 get_group_context 기본값과 같은 요약으로 받는다. 전체 문맥은 도구 출력 한도를 넘을 수 있다.
+    const query = new URLSearchParams({ view: 'summary' })
+    if (activeMapId) query.set('mapId', activeMapId)
+    return apiRequest(`/api/groups/${encodeURIComponent(groupId)}?${query}`, { method: 'PATCH', body: JSON.stringify(body) })
+  })
 
   registerTool(server, 'mindnprogress_create_group_document', '사용자가 승인한 문서 구성 범위에서만 그룹에 기능 문서와 집계 전용 루트를 생성합니다. 미승인 분할안은 대화로 제안하고 이 도구를 호출하지 마세요. description에 담당 원본 범위, 요구사항 소유권, 분석·감사 순서, 정책 Ref와 완료 조건을 기록하세요. 이 호출은 AI를 실행하지 않습니다. 하위 카드는 기존 카드 도구로 구성하고 문서별 실행 계획까지 사용자에게 승인받은 뒤 그룹 총괄에서 mindnprogress_send_group_document_instruction으로 문서 루트 AI에 지시 전문을 전달하세요.', {
     groupId: z.string().min(1), baseVersion: z.number().int().nonnegative(),
@@ -1854,10 +1869,12 @@ async function main() {
   registerTool(server, 'mindnprogress_list_group_document_instructions', '그룹 총괄 문서에서 보낸 문서 지시의 대기·전달·응답·실패 상태를 조회합니다. 전달이나 응답 상태는 실제 문서 업무 완료를 뜻하지 않으므로 get_group_context의 카드와 문서 내부 AI 위임도 함께 확인하세요.', {
     mapId: z.string().min(1).describe('그룹 총괄 문서 ID'),
     targetMapId: z.string().min(1).optional().describe('특정 대상 문서로 필터'),
+    instructionId: z.string().min(1).optional().describe('지시 한 건만 조회. 없으면 GROUP_DOCUMENT_INSTRUCTION_NOT_FOUND'),
     includeContent: z.boolean().optional().describe('승인 근거·지시·응답 원문 포함'),
-  }, async ({ mapId, targetMapId, includeContent }) => {
+  }, async ({ mapId, targetMapId, instructionId, includeContent }) => {
     const query = new URLSearchParams()
     if (targetMapId) query.set('targetMapId', targetMapId)
+    if (instructionId) query.set('instructionId', instructionId)
     if (includeContent) query.set('includeContent', 'true')
     const suffix = query.size > 0 ? `?${query}` : ''
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/group-document-instructions${suffix}`, { aiMapId: mapId })

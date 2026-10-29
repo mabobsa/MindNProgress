@@ -34,6 +34,7 @@ import {
   rewriteMovedCardReferences,
 } from './lib/crossDocumentCardMove.mjs'
 import { createGroupProjects, documentRoot, DOCUMENT_COORDINATOR_INSTRUCTION } from './lib/groupProjects.mjs'
+import { summarizeGroupContext } from './lib/groupContextSummary.mjs'
 import { createDocumentGroupMetadata, documentGroupFields } from './lib/documentGroupMetadata.mjs'
 import {
   buildGroupDocumentInstruction,
@@ -8930,13 +8931,16 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const user = requireUser(request, response)
       if (!user) return
       const groupId = decodeURIComponent(groupRoute[1])
-      if (request.method === 'GET' && !groupRoute[2]) return sendJson(response, 200, await groupProjects.context(groupId, url.searchParams.get('mapId') ?? ''))
+      // view=summary는 AI용 요약이다. 생략하면 화면이 쓰는 기존 전체 응답을 그대로 반환한다.
+      const groupView = (context) => url.searchParams.get('view') === 'summary'
+        ? summarizeGroupContext(context, { mapId: url.searchParams.get('mapId') ?? '' }) : context
+      if (request.method === 'GET' && !groupRoute[2]) return sendJson(response, 200, groupView(await groupProjects.context(groupId, url.searchParams.get('mapId') ?? '')))
       if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 그룹 개발 정보를 변경할 수 있습니다.' })
       if ((request.method === 'PATCH' && !groupRoute[2]) || (request.method === 'POST' && groupRoute[2])) {
         const body = await readJsonBody(request)
         const result = groupRoute[2]
           ? { map: await groupProjects.createDocument(groupId, body, user) }
-          : await groupProjects.update(groupId, body, user)
+          : groupView(await groupProjects.update(groupId, body, user))
         broadcastEvent({ type: 'map-changed', mapId: null, action: 'layout', sourceClientId: requestClientId(request), updatedAt: new Date().toISOString(), updatedBy: publicUser(user) })
         return sendJson(response, groupRoute[2] ? 201 : 200, result)
       }
@@ -10952,12 +10956,19 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         response, 400, 'GROUP_DOCUMENT_INSTRUCTION_MAP_INVALID', '총괄 문서 ID가 올바르지 않습니다.',
       )
       const targetMapId = String(url.searchParams.get('targetMapId') ?? '').trim()
+      const instructionId = String(url.searchParams.get('instructionId') ?? '').trim()
       const includeContent = url.searchParams.get('includeContent') === 'true'
       const instructions = [...groupDocumentInstructions.values()]
         .filter((instruction) => instruction.parentMapId === parentMapId
-          && (!targetMapId || instruction.targetMapId === targetMapId))
+          && (!targetMapId || instruction.targetMapId === targetMapId)
+          && (!instructionId || instruction.id === instructionId))
         .sort((first, second) => String(second.createdAt).localeCompare(String(first.createdAt)))
         .map((instruction) => groupDocumentInstructionPublicView(instruction, { includeContent }))
+      // 단건 조회의 빈 목록을 "지시 없음"으로 오해하지 않도록 명시적으로 알린다.
+      if (instructionId && !instructions.length) return sendGroupDocumentInstructionResponse(
+        response, 404, 'GROUP_DOCUMENT_INSTRUCTION_NOT_FOUND', '이 총괄 문서에서 보낸 지시 중 해당 instructionId를 찾지 못했습니다. 발신 총괄 문서 ID와 instructionId를 확인해 주세요.',
+        { parentMapId, instructions },
+      )
       return sendGroupDocumentInstructionResponse(
         response, 200, 'GROUP_DOCUMENT_INSTRUCTION_LISTED', '그룹 문서 지시 내역을 조회했습니다.',
         { parentMapId, instructions },

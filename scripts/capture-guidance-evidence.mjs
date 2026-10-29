@@ -20,6 +20,8 @@ const startHead = 'eaa7eeda712c76e59c19ed771cbba077b72ada1e'
 // 운영 연결을 상속하지 않으며 모의 API는 GET 이외 요청과 미등록 경로를 거부한다.
 export async function captureInitialResponses(codeRoot, stateRoot) {
   const { createGroupProjects } = await import(pathToFileURL(path.join(codeRoot, 'server/lib/groupProjects.mjs')))
+  // 요약 모듈이 없는 과거 커밋을 재현할 때는 전체 응답을 그대로 쓴다.
+  const { summarizeGroupContext } = await import(pathToFileURL(path.join(codeRoot, 'server/lib/groupContextSummary.mjs'))).catch(() => ({}))
   const { MNP_MCP_SERVER_INSTRUCTIONS } = await import(pathToFileURL(path.join(codeRoot, 'src/utils/aiContextInstructions.mjs')))
   const maps = ['map-coordinator', 'map-member'].map((id) => ({
     id, title: id, version: 1, color: 'cyan', updatedAt: '2026-10-01T00:00:00.000Z',
@@ -50,7 +52,10 @@ export async function captureInitialResponses(codeRoot, stateRoot) {
       let value
       if (url.pathname === '/api/health') value = { status: 'ok', publicBaseUrl: 'https://guidance-fixture.test' }
       else if (url.pathname === '/api/assignees') value = { users: [] }
-      else if (url.pathname === '/api/groups/group-fixture') value = await service.context(group.id, roleMapId)
+      else if (url.pathname === '/api/groups/group-fixture') {
+        value = await service.context(group.id, roleMapId)
+        if (summarizeGroupContext && url.searchParams.get('view') === 'summary') value = summarizeGroupContext(value, { mapId: url.searchParams.get('mapId') ?? '' })
+      }
       else if (url.pathname === '/api/document-groups') value = { documentGroups: await Promise.all(url.searchParams.getAll('mapId').map(async (mapId) => ({ mapId, group, groupMembership: 'grouped', groupProject: await service.forDocument(mapId) }))) }
       else if (/^\/api\/maps\/[^/]+\/comments$/.test(url.pathname)) value = { comments: [] }
       else if (/^\/api\/maps\/[^/]+\/ai-delegations$/.test(url.pathname)) value = { delegations: [] }

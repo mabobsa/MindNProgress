@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import path from 'node:path'
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { knowledge, storageApi } from './helpers/storage-api-harness.mjs'
@@ -298,4 +298,69 @@ test('실제 MCP의 get_card·list_comments는 예산을 넘으면 댓글 페이
   const { value: deleted } = await invoke('delete_card', { mapId, cardId: added.card.id })
   assert.deepEqual(deleted.deletedCardIds, [added.card.id])
   assert.ok(deleted.affectedCards.every(isSummary))
+})
+
+// 문서 85개 중 6개는 그룹(총괄 문서 0)에 속한다. 총괄 문서는 소속 문서 5개에 지시 40건을 보냈고 가장 최근 1건은 응답 대기(delivered)다.
+const E2E_GROUP_ID = 'group-e2e-budget'
+const e2eInstructionResponse = (index) => `${index}번 응답 원문: 합의한 마감일은 D-${index}이다. `.repeat(30)
+async function seedDocumentGroups({ data, ids }) {
+  await writeFile(path.join(data, '_map-order.json'), JSON.stringify({ version: 1, items: [{ type: 'group', id: E2E_GROUP_ID }, ...ids.slice(6).map((id) => ({ type: 'map', id }))],
+    groups: [{ id: E2E_GROUP_ID, name: '격리 그룹', mapIds: ids.slice(0, 6) }] }))
+  await mkdir(path.join(data, '_group-projects'), { recursive: true })
+  await writeFile(path.join(data, '_group-projects', `${E2E_GROUP_ID}.json`), JSON.stringify({ version: 1, coordinatorMapId: ids[0], source: 'manual', sourceVersion: 'manual-1',
+    objective: '격리 검증 그룹 목표', instructions: '격리 검증 그룹 지침', updatedAt: '2026-10-27T00:00:00.000Z', updatedBy: { id: 'user-editor', name: '김용민' } }))
+  const instructions = Array.from({ length: 40 }, (_, index) => {
+    const state = index === 0 ? 'delivered' : 'replied'
+    const createdAt = new Date(Date.UTC(2026, 9, 28) - index * 3_600_000).toISOString()
+    return { id: `e2e-instruction-${String(index).padStart(2, '0')}`, groupId: E2E_GROUP_ID, groupProjectVersion: 1, parentMapId: ids[0], parentCardId: 'card-0',
+      parentCardLabel: '검증 카드 0', parentConversationId: 'conv-coordinator', targetMapId: ids[1 + (index % 5)], targetCardId: 'card-0', targetCardLabel: '검증 카드 0',
+      strategy: 'new', instructionType: 'planning', approvalScope: 'document', instructionPreview: `${index}번 지시 미리보기`, instructionHash: 'a'.repeat(64),
+      approvalEvidencePreview: '승인 근거 미리보기', approvalEvidenceHash: 'b'.repeat(64), decisionReason: '격리 검증 지시', state, reasonCode: `GROUP_DOCUMENT_INSTRUCTION_${state.toUpperCase()}`,
+      message: '지시 상태를 기록했습니다.', createdAt, updatedAt: createdAt, deliveredAt: createdAt, instruction: `${index}번 지시 원문. `.repeat(250), approvalEvidence: '사용자 승인 근거. '.repeat(40),
+      ...(state === 'replied' ? { response: e2eInstructionResponse(index), responseHash: 'c'.repeat(64), repliedAt: createdAt } : {}) }
+  })
+  await writeFile(path.join(data, '_group-document-instructions.json'), JSON.stringify(instructions))
+}
+
+test('실제 MCP의 list_documents·list_group_document_instructions는 예산을 넘으면 문서·대기 지시를 두고 줄인다', { timeout: 180000 }, async (t) => {
+  const api = await storageApi(t, { documents: 85, seed: seedDocumentGroups })
+  const client = new Client({ name: 'list-budget-test', version: '1' })
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['mcp/server.mjs'],
+    cwd: process.env.MNP_STORAGE_TEST_SOURCE_ROOT || path.resolve(import.meta.dirname, '..'), env: api.env, stderr: 'pipe' })
+  t.after(async () => { await client.close() })
+  await client.connect(transport)
+  const invoke = async (name, args) => {
+    const result = await client.callTool({ name: `mindnprogress_${name}`, arguments: args })
+    assert.notEqual(result.isError, true, JSON.stringify(result))
+    const text = result.content.find((part) => part.type === 'text').text
+    return { value: JSON.parse(text), chars: text.length }
+  }
+  const [coordinatorMapId] = api.ids
+  await invoke('get_context', { mapId: coordinatorMapId, cardId: 'card-0', editorId: 'user-editor', aiType: 'Fixture AI', aiModel: 'fixture' })
+  const { value: documents, chars } = await invoke('list_documents', {})
+  assert.ok(documents.responseBudget, `문서 목록이 예산을 넘어야 합니다(${chars}자).`)
+  assert.equal(documents.responseBudget.returnedChars, chars)
+  assert.ok(chars <= 40000, `list_documents ${chars}자`)
+  assert.equal(documents.maps.length, 85, '문서 항목은 빼지 않는다')
+  assert.equal(documents.documentGroups, undefined, '문서 항목과 같은 값인 documentGroups를 생략한다')
+  const grouped = documents.maps.filter((map) => map.group?.id === E2E_GROUP_ID)
+  assert.equal(grouped.length, 6, '그룹 정보는 문서 항목에 남는다')
+  assert.ok(grouped.every((map) => map.groupProject?.coordinatorMapId === coordinatorMapId))
+  assert.equal(grouped.find((map) => map.id === coordinatorMapId).groupProject.role, 'coordinator')
+  assert.ok(documents.maps.every((map) => map.updatedBy === undefined || Object.keys(map.updatedBy).every((key) => key === 'id' || key === 'name')))
+
+  const { value: history, chars: historyChars } = await invoke('list_group_document_instructions', { mapId: coordinatorMapId, includeContent: true })
+  assert.ok(history.responseBudget, `지시 목록이 예산을 넘어야 합니다(${historyChars}자).`)
+  assert.equal(history.responseBudget.returnedChars, historyChars)
+  assert.ok(historyChars <= 40000, `list_group_document_instructions ${historyChars}자`)
+  const delivered = history.instructions.find((item) => item.id === 'e2e-instruction-00')
+  assert.equal(delivered.state, 'delivered')
+  assert.equal(delivered.instruction, '0번 지시 원문. '.repeat(250), '응답 대기 지시는 원문까지 그대로 둔다')
+  // 대상 문서 5개의 최신 정리된 지시(1~5번)는 목록에 남는다.
+  for (let index = 1; index <= 5; index++) assert.ok(history.instructions.some((item) => item.id === `e2e-instruction-0${index}`), `${index}번`)
+  const omittedId = history.omitted.contentOmittedInstructionIds.at(-1)
+  assert.ok(omittedId)
+  const { value: single } = await invoke('list_group_document_instructions', { ...history.omitted.retrieval.instruction.arguments, instructionId: omittedId })
+  assert.equal(single.responseBudget, undefined, '한 건 조회는 줄이지 않는다')
+  assert.equal(single.instructions[0].response, e2eInstructionResponse(Number(omittedId.slice(-2))))
 })

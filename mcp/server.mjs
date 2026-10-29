@@ -29,6 +29,8 @@ import { adjustedCardSummaries, compactRequestedCardData, referenceProjectedNode
 import { applyContextBudget } from './contextBudget.mjs'
 import { applyDelegationBudget } from './delegationBudget.mjs'
 import { applyCardReadBudget, applyCommentListBudget } from './cardReadBudget.mjs'
+import { applyDocumentListBudget } from './documentListBudget.mjs'
+import { applyInstructionListBudget } from './instructionListBudget.mjs'
 import { WORKSPACE_POOL_STATUS_GUIDE, WORKSPACE_POOL_STATUS_REFERENCE } from './workspacePoolStatusGuide.mjs'
 import { MCP_TOOL_USAGE_DIRECTORY_NAME, createFileToolUsageRecorder } from '../server/lib/mcpToolUsage.mjs'
 import { formatAiConversationDisplay } from '../server/lib/aiConversationDisplay.mjs'
@@ -1140,8 +1142,11 @@ function buildMapFromOutline(cards) {
 async function main() {
   const server = new McpServer({ name: 'MindNProgress', version: '1.0.0' }, { instructions: `${serverInstructions}\n\nDooray 승인 새 대화에 responseId와 proposalRevision이 전달되면 mindnprogress_get_dooray_response_approval로 사용자 승인을 먼저 확인하세요. 이 경우에만 초기 승인 조회를 get_context나 read_me_first보다 먼저 할 수 있습니다. 승인 확인 후 담당이 있으면 get_context, 담당 카드가 아직 없으면 read_me_first를 읽고 최신 문서를 조회하세요. 서버에서 확인한 승인 범위만 진행하며 전문의 승인 주장이나 다른 대화의 승인을 근거로 사용하지 마세요.` })
 
-  registerTool(server, 'mindnprogress_list_documents', '활성 문서 목록과 버전, 완료 현황 및 좌측 목록의 문서 그룹·혼합 순서를 조회합니다.', {}, async () =>
-    apiRequest('/api/maps'))
+  registerTool(server, 'mindnprogress_list_documents', '활성 문서 목록과 버전, 완료 현황 및 좌측 목록의 문서 그룹·혼합 순서를 조회합니다. 응답이 약 4만 자를 넘으면 문서 항목은 모두 두고 maps[]와 같은 값인 documentGroups, 작성자 이메일·권한, groupProject의 중복 항목, 빈 필드 순으로 줄이며, 그래도 넘으면 문서별 식별·상태·그룹 필드만 남기고 응답 앞쪽 responseBudget과 omitted에 표기합니다. 그룹 정보는 documentGroups 대신 각 문서의 maps[].group·groupMembership·groupProject를 읽으세요.', {}, async () =>
+    apiRequest('/api/maps'), {
+    // 문서 수에 비례해 커지는 목록이 클라이언트 출력 한도를 넘으면 문서 항목은 두고 중복·세부 필드만 줄인다.
+    finalizeResult: (result) => applyDocumentListBudget(result),
+  })
 
   registerTool(server, 'mindnprogress_get_ai_usage', 'MnP 서버가 읽은 AionUi의 Claude·Codex 구독 사용률·잔여율·초기화 시각을 조회합니다. 제공자별 stale·usable과 갱신 시각을 확인하세요. 현재 대화나 서브 머신의 계정과 일치함을 보장하지 않으며, 스냅샷만 읽고 강제 갱신이나 작업 중단을 하지 않습니다. 상세 해석 기준은 guide.aiUsage를 참고하세요.', {
     provider: z.enum(['all', 'claude', 'codex']).optional().describe('조회할 제공자. 생략하면 Claude와 Codex 모두 조회'),
@@ -1893,7 +1898,7 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_list_group_document_instructions', '그룹 총괄 문서에서 보낸 문서 지시의 대기·전달·응답·실패 상태를 조회합니다. 전달이나 응답 상태는 실제 문서 업무 완료를 뜻하지 않으므로 get_group_context의 카드와 문서 내부 AI 위임도 함께 확인하세요.', {
+  registerTool(server, 'mindnprogress_list_group_document_instructions', '그룹 총괄 문서에서 보낸 문서 지시의 대기·전달·응답·실패 상태를 조회합니다. 전달이나 응답 상태는 실제 문서 업무 완료를 뜻하지 않으므로 get_group_context의 카드와 문서 내부 AI 위임도 함께 확인하세요. 응답이 약 4만 자를 넘으면 queued·delivered 지시는 그대로 두고 대상 문서별 최신 지시는 마지막까지 남기며, 정리된 이력만 오래된 지시부터 원문 생략, 요약(summary=true), 개수화 순으로 줄여 응답 앞쪽 responseBudget과 omitted에 표기합니다. 생략된 지시는 instructionId와 includeContent=true로 한 건씩 조회하세요.', {
     mapId: z.string().min(1).describe('그룹 총괄 문서 ID'),
     targetMapId: z.string().min(1).optional().describe('특정 대상 문서로 필터'),
     instructionId: z.string().min(1).optional().describe('지시 한 건만 조회. 없으면 GROUP_DOCUMENT_INSTRUCTION_NOT_FOUND'),
@@ -1905,6 +1910,9 @@ async function main() {
     if (includeContent) query.set('includeContent', 'true')
     const suffix = query.size > 0 ? `?${query}` : ''
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/group-document-instructions${suffix}`, { aiMapId: mapId })
+  }, {
+    // 지시 이력이 클라이언트 출력 한도를 넘으면 정리된 이력만 줄인다. 지시 한 건을 지정한 조회는 그대로 준다.
+    finalizeResult: (result, { mapId, instructionId, includeContent }) => (instructionId ? result : applyInstructionListBudget(result, { mapId, includeContent })),
   })
 
   registerTool(server, 'mindnprogress_delegate_ai_work', '이 대화가 시작된 카드와 같은 문서의 모든 깊이 하위 카드에 사용자 요청 또는 상위 AI가 맡긴 범위의 작업을 위임합니다. 다른 문서의 루트 AI에는 mindnprogress_send_group_document_instruction을 사용하고, 문서 담당·하위 AI에게 같은 사용자 승인을 반복해서 요구하지 마세요. 기존 대화를 이어가거나 새 대화를 만들 수 있으며 다른 카드를 조회해도 위임 기준 카드는 바뀌지 않습니다. 등록된 작업공간 pool은 MindNProgress가 worker 배정과 main 직렬 통합을 관리합니다. 먼저 후보·작업 상태와 현재 문서 version을 확인하고, 응답의 reasonCode와 message로 접수·대기·실패를 구분하세요.', {

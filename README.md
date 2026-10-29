@@ -410,7 +410,7 @@ node runner/index.mjs
 | 명령어 | 설명 |
 | --- | --- |
 | `mindnprogress_read_me_first` | 문서 선택 없이 제품 개념, 작성 규칙과 권장 작업 순서를 조회합니다. |
-| `mindnprogress_list_documents` | 활성 문서 목록, 버전, 완료 현황과 문서 그룹·혼합 순서를 조회합니다. |
+| `mindnprogress_list_documents` | 활성 문서 목록, 버전, 완료 현황과 문서 그룹·혼합 순서를 조회합니다. 응답이 4만 자를 넘으면 문서 항목은 모두 두고 같은 값인 `documentGroups`, 작성자 세부, 중복 그룹 필드, 빈 필드 순으로 줄여 `responseBudget`·`omitted`에 표기합니다. 그룹 정보는 각 문서의 `group`·`groupMembership`·`groupProject`에 있습니다. |
 | `mindnprogress_search_content` | 열람 가능한 활성 문서 전체의 사용자 콘텐츠를 관련도순으로 검색하거나, 정확성 보완이 필요할 때 모든 카드를 커서 기반 카탈로그로 순회합니다. 결과는 후보이므로 최종 판단 전에 `mindnprogress_get_card`로 최신 원문을 확인합니다. |
 | `mindnprogress_get_context` | 선택 카드와 문서 구조, 관계, 댓글, 담당자, 업무 링크 및 선행 지식을 작업 문맥으로 조회합니다. `detailLevel`은 `focused` 또는 `full`을 사용합니다. `focused` 응답이 약 4만 자를 넘으면 `guide` 등 규칙은 그대로 두고 덜 중요한 데이터부터 줄이며, 생략한 경로와 회수 도구를 응답 앞쪽 `contextBudget`·`omitted`에 표기합니다([응답 크기 예산](docs/mcp-response-budget-20261029.md)). |
 | `mindnprogress_get_document` | 문서의 모든 카드와 연결 관계 및 외부 접근 URL을 조회합니다. `view`를 생략하면 기존 full 응답이며, `compact`(카드 원문 유지·AI 대화 상세와 렌더링 값 축약), `outline`(구조·상태·관계·본문 길이와 `textIntegrity`, `cardIds`로 고른 카드만 전문), `version`(version과 `documentEtag`만)을 선택할 수 있습니다. 같은 `view`·`cardIds`로 받은 응답의 `documentEtag`를 `ifNoneMatch`로 전달했고 그 뒤 문서가 바뀌지 않았으면 본문을 생략하고 `notModified=true`를 반환합니다. `knownVersion`은 version 일치 여부만 `freshness`로 알려 주며 본문을 생략하지 않습니다(`view`를 생략한 full 응답에는 `freshness`가 없습니다). `outline` 응답이 약 4만 자를 넘으면 구조·상태·계층과 `cardIds` 카드 전문은 두고 큰 비원문 필드부터 단계적으로 줄이며, 줄인 범위와 회수 경로를 `responseBudget`·`omitted`에 표기합니다. |
@@ -492,7 +492,7 @@ AI 정리는 `mindnprogress_list_shared_knowledge_candidates`로 원문 없는 �
 | `mindnprogress_update_group_project` | 그룹의 기획 기준과 총괄 문서 연결을 버전 조건부로 수정합니다. |
 | `mindnprogress_create_group_document` | 그룹에 기능 문서와 담당 범위·완료 조건을 담은 집계 루트를 만듭니다. |
 | `mindnprogress_send_group_document_instruction` | 총괄 루트 AI가 같은 그룹의 문서 루트 AI에 승인된 지시 전문을 전달합니다. 기존 루트 대화를 이어갈 때는 최신 `contextHealth.assessmentId`가 필요합니다. |
-| `mindnprogress_list_group_document_instructions` | 문서 지시의 대기·전달·응답 상태와 선택적으로 전문을 조회합니다. |
+| `mindnprogress_list_group_document_instructions` | 문서 지시의 대기·전달·응답 상태와 선택적으로 전문을 조회합니다. 응답이 4만 자를 넘으면 `queued`·`delivered` 지시와 대상 문서별 최신 지시는 두고 오래된 이력부터 원문 생략·요약·개수화 순으로 줄이며, 생략된 지시는 `instructionId`와 `includeContent=true`로 한 건씩 조회합니다. |
 
 그룹이나 혼합 순서를 변경할 때는 먼저 `mindnprogress_list_documents`의 `documentLayout`을 확인하고 모든 활성 문서를 정확히 한 번 포함해야 합니다.
 

@@ -26,6 +26,8 @@ const responseBudgetAppendices = new Map([
   ['mindnprogress_add_card', /^ affected의 affectedCards에는 서버가 함께 조정한 카드\(상위 진행률·Root 집계 등\)의 상태 요약과 changedKeys만 있습니다\.$/],
   ['mindnprogress_move_card', /^ 같은 문서 안 이동의 affected 응답에서 card는 바뀌지 않은 1,000자 초과 필드를 card\.omittedFields와 textIntegrity로만 표시하고, affectedCards에는 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다\.$/],
   ['mindnprogress_delete_card', /^ affectedCards에는 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다\.$/],
+  ['mindnprogress_list_documents', /^ 응답이 약 4만 자를 넘으면 문서 항목은 모두 두고 maps\[\]와 같은 값인 documentGroups, 작성자 이메일·권한, groupProject의 중복 항목, 빈 필드 순으로 줄이며, 그래도 넘으면 문서별 식별·상태·그룹 필드만 남기고 응답 앞쪽 responseBudget과 omitted에 표기합니다\. 그룹 정보는 documentGroups 대신 각 문서의 maps\[\]\.group·groupMembership·groupProject를 읽으세요\.$/],
+  ['mindnprogress_list_group_document_instructions', /^ 응답이 약 4만 자를 넘으면 queued·delivered 지시는 그대로 두고 대상 문서별 최신 지시는 마지막까지 남기며, 정리된 이력만 오래된 지시부터 원문 생략, 요약\(summary=true\), 개수화 순으로 줄여 응답 앞쪽 responseBudget과 omitted에 표기합니다\. 생략된 지시는 instructionId와 includeContent=true로 한 건씩 조회하세요\.$/],
   ['mindnprogress_update_card', /^ affected의 card는 이번에 보낸 필드와 저장 중 바뀐 필드를 원문으로 주고, 그 밖의 1,000자 초과 필드는 card\.omittedFields와 textIntegrity로만 표시합니다\. affectedCards에는 요청 카드를 빼고 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다\.$/],
 ])
 // send_group_document_instruction(실제 서버 동작에 맞춘 정정)과 get_document(2026-10-21 승인 view 인자)는 재생성 기준선과

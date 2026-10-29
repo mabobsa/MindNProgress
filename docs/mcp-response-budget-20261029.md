@@ -150,7 +150,7 @@ AI 클라이언트는 큰 MCP 응답을 그대로 받지 못한다. Claude Code�
 - 규칙이 큰 문맥은 더 줄일 수 없는 최소 응답도 4만 자를 넘는다(운영 측정 20건, 최대 44,169자). 규칙은 줄이지 않는다.
 - 큰 문맥에서는 선행 지식 원문을 원천 수만큼 `get_card`로 따로 읽으므로 호출 수가 늘어난다.
 - 단일 필드가 4.8만 자 안팎인 카드는 `fields`로 나눠 받아도 그 필드 하나가 한도를 넘을 수 있다.
-- `get_document`의 `full`·`compact` 크기는 범위가 아니다. `get_document`의 `outline`, `list_ai_delegations`, `get_card`·`list_comments`는 아래 후속 절에서 다룬다.
+- `get_document`의 `full`·`compact` 크기는 범위가 아니다. `get_document`의 `outline`, `list_ai_delegations`, `get_card`·`list_comments`, `list_documents`·`list_group_document_instructions`는 아래 후속 절에서 다룬다.
 
 ## 후속: `get_document` outline 예산
 
@@ -479,3 +479,132 @@ AI 클라이언트는 큰 MCP 응답을 그대로 받지 못한다. Claude Code�
   - A의 Claude 비용은 개정 후가 회당 $0.15~0.30 많았다. 저장 파일을 부분 검색하던 방식 대신 원문 페이지를 직접 읽었기 때문이다.
   - 총 사용량은 Claude 6회 환산 $8.09(Max 한도에서 차감), Codex 6회 입력 253만(캐시 219만)·출력 2.1만 토큰이다.
 - **한계**: 조합마다 1회, 합성 데이터다. 원문 한 필드가 4만 자 안팎인 카드는 `fields`로 나눠도 그 필드 하나가 한도를 넘을 수 있다(구간 읽기는 범위 밖).
+
+## 후속: `list_documents`·`list_group_document_instructions` 예산
+
+### 배경과 원인
+
+2026-10-07~29 대화 기록을 읽기 전용으로 집계했다(행동 평가 세션 제외).
+
+| 도구 | Claude 호출 | Claude 4.8만 자 초과 | Codex 호출 | Codex 4.8만 자 초과 |
+|---|---:|---:|---:|---:|
+| `list_documents` | 23 | 12 | 28 | 26 |
+| `list_group_document_instructions` | 32 | 4 | 456 | 44(4만 자 초과 166) |
+
+- **`list_documents`**: 큰 필드 없이 문서 수에 비례해 커진다. 현재 운영 문서 52개에 62,932자다.
+  - `documentGroups`(1.4만 자)는 각 문서 항목의 `group`·`groupMembership`·`groupProject`를 그대로 한 번 더 담는다(측정에서 값이 모두 같음을 확인).
+  - 작성자(`createdBy`·`updatedBy`)는 AI에게 필요 없는 이메일·권한·공개 접근 여부를 담는다.
+  - 문서별 `groupProject`는 `group`과 같은 그룹 ID·이름과 모든 문서에서 같은 `contextTool`을 반복한다.
+- **`list_group_document_instructions`**: 지시 이력 전체를 돌려준다.
+  - 지시마다 미리보기·판단 사유·회신 대상·응답 기록 등이 약 2,500자이고, 원문을 포함하면 2,000~6,000자가 더해진다.
+  - 운영 총괄 문서 7개 중 4개가 4만 자를 넘었다. 가장 큰 문서(지시 129건)는 328,281자, 원문 포함 928,798자였다.
+  - 대상 문서 하나의 원문 포함 조회도 최대 145,432자였다.
+
+### 변경 (`mcp/documentListBudget.mjs`, `mcp/instructionListBudget.mjs`, `mcp/server.mjs`)
+
+- **`list_documents`**: 응답이 4만 자를 넘을 때만 아래 순서로 줄이고 예산에 들면 멈춘다. 문서 항목은 하나도 빼지 않는다.
+
+| 순서 | 단계 ID | 줄이는 데이터 | 회수 경로 |
+|---|---|---|---|
+| 1 | `documentGroups` | 문서 항목과 같은 값인 `documentGroups`(값이 다르면 줄이지 않음) | 각 문서의 `group`·`groupMembership`·`groupProject` |
+| 2 | `authors` | 작성자를 `{id, name}`으로 | `list_users` |
+| 3 | `groupProject` | 문서별 `groupProject`를 `{coordinatorMapId, role}`로 | `get_group_context(groupId)` |
+| 4 | `emptyFields` | 값이 없거나 비어 있는 필드 | 없음(값 없음과 같다) |
+| 5 | `minimalDocuments` | 문서별 식별·버전·진행률·상태·대기 수·그룹 필드 외의 필드 | `get_document` |
+
+- **`list_group_document_instructions`**: `list_ai_delegations`와 같은 방식이다. 응답이 4만 자를 넘을 때만 정리된 이력(`replied`·`failed`·`expired`·`cancelled`)을 아래 순서로 줄인다.
+  - 전달·응답 대기 지시(`queued`·`delivered`)는 그대로 둔다.
+  - 대상 문서별 최신 지시(그 문서의 현재 지시)는 마지막까지 남긴다.
+
+| 순서 | 단계 ID | 줄이는 데이터 |
+|---|---|---|
+| 1 | `olderSettledContent` | 최신이 아닌 지시의 원문(`instruction`·`approvalEvidence`·`response`, 해시는 유지, `contentOmitted=true`) |
+| 2 | `olderSettledSummaries` | 최신이 아닌 지시를 요약으로(ID·상태·대상·유형·승인 범위·시각·사유 코드·해시, `summary=true`) |
+| 3 | `latestSettledContent` | 대상 문서별 최신 지시의 원문 |
+| 4 | `latestSettledSummaries` | 대상 문서별 최신 지시를 요약으로 |
+| 5 | `olderSettledRemoved` | 최신이 아닌 지시를 오래된 것부터 목록에서 빼고 대상 문서별 개수만 남김 |
+| 6 | `latestSettledRemoved` | 그래도 넘으면 최신 지시도 오래된 것부터 개수로 |
+
+- 지시 목록의 세부 규칙:
+  - 5단계에서 최신이 아닌 지시부터 빼므로, 오래전에 받은 지시가 현재 지시인 문서도 목록에 남는다.
+  - 회수 경로는 이미 있는 `instructionId`+`includeContent=true`(한 건)와 `targetMapId`(문서별)다. `instructionId`로 한 건을 조회하면 줄이지 않는다.
+- **표기**: 줄였을 때 `responseBudget`과 `omitted`를 응답 앞쪽에 둔다(`list_documents`는 맨 앞, 지시 목록은 `parentMapId` 바로 뒤). `returnedChars`는 그룹 메타데이터를 붙인 최종 응답 크기와 같다.
+- **도구 설명**: 두 도구 모두 기준선 문장 뒤에 안내만 덧붙였다. 생략된 `documentGroups`를 코드로 읽으면 빈 값이 되므로, 같은 값이 각 문서 항목에 있다는 점을 설명과 `omitted`에 밝혔다.
+- **서버 변경 없음**: 운영 반영에는 MCP 재연결만 필요하다.
+
+### 테스트
+
+- `tests/mcp-list-budget.test.mjs`(새 테스트)
+  - `list_documents`: 예산 안 무변경, 문서 항목 유지, 값이 다르면 `documentGroups` 유지, 단계별 축소, 최소 필드와 `exceeded`, 여러 규모
+  - 지시 목록: 대기 지시 판정, 대기·최신 지시 유지와 오래된 원문부터 생략, 오래전 지시가 현재 지시인 문서 유지, 여러 규모
+- `tests/mcp-response-budget-mcp.test.mjs`: 실제 MCP와 격리 API로 다음을 확인한다.
+  - 문서 85개(그룹 1개)의 `list_documents` 축소와 그룹 필드 유지
+  - 지시 40건(응답 대기 1건 포함)의 원문 포함 조회 축소, 대기 지시 원문 유지, `instructionId` 회수
+- `npm run test:mcp`: 통과.
+- `npm run test:unit`: 1,608건 중 실패 4건. `65704ea` 기준선의 기존 실패 4건과 같다.
+- 변경 파일 `oxlint`: 경고 없음.
+
+### 측정 (운영 데이터 사본, 읽기 전용)
+
+운영 `server/data`에서 문서·그룹·지시 파일만 임시 폴더로 복사해 격리 서버를 띄웠다. 개정 전(`5425a0a`)과 개정 후 MCP로 같은 조회를 했다. 연동 토큰·세션·Dooray 파일은 복사하지 않았고, 측정 후 사본을 지웠다.
+
+| 조회 | 개정 | 호출 | 중앙값 | 최대 | 4만 자 초과 | 4.8만 자 초과 |
+|---|---|---:|---:|---:|---:|---:|
+| `list_documents`(문서 52개) | 전 | 1 | 62,932자 | 62,932자 | 1 | 1 |
+| `list_documents`(문서 52개) | 후 | 1 | 39,533자 | 39,533자 | 0 | 0 |
+| 지시 전체(총괄 문서 5개) | 전 | 5 | 88,908자 | 328,281자 | 4 | 3 |
+| 지시 전체(총괄 문서 5개) | 후 | 5 | 36,320자 | 39,846자 | 0 | 0 |
+| 지시 전체 + 원문 | 전 | 5 | 223,421자 | 928,798자 | 5 | 4 |
+| 지시 전체 + 원문 | 후 | 5 | 39,132자 | 39,680자 | 0 | 0 |
+| 대상 문서별 + 원문 | 전 | 30 | 46,778자 | 145,432자 | 16 | 14 |
+| 대상 문서별 + 원문 | 후 | 30 | 24,441자 | 39,585자 | 0 | 0 |
+
+- `list_documents`는 1~3단계로 들어왔다. `exceeded`는 0건이다.
+- 지시 목록에서 최신 지시까지 개수로 바꾼 경우(`latestSettledRemoved`)는 없었다.
+- 4만 자를 넘은 대화 기록 응답에 같은 규칙을 적용해 보았다. `list_documents` 25건과 지시 목록 Claude 4건은 모두 한도 안에 들었다. Codex 161건은 1건을 빼고 모두 들었고, 남은 1건(40,953자)은 시뮬레이션의 추정치 오차 범위였다.
+
+### 행동 평가
+
+개정 전은 `5425a0a`, 개정 후는 이 변경을 더한 작업 트리다. 실행 원본은 저장소 밖 `C:\Git\MindNProgress\behavior-eval-list-budget-20261029`에 있다.
+
+- **fixture**: 합성 문서 60개다. 그룹 4개(총괄 포함 24개)와 그룹 없는 문서 36개가 있다.
+  - 결제 그룹 총괄은 소속 문서 6개에 지시 42건을 보냈고, 그중 1건(PAY-02)은 응답 대기다.
+  - 문서별 최신 응답에 LATEST 코드를, PAY-03에 처음 보낸 지시의 응답에만 마감일(DEADLINE-P3, 2026-11-14)을 두었다.
+
+| 조회 | 개정 전 | 개정 후 |
+|---|---:|---:|
+| `list_documents` | 57,300자 | 38,376자 |
+| 지시 전체 | 67,014자 | 37,853자 |
+| 지시 전체 + 원문 | 245,838자 | 38,269자(마감일 원문은 생략) |
+
+- **시나리오 A, BEH-03(넓은 요청의 대상 분모 확인) 문서 목록형**: 활성 문서 전체를 그룹별로 정리하게 했다(그룹별 소속 문서·루트 진행률·총괄 문서, 미소속 문서의 개수와 제목, 수정 금지). 4회(xhigh).
+- **시나리오 B, BEH-07(그룹 문서 지시의 최종 회신) 총괄 검토형**: 총괄 문서에서 다음을 확인하게 했다(새 지시·수정 금지). 8회(xhigh·high).
+  - 소속 문서별 마지막 지시와 응답 요지
+  - 응답 대기 지시
+  - PAY-03에 처음 보낸 지시의 마감일
+
+| 시나리오 | 사고 강도 | Claude 전 | Claude 후 | Codex 전 | Codex 후 |
+|---|---|---|---|---|---|
+| A 문서 목록 | xhigh | 통과 | 통과 | 통과 | 통과 |
+| B 지시 이력 | xhigh / high | 통과 / 통과 | 통과 / 통과 | 통과 / 통과 | 통과 / 통과 |
+
+- **A 결과**: 4회 모두 그룹 문서 24개를 맞는 그룹·총괄 문서·진행률로 정리했고, 미소속 문서 36개의 개수와 제목을 모두 적었다. 쓰기는 없었다.
+  - 개정 후에는 `documentGroups` 없이 각 문서의 그룹 필드로 정확히 답했다.
+  - 개정 전 Claude는 5.7만 자 응답을 파일로 받아 21회 처리했다(2.5분). 개정 후는 0.5분이었다.
+- **B 결과**: 8회 모두 다음을 맞게 보고했다. 새 지시나 쓰기는 없었다.
+  - 문서별 마지막 지시와 응답 요지(PAY-02는 응답 대기)
+  - 응답 대기 지시 1건
+  - PAY-03 첫 지시의 마감일: `instructionId`+`includeContent`로 그 지시를 읽어 확인했다.
+- **B 세부**:
+  - 개정 후 Claude는 원문 포함 전체 조회(38,269자)로 시작해, 원문이 생략된 지시를 `instructionId`로 7건 회수했다.
+  - 개정 전 Claude는 6.7만 자 응답(high는 24.6만 자 원문 포함 응답도)을 파일로 받아 실행마다 5회 처리했다.
+  - Codex는 개정 전후 모두 `get_group_context` 요약으로 지시 ID를 찾은 뒤 한 건씩 조회했다. 그래서 큰 목록 응답을 받지 않았다.
+  - PAY-02는 마지막 지시가 응답 대기라서 직전 응답의 LATEST-P2는 선택 정보다. 이를 함께 적은 실행은 Claude 3회였다.
+- **시간·사용량**:
+  - A의 Claude는 개정 전 2.5분·$1.25, 개정 후 0.5분·$0.66이었다.
+  - B의 Claude는 개정 전 1.5~1.9분, 개정 후 0.6~1.0분이었다.
+  - 유효한 12회 사용량은 Claude 6회 환산 $6.01(Max 한도에서 차감), Codex 6회 입력 175만(캐시 146만)·출력 1.3만 토큰이다.
+- **재실행**: B의 첫 실행 8회는 판정에 쓰지 않았다. fixture의 응답 대기 지시에 전달 작업 ID가 있어, 격리 서버의 지시 상태 확인이 가짜 AionUi 응답을 실패로 바꿨기 때문이다.
+  - 그 지시의 전달 작업 ID를 빼고 다시 실행했다.
+  - 버린 실행의 사용량은 Claude 4회 $4.68, Codex 4회 입력 133만 토큰이다. 원본은 `runs-discarded-fixture-v1`에 보존했다.
+- **한계**: 조합마다 1회, 합성 데이터다. Codex는 B에서 큰 지시 목록을 받지 않아, 개정 후 목록 축소에 대한 Codex의 반응은 평가하지 못했다(단위·E2E 테스트로만 확인).

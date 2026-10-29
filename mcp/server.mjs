@@ -25,6 +25,7 @@ import { imageCardLocalAccess } from './imageAccess.mjs'
 import { withDocumentGroupMetadata } from './documentGroupMetadata.mjs'
 import { DOCUMENT_VIEW_CARD_ID_LIMIT, DOCUMENT_VIEWS, cardAccessUrl, documentAccessUrl, updateCardFullEdge, updateCardFullNode } from './documentViews.mjs'
 import { preserveOmittedWaitingItemNotes } from './waitingItemNotes.mjs'
+import { changedCardIds, referenceProjectedNode } from './affectedCards.mjs'
 import { WORKSPACE_POOL_STATUS_GUIDE, WORKSPACE_POOL_STATUS_REFERENCE } from './workspacePoolStatusGuide.mjs'
 import { MCP_TOOL_USAGE_DIRECTORY_NAME, createFileToolUsageRecorder } from '../server/lib/mcpToolUsage.mjs'
 import { formatAiConversationDisplay } from '../server/lib/aiConversationDisplay.mjs'
@@ -755,13 +756,6 @@ function updateCardFullMap(map) {
   }
 }
 
-function changedCardIds(previousMap, savedMap) {
-  const previousNodes = new Map(previousMap.nodes.map((node) => [node.id, JSON.stringify(node)]))
-  return savedMap.nodes
-    .filter((node) => previousNodes.get(node.id) !== JSON.stringify(node))
-    .map((node) => node.id)
-}
-
 function rootCardOf(map) {
   const hierarchyTargets = new Set(map.edges.filter(isHierarchyEdge).map((edge) => edge.target))
   return map.nodes.find((item) => item.data?.kind === 'root' && !hierarchyTargets.has(item.id))
@@ -786,12 +780,13 @@ function affectedCardsOf(previousMap, savedMap, mapId, requestedCardIds, rootCar
   const requested = new Set(requestedCardIds)
   const excluded = new Set(excludedCardIds)
   const affectedIds = new Set([...requested, ...changedCardIds(previousMap, savedMap)])
+  const previousById = new Map(previousMap.nodes.map((node) => [node.id, node]))
   return savedMap.nodes
     .filter((item) => affectedIds.has(item.id) && !excluded.has(item.id))
     .map((item) => ({
       reason: requested.has(item.id) ? 'requested' : item.id === rootCardId ? 'root-rollup' : 'server-adjusted',
       card: {
-        ...contentCard(item, mapId),
+        ...contentCard(referenceProjectedNode(item, previousById.get(item.id), savedMap), mapId),
         position: item.position,
       },
     }))
@@ -2119,11 +2114,12 @@ async function main() {
       }
     }
     const rootCard = rootCardOf(savedMap)
+    const previousCard = previousMap.nodes.find((item) => item.id === resolvedCardId)
     return {
       responseMode,
       document: saved.summary,
       card: {
-        ...contentCard(savedCard, mapId),
+        ...contentCard(referenceProjectedNode(savedCard, previousCard, savedMap), mapId),
         position: savedCard.position,
       },
       root: rootRollup(rootCard),

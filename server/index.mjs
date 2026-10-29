@@ -63,6 +63,7 @@ import { hostname, networkInterfaces, tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { applyProgressRollup } from './lib/progressRollup.mjs'
+import { projectReferenceNodeData } from './lib/referenceProjection.mjs'
 import { detectReleasedWaitingItems } from './lib/waitingItems.mjs'
 import { resolveAttributionWithoutToken, resolveScopedAttribution } from './lib/attributionScope.mjs'
 import { readAionUiSubscriptionUsage } from './lib/aionUiSubscriptionUsage.mjs'
@@ -6885,37 +6886,6 @@ function buildNodeCommentStats(comments) {
     }
     return stats
   }, {})
-}
-
-const referenceContentKeys = [
-  'description',
-  'sharedKnowledge',
-  'sharedKnowledgeUpdatedAt',
-  'sharedKnowledgeUpdatedBy',
-  'sharedKnowledgeReview',
-  'progress',
-  'status',
-  'taskUrl',
-  'externalLink',
-  'webLink',
-  'aiConversationId',
-  'aiConversations',
-  'isWork',
-  'assigneeId',
-  'dueDate',
-  'checklist',
-  'waitingItems',
-]
-
-function projectReferenceNodeData(localData, sourceData) {
-  const projected = { ...localData }
-  for (const key of referenceContentKeys) {
-    if (Object.hasOwn(sourceData, key)) projected[key] = structuredClone(sourceData[key])
-    else delete projected[key]
-  }
-  const sourceLabel = String(sourceData.label ?? '').replace(/\s*\(ref\)\s*$/i, '').trim()
-  projected.label = `${sourceLabel || String(localData.label ?? '').replace(/\s*\(ref\)\s*$/i, '').trim()} (ref)`
-  return projected
 }
 
 async function resolveReferencesForMap(map) {

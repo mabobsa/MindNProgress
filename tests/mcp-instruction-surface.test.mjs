@@ -18,6 +18,8 @@ const baselineDescriptions = new Map([...baseline.matchAll(/^\s*registerTool\(se
 const safetyTools = new Set(['mindnprogress_restore_history', 'mindnprogress_update_document_info', 'mindnprogress_recover_ai_delegation'])
 // 코드로 필드를 꺼내는 AI가 생략된 경로를 조용히 빈 값으로 읽지 않도록, 덧붙인 안내는 생략될 수 있는 필드와 회수 경로를 이름으로 밝힌다.
 const responseBudgetAppendices = new Map([
+  ['mindnprogress_get_context', /^ focused 응답이 약 4만 자를 넘으면 guide·groupProject·selection\.taskLinks·selection\.aiWorkCoordination·nextStep 등 규칙은 그대로 두고 덜 중요한 데이터부터 생략하며, 생략 여부와 경로·회수 도구를 응답 앞쪽의 contextBudget과 omitted에 표기합니다\. 생략될 수 있는 것은 선행 지식 원천의 설명·댓글·sharedKnowledge, 문서 지식선·개요, 관계 카드의 대기 상세, 선택 카드의 댓글과 description·sharedKnowledge 등 큰 필드입니다\. 생략된 원문은 추측하지 말고 omitted\.retrieval로 읽으세요\.$/],
+  ['mindnprogress_get_card', /^ fields로 필요한 data 필드만, includeComments=false로 댓글 없이 받을 수 있으며 get_context의 omitted\.retrieval이 이 인자를 안내합니다\. textIntegrity는 fields와 무관하게 항상 description·sharedKnowledge 전체 기준입니다\.$/],
   ['mindnprogress_update_card', /^ affected의 card는 이번에 보낸 필드와 저장 중 바뀐 필드를 원문으로 주고, 그 밖의 1,000자 초과 필드는 card\.omittedFields와 textIntegrity로만 표시합니다\. affectedCards에는 요청 카드를 빼고 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다\.$/],
 ])
 // send_group_document_instruction(실제 서버 동작에 맞춘 정정)과 get_document(2026-10-21 승인 view 인자)는 재생성 기준선과
@@ -44,8 +46,9 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
     assert.equal(tools.length, 60)
     // REQ-MNP-04: 기존 변경 도구의 requestId/resultOnly 호환 확장. 도구 개수는 유지한다.
     // 2026-10-29: get_group_context의 detailLevel·mapId와 list_group_document_instructions의 instructionId를 추가했다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '97e623697270ed842f595ae353ec0361fe16d6b59c54003dcce8a431685a1258')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 211)
+    // 2026-10-29: get_context 응답 예산의 회수 경로로 get_card에 fields·includeComments를 추가했다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '83cae0994ddbec9988676ffe7fcd5c7e38a1480e37a29f992e5249e9c3b05a85')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 213)
     for (const tool of tools.filter((tool) => storageWriteTools.has(tool.name))) {
       assert.ok(tool.inputSchema.properties.requestId.pattern || tool.inputSchema.properties.proposalRequestId)
       assert.equal(tool.inputSchema.properties.resultOnly.type, 'boolean')

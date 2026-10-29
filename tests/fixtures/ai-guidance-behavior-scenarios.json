@@ -264,6 +264,23 @@
       ],
       "evidence": ["mcp/server.mjs productGuide operationRules(waitingItems)", "롤백 전 경량화에서 대기·재개 절차가 공통 지침에서 빠졌던 결함(09-30 재감사)"],
       "guidanceSurfaces": []
+    },
+    {
+      "id": "BEH-15",
+      "title": "축소된 최초 문맥의 원문 회수",
+      "category": "context-lifecycle",
+      "role": "worker",
+      "setup": "선행 지식 원천이 많아 get_context focused가 응답 예산을 넘는 카드에서, 생략된 선행 지식 원문에만 있는 결론을 반영해야 하는 계획을 요청한다.",
+      "expected": [
+        "contextBudget·omitted를 확인하고 생략된 선행 지식·선택 카드 원문을 omitted.retrieval 같은 대상별 조회로 읽은 뒤 판단한다.",
+        "원문에만 있는 결론을 근거 카드와 함께 빠짐없이 반영한다."
+      ],
+      "forbidden": [
+        "생략된 원문을 추측해 결론을 만들거나 생략을 내용 없음으로 단정한다.",
+        "분석 요청인데 카드·댓글을 변경한다."
+      ],
+      "evidence": ["mcp/contextBudget.mjs 예산 단계와 omitted 기록", "docs/mcp-response-budget-20261029.md"],
+      "guidanceSurfaces": []
     }
   ]
 }

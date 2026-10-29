@@ -1023,7 +1023,7 @@ async function main() {
       editorId: attribution.editorId,
       attributionToken: attribution.attributionToken,
     })
-    assert.equal(context.contextSchemaVersion, '3.3')
+    assert.equal(context.contextSchemaVersion, '3.4')
     assert.equal(context.guide.contextLifecycle.bootstrap.tool, 'mindnprogress_get_context')
     assert.deepEqual(context.guide.sharedKnowledgePolicy, guide.guide.sharedKnowledgePolicy)
     assert.match(context.nextStep, /sharedKnowledge.*새 지식·변경 조건.*새 지식이 없으면 변경하지/)

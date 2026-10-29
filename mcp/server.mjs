@@ -26,6 +26,7 @@ import { withDocumentGroupMetadata } from './documentGroupMetadata.mjs'
 import { DOCUMENT_VIEW_CARD_ID_LIMIT, DOCUMENT_VIEWS, cardAccessUrl, documentAccessUrl, updateCardFullEdge, updateCardFullNode } from './documentViews.mjs'
 import { preserveOmittedWaitingItemNotes } from './waitingItemNotes.mjs'
 import { adjustedCardSummaries, changedCardIds, compactRequestedCardData, referenceProjectedNode } from './affectedCards.mjs'
+import { applyContextBudget } from './contextBudget.mjs'
 import { WORKSPACE_POOL_STATUS_GUIDE, WORKSPACE_POOL_STATUS_REFERENCE } from './workspacePoolStatusGuide.mjs'
 import { MCP_TOOL_USAGE_DIRECTORY_NAME, createFileToolUsageRecorder } from '../server/lib/mcpToolUsage.mjs'
 import { formatAiConversationDisplay } from '../server/lib/aiConversationDisplay.mjs'
@@ -50,7 +51,7 @@ const toolUsageDirectory = path.resolve(String(process.env.MNP_MCP_USAGE_DIR ?? 
   || path.join(dataDirectory, MCP_TOOL_USAGE_DIRECTORY_NAME))
 const toolUsageDisabled = String(process.env.MNP_MCP_USAGE_DISABLED ?? '').trim() === '1'
 const toolUsageFlushIntervalMs = Number(String(process.env.MNP_MCP_USAGE_FLUSH_MS ?? '').trim())
-const contextSchemaVersion = '3.3'
+const contextSchemaVersion = '3.4'
 const commentSummaryMaxLength = 240
 const commentSummaryTooLongMessage = 'summary는 240자 이하의 1~2문장만 입력하세요. 상세 내용은 summary 문자열에 이어 붙이지 말고 detail 인자로 분리하세요. 예: {"summary":"[결과] 구현과 검증을 완료했습니다.","detail":"## 수행 내용\\n..."}. 호환용 text로 우회하거나 상세를 여러 댓글로 나누지 마세요.'
 const contextCommentLimit = 20
@@ -582,7 +583,8 @@ function registerTool(server, name, description, schema, handler, options = {}) 
         const query = new URLSearchParams(mapIds.map((id) => ['mapId', id]))
         return (await apiRequest(`/api/document-groups?${query}`)).documentGroups
       })
-      const result = toolResult(enriched, options.prettyResult === true)
+      // 응답 크기 예산처럼 최종 응답 전체를 봐야 하는 처리는 그룹 메타데이터를 붙인 뒤에 한다.
+      const result = toolResult(options.finalizeResult ? options.finalizeResult(enriched, input) : enriched, options.prettyResult === true)
       toolUsage?.record(name, { ok: true, chars: toolResultLength(result) })
       return result
     } catch (error) {
@@ -741,6 +743,12 @@ function contentCard(node, mapId = '') {
     textIntegrity: cardTextIntegrity(data),
     ...(imageAccess ? { imageAccess } : {}),
   }
+}
+
+// get_card fields: 카드 식별용 label과 요청한 필드만 남긴다. aiConversations는 contentCard에서 aiConversationCount로 바뀐다.
+function selectedCardFields(data, fields) {
+  const wanted = new Set(['label', ...fields, ...(fields.includes('aiConversations') ? ['aiConversationCount'] : [])])
+  return Object.fromEntries(Object.entries(data ?? {}).filter(([key]) => wanted.has(key)))
 }
 
 function updateCardFullMap(map) {
@@ -1309,7 +1317,7 @@ async function main() {
     ],
   }))
 
-  registerTool(server, 'mindnprogress_get_context', 'MindNProgress의 제품 개념과 작성 규칙, 호출 시점의 문서 개요, 선택 카드와 업무 링크, 계층·의존성·댓글·담당자 정보를 한 번에 조회합니다. focused는 작업 관련 원문과 문서 개요를, full은 전체 문서 원문을 반환합니다. 대화를 시작한 뒤 다른 MindNProgress 도구보다 먼저 한 번 성공적으로 호출하세요. 성공 후에는 최신성 갱신만을 위해 반복 호출하지 말고 응답의 guide.contextLifecycle에 지정된 대상별 조회 도구를 사용하세요. AionUi 일반 대화는 현재 대화의 AI 종류와 모델을 자동 확인합니다. AionUi가 아닌 외부 MCP 세션만 현재 AI 종류와 모델을 정확히 알고 있을 때 aiType과 aiModel에 함께 전달하세요.', {
+  registerTool(server, 'mindnprogress_get_context', 'MindNProgress의 제품 개념과 작성 규칙, 호출 시점의 문서 개요, 선택 카드와 업무 링크, 계층·의존성·댓글·담당자 정보를 한 번에 조회합니다. focused는 작업 관련 원문과 문서 개요를, full은 전체 문서 원문을 반환합니다. 대화를 시작한 뒤 다른 MindNProgress 도구보다 먼저 한 번 성공적으로 호출하세요. 성공 후에는 최신성 갱신만을 위해 반복 호출하지 말고 응답의 guide.contextLifecycle에 지정된 대상별 조회 도구를 사용하세요. AionUi 일반 대화는 현재 대화의 AI 종류와 모델을 자동 확인합니다. AionUi가 아닌 외부 MCP 세션만 현재 AI 종류와 모델을 정확히 알고 있을 때 aiType과 aiModel에 함께 전달하세요. focused 응답이 약 4만 자를 넘으면 guide·groupProject·selection.taskLinks·selection.aiWorkCoordination·nextStep 등 규칙은 그대로 두고 덜 중요한 데이터부터 생략하며, 생략 여부와 경로·회수 도구를 응답 앞쪽의 contextBudget과 omitted에 표기합니다. 생략될 수 있는 것은 선행 지식 원천의 설명·댓글·sharedKnowledge, 문서 지식선·개요, 관계 카드의 대기 상세, 선택 카드의 댓글과 description·sharedKnowledge 등 큰 필드입니다. 생략된 원문은 추측하지 말고 omitted.retrieval로 읽으세요.', {
     mapId: z.string().min(1).describe('현재 문서 ID'),
     cardId: z.string().min(1).describe('편집자가 선택한 카드 ID'),
     editorId: z.string().min(1).max(120).optional().describe('AI 대화를 시작한 MindNProgress 편집자 계정 ID'),
@@ -1584,7 +1592,7 @@ async function main() {
         ...productGuide.operationRules, followupInstruction],
     } : productGuide
 
-    return {
+    const response = {
       contextSchemaVersion,
       detailLevel,
       ...(currentConversation ? { currentConversation: { displayLabel: currentConversation.displayLabel } } : {}),
@@ -1687,6 +1695,10 @@ async function main() {
       teamMembers: full ? (usersResult.users ?? []) : (usersResult.users ?? []).map(compactTeamMember),
       nextStep: `${groupCoordinator ? '미승인 분석·제안은 대화로 보고하고 사용자 승인을 기다리세요. 이때 댓글·공유 지식·상태를 변경하지 마세요. 승인된 작업을 실제 수행한 경우에만 ' : ''}의미 있는 진행과 결과는 1~2문장의 summary와 작업을 이어가거나 검증하는 데 필요한 사실을 담은 detail 댓글로 기록하세요. sharedKnowledge는 guide.sharedKnowledgePolicy의 새 지식·변경 조건을 만족할 때만 갱신하고 새 지식이 없으면 변경하지 마세요. 변경 후 변경 도구의 응답 또는 대상별 조회 도구(카드는 mindnprogress_get_card, 문서 구조·version은 mindnprogress_get_document의 view=outline 또는 version)로 결과를 다시 확인하세요. 작업 중 선택 카드 이외의 MindNProgress 카드를 실제 근거로 사용했다면 guide.knowledgeLinePolicy에 따라 작업 종료 전에 연결 또는 제안 여부를 판단하세요. 외부 전달물이나 결정 때문에 멈추면 제목을 바꾸지 말고 waitingItems와 [차단] 댓글을 추가하며, 재개할 때 해당 항목을 제거하고 [진행] 댓글을 남기세요.`,
     }
+    return response
+  }, {
+    // focused가 클라이언트 출력 한도를 넘으면 규칙은 두고 데이터만 줄인다. full은 요청대로 전체를 준다.
+    finalizeResult: (result, { mapId, cardId, detailLevel }) => detailLevel === 'full' ? result : applyContextBudget(result, { mapId, cardId }),
   })
 
   registerTool(server, 'mindnprogress_get_group_context', '그룹의 최신 기획서 목록(project.sources: 이름·주소·개별 버전), 목표·공통 지침, 통합 관리 문서, 소속 문서의 루트 업무 설명·대화, 그룹 문서 지시와 과거 그룹 위임 현황을 조회합니다. source/sourceVersion은 첫 항목의 호환 별칭이며 모든 기획서는 sources와 guide.sources를 확인하세요. 총괄 AI는 guide.approval에 있는 전체 방향·문서별 실행 계획의 두 단계 사용자 승인을 확인하세요. 미승인 상태에서는 읽기 전용 분석과 제안만 합니다. 이 문맥을 먼저 읽고 원본 전수 분석, 요구사항 주 소유권, 문서 경계와 실행 순서를 관리하세요. 지시 전달 상태와 카드 완료 수는 기획 구현률이 아닙니다. 기본 detailLevel=summary는 project·guide 전문과 문서·지시·위임·대기의 요약을 반환하고, 생략한 원문의 회수 경로를 detail에 담습니다. summary의 documents[].root.data에는 description·sharedKnowledge가 없고 길이·SHA-256만 root.textIntegrity에 있으며, documentInstructions에는 지시·응답 원문이 없습니다. 실행 범위·문서 경계·완료를 판단하기 전에는 그 경로로 해당 원문을 읽으세요. full은 모든 원문을 반환하지만 AI 클라이언트의 도구 출력 한도를 넘을 수 있습니다.', {
@@ -1944,19 +1956,23 @@ async function main() {
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/ai-delegations${suffix}`, { aiMapId: mapId })
   })
 
-  registerTool(server, 'mindnprogress_get_card', '한 카드의 설명, 공유 지식, 업무 필드와 댓글을 선택적으로 조회합니다. description과 sharedKnowledge의 길이·SHA-256은 textIntegrity로 반환하며 이미지 카드는 로컬 원본 경로도 반환합니다. get_context의 fallback 카드 또는 간략 개요에서 원문이 필요할 때 사용하세요.', {
+  registerTool(server, 'mindnprogress_get_card', '한 카드의 설명, 공유 지식, 업무 필드와 댓글을 선택적으로 조회합니다. description과 sharedKnowledge의 길이·SHA-256은 textIntegrity로 반환하며 이미지 카드는 로컬 원본 경로도 반환합니다. get_context의 fallback 카드 또는 간략 개요에서 원문이 필요할 때 사용하세요. fields로 필요한 data 필드만, includeComments=false로 댓글 없이 받을 수 있으며 get_context의 omitted.retrieval이 이 인자를 안내합니다. textIntegrity는 fields와 무관하게 항상 description·sharedKnowledge 전체 기준입니다.', {
     mapId: z.string().min(1),
     cardId: z.string().min(1),
     commentOffset: z.number().int().nonnegative().default(0),
     commentLimit: z.number().int().min(1).max(100).default(20),
     commentOrder: z.enum(['asc', 'desc']).default('desc'),
     includeCommentDetail: z.boolean().default(false).describe('true이면 댓글 상세 본문을 함께 반환. 요약만으로 작업 판단이 어려울 때 사용'),
-  }, async ({ mapId, cardId, commentOffset, commentLimit, commentOrder, includeCommentDetail }) => {
-    const query = new URLSearchParams({ readCard: cardId, commentOffset: String(commentOffset),
-      commentLimit: String(commentLimit), commentOrder, includeCommentDetail: String(includeCommentDetail) })
+    fields: z.array(z.string().min(1).max(80)).min(1).max(40).optional().describe('반환할 card.data 필드 이름. 지정하면 label과 이 필드만 반환. 생략하면 모든 필드'),
+    includeComments: z.boolean().default(true).describe('false이면 댓글 본문 없이 commentsPage의 total만 반환'),
+  }, async ({ mapId, cardId, commentOffset, commentLimit, commentOrder, includeCommentDetail, fields, includeComments }) => {
+    const query = new URLSearchParams({ readCard: cardId, commentOffset: String(includeComments ? commentOffset : 0),
+      commentLimit: String(includeComments ? commentLimit : 1), commentOrder, includeCommentDetail: String(includeComments && includeCommentDetail) })
     const documentResult = await apiRequest(`/api/maps/${encodeURIComponent(mapId)}?${query}`)
     const card = documentResult.map.nodes.find((node) => node.id === cardId)
     if (!card) throw new Error(`카드를 찾을 수 없습니다: ${cardId}`)
+    const shownCard = contentCard(card, mapId)
+    const page = documentResult.commentsPage
     return {
       documentGroups: documentResult.documentGroups,
       document: {
@@ -1966,10 +1982,12 @@ async function main() {
         updatedAt: documentResult.map.updatedAt,
         updatedBy: documentResult.map.updatedBy,
       },
-      card: contentCard(card, mapId),
+      card: fields ? { ...shownCard, data: selectedCardFields(shownCard.data, fields) } : shownCard,
       accessUrl: cardAccessUrl(documentResult.publicBaseUrl, documentResult.map.id, card.id),
-      comments: documentResult.comments,
-      commentsPage: documentResult.commentsPage,
+      comments: includeComments ? documentResult.comments : [],
+      commentsPage: includeComments || !page ? page : {
+        ...page, offset: 0, limit: 0, hasMore: page.total > 0, nextOffset: page.total > 0 ? 0 : null,
+      },
     }
   })
 

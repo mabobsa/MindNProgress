@@ -148,17 +148,17 @@ const BUDGET_STEPS = [
     apply(response, { state, fits }) {
       const omitted = []
       const sources = primaryOf(response)
+      // 생략 기록을 먼저 남긴 뒤 크기를 다시 재야 최종 응답이 예산을 넘지 않는다.
       for (let index = sources.length - 1; index >= 0 && !fits(); index--) {
         const data = sources[index].card?.data
         if (typeof data?.sharedKnowledge !== 'string') continue
         delete data.sharedKnowledge
         omitted.unshift(sources[index].card.id)
         state.cardIds.knowledgeSourceSharedKnowledge = [...omitted]
+        state.fields['selection.knowledgeSources.primary[].card.data.sharedKnowledge'] = 'omitted.cardIds.knowledgeSourceSharedKnowledge의 카드는 원문을 생략했습니다. 길이는 card.textIntegrity.sharedKnowledge.length에 있습니다.'
+        state.retrieval.add('knowledgeSource')
       }
-      if (omitted.length === 0) return false
-      state.fields['selection.knowledgeSources.primary[].card.data.sharedKnowledge'] = 'omitted.cardIds.knowledgeSourceSharedKnowledge의 카드는 원문을 생략했습니다. 길이는 card.textIntegrity.sharedKnowledge.length에 있습니다.'
-      state.retrieval.add('knowledgeSource')
-      return true
+      return omitted.length > 0
     },
   },
   {
@@ -272,7 +272,9 @@ export function applyContextBudget(response, { mapId, cardId, limitChars = CONTE
   const context = { mapId, cardId, limitChars, focusedChars }
   const fits = () => size(assemble(working, state, context)) <= limitChars
   for (const step of BUDGET_STEPS) {
-    if (step.apply(working, { state, fits, mapId, cardId })) state.applied.push(step.id)
+    // 단계 안에서 크기를 잴 때도 appliedSteps에 이 단계가 들어 있어야 최종 크기와 같다. 줄인 것이 없으면 뺀다.
+    state.applied.push(step.id)
+    if (!step.apply(working, { state, fits, mapId, cardId })) state.applied.pop()
     if (fits()) break
   }
   const result = assemble(working, state, context)

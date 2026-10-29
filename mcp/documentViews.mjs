@@ -348,7 +348,7 @@ function compactResponse(documentResult, publicBaseUrl, imageAccessOf, freshness
  */
 export const OUTLINE_RESPONSE_BUDGET_CHARS = 40_000
 // 서버가 만든 outline에 MCP가 그룹 메타데이터와 로컬 이미지 경로를 덧붙이는 몫
-const OUTLINE_POSTPROCESS_RESERVE_CHARS = 1_000
+export const OUTLINE_POSTPROCESS_RESERVE_CHARS = 1_000
 const OUTLINE_KEPT_FIELDS = new Set(['label', 'kind', 'status', 'progress', 'isWork', 'blockedBy', 'waitingItems', 'checklistSummary', 'aiConversationCount', 'reference', 'taskUrl', 'assigneeId', 'dueDate'])
 const OUTLINE_METADATA_FIELDS = ['sharedKnowledgeUpdatedBy', 'sharedKnowledgeUpdatedAt', 'sharedKnowledgeReview', 'reconstructionSources', 'restructureV2Changes', 'externalLink']
 const OUTLINE_MINIMAL_FIELDS = ['label', 'kind', 'status', 'progress', 'isWork', 'blockedBy', 'waitingItemCount']
@@ -513,7 +513,9 @@ export function applyOutlineBudget(response, { mapId, limitChars = OUTLINE_RESPO
     state.fields.selectedCards = 'cardIds로 고른 카드 전문만으로 응답 예산을 넘어 개요를 줄이지 않았습니다. cardIds를 줄이거나 retrieval.cardFields로 필요한 필드만 조회하세요.'
   } else {
     for (const step of OUTLINE_BUDGET_STEPS) {
-      if (step.apply(working, state, fits)) state.applied.push(step.id)
+      // 단계 안에서 크기를 잴 때도 appliedSteps에 이 단계가 들어 있어야 최종 크기와 같다. 줄인 것이 없으면 뺀다.
+      state.applied.push(step.id)
+      if (!step.apply(working, state, fits)) state.applied.pop()
       if (fits()) break
     }
   }

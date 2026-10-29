@@ -125,6 +125,25 @@ test('크게 넘으면 정해진 순서로 줄이고 생략한 카드·필드·�
   }
 })
 
+test('선행 지식 원문을 한 장씩 줄이다 예산에 들면 다음 단계로 넘어가지 않는다', () => {
+  // 생략 기록까지 더한 크기로 판정해야, 예산에 든 응답을 다음 단계(댓글·개요·선택 카드 원문 생략)까지 줄이지 않는다.
+  let progressive = 0
+  for (let sources = 6; sources <= 20; sources++) for (const sharedKnowledge of [2600, 3100, 3700]) {
+    const result = applyContextBudget(focusedResponse({ guideLength: 10000, sources, sourceSize: { description: 4000, sharedKnowledge }, outlineCards: 40, comments: 8, knowledgeLinks: 30 }), { mapId, cardId })
+    if (!result.contextBudget) continue
+    const label = `원천 ${sources}개·${sharedKnowledge}자`
+    assert.equal(result.contextBudget.returnedChars, JSON.stringify(result).length, label)
+    assert.ok(result.contextBudget.returnedChars <= CONTEXT_RESPONSE_BUDGET_CHARS, label)
+    assert.equal(result.contextBudget.exceeded, false, label)
+    const omittedSources = result.omitted.cardIds?.knowledgeSourceSharedKnowledge ?? []
+    if (omittedSources.length > 0 && omittedSources.length < sources) {
+      assert.equal(result.contextBudget.appliedSteps.at(-1), 'knowledgeSourceSharedKnowledge', `${label}: 원문이 남은 원천이 있는데 다음 단계까지 줄였습니다.`)
+      progressive++
+    }
+  }
+  assert.ok(progressive >= 10, `선행 지식 원문 단계에서 멈춘 규모 ${progressive}개`)
+})
+
 test('규칙만으로 예산을 넘으면 모든 단계를 적용하고 exceeded로 알리되 규칙은 줄이지 않는다', () => {
   const response = focusedResponse({ guideLength: 45000, sources: 3 })
   const result = applyContextBudget(response, { mapId, cardId })

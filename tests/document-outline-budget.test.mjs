@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildDocumentView, OUTLINE_BUDGET_STEP_IDS, OUTLINE_RESPONSE_BUDGET_CHARS } from '../mcp/documentViews.mjs'
+import { buildDocumentView, OUTLINE_BUDGET_STEP_IDS, OUTLINE_POSTPROCESS_RESERVE_CHARS, OUTLINE_RESPONSE_BUDGET_CHARS } from '../mcp/documentViews.mjs'
 
 const actor = { id: 'user-editor', name: '김용민' }
 const text = (label, length) => `${label} `.repeat(Math.ceil(length / (label.length + 1))).slice(0, length)
@@ -80,6 +80,19 @@ test('아주 큰 문서도 구조를 남긴 채 예산 안으로 줄이고, 줄�
   const impossible = outline(documentResult({ cards: 900 }))
   assert.equal(impossible.responseBudget.exceeded, true)
   assert.equal(impossible.cards.length, 900, '카드 목록 자체는 자르지 않는다')
+})
+
+test('카드별로 줄이다 멈춰도 후처리 여유분을 남긴다', () => {
+  let progressive = 0
+  for (let cards = 60; cards <= 200; cards += 3) {
+    const view = outline(documentResult({ cards, waitingNotes: 40 }))
+    // 모든 카드를 최소 형태로 줄여도 여유분 안에 못 들면 줄일 것이 없으므로 한도(40,000자)만 지킨다.
+    if (!view.responseBudget || view.responseBudget.exceeded || view.cards.every((card) => card.minimal)) continue
+    if (['waitingNotes', 'waitingCounts', 'minimalCards'].includes(view.responseBudget.appliedSteps.at(-1))) progressive++
+    assert.equal(view.responseBudget.returnedChars, JSON.stringify(view).length)
+    assert.ok(view.responseBudget.returnedChars <= OUTLINE_RESPONSE_BUDGET_CHARS - OUTLINE_POSTPROCESS_RESERVE_CHARS, `${cards}장: ${view.responseBudget.returnedChars}자`)
+  }
+  assert.ok(progressive >= 10, `카드별 단계에서 멈춘 규모 ${progressive}개`)
 })
 
 test('cardIds로 고른 카드 전문만으로 예산을 넘으면 개요를 줄이지 않고 cardIds를 줄이라고 안내한다', () => {

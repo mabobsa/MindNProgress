@@ -25,7 +25,7 @@ import { imageCardLocalAccess } from './imageAccess.mjs'
 import { withDocumentGroupMetadata } from './documentGroupMetadata.mjs'
 import { DOCUMENT_VIEW_CARD_ID_LIMIT, DOCUMENT_VIEWS, cardAccessUrl, documentAccessUrl, updateCardFullEdge, updateCardFullNode } from './documentViews.mjs'
 import { preserveOmittedWaitingItemNotes } from './waitingItemNotes.mjs'
-import { changedCardIds, referenceProjectedNode } from './affectedCards.mjs'
+import { adjustedCardSummaries, changedCardIds, compactRequestedCardData, referenceProjectedNode } from './affectedCards.mjs'
 import { WORKSPACE_POOL_STATUS_GUIDE, WORKSPACE_POOL_STATUS_REFERENCE } from './workspacePoolStatusGuide.mjs'
 import { MCP_TOOL_USAGE_DIRECTORY_NAME, createFileToolUsageRecorder } from '../server/lib/mcpToolUsage.mjs'
 import { formatAiConversationDisplay } from '../server/lib/aiConversationDisplay.mjs'
@@ -771,6 +771,21 @@ function rootRollup(rootCard) {
     label: rootCard.data?.label ?? rootCard.id,
     status: rootCard.data?.progress >= 100 ? 'done' : rootCard.data?.status,
     progress: rootCard.data?.progress ?? 0,
+  }
+}
+
+function updateCardOmitted(mapId, cardId, omittedFields, affectedCards) {
+  return {
+    fields: {
+      ...(omittedFields.length > 0 ? {
+        'card.data': '이번에 보내지 않았고 저장 중에도 바뀌지 않은 1,000자 초과 필드(card.omittedFields)는 원문을 생략했습니다. description·sharedKnowledge의 길이·SHA-256은 card.textIntegrity에 있습니다.',
+      } : {}),
+      ...(affectedCards.length > 0 ? {
+        'affectedCards[].card': '서버가 함께 조정한 카드는 상태 요약과 바뀐 키(changedKeys)만 줍니다. 요청 카드는 card에만 있습니다.',
+      } : {}),
+    },
+    rule: '생략된 원문을 추측하거나 생략을 삭제로 해석하지 말고, 원문이 필요하면 retrieval의 도구로 조회하세요.',
+    retrieval: { tool: 'mindnprogress_get_card', arguments: { mapId, cardId } },
   }
 }
 
@@ -2070,7 +2085,7 @@ async function main() {
     }
   })
 
-  registerTool(server, 'mindnprogress_update_card', '카드의 일부 필드만 부분 병합합니다. data에는 변경할 필드만 보내고 description 또는 sharedKnowledge의 일부만 고칠 때는 mindnprogress_patch_card_text를 사용하세요. checklist는 기존 ID를 보존한 전체 배열이며 완료 비율로 progress와 status를 자동 계산합니다. 완료 처리하면 waitingItems가 해제될 수 있고 Ref와 자동 집계 카드는 서버가 원본·하위 업무 기준으로 다시 계산합니다. responseMode=full은 최신 문서를, affected는 직접 수정 카드와 서버가 함께 조정한 카드만 반환합니다.', {
+  registerTool(server, 'mindnprogress_update_card', '카드의 일부 필드만 부분 병합합니다. data에는 변경할 필드만 보내고 description 또는 sharedKnowledge의 일부만 고칠 때는 mindnprogress_patch_card_text를 사용하세요. checklist는 기존 ID를 보존한 전체 배열이며 완료 비율로 progress와 status를 자동 계산합니다. 완료 처리하면 waitingItems가 해제될 수 있고 Ref와 자동 집계 카드는 서버가 원본·하위 업무 기준으로 다시 계산합니다. responseMode=full은 최신 문서를, affected는 직접 수정 카드와 서버가 함께 조정한 카드만 반환합니다. affected의 card는 이번에 보낸 필드와 저장 중 바뀐 필드를 원문으로 주고, 그 밖의 1,000자 초과 필드는 card.omittedFields와 textIntegrity로만 표시합니다. affectedCards에는 요청 카드를 빼고 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다.', {
     mapId: z.string().min(1),
     cardId: z.string().min(1).optional().describe('수정할 카드 ID. 새 호출에서는 이 필드를 사용'),
     nodeId: z.string().min(1).optional().describe('기존 대화 호환용 카드 ID. 새 호출에서는 cardId 사용'),
@@ -2115,16 +2130,26 @@ async function main() {
     }
     const rootCard = rootCardOf(savedMap)
     const previousCard = previousMap.nodes.find((item) => item.id === resolvedCardId)
+    const projectedCard = referenceProjectedNode(savedCard, previousCard, savedMap)
+    const shownCard = contentCard(projectedCard, mapId)
+    // 요청 카드는 card에만 둔다. 바꾸지 않은 큰 필드와 서버 조정 카드의 원문은 get_card로 읽는다.
+    const { data: cardData, omittedFields } = compactRequestedCardData(previousCard?.data, projectedCard.data, shownCard.data, changedFields)
+    const affectedCards = adjustedCardSummaries(previousMap, savedMap, { rootCardId: rootCard?.id, excludedCardIds: [resolvedCardId] })
     return {
       responseMode,
       document: saved.summary,
       card: {
-        ...contentCard(referenceProjectedNode(savedCard, previousCard, savedMap), mapId),
+        ...shownCard,
+        data: cardData,
         position: savedCard.position,
+        ...(omittedFields.length > 0 ? { omittedFields } : {}),
       },
       root: rootRollup(rootCard),
-      affectedCards: affectedCardsOf(previousMap, savedMap, mapId, [resolvedCardId], rootCard?.id),
+      affectedCards,
       changedFields,
+      ...(omittedFields.length > 0 || affectedCards.length > 0
+        ? { omitted: updateCardOmitted(mapId, resolvedCardId, omittedFields, affectedCards) }
+        : {}),
     }
   })
 

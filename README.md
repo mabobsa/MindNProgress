@@ -439,7 +439,7 @@ node runner/index.mjs
 | --- | --- |
 | `mindnprogress_create_mindmap` | 루트 한 건부터 여러 카드까지 새 문서와 계층 구조를 한 번에 생성하고 자동 배치합니다. |
 | `mindnprogress_add_card` | 새 카드 또는 지정한 상위 카드의 하위 카드를 추가합니다. 기본 `responseMode=affected`는 추가한 카드와 문서·Root 요약만, `full`은 변경 전과 같은 API 원본 전체 문서를 반환합니다. |
-| `mindnprogress_update_card` | 전달한 필드만 부분 병합하여 카드 제목, 설명, 공유 지식, 상태, 진행률과 업무 관리 필드를 수정합니다. 일반 카드에서 생략한 필드와 위치는 보존됩니다. 기본 `responseMode=full`은 저활용 필드를 제외한 최신 전체 문서를, `affected`는 직접·간접 변경 카드와 문서·Root 요약을 반환합니다. |
+| `mindnprogress_update_card` | 전달한 필드만 부분 병합하여 카드 제목, 설명, 공유 지식, 상태, 진행률과 업무 관리 필드를 수정합니다. 일반 카드에서 생략한 필드와 위치는 보존됩니다. 기본 `responseMode=full`은 저활용 필드를 제외한 최신 전체 문서를, `affected`는 직접·간접 변경 카드와 문서·Root 요약을 반환합니다. `affected`의 요청 카드는 바꾸지 않은 1,000자 초과 필드를 `omittedFields`로만 표시하고, 서버가 함께 조정한 카드는 상태 요약과 `changedKeys`로 줍니다. |
 | `mindnprogress_patch_card_text` | 조회한 SHA-256이 유지된 경우에만 설명 또는 공유 지식의 유일 문자열·경계 내부를 교체하거나 뒤에 추가합니다. 장문 필드 전체를 다시 생성하지 않습니다. |
 | `mindnprogress_apply_shared_knowledge_review` | 문서 버전과 카드별 SHA-256이 모두 일치할 때만 최대 20개 카드의 정리 결과와 검토 기록을 한 번에 저장합니다. |
 | `mindnprogress_move_card` | 카드와 전체 하위 구조를 다른 카드 아래로 이동합니다. `targetMapId`를 지정하면 카드 ID와 댓글·AI 대화·완료 위임·이미지·Ref 연결을 유지한 채 다른 문서로 실제 이동합니다. 기본 `responseMode=affected`는 이동 결과와 이전·새 상위 관계만, `full`은 관련 원본 문서 전체를 반환합니다. |

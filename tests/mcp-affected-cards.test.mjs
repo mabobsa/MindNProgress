@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { changedCardIds, referenceProjectedNode } from '../mcp/affectedCards.mjs'
+import { adjustedCardSummaries, changedCardIds, compactRequestedCardData, referenceProjectedNode, UPDATE_CARD_UNCHANGED_FIELD_LIMIT } from '../mcp/affectedCards.mjs'
 import { projectReferenceNodeData } from '../server/lib/referenceProjection.mjs'
 
 const source = { label: '원본 정책', description: '원본의 최신 설명', sharedKnowledge: '원본의 최신 공유 지식', progress: 40, status: 'in-progress' }
@@ -56,4 +56,32 @@ test('Ref가 아니거나 투영 근거가 없으면 저장본을 그대로 쓴�
   assert.equal(referenceProjectedNode(card, card, { id: 'map-a', nodes: [card] }), card)
   const newReference = storedReference()
   assert.equal(referenceProjectedNode(newReference, plain('ref-card'), { id: 'map-a', nodes: [] }), newReference)
+})
+
+test('update_card 서버 조정 요약은 요청 카드와 Ref 투영 차이를 빼고 상태와 바뀐 키만 준다', () => {
+  const longText = '긴 원문 '.repeat(500)
+  const previousMap = { id: 'map-a', nodes: [plain('root', { kind: 'root', progress: 10, description: longText }), plain('task-a', { isWork: true }), resolvedReference()], edges: [] }
+  const savedMap = { id: 'map-a', nodes: [plain('root', { kind: 'root', progress: 50, status: 'in-progress', description: longText }), plain('task-a', { isWork: true, progress: 100, status: 'done' }), storedReference()], edges: [] }
+  const summaries = adjustedCardSummaries(previousMap, savedMap, { rootCardId: 'root', excludedCardIds: ['task-a'] })
+  assert.deepEqual(summaries, [{
+    reason: 'root-rollup',
+    card: { id: 'root', data: { label: 'root', kind: 'root', status: 'in-progress', progress: 50 }, changedKeys: ['progress', 'status'] },
+  }])
+  const moved = adjustedCardSummaries(previousMap, { ...savedMap, nodes: savedMap.nodes.map((node) => node.id === 'root' ? { ...node, position: { x: 5, y: 5 } } : node) }, { rootCardId: 'root', excludedCardIds: ['task-a'] })
+  assert.deepEqual(moved[0].card.position, { x: 5, y: 5 })
+  assert.ok(moved[0].card.changedKeys.includes('position'))
+})
+
+test('update_card 요청 카드는 보낸 필드와 바뀐 필드를 원문으로 두고 바꾸지 않은 큰 필드만 생략한다', () => {
+  const big = 'x'.repeat(UPDATE_CARD_UNCHANGED_FIELD_LIMIT + 10)
+  const previous = { label: '카드', description: big, sharedKnowledge: big, remainingWorkItems: [big], progress: 0, status: 'planned', checklist: [{ id: 'c1', text: '완료 조건', done: false }] }
+  const saved = { ...previous, sharedKnowledge: '새 공유 지식 '.repeat(200), progress: 100, status: 'done', waitingItems: [] }
+  const { data, omittedFields } = compactRequestedCardData(previous, saved, saved, ['sharedKnowledge'])
+  assert.deepEqual(omittedFields, ['description', 'remainingWorkItems'])
+  assert.equal(data.sharedKnowledge, saved.sharedKnowledge, '보낸 필드는 크기와 무관하게 원문으로 둔다')
+  assert.equal(data.progress, 100); assert.equal(data.status, 'done'); assert.deepEqual(data.waitingItems, [])
+  assert.deepEqual(data.checklist, previous.checklist, '바꾸지 않은 작은 필드는 그대로 둔다')
+  assert.equal(data.description, undefined)
+  const sent = compactRequestedCardData(previous, previous, previous, ['description'])
+  assert.equal(sent.data.description, big, '바뀌지 않았어도 보낸 필드는 확인용으로 원문을 둔다')
 })

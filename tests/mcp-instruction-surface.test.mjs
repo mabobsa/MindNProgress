@@ -16,6 +16,10 @@ const baseline = JSON.parse(await readFile(path.join(root, 'docs/ai-guidance-rol
 const baselineDescriptions = new Map([...baseline.matchAll(/^\s*registerTool\(server, '([^']+)', ('(?:\\.|[^'])*'|`[^`]*`), /gm)]
   .map((match) => [match[1], match[2]]))
 const safetyTools = new Set(['mindnprogress_restore_history', 'mindnprogress_update_document_info', 'mindnprogress_recover_ai_delegation'])
+// 코드로 필드를 꺼내는 AI가 생략된 경로를 조용히 빈 값으로 읽지 않도록, 덧붙인 안내는 생략될 수 있는 필드와 회수 경로를 이름으로 밝힌다.
+const responseBudgetAppendices = new Map([
+  ['mindnprogress_update_card', /^ affected의 card는 이번에 보낸 필드와 저장 중 바뀐 필드를 원문으로 주고, 그 밖의 1,000자 초과 필드는 card\.omittedFields와 textIntegrity로만 표시합니다\. affectedCards에는 요청 카드를 빼고 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다\.$/],
+])
 // send_group_document_instruction(실제 서버 동작에 맞춘 정정)과 get_document(2026-10-21 승인 view 인자)는 재생성 기준선과
 // 설명이 같아졌으므로 다른 도구와 같이 기준선 전문 비교 대상이다. 아래 의미 검사는 재생성 이후를 대비한 보조 안전망이다.
 function countSchemaDescriptions(value) {
@@ -65,6 +69,12 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
         assert.match(currentDescription.slice(original.length - 2), /^ 기본 detailLevel=summary는 project·guide 전문.*회수 경로를 detail.*판단하기 전에는 그 경로로 해당 원문을 읽으세요.*full.*도구 출력 한도/s)
         // 코드로 필드를 꺼내는 AI가 summary에 없는 경로를 조용히 빈 값으로 읽지 않도록 생략 필드를 이름으로 밝힌다.
         assert.match(currentDescription, /root\.data에는 description·sharedKnowledge가 없고 길이·SHA-256만 root\.textIntegrity에 있으며, documentInstructions에는 지시·응답 원문이 없습니다/)
+        continue
+      }
+      // 응답 크기 예산(2026-10-29)도 기준선 설명을 그대로 두고 생략·회수 안내만 뒤에 덧붙였다.
+      if (responseBudgetAppendices.has(tool.name)) {
+        assert.ok(currentDescription.startsWith(original.slice(1, -1)), `${tool.name}의 기준선 설명 문장을 그대로 유지한다.`)
+        assert.match(currentDescription.slice(original.length - 2), responseBudgetAppendices.get(tool.name))
         continue
       }
       // 과거 기준선은 보존하고 사용자가 변경한 화면 명칭만 현재 이름으로 대조한다.

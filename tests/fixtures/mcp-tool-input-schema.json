@@ -3662,7 +3662,7 @@
   },
   {
     "name": "mindnprogress_update_card",
-    "description": "카드의 일부 필드만 부분 병합합니다. data에는 변경할 필드만 보내고 description 또는 sharedKnowledge의 일부만 고칠 때는 mindnprogress_patch_card_text를 사용하세요. checklist는 기존 ID를 보존한 전체 배열이며 완료 비율로 progress와 status를 자동 계산합니다. 완료 처리하면 waitingItems가 해제될 수 있고 Ref와 자동 집계 카드는 서버가 원본·하위 업무 기준으로 다시 계산합니다. responseMode=full은 최신 문서를, affected는 직접 수정 카드와 서버가 함께 조정한 카드만 반환합니다. requestId를 보존해 재전송하세요. resultOnly=true는 변경 본문 없이 결과만 조회합니다. 응답 유실은 unknown이며 같은 ID로 확인합니다.",
+    "description": "카드의 일부 필드만 부분 병합합니다. data에는 변경할 필드만 보내고 description 또는 sharedKnowledge의 일부만 고칠 때는 mindnprogress_patch_card_text를 사용하세요. checklist는 기존 ID를 보존한 전체 배열이며 완료 비율로 progress와 status를 자동 계산합니다. 완료 처리하면 waitingItems가 해제될 수 있고 Ref와 자동 집계 카드는 서버가 원본·하위 업무 기준으로 다시 계산합니다. responseMode=full은 최신 문서를, affected는 직접 수정 카드와 서버가 함께 조정한 카드만 반환합니다. affected의 card는 이번에 보낸 필드와 저장 중 바뀐 필드를 원문으로 주고, 그 밖의 1,000자 초과 필드는 card.omittedFields와 textIntegrity로만 표시합니다. affectedCards에는 요청 카드를 빼고 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다. requestId를 보존해 재전송하세요. resultOnly=true는 변경 본문 없이 결과만 조회합니다. 응답 유실은 unknown이며 같은 ID로 확인합니다.",
     "inputSchema": {
       "type": "object",
       "properties": {

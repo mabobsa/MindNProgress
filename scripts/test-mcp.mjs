@@ -2258,8 +2258,16 @@ async function main() {
     assert.equal(waitingCardResult.responseMode, 'affected')
     assert.ok(waitingCardResult.changedFields.includes('progress'))
     assert.ok(waitingCardResult.changedFields.includes('status'))
-    assert.ok(waitingCardResult.affectedCards.some((item) => item.card.id === addedCard.id && item.reason === 'requested'))
-    assert.ok(waitingCardResult.affectedCards.some((item) => item.card.id === 'root' && item.reason === 'root-rollup'))
+    assert.ok(
+      waitingCardResult.affectedCards.every((item) => item.card.id !== addedCard.id),
+      'update_card affected 응답은 요청 카드를 card에만 담고 affectedCards에 중복해서 담지 않아야 합니다.',
+    )
+    const rootRollupEntry = waitingCardResult.affectedCards.find((item) => item.card.id === 'root' && item.reason === 'root-rollup')
+    assert.ok(rootRollupEntry)
+    assert.equal(rootRollupEntry.card.data.progress, 15)
+    assert.ok(rootRollupEntry.card.changedKeys.length > 0)
+    assert.equal(rootRollupEntry.card.data.description, undefined, '서버 조정 카드는 원문 대신 상태 요약만 줍니다.')
+    assert.equal(waitingCardResult.omitted.retrieval.tool, 'mindnprogress_get_card')
 
     const partialMergePreservedFields = [
       'label',

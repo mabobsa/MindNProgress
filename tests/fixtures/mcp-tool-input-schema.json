@@ -1641,7 +1641,7 @@
   },
   {
     "name": "mindnprogress_list_ai_delegations",
-    "description": "문서의 AI 작업 위임 상태와 감사 정보를 조회합니다. worker 대기(waiting-workspace), 통합 작업공간 정리 대기(waiting-integration-clean), 하위 실행·자원 대기(waiting-resource), 통합 대기, AI 충돌 해결, 상위 대기·재개, 완료 또는 실패 상태와 대상 대화·turnId·작업공간 결과를 반환하며 문서 버전을 변경하지 않습니다. 복구 판단이 가능한 상태에는 recovery.failureCategory, recoveryAvailable, recommendedAction과 recoveryTool을 함께 반환합니다. recoveryAvailable은 기록 기준 후보이며 실제 세션·브랜치·HEAD·작업 트리 안전성은 복구 호출 시 다시 검증합니다.",
+    "description": "문서의 AI 작업 위임 상태와 감사 정보를 조회합니다. worker 대기(waiting-workspace), 통합 작업공간 정리 대기(waiting-integration-clean), 하위 실행·자원 대기(waiting-resource), 통합 대기, AI 충돌 해결, 상위 대기·재개, 완료 또는 실패 상태와 대상 대화·turnId·작업공간 결과를 반환하며 문서 버전을 변경하지 않습니다. 복구 판단이 가능한 상태에는 recovery.failureCategory, recoveryAvailable, recommendedAction과 recoveryTool을 함께 반환합니다. recoveryAvailable은 기록 기준 후보이며 실제 세션·브랜치·HEAD·작업 트리 안전성은 복구 호출 시 다시 검증합니다. 응답이 약 4만 자를 넘으면 판단이 필요한 위임(미종료·실패·복구 가능·종료 처리 가능·보고 대기)과 미해결 접수 실패는 그대로 두고 정리된 이력(완료·대체·종료된 위임과 재접수 확인·종료된 접수 실패)만 결과 원문 생략, 요약(summary=true), 오래된 이력 개수화 순으로 줄이며, 줄인 범위와 회수 경로를 응답 앞쪽 responseBudget과 omitted에 표기합니다. 생략된 위임은 delegationId로 한 건씩 조회하세요.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1668,6 +1668,11 @@
         "includeFullResult": {
           "type": "boolean",
           "description": "includeResult=true와 함께 사용합니다. 절단된 결과의 보관 원문(resultFull, 최대 100,000자)과 resultFullHash를 포함합니다. 수신 확인에는 resultFullHash가 아니라 resultHash를 사용합니다."
+        },
+        "delegationId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$",
+          "description": "위임 한 건만 조회. 응답 예산으로 생략된 결과·세부 기록을 읽을 때 includeResult=true와 함께 사용"
         }
       },
       "required": [

@@ -424,7 +424,7 @@ node runner/index.mjs
 | `mindnprogress_list_ai_conversations` | 카드에 연결된 모든 AI 대화 후보의 실행 환경, 최근 활동, 실시간 상태와 `contextHealth`를 조회해 기존 대화 이어가기와 새 대화 시작 판단에 사용합니다. |
 | `mindnprogress_delegate_ai_work` | 대화 시작 카드의 모든 깊이 하위 카드에 실행 가능한 지시를 전달해 기존 대화를 이어가거나 새 대화를 만들고, 해당 턴 완료 후 결과와 함께 상위 대화를 자동 재개합니다. 일반 `resume`에는 후보의 최신 `contextHealth.assessmentId`가 필요합니다. 다른 카드 조회는 위임 기준을 바꾸지 않습니다. |
 | `mindnprogress_complete_ai_delegation` | 사용자가 중지한 하위 위임을 같은 대화에서 직접 이어 실제 작업을 완료했을 때, 카드 기록과 작업공간 체크포인트 이후 마지막 턴에 명시적 완료 신호를 보냅니다. 단순 질의 응답과 중간 보고에는 사용하지 않습니다. |
-| `mindnprogress_list_ai_delegations` | 하위 실행부터 상위 대화 재개까지 AI 작업 위임의 현재 상태, 대상 대화와 turnId를 조회합니다. 구버전 실행 기록의 자원 대기(`waiting-resource`) 상태도 호환 조회합니다. |
+| `mindnprogress_list_ai_delegations` | 하위 실행부터 상위 대화 재개까지 AI 작업 위임의 현재 상태, 대상 대화와 turnId를 조회합니다. 구버전 실행 기록의 자원 대기(`waiting-resource`) 상태도 호환 조회합니다. 응답이 4만 자를 넘으면 판단이 필요한 위임과 미해결 접수 실패는 두고 정리된 이력만 줄여 `responseBudget`·`omitted`에 표기하며, 생략된 위임은 `delegationId`로 한 건씩 조회합니다. |
 | `mindnprogress_recover_ai_delegation` | AionCore 재시작으로 복구가 필요해진 위임을 원 지시 자동 재생 없이 기존 대화·작업공간에서 명시적으로 이어갑니다. |
 | `mindnprogress_finalize_ai_coordination` | 완료된 문서 조정 실행이 하위 업무·문서 검수 대기에 남았을 때, 카드 상태·진행률·외부 대기와 실제 미완료 하위 위임을 보존하고 후속 성공으로 해소된 과거 한도 시도만 정리한 채 조정 위임을 종료해 현재 결과를 상위 AI에 전달합니다. |
 | `mindnprogress_supersede_ai_delegation` | 한도에 막혀 변경 없이 끝난 과거 위임을 같은 카드에서 나중에 성공한 위임과 연결하여 `superseded`로 종료합니다. 카드나 작업공간을 수정하지 않습니다. |

@@ -11222,10 +11222,12 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!isValidMapId(mapId)) return sendJson(response, 400, { error: '문서 ID가 올바르지 않습니다.' })
       const parentCardId = String(url.searchParams.get('parentCardId') ?? '').trim()
       const targetCardId = String(url.searchParams.get('targetCardId') ?? '').trim()
+      const delegationId = String(url.searchParams.get('delegationId') ?? '').trim()
       const listed = [...aiDelegations.values()]
         .filter((delegation) => (delegation.mapId === mapId || delegation.parentMapId === mapId)
           && (!parentCardId || delegation.parentCardId === parentCardId)
-          && (!targetCardId || delegation.targetCardId === targetCardId))
+          && (!targetCardId || delegation.targetCardId === targetCardId)
+          && (!delegationId || delegation.id === delegationId))
         .sort((first, second) => String(second.createdAt).localeCompare(String(first.createdAt)))
       const maps = new Map(await Promise.all([...new Set(listed.map(item => item.mapId))]
         .map(async id => [id, await readMapProjection(id, {}, ({ map }) => ({ nodes: map.nodes.map((node) => ({
@@ -11235,7 +11237,9 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         delegationPublicView(item, url.searchParams.get('includeResult') === 'true', {
           includeFullResult: url.searchParams.get('includeFullResult') === 'true',
         }), maps.get(item.mapId)))
-      const requestFailures = aiDelegationRequestFailures.list({ mapId, parentCardId, targetCardId, delegations: aiDelegations }).map(item => {
+      // 위임 한 건을 지정하면 그 위임을 요청했거나 그 위임으로 재접수가 확인된 접수 실패만 둔다.
+      const requestFailures = aiDelegationRequestFailures.list({ mapId, parentCardId, targetCardId, delegations: aiDelegations })
+        .filter(item => !delegationId || item.requestedDelegationId === delegationId || item.resolvedByDelegationId === delegationId).map(item => {
         const targetCardLabel = maps.get(item.mapId)?.nodes.find(node => node.id === item.targetCardId)?.data?.label ?? item.targetCardLabel
         return { ...item, targetCardLabel, retryVerification: { ...item.retryVerification,
           replacement: item.retryVerification.replacement ? { ...item.retryVerification.replacement, targetCardLabel } : null } }

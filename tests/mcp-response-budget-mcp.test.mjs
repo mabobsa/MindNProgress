@@ -140,3 +140,73 @@ test('실제 MCP의 get_document outline은 예산을 넘으면 줄이고 최종
   assert.match(card.card.data.waitingItems[0].note, /임시 리소스로 대체하지 않는다/)
   assert.deepEqual(Object.keys(card.card.data).sort(), ['label', 'waitingItems'])
 })
+
+// 문서 0: card-3에 완료 위임 12건(결과 원문 포함), card-4에 복구가 필요한 위임 1건을 둔다. 최신 위임일수록 createdAt이 늦다.
+const delegationResult = (index) => `위임 ${index}의 하위 결과 보고: 재시도 정책 점검 ${index}회차를 마쳤다. `.repeat(70)
+async function seedDelegations({ data, ids }) {
+  const [mapId] = ids
+  const base = (id, extra) => ({ id, mapId, parentMapId: mapId, parentCardId: 'card-0', parentConversationId: 'conv-parent',
+    parentHomeMachineId: 'isolated-storage', targetHomeMachineId: 'isolated-storage', ...extra })
+  const delegations = Array.from({ length: 12 }, (_, index) => base(`delegation-card3-${String(index).padStart(2, '0')}`, {
+    targetCardId: 'card-3', targetConversationId: `conv-card3-${index}`, state: 'completed', childStatus: 'completed', parentDispatchState: 'completed',
+    createdAt: `2026-10-${String(10 + index).padStart(2, '0')}T00:00:00.000Z`, updatedAt: `2026-10-${String(10 + index).padStart(2, '0')}T01:00:00.000Z`,
+    decisionReason: '격리 검증용 완료 위임'.repeat(20), instructionPreview: '재시도 정책 점검 지시'.repeat(20), childResultSnapshot: delegationResult(index),
+  }))
+  delegations.push(base('delegation-card4-recovery', { targetCardId: 'card-4', targetConversationId: 'conv-card4', state: 'recovery-required',
+    childStatus: 'running', createdAt: '2026-10-25T00:00:00.000Z', updatedAt: '2026-10-25T00:30:00.000Z', childResultSnapshot: '복구 대기 위임의 중간 보고' }))
+  await writeFile(path.join(data, '_ai-delegations.json'), JSON.stringify(delegations))
+  // card-3의 접수 실패 두 건은 각각 다른 위임으로 재접수가 확인됐다.
+  const failure = (id, delegationId, createdAt) => ({ id, kind: 'request-failure', state: 'request-failed', requestedDelegationId: `${id}-requested`,
+    mapId, parentMapId: mapId, parentCardId: 'card-0', parentConversationId: 'conv-parent', targetCardId: 'card-3',
+    parentHomeMachineId: 'isolated-storage', targetHomeMachineId: 'isolated-storage', strategy: 'new', phase: 'preflight', accepted: false,
+    executionState: 'not-started', automaticRetry: false, status: 409, reasonCode: 'AI_DELEGATION_VERSION_CONFLICT', message: '문서 버전이 바뀌어 접수하지 못했습니다.',
+    createdAt, updatedAt: createdAt, instructionHash: null, requestSummary: '재시도 정책 점검',
+    resolution: { delegationId, method: 'confirmed-retry', at: createdAt, actorId: 'user-editor', note: '같은 업무의 재접수를 확인했습니다.' } })
+  await writeFile(path.join(data, '_ai-delegation-request-failures.json'), JSON.stringify([
+    failure('request-card3-latest', 'delegation-card3-11', '2026-10-21T12:00:00.000Z'),
+    failure('request-card3-older', 'delegation-card3-05', '2026-10-15T12:00:00.000Z'),
+  ]))
+}
+
+test('실제 MCP의 list_ai_delegations는 정리된 이력만 줄이고 delegationId로 원문을 회수한다', { timeout: 90000 }, async (t) => {
+  const api = await storageApi(t, { documents: 1, seed: seedDelegations })
+  const client = new Client({ name: 'delegation-budget-test', version: '1' })
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['mcp/server.mjs'],
+    cwd: process.env.MNP_STORAGE_TEST_SOURCE_ROOT || path.resolve(import.meta.dirname, '..'), env: api.env, stderr: 'pipe' })
+  t.after(async () => { await client.close() })
+  await client.connect(transport)
+  const invoke = async (name, args) => {
+    const result = await client.callTool({ name: `mindnprogress_${name}`, arguments: args })
+    assert.notEqual(result.isError, true, JSON.stringify(result))
+    const text = result.content.find((part) => part.type === 'text').text
+    return { value: JSON.parse(text), chars: text.length }
+  }
+  const [mapId] = api.ids
+  await invoke('get_context', { mapId, cardId: 'card-0', editorId: 'user-editor', aiType: 'Fixture AI', aiModel: 'fixture' })
+  const { value: history, chars } = await invoke('list_ai_delegations', { mapId, targetCardId: 'card-3', includeResult: true })
+  assert.ok(history.responseBudget, `카드 이력이 예산을 넘어야 합니다(${chars}자).`)
+  assert.equal(history.responseBudget.returnedChars, chars)
+  assert.ok(chars <= 40000, `응답 ${chars}자`)
+  assert.equal(history.delegations[0].id, 'delegation-card3-11', '최신순을 유지한다')
+  assert.equal(history.delegations[0].result, delegationResult(11), '카드별 최신 이력은 결과를 남긴다')
+  const omittedId = history.omitted.resultOmittedDelegationIds.at(-1)
+  assert.ok(omittedId)
+  // 생략된 결과는 delegationId로 한 건만, 줄이지 않고 받는다.
+  const { value: single } = await invoke('list_ai_delegations', { ...history.omitted.retrieval.delegation.arguments, delegationId: omittedId })
+  assert.equal(single.delegations.length, 1)
+  assert.equal(single.responseBudget, undefined)
+  assert.equal(single.delegations[0].result, delegationResult(Number(omittedId.slice(-2))))
+  assert.equal(single.delegations[0].summary, undefined, '단건 조회는 요약하지 않는다')
+  assert.match(single.delegations[0].decisionReason, /격리 검증용 완료 위임/, '세부 기록도 그대로 준다')
+  // 단건 조회의 접수 실패는 그 위임에 연결된 기록만 준다. 카드 이력 조회에는 모두 있다.
+  assert.deepEqual(history.requestFailures.map((item) => item.id), ['request-card3-latest', 'request-card3-older'])
+  const { value: latest } = await invoke('list_ai_delegations', { mapId, delegationId: 'delegation-card3-11' })
+  assert.deepEqual(latest.requestFailures.map((item) => [item.id, item.resolvedByDelegationId, item.retryVerification.state]),
+    [['request-card3-latest', 'delegation-card3-11', 'confirmed']])
+  // 문서 전체 조회에서도 복구가 필요한 위임은 그대로 둔다.
+  const { value: all } = await invoke('list_ai_delegations', { mapId, includeResult: true })
+  const recovery = all.delegations.find((item) => item.id === 'delegation-card4-recovery')
+  assert.equal(recovery.recovery.recoveryAvailable, true)
+  assert.equal(recovery.result, '복구 대기 위임의 중간 보고')
+  assert.equal(recovery.summary, undefined)
+})

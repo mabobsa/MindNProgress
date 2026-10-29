@@ -27,6 +27,7 @@ import { DOCUMENT_VIEW_CARD_ID_LIMIT, DOCUMENT_VIEWS, cardAccessUrl, documentAcc
 import { preserveOmittedWaitingItemNotes } from './waitingItemNotes.mjs'
 import { adjustedCardSummaries, changedCardIds, compactRequestedCardData, referenceProjectedNode } from './affectedCards.mjs'
 import { applyContextBudget } from './contextBudget.mjs'
+import { applyDelegationBudget } from './delegationBudget.mjs'
 import { WORKSPACE_POOL_STATUS_GUIDE, WORKSPACE_POOL_STATUS_REFERENCE } from './workspacePoolStatusGuide.mjs'
 import { MCP_TOOL_USAGE_DIRECTORY_NAME, createFileToolUsageRecorder } from '../server/lib/mcpToolUsage.mjs'
 import { formatAiConversationDisplay } from '../server/lib/aiConversationDisplay.mjs'
@@ -1943,20 +1944,31 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_list_ai_delegations', '문서의 AI 작업 위임 상태와 감사 정보를 조회합니다. worker 대기(waiting-workspace), 통합 작업공간 정리 대기(waiting-integration-clean), 하위 실행·자원 대기(waiting-resource), 통합 대기, AI 충돌 해결, 상위 대기·재개, 완료 또는 실패 상태와 대상 대화·turnId·작업공간 결과를 반환하며 문서 버전을 변경하지 않습니다. 복구 판단이 가능한 상태에는 recovery.failureCategory, recoveryAvailable, recommendedAction과 recoveryTool을 함께 반환합니다. recoveryAvailable은 기록 기준 후보이며 실제 세션·브랜치·HEAD·작업 트리 안전성은 복구 호출 시 다시 검증합니다.', {
+  registerTool(server, 'mindnprogress_list_ai_delegations', '문서의 AI 작업 위임 상태와 감사 정보를 조회합니다. worker 대기(waiting-workspace), 통합 작업공간 정리 대기(waiting-integration-clean), 하위 실행·자원 대기(waiting-resource), 통합 대기, AI 충돌 해결, 상위 대기·재개, 완료 또는 실패 상태와 대상 대화·turnId·작업공간 결과를 반환하며 문서 버전을 변경하지 않습니다. 복구 판단이 가능한 상태에는 recovery.failureCategory, recoveryAvailable, recommendedAction과 recoveryTool을 함께 반환합니다. recoveryAvailable은 기록 기준 후보이며 실제 세션·브랜치·HEAD·작업 트리 안전성은 복구 호출 시 다시 검증합니다. 응답이 약 4만 자를 넘으면 판단이 필요한 위임(미종료·실패·복구 가능·종료 처리 가능·보고 대기)과 미해결 접수 실패는 그대로 두고 정리된 이력(완료·대체·종료된 위임과 재접수 확인·종료된 접수 실패)만 결과 원문 생략, 요약(summary=true), 오래된 이력 개수화 순으로 줄이며, 줄인 범위와 회수 경로를 응답 앞쪽 responseBudget과 omitted에 표기합니다. 생략된 위임은 delegationId로 한 건씩 조회하세요.', {
     mapId: z.string().min(1),
     parentCardId: z.string().min(1).max(120).optional().describe('상위 카드로 필터'),
     targetCardId: z.string().min(1).max(120).optional().describe('하위 대상 카드로 필터'),
     includeResult: z.boolean().optional().describe('결과 원문과 검증된 resultHash/resultTurnId 포함. 필요한 대상만 필터해서 읽으세요. 조회만으로 보고를 수신 확인하지 않습니다. 담당 상위 AI는 읽은 결과를 refresh_ai_delegation의 acknowledgeResultHash로 명시적으로 수신 확인할 수 있습니다. resultHash는 반환된 result 문자열(절단 표시 포함) 기준이며 resultHashBasis로 표시합니다. 원문이 12,000자를 넘으면 result는 앞 12,000자와 절단 표시만 담고 resultTruncated=true, resultOriginalLength와 resultFullAvailable을 함께 반환합니다.'),
     includeFullResult: z.boolean().optional().describe('includeResult=true와 함께 사용합니다. 절단된 결과의 보관 원문(resultFull, 최대 100,000자)과 resultFullHash를 포함합니다. 수신 확인에는 resultFullHash가 아니라 resultHash를 사용합니다.'),
-  }, async ({ mapId, parentCardId, targetCardId, includeResult, includeFullResult }) => {
+    delegationId: z.string().regex(AI_DELEGATION_ID_PATTERN).optional().describe('위임 한 건만 조회. 응답 예산으로 생략된 결과·세부 기록을 읽을 때 includeResult=true와 함께 사용'),
+  }, async ({ mapId, parentCardId, targetCardId, includeResult, includeFullResult, delegationId }) => {
     const query = new URLSearchParams()
     if (parentCardId) query.set('parentCardId', parentCardId)
     if (targetCardId) query.set('targetCardId', targetCardId)
+    if (delegationId) query.set('delegationId', delegationId)
     if (includeResult) query.set('includeResult', 'true')
     if (includeResult && includeFullResult) query.set('includeFullResult', 'true')
     const suffix = query.size > 0 ? `?${query}` : ''
-    return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/ai-delegations${suffix}`, { aiMapId: mapId })
+    const result = await apiRequest(`/api/maps/${encodeURIComponent(mapId)}/ai-delegations${suffix}`, { aiMapId: mapId })
+    // delegationId 필터를 모르는 이전 서버도 한 건과 그 위임에 연결된 접수 실패만 돌려주도록 MCP에서도 거른다.
+    return delegationId && Array.isArray(result?.delegations)
+      ? { ...result, delegations: result.delegations.filter((item) => item.id === delegationId),
+        ...(Array.isArray(result.requestFailures) ? { requestFailures: result.requestFailures.filter((item) =>
+          item.requestedDelegationId === delegationId || item.resolvedByDelegationId === delegationId) } : {}) }
+      : result
+  }, {
+    // 문서 전체·카드 이력이 클라이언트 출력 한도를 넘으면 정리된 이력만 줄인다. 위임 한 건을 지정한 조회는 그대로 준다.
+    finalizeResult: (result, { mapId, delegationId }) => (delegationId ? result : applyDelegationBudget(result, { mapId })),
   })
 
   registerTool(server, 'mindnprogress_get_card', '한 카드의 설명, 공유 지식, 업무 필드와 댓글을 선택적으로 조회합니다. description과 sharedKnowledge의 길이·SHA-256은 textIntegrity로 반환하며 이미지 카드는 로컬 원본 경로도 반환합니다. get_context의 fallback 카드 또는 간략 개요에서 원문이 필요할 때 사용하세요. fields로 필요한 data 필드만, includeComments=false로 댓글 없이 받을 수 있으며 get_context의 omitted.retrieval이 이 인자를 안내합니다. textIntegrity는 fields와 무관하게 항상 description·sharedKnowledge 전체 기준입니다.', {

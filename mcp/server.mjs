@@ -23,7 +23,7 @@ import {
 } from './cardTextPatch.mjs'
 import { imageCardLocalAccess } from './imageAccess.mjs'
 import { withDocumentGroupMetadata } from './documentGroupMetadata.mjs'
-import { DOCUMENT_VIEW_CARD_ID_LIMIT, DOCUMENT_VIEWS, cardAccessUrl, documentAccessUrl, updateCardFullEdge, updateCardFullNode } from './documentViews.mjs'
+import { DOCUMENT_VIEW_CARD_ID_LIMIT, DOCUMENT_VIEWS, cardAccessUrl, documentAccessUrl, finalizeResponseBudget, updateCardFullEdge, updateCardFullNode } from './documentViews.mjs'
 import { preserveOmittedWaitingItemNotes } from './waitingItemNotes.mjs'
 import { adjustedCardSummaries, changedCardIds, compactRequestedCardData, referenceProjectedNode } from './affectedCards.mjs'
 import { applyContextBudget } from './contextBudget.mjs'
@@ -1733,7 +1733,7 @@ async function main() {
     title: z.string().min(1).max(80), description: z.string().max(100000),
   }, async ({ groupId, ...body }) => apiRequest(`/api/groups/${encodeURIComponent(groupId)}/documents`, { method: 'POST', body: JSON.stringify(body) }))
 
-  registerTool(server, 'mindnprogress_get_document', '문서의 모든 카드와 연결 관계, 외부 접근 URL 및 이미지 카드의 로컬 원본 경로를 조회합니다. view를 생략하면 기존과 같은 full 전체 응답입니다. compact는 모든 카드 원문·관계·안전 메타데이터를 유지하고 AI 대화 상세·렌더링 전용 값·카드별 접근 URL 목록만 줄입니다. outline은 카드 원문 대신 구조·상태·관계·요구사항 필드·본문 길이와 textIntegrity를 주고 cardIds로 고른 카드만 전문을 함께 주며, 생략 범위와 회수 도구를 omitted에 표기합니다. version은 문서 version과 documentEtag만 확인합니다. 같은 view·cardIds로 받은 응답의 documentEtag를 ifNoneMatch로 전달하면 그 응답 이후 문서가 바뀌지 않았을 때만 본문을 생략하고, knownVersion은 version 일치 여부만 freshness로 알려 주며 본문을 생략하지 않습니다(view를 생략한 full 응답에는 freshness가 없습니다). 재구성 계획·의미 보존 검토, restore_history 직전 백업, 요구사항 전수 감사와 지식선 전역 점검에는 full을 사용하세요.', getDocumentSchema, async ({ mapId, view = 'full', cardIds, knownVersion, ifNoneMatch }) => {
+  registerTool(server, 'mindnprogress_get_document', '문서의 모든 카드와 연결 관계, 외부 접근 URL 및 이미지 카드의 로컬 원본 경로를 조회합니다. view를 생략하면 기존과 같은 full 전체 응답입니다. compact는 모든 카드 원문·관계·안전 메타데이터를 유지하고 AI 대화 상세·렌더링 전용 값·카드별 접근 URL 목록만 줄입니다. outline은 카드 원문 대신 구조·상태·관계·요구사항 필드·본문 길이와 textIntegrity를 주고 cardIds로 고른 카드만 전문을 함께 주며, 생략 범위와 회수 도구를 omitted에 표기합니다. version은 문서 version과 documentEtag만 확인합니다. 같은 view·cardIds로 받은 응답의 documentEtag를 ifNoneMatch로 전달하면 그 응답 이후 문서가 바뀌지 않았을 때만 본문을 생략하고, knownVersion은 version 일치 여부만 freshness로 알려 주며 본문을 생략하지 않습니다(view를 생략한 full 응답에는 freshness가 없습니다). 재구성 계획·의미 보존 검토, restore_history 직전 백업, 요구사항 전수 감사와 지식선 전역 점검에는 full을 사용하세요. outline 응답이 약 4만 자를 넘으면 구조·상태·계층과 cardIds로 고른 카드 전문은 그대로 두고 큰 비원문 필드, 검증 해시, 갱신 메타데이터, 대기 메모, 대기 항목, 카드 보조 필드, 지식선 순으로 줄이며, 줄인 범위와 회수 경로를 응답 앞쪽 responseBudget과 omitted에 표기합니다. 대기·완료 판단에 필요한 원문은 omitted.retrieval로 먼저 읽으세요.', getDocumentSchema, async ({ mapId, view = 'full', cardIds, knownVersion, ifNoneMatch }) => {
     const query = new URLSearchParams({ mcpView: view })
     for (const id of cardIds ?? []) query.append('cardId', id)
     if (cardIds && view !== 'outline') throw Object.assign(new Error("cardIds는 view='outline'에서만 사용할 수 있습니다."), { reasonCode: 'DOCUMENT_VIEW_ARGUMENT_INVALID' })
@@ -1749,6 +1749,9 @@ async function main() {
       if (access) card.imageAccess = access
     }
     return result
+  }, {
+    // outline 예산의 반환 크기는 그룹 메타데이터·로컬 이미지 경로를 붙인 최종 응답 기준으로 맞춘다.
+    finalizeResult: (result) => finalizeResponseBudget(result),
   })
 
   registerTool(server, 'mindnprogress_get_ai_work_states', '카드에 연결된 AionUi 대화의 현재 작업 상태를 조회합니다. 형제·하위·선행 카드 등 선택 카드 밖의 관련 카드를 수정하기 전에 호출해 다른 AI와의 동시 작업 충돌을 확인하세요. 이 조회는 문서 데이터, 버전과 변경 이력을 수정하지 않습니다.', {

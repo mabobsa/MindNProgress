@@ -150,4 +150,67 @@ AI 클라이언트는 큰 MCP 응답을 그대로 받지 못한다. Claude Code�
 - 규칙이 큰 문맥은 더 줄일 수 없는 최소 응답도 4만 자를 넘는다(운영 측정 20건, 최대 44,169자). 규칙은 줄이지 않는다.
 - 큰 문맥에서는 선행 지식 원문을 원천 수만큼 `get_card`로 따로 읽으므로 호출 수가 늘어난다.
 - 단일 필드가 4.8만 자 안팎인 카드는 `fields`로 나눠 받아도 그 필드 하나가 한도를 넘을 수 있다.
-- `get_document`·`list_ai_delegations`·`list_comments`와 `get_card` 기본 응답의 크기는 이번 범위가 아니다.
+- `list_ai_delegations`·`list_comments`, `get_card` 기본 응답, `get_document`의 `full`·`compact` 크기는 범위가 아니다. `get_document`의 `outline`은 아래 후속 절에서 다룬다.
+
+## 후속: `get_document` outline 예산
+
+### 배경과 원인
+
+- 2026-10 대화 기록에서 `get_document`는 Claude 파일 저장 187건, Codex 5.6만 자 초과 1,717건으로 가장 많았다.
+- 기본 `full`은 문서 전체를 주는 계약이다(`mcp/documentViews.mjs`: 기존 응답과 바이트 단위로 같아야 한다). 백업·전수 감사에 쓰이므로 바꾸지 않는다.
+- 구조 파악용 `outline`도 운영 문서 74개 중 11개에서 4.8만 자를 넘었다(최대 1,045,284자). 원인은 문서마다 다르다.
+  - 큰 비원문 필드: JP-게임룸 · 인게임 v0.3의 `requirementsLedger` 55만 자 등
+  - 대기 메모 원문: 감사 문서들의 `waitingItems` 4만~7.5만 자
+  - 카드별 `textIntegrity`, 공유 지식 갱신 기록, 지식선
+- `get_context` 예산이 생략한 문서 개요의 회수 경로가 `outline`이라, 큰 문서에서는 회수 경로도 한도를 넘었다.
+
+### 변경 (`mcp/documentViews.mjs`)
+
+`outline` 응답이 4만 자(`OUTLINE_RESPONSE_BUDGET_CHARS`)를 넘을 때만 아래 순서로 줄이고 예산 안에 들면 멈춘다. 서버가 만든 응답에 MCP가 그룹 메타데이터·로컬 이미지 경로를 덧붙이므로 1천 자를 여유로 둔다.
+
+| 순서 | 단계 ID | 줄이는 데이터 |
+|---|---|---|
+| 1 | `largeFields` | 원문 이외의 2천 자 초과 필드(카드별 `omittedFields`에 이름) |
+| 2 | `integrityLengths` | `textIntegrity`의 SHA-256(길이는 유지) |
+| 3 | `metadataFields` | 공유 지식 갱신·검토 기록, 재구성 출처, 외부 링크 미리보기 |
+| 4 | `mediumFields` | 원문 이외의 500자 초과 필드 |
+| 5 | `waitingNotes` | 대기 메모 원문(큰 카드부터, 예산에 들 때까지) |
+| 6 | `waitingCounts` | 대기 항목을 개수로(큰 카드부터) |
+| 7 | `minimalCards` | 카드를 id·계층·제목·상태만으로(큰 카드부터, `minimal=true`) |
+| 8 | `knowledgeLinks` | 지식선 목록(개수만 남김) |
+
+- 구조(`cards[]`의 id·`parentId`·`childCount`), 상태·진행률, `cardIds`로 고른 카드 전문(`selectedCards`)은 줄이지 않는다. 고른 카드 전문만으로 예산을 넘으면 개요를 줄이지 않고 `exceeded=true`와 함께 `cardIds`를 줄이라고 안내한다. 줄여도 어차피 한도를 넘어 정보만 잃기 때문이다.
+- 대기 메모는 재개를 제한하는 조건을 담을 수 있으므로 늦은 단계에서만 줄인다. 줄였을 때는 대기 재개·완료·위임 판단 전에 원문을 확인하라는 안내와 `retrieval.cardFields`(`get_card` `fields`)를 붙인다.
+- 줄였을 때 `view` 바로 뒤에 `responseBudget`(`limitChars`·`originalChars`·`returnedChars`·`appliedSteps`·`exceeded`)을 두고 `omitted.fields`·`counts`·`notOmitted`·`retrieval.cardFields`를 갱신한다. MCP는 최종 응답 기준으로 `returnedChars`를 다시 맞춘다.
+- `DOCUMENT_VIEW_FORMAT`을 4로 올려, 이전 형식으로 받은 `documentEtag`가 새 응답과 맞지 않게 했다.
+- `get_document` 도구 설명은 기준선 문장 뒤에 `outline` 예산 안내만 덧붙였다. `get_context`의 생략 안내 문구도 `outline`이 예산을 지킨다는 내용으로 고쳤다.
+- `outline`은 서버가 만들므로 운영 반영에는 서버 재시작이 필요하다. 서버와 MCP 버전이 어긋나도 응답이 스스로 설명하므로 동작은 깨지지 않는다.
+
+### 측정 (운영 문서 파일, 읽기 전용)
+
+| 범위 | 개정 전 중앙값 | 개정 전 최대 | 4.8만 자 초과 | 개정 후 최대 | 개정 후 초과 |
+|---|---:|---:|---:|---:|---:|
+| 휴지통 제외 74개 | 21,852자 | 1,045,284자 | 11개 | 38,840자 | 0개 |
+| 활성 52개 | 11,867자 | 1,045,284자 | 7개 | 38,840자 | 0개 |
+
+- 예산 적용 19개(활성 9개), `exceeded` 0개. 4만 자 안의 문서 55개는 그대로다.
+- 대기 메모가 많은 감사 문서는 큰 카드부터 필요한 만큼만 줄여 3.8만 자 안팎까지 원문을 유지했다(예: JP 감사 · 누락 33항목 112,084자 → 38,348자).
+
+### 행동 평가
+
+개정 전은 `f401193`(이 절 이전 변경까지 포함), 개정 후는 이 변경을 더한 작업 트리다. 실행 원본은 저장소 밖 `C:\Git\MindNProgress\behavior-eval-outline-budget-20261029`에 있다.
+
+- **시나리오 BEH-03(넓은 요청의 대상 분모 확인), 문서 단위**: 문서의 모든 대기 항목을 메모·재개 조건과 함께 빠짐없이 보고하게 했다(카드·댓글 수정 금지).
+- **fixture**: 카드 36장에 대기 항목 50개(라벨 W-01~W-50)를 두었다. 대기 메모가 가장 긴 카드 네 곳의 메모에만 판별 단서 P1~P4를 두었다. 개정 전 `outline`은 74,763자, 개정 후는 37,954자다(메모 20개 생략, P1·P2 생략, P3·P4 유지).
+- **모델**: Claude 개인 Max `claude-opus-5-5`, Codex `gpt-6-astra`(exec 코드 모드), 사고 강도 xhigh·high. 8회.
+
+| 사고 강도 | Claude 전 | Claude 후 | Codex 전 | Codex 후 |
+|---|---|---|---|---|
+| xhigh | 통과 | 통과 | 통과 | 통과 |
+| high | 통과 | 통과 | 통과 | 통과 |
+
+- 8회 모두 대기 항목 50/50개와 총수(50건)를 보고했고, 판별 단서 네 개를 원문 그대로 옮겼다. 쓰기는 없었다.
+- **Codex 개정 후**는 예산이 적용된 `outline`(38,365자)을 받은 뒤 메모가 생략된 카드 10장만 `get_card(fields=["waitingItems"])`로 읽어 P1·P2를 회수했다. 개정 전은 75,174자 `outline`(또는 93,696자 `compact`)을 객체로 받았다.
+- **Claude**는 개정 전후 모두 "빠짐없이" 요청에 원문을 모두 담는 `compact`를 먼저 골라 파일 저장 뒤 카드 36장을 `get_card`로 읽었다. 개정 후 high 1회만 `cardIds` 12장으로 `outline`을 더 조회했다(38,979자, 한도 안).
+- **사용량**: Claude 4회 환산 $6.01(Max 한도에서 차감), Codex 4회 입력 128만 토큰(캐시 108만), 출력 1.6만 토큰.
+- **한계**: 조합마다 1회, 합성 데이터다. Claude는 `cardIds` 없는 `outline`을 고르지 않아, Claude가 메모 생략 응답을 받은 경우는 평가하지 못했다.

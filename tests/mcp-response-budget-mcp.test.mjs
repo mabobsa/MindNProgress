@@ -100,3 +100,43 @@ test('실제 MCP의 get_context 예산 축소·get_card 회수 인자·update_ca
   assert.equal(referenceUpdated.card.textIntegrity.description.length, '격리 환경의 시험 본문입니다. '.repeat(100).length)
   assert.ok(referenceUpdated.affectedCards.every((entry) => entry.card.id !== 'card-5'))
 })
+
+// 문서 0의 카드마다 긴 대기 메모(저장 한도 1,000자 안) 두 건을 두어 outline이 예산을 넘게 한다.
+async function seedWaitingNotes({ data, ids }) {
+  const file = path.join(data, `${ids[0]}.json`)
+  const map = JSON.parse(await readFile(file, 'utf8'))
+  for (const node of map.nodes) {
+    node.data.waitingItems = [1, 2].map((index) => ({ id: `wait-${node.id}-${index}`, label: `외부 전달물 대기 ${index}`, resumeCondition: '전달물 수령 후 재개',
+      since: '2026-10-01T00:00:00.000Z', note: `${node.id} 대기 메모 ${index}: 임시 리소스로 대체하지 않는다. `.repeat(30).slice(0, 990) }))
+  }
+  await writeFile(file, JSON.stringify(map))
+}
+
+test('실제 MCP의 get_document outline은 예산을 넘으면 줄이고 최종 응답 크기를 정확히 알린다', { timeout: 90000 }, async (t) => {
+  const api = await storageApi(t, { documents: 1, seed: seedWaitingNotes })
+  const client = new Client({ name: 'outline-budget-test', version: '1' })
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['mcp/server.mjs'],
+    cwd: process.env.MNP_STORAGE_TEST_SOURCE_ROOT || path.resolve(import.meta.dirname, '..'), env: api.env, stderr: 'pipe' })
+  t.after(async () => { await client.close() })
+  await client.connect(transport)
+  const invoke = async (name, args) => {
+    const result = await client.callTool({ name: `mindnprogress_${name}`, arguments: args })
+    assert.notEqual(result.isError, true, JSON.stringify(result))
+    const text = result.content.find((part) => part.type === 'text').text
+    return { value: JSON.parse(text), chars: text.length }
+  }
+  const [mapId] = api.ids
+  const { value: outline, chars } = await invoke('get_document', { mapId, view: 'outline' })
+  assert.ok(outline.responseBudget, '예산을 넘는 outline에는 responseBudget이 있어야 합니다.')
+  assert.equal(outline.responseBudget.returnedChars, chars, 'MCP가 덧붙인 그룹 메타데이터까지 포함한 최종 크기여야 합니다.')
+  assert.ok(chars <= 40000, `outline ${chars}자`)
+  assert.equal(outline.responseBudget.exceeded, false)
+  assert.ok(outline.responseBudget.appliedSteps.includes('waitingNotes'))
+  assert.equal(outline.cards.length, 20)
+  assert.equal(outline.cards.find((card) => card.id === 'card-3').parentId, 'card-0')
+  // 회수 경로로 받은 대기 메모 원문은 줄이지 않은 원문이다.
+  const retrieval = outline.omitted.retrieval.cardFields
+  const { value: card } = await invoke(retrieval.tool.replace('mindnprogress_', ''), { ...retrieval.arguments, cardId: 'card-3', fields: ['waitingItems'] })
+  assert.match(card.card.data.waitingItems[0].note, /임시 리소스로 대체하지 않는다/)
+  assert.deepEqual(Object.keys(card.card.data).sort(), ['label', 'waitingItems'])
+})

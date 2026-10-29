@@ -192,8 +192,9 @@ function representationCardIds(view, cardIds) {
  * Response representation format of the projected views. Bump it whenever a view's response shape or
  * wording changes, so an etag issued for an older response body never yields notModified.
  * 3: 현재 그룹 소속도 조건부 응답의 의존성에 포함한다.
+ * 4: outline이 응답 예산(OUTLINE_RESPONSE_BUDGET_CHARS)을 넘으면 필드를 단계적으로 생략하고 responseBudget을 붙인다.
  */
-export const DOCUMENT_VIEW_FORMAT = 3
+export const DOCUMENT_VIEW_FORMAT = 4
 
 /**
  * Content token for re-fetch avoidance. It covers the resolved map (including Ref projections),
@@ -341,6 +342,197 @@ function compactResponse(documentResult, publicBaseUrl, imageAccessOf, freshness
   }
 }
 
+/**
+ * outline 응답 예산. get_context 예산과 같은 Claude Code 실측(MnP JSON 48,499자 통과, 56,289자 초과)에 여유를 둔 값이다.
+ * 넘을 때만 구조·상태·관계와 selectedCards는 두고 아래 단계를 차례로 적용하며, 들어오면 멈춘다.
+ */
+export const OUTLINE_RESPONSE_BUDGET_CHARS = 40_000
+// 서버가 만든 outline에 MCP가 그룹 메타데이터와 로컬 이미지 경로를 덧붙이는 몫
+const OUTLINE_POSTPROCESS_RESERVE_CHARS = 1_000
+const OUTLINE_KEPT_FIELDS = new Set(['label', 'kind', 'status', 'progress', 'isWork', 'blockedBy', 'waitingItems', 'checklistSummary', 'aiConversationCount', 'reference', 'taskUrl', 'assigneeId', 'dueDate'])
+const OUTLINE_METADATA_FIELDS = ['sharedKnowledgeUpdatedBy', 'sharedKnowledgeUpdatedAt', 'sharedKnowledgeReview', 'reconstructionSources', 'restructureV2Changes', 'externalLink']
+const OUTLINE_MINIMAL_FIELDS = ['label', 'kind', 'status', 'progress', 'isWork', 'blockedBy', 'waitingItemCount']
+const responseSize = (value) => JSON.stringify(value).length
+
+/** 조건에 맞는 카드를 measure 값의 직렬화 크기가 큰 순서로 돌려준다. 같은 크기는 문서 순서를 지킨다. */
+function cardsBySize(response, predicate, measure) {
+  return response.cards
+    .map((card, index) => ({ card, index }))
+    .filter(({ card }) => predicate(card))
+    .map(({ card, index }) => ({ card, index, size: responseSize(measure(card)) }))
+    .sort((a, b) => b.size - a.size || a.index - b.index)
+    .map(({ card }) => card)
+}
+
+function dropOutlineFields(response, state, limit) {
+  let dropped = 0
+  for (const card of response.cards) {
+    for (const [key, value] of Object.entries(card.data ?? {})) {
+      if (OUTLINE_KEPT_FIELDS.has(key) || responseSize(value) <= limit) continue
+      delete card.data[key]
+      card.omittedFields = [...new Set([...(card.omittedFields ?? []), key])]
+      state.fieldNames.add(key)
+      dropped++
+    }
+  }
+  return dropped
+}
+
+const OUTLINE_BUDGET_STEPS = [
+  {
+    id: 'largeFields',
+    apply(response, state) {
+      const dropped = dropOutlineFields(response, state, 2000)
+      if (dropped) state.fields['cards[].data(2,000자 초과 필드)'] = '원문 이외의 큰 필드를 생략했습니다. 카드별 이름은 cards[].omittedFields에 있습니다.'
+      return dropped > 0
+    },
+  },
+  {
+    id: 'integrityLengths',
+    apply(response, state) {
+      for (const card of response.cards) {
+        card.textIntegrity = Object.fromEntries(Object.entries(card.textIntegrity ?? {}).map(([field, value]) => [field, { length: value?.length ?? 0 }]))
+      }
+      state.fields['cards[].textIntegrity.*.sha256'] = 'SHA-256을 생략하고 길이만 남겼습니다. 해시가 필요하면 retrieval.selectedCards나 retrieval.singleCard로 조회하세요.'
+      return response.cards.length > 0
+    },
+  },
+  {
+    id: 'metadataFields',
+    apply(response, state) {
+      let dropped = 0
+      for (const card of response.cards) for (const key of OUTLINE_METADATA_FIELDS) if (Object.hasOwn(card.data ?? {}, key)) { delete card.data[key]; dropped++ }
+      if (dropped) state.fields[`cards[].data.${OUTLINE_METADATA_FIELDS.join('·')}`] = '공유 지식 갱신·검토 기록, 재구성 출처, 외부 링크 미리보기를 생략했습니다.'
+      return dropped > 0
+    },
+  },
+  {
+    id: 'mediumFields',
+    apply(response, state) {
+      const dropped = dropOutlineFields(response, state, 500)
+      if (dropped) state.fields['cards[].data(500자 초과 필드)'] = '원문 이외의 500자 초과 필드를 생략했습니다. 카드별 이름은 cards[].omittedFields에 있습니다.'
+      return dropped > 0
+    },
+  },
+  // 아래 세 단계는 문서 전체에 한꺼번에 적용하지 않고 큰 카드부터 하나씩 적용하다가 예산에 들면 멈춘다.
+  {
+    id: 'waitingNotes',
+    apply(response, state, fits) {
+      let dropped = 0
+      for (const card of cardsBySize(response, (card) => (card.data?.waitingItems ?? []).some((item) => item && Object.hasOwn(item, 'note')), (card) => card.data.waitingItems)) {
+        if (fits()) break
+        for (const item of card.data.waitingItems) if (item && Object.hasOwn(item, 'note')) { delete item.note; dropped++ }
+        state.counts['cards[].data.waitingItems[].note'] = dropped
+        state.fields['cards[].data.waitingItems[].note'] = '일부 카드의 대기 메모 원문을 생략했습니다(개수는 omitted.counts). 메모에는 재개를 제한하는 조건이 있을 수 있으므로 note가 없는 대기 항목은 대기 재개·완료·위임 판단 전에 retrieval.cardFields로 해당 카드의 waitingItems 원문을 확인하세요.'
+      }
+      return dropped > 0
+    },
+  },
+  {
+    id: 'waitingCounts',
+    apply(response, state, fits) {
+      let changed = 0
+      for (const card of cardsBySize(response, (card) => Array.isArray(card.data?.waitingItems), (card) => card.data.waitingItems)) {
+        if (fits()) break
+        card.data.waitingItemCount = card.data.waitingItems.length
+        delete card.data.waitingItems
+        changed++
+        state.counts['cards[].data.waitingItemCount'] = changed
+        state.fields['cards[].data.waitingItems'] = 'waitingItemCount가 있는 카드는 대기 항목 원문 대신 개수만 줍니다. 대기 판단 전에는 retrieval.cardFields로 해당 카드의 waitingItems를 확인하세요.'
+      }
+      return changed > 0
+    },
+  },
+  {
+    id: 'minimalCards',
+    apply(response, state, fits) {
+      let changed = 0
+      const indexById = new Map(response.cards.map((card, index) => [card.id, index]))
+      for (const card of cardsBySize(response, () => true, (card) => card)) {
+        if (fits()) break
+        changed++
+        response.cards[indexById.get(card.id)] = {
+          id: card.id,
+          parentId: card.parentId,
+          childCount: card.childCount,
+          data: Object.fromEntries(OUTLINE_MINIMAL_FIELDS.filter((key) => card.data?.[key] !== undefined).map((key) => [key, card.data[key]])),
+          minimal: true,
+        }
+        state.counts['cards[].minimal'] = changed
+        state.fields['cards[]'] = `minimal=true인 카드는 id·parentId·childCount와 ${OUTLINE_MINIMAL_FIELDS.join('·')}만 남겼습니다. 다른 필드는 retrieval.selectedCards나 retrieval.cardFields로 조회하세요.`
+      }
+      return changed > 0
+    },
+  },
+  {
+    id: 'knowledgeLinks',
+    apply(response, state) {
+      if (!response.knowledgeLinks?.length) return false
+      state.counts.knowledgeLinks = response.knowledgeLinks.length
+      response.knowledgeLinks = []
+      state.fields.knowledgeLinks = '지식선 목록을 생략했습니다. 개수는 omitted.counts.knowledgeLinks에 있습니다. 지식선 전역 점검에는 view를 생략한 full을 사용하세요.'
+      return true
+    },
+  },
+]
+
+export const OUTLINE_BUDGET_STEP_IDS = Object.freeze(OUTLINE_BUDGET_STEPS.map((step) => step.id))
+
+function withOutlineBudget(response, state, mapId, limitChars, originalChars) {
+  const omitted = {
+    ...response.omitted,
+    fields: { ...response.omitted.fields, ...state.fields },
+    ...(Object.keys(state.counts).length > 0 ? { counts: { ...state.counts } } : {}),
+    notOmitted: 'responseBudget.appliedSteps로 줄인 필드 외에 version, 상태·진행률, 계층(parentId·childCount), cardIds로 고른 카드의 전문(selectedCards), group·membership, access.rule은 그대로 제공합니다.',
+    retrieval: { ...response.omitted.retrieval, cardFields: { tool: 'mindnprogress_get_card', arguments: { mapId, cardId: '<cardId>', fields: ['<field>'], includeComments: false } } },
+  }
+  // 코드로 일부만 출력하거나 긴 출력의 중간이 잘려도 보이도록 view 바로 뒤에 둔다.
+  const responseBudget = { limitChars, originalChars, returnedChars: limitChars, appliedSteps: [...state.applied], exceeded: false }
+  const result = {}
+  for (const [key, value] of Object.entries(response)) {
+    result[key] = key === 'omitted' ? omitted : value
+    if (key === 'view') result.responseBudget = responseBudget
+  }
+  return result
+}
+
+/**
+ * outline 응답이 limitChars를 넘을 때만 단계적으로 줄인 새 응답을 만든다. 넘지 않으면 원래 객체를 그대로 반환한다.
+ * reserveChars는 이후 단계(MCP의 그룹 메타데이터·로컬 이미지 경로)가 덧붙일 여유분이다.
+ */
+export function applyOutlineBudget(response, { mapId, limitChars = OUTLINE_RESPONSE_BUDGET_CHARS, reserveChars = 0 } = {}) {
+  const originalChars = responseSize(response)
+  const targetChars = limitChars - reserveChars
+  if (originalChars <= targetChars) return response
+  const working = structuredClone(response)
+  const state = { fields: {}, counts: {}, fieldNames: new Set(), applied: [] }
+  const fits = () => responseSize(withOutlineBudget(working, state, mapId, limitChars, originalChars)) <= targetChars
+  // cardIds로 고른 카드 전문 등 줄이지 않는 부분만으로 예산을 넘으면, 개요를 줄여도 한도를 넘으므로 정보만 잃는다.
+  const floor = responseSize(withOutlineBudget({ ...working, cards: [], knowledgeLinks: [] }, state, mapId, limitChars, originalChars))
+  if (floor > targetChars) {
+    state.fields.selectedCards = 'cardIds로 고른 카드 전문만으로 응답 예산을 넘어 개요를 줄이지 않았습니다. cardIds를 줄이거나 retrieval.cardFields로 필요한 필드만 조회하세요.'
+  } else {
+    for (const step of OUTLINE_BUDGET_STEPS) {
+      if (step.apply(working, state, fits)) state.applied.push(step.id)
+      if (fits()) break
+    }
+  }
+  return finalizeResponseBudget(withOutlineBudget(working, state, mapId, limitChars, originalChars))
+}
+
+/** 예산을 적용한 응답의 returnedChars·exceeded를 지금 크기로 맞춘다. 이후 단계에서 응답이 커진 경우에도 다시 호출한다. */
+export function finalizeResponseBudget(response) {
+  const budget = response?.responseBudget
+  if (!budget) return response
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const returnedChars = responseSize(response)
+    if (budget.returnedChars === returnedChars) break
+    budget.returnedChars = returnedChars
+    budget.exceeded = returnedChars > budget.limitChars
+  }
+  return response
+}
+
 function outlineResponse(documentResult, publicBaseUrl, imageAccessOf, cardIds, freshness) {
   const map = documentResult.map
   const hierarchyEdges = map.edges.filter((edge) => !isKnowledgeEdge(edge))
@@ -354,7 +546,7 @@ function outlineResponse(documentResult, publicBaseUrl, imageAccessOf, cardIds, 
   const nodesById = new Map(map.nodes.map((node) => [node.id, node]))
   const selected = new Set(selectedIds)
   const omittedCardIds = map.nodes.filter((node) => !selected.has(node.id)).map((node) => node.id)
-  return {
+  return applyOutlineBudget({
     view: 'outline',
     ...documentMetadata(documentResult),
     map: { ...documentFields(map), accessUrl: documentAccessUrl(publicBaseUrl, map.id) },
@@ -383,7 +575,7 @@ function outlineResponse(documentResult, publicBaseUrl, imageAccessOf, cardIds, 
       rule: OMITTED_TEXT_RULE,
       retrieval: retrievalFor(map.id),
     },
-  }
+  }, { mapId: map.id, reserveChars: OUTLINE_POSTPROCESS_RESERVE_CHARS })
 }
 
 function assertCardIdsExist(map, cardIds) {

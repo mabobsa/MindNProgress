@@ -178,7 +178,7 @@ const BUDGET_STEPS = [
       if (!Array.isArray(outline) || outline.length === 0) return false
       state.counts['document.outline'] = outline.length
       response.document.outline = []
-      state.fields['document.outline'] = '문서 개요를 생략했습니다. 카드 수는 document.stats에 있습니다. 큰 문서는 get_document 응답도 한도를 넘을 수 있으니 필요한 카드만 get_card로 조회하세요.'
+      state.fields['document.outline'] = '문서 개요를 생략했습니다. 카드 수는 document.stats에 있고 개요는 retrieval.document로 조회합니다.'
       state.retrieval.add('document')
       return true
     },
@@ -228,7 +228,7 @@ function retrievalOf(state, { mapId, cardId }) {
     retrieval.comments = { tool: 'mindnprogress_list_comments', arguments: { mapId, cardId, offset: 0, limit: 50, order: 'desc', includeDetail: false } }
   }
   if (state.retrieval.has('document')) {
-    retrieval.document = { tool: 'mindnprogress_get_document', arguments: { mapId, view: 'outline' }, caution: '큰 문서는 이 응답도 도구 출력 한도를 넘을 수 있습니다.' }
+    retrieval.document = { tool: 'mindnprogress_get_document', arguments: { mapId, view: 'outline' }, caution: '큰 문서의 outline도 응답 예산에 맞춰 필드를 줄입니다. 줄인 범위는 그 응답의 responseBudget·omitted에 있습니다.' }
   }
   return retrieval
 }

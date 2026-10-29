@@ -19,6 +19,7 @@ const safetyTools = new Set(['mindnprogress_restore_history', 'mindnprogress_upd
 // 코드로 필드를 꺼내는 AI가 생략된 경로를 조용히 빈 값으로 읽지 않도록, 덧붙인 안내는 생략될 수 있는 필드와 회수 경로를 이름으로 밝힌다.
 const responseBudgetAppendices = new Map([
   ['mindnprogress_get_context', /^ focused 응답이 약 4만 자를 넘으면 guide·groupProject·selection\.taskLinks·selection\.aiWorkCoordination·nextStep 등 규칙은 그대로 두고 덜 중요한 데이터부터 생략하며, 생략 여부와 경로·회수 도구를 응답 앞쪽의 contextBudget과 omitted에 표기합니다\. 생략될 수 있는 것은 선행 지식 원천의 설명·댓글·sharedKnowledge, 문서 지식선·개요, 관계 카드의 대기 상세, 선택 카드의 댓글과 description·sharedKnowledge 등 큰 필드입니다\. 생략된 원문은 추측하지 말고 omitted\.retrieval로 읽으세요\.$/],
+  ['mindnprogress_get_document', /^ outline 응답이 약 4만 자를 넘으면 구조·상태·계층과 cardIds로 고른 카드 전문은 그대로 두고 큰 비원문 필드, 검증 해시, 갱신 메타데이터, 대기 메모, 대기 항목, 카드 보조 필드, 지식선 순으로 줄이며, 줄인 범위와 회수 경로를 응답 앞쪽 responseBudget과 omitted에 표기합니다\. 대기·완료 판단에 필요한 원문은 omitted\.retrieval로 먼저 읽으세요\.$/],
   ['mindnprogress_get_card', /^ fields로 필요한 data 필드만, includeComments=false로 댓글 없이 받을 수 있으며 get_context의 omitted\.retrieval이 이 인자를 안내합니다\. textIntegrity는 fields와 무관하게 항상 description·sharedKnowledge 전체 기준입니다\.$/],
   ['mindnprogress_update_card', /^ affected의 card는 이번에 보낸 필드와 저장 중 바뀐 필드를 원문으로 주고, 그 밖의 1,000자 초과 필드는 card\.omittedFields와 textIntegrity로만 표시합니다\. affectedCards에는 요청 카드를 빼고 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다\.$/],
 ])
@@ -98,7 +99,8 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
     assert.match(getDocument, /view를 생략하면 기존과 같은 full.*compact.*outline.*cardIds.*omitted.*version.*같은 view·cardIds로 받은 응답의 documentEtag를 ifNoneMatch.*knownVersion은 version 일치 여부만.*본문을 생략하지 않습니다.*재구성.*restore_history.*전수 감사.*지식선 전역 점검에는 full/s)
     assert.match(getDocumentSchema.properties.ifNoneMatch.description, /같은 view·cardIds로 받은.*다른 view·cardIds 응답의 documentEtag는 일치하지 않음/s)
     assert.match(getDocumentSchema.properties.knownVersion.description, /본문은 생략하지 않음.*full 응답에는 freshness가 없으므로/s)
-    assert.equal(getDocument, baselineDescriptions.get('mindnprogress_get_document').slice(1, -1), 'get_document 기준선 설명 전문')
+    // outline 응답 예산(2026-10-29)은 기준선 설명 전문 뒤에 안내만 덧붙였다.
+    assert.match(getDocument.slice(baselineDescriptions.get('mindnprogress_get_document').length - 2), responseBudgetAppendices.get('mindnprogress_get_document'), 'get_document 기준선 설명 뒤에 outline 예산 안내만 덧붙인다')
     assert.equal(descriptions.get('mindnprogress_send_group_document_instruction'), baselineDescriptions.get('mindnprogress_send_group_document_instruction').slice(1, -1), 'send_group_document_instruction 기준선 설명 전문')
     assert.deepEqual(getDocumentSchema.required, ['mapId'])
     assert.deepEqual(getDocumentSchema.properties.view.enum, ['full', 'compact', 'outline', 'version'])

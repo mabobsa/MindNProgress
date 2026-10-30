@@ -79,7 +79,8 @@ export function completedWorkspaceLeaseIds(state, { protectedLeaseIds = new Set(
 }
 
 // 결과·지시·복구 전문은 보관하지 않는다. 지연된 재요청 차단과 대화 재사용 통계만 남긴다.
+// 문맥 포화 예외(contextOverride)는 남용 여부를 나중에 확인할 수 있도록 상세 정리 뒤에도 보존한다.
 export function completedRequestReceipt(record) {
   return Object.fromEntries(['id', 'requestSignature', 'mapId', 'parentMapId', 'targetConversationId',
-    'strategy', 'createdAt', 'completedAt'].filter((key) => record[key] !== undefined).map((key) => [key, record[key]]))
+    'strategy', 'contextOverride', 'createdAt', 'completedAt'].filter((key) => record[key] !== undefined).map((key) => [key, record[key]]))
 }

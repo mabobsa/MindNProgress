@@ -59,6 +59,15 @@ test('그룹 문서 지시 키와 요청 서명은 안정적이며 다른 지시
       replyTarget: { mode: 'explicit', conversationId: 'conversation-review', evidence: '사용자가 현재 지시에서 지정했습니다.' },
     }),
   )
+  // 문맥 포화 예외가 없는 요청은 이전 서명을 유지하고, 예외의 사유 코드·근거가 바뀌면 다른 요청으로 구분한다.
+  const resumeRequest = { ...request, strategy: 'resume', conversationId: 'document-conversation', newConversation: undefined }
+  const contextOverride = { reasonCode: 'unrecorded-context', reason: '문서 담당 대화에만 있는 정비 판단을 이어갑니다.' }
+  assert.equal(createGroupDocumentInstructionSignature(resumeRequest), createGroupDocumentInstructionSignature({ ...resumeRequest, contextOverride: null }))
+  assert.notEqual(createGroupDocumentInstructionSignature(resumeRequest), createGroupDocumentInstructionSignature({ ...resumeRequest, contextOverride }))
+  assert.notEqual(
+    createGroupDocumentInstructionSignature({ ...resumeRequest, contextOverride }),
+    createGroupDocumentInstructionSignature({ ...resumeRequest, contextOverride: { ...contextOverride, reasonCode: 'user-requested' } }),
+  )
 })
 
 test('폴러가 먼저 점유한 동일 지시는 최초 요청도 같은 전달 결과를 기다린다', async () => {

@@ -371,6 +371,14 @@ test('같은 위임 ID의 새 대화 실행 설정이 달라지면 다른 요청
     ...base,
     machineId: 'macbook',
   }))
+  // 문맥 포화 예외가 없는 요청은 이전 서명을 유지하고, 예외의 사유 코드·근거가 바뀌면 다른 요청으로 구분한다.
+  assert.equal(signature, createAiDelegationRequestSignature({ ...base, contextOverride: null }))
+  const contextOverride = { reasonCode: 'final-step', reason: '같은 위임의 마지막 보고만 남았습니다.' }
+  const withOverride = createAiDelegationRequestSignature({ ...base, contextOverride })
+  assert.notEqual(signature, withOverride)
+  assert.equal(withOverride, createAiDelegationRequestSignature({ ...base, contextOverride: { ...contextOverride, appliedAt: '2026-10-30T00:00:00.000Z' } }))
+  assert.notEqual(withOverride, createAiDelegationRequestSignature({ ...base, contextOverride: { ...contextOverride, reasonCode: 'user-requested' } }))
+  assert.notEqual(withOverride, createAiDelegationRequestSignature({ ...base, contextOverride: { ...contextOverride, reason: '다른 근거' } }))
 })
 
 test('AionCore가 실제 사용한 작업공간 lease를 모든 식별자로 비교한다', () => {

@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { AI_CONVERSATION_CONTEXT_REUSE_GUARD_ENABLED, applyAiConversationDelegationModelPolicy, assessAiConversationContextHealth as assessContextHealth, isAiDelegationModelBlocked } from '../server/lib/aiConversationContextHealth.mjs'
+import {
+  AI_CONVERSATION_CONTEXT_OVERRIDE_REASON_CODES,
+  AI_CONVERSATION_CONTEXT_REUSE_GUARD_ENABLED,
+  applyAiConversationDelegationModelPolicy,
+  assessAiConversationContextHealth as assessContextHealth,
+  isAiDelegationModelBlocked,
+  normalizeAiConversationContextOverride,
+  resolveAiConversationContextOverride,
+} from '../server/lib/aiConversationContextHealth.mjs'
 
-// 기존 ON 판정은 보존해 임시 중지를 되돌릴 때 같은 기준으로 복원되는지 검증한다.
+// ON 판정을 명시해 기본값이 바뀌어도 같은 기준을 검증한다. 응급 OFF는 contextReuseGuardEnabled: false로 따로 검증한다.
 function assessAiConversationContextHealth(input, observedAt) {
   return assessContextHealth(input, observedAt, { contextReuseGuardEnabled: true })
 }
+const assessOff = (input, observedAt) => assessContextHealth(input, observedAt, { contextReuseGuardEnabled: false })
+const override = { reasonCode: 'unrecorded-context', reason: '대화에만 있는 결정 맥락을 이어서 수정해야 합니다.' }
 
 const base = {
   conversationId: 'conversation-a',
@@ -18,45 +28,131 @@ const base = {
   consecutiveResumeCount: 1,
 }
 
-test('공통 스위치는 기본 OFF이며 높은 문맥 사용률을 이유로 새 대화를 요구하지 않는다', () => {
+test('공통 스위치는 기본 ON이며 사용률 80% 이상 대화의 일반 이어가기를 막는다', () => {
   const result = assessContextHealth({ ...base, usage: { used: 190_000, size: 200_000 } })
-  assert.equal(AI_CONVERSATION_CONTEXT_REUSE_GUARD_ENABLED, false)
-  assert.equal(result.contextReuseGuardEnabled, false)
-  assert.equal(result.state, 'saturated', '관측 지표와 판정 자체는 참고용으로 남긴다.')
+  assert.equal(AI_CONVERSATION_CONTEXT_REUSE_GUARD_ENABLED, true)
+  assert.equal(result.contextReuseGuardEnabled, true)
+  assert.equal(result.state, 'saturated')
   assert.equal(result.metrics.contextUsageRatio, 0.95)
   assert.deepEqual(result.reasonCodes, ['CONVERSATION_CONTEXT_USAGE_HIGH'])
-  assert.equal(result.resumeAllowed, true)
-  assert.equal(result.recommendation, 'resume')
-  assert.match(result.message, /임시로 OFF/)
-  assert.doesNotMatch(result.message, /새 대화로 시작해야/)
+  assert.equal(result.resumeAllowed, false)
+  assert.equal(result.recommendation, 'new')
+  assert.equal(result.contextOverrideEligible, false, '90% 이상은 예외도 허용하지 않는다.')
+  assert.match(result.message, /새 대화로 시작해야 합니다\. 사용률이 90% 이상이라 contextOverride 예외도 허용하지 않습니다\.$/)
 })
 
-test('OFF에서는 주의·긴 대화·연속 재사용·통계 미확인도 교체 사유로 삼지 않는다', () => {
+test('예외 가능 구간은 사용률 80% 이상 90% 미만이며 경계값을 그대로 따른다', () => {
+  for (const [used, state, eligible] of [
+    [159_999, 'caution', false],
+    [160_000, 'saturated', true],
+    [179_999, 'saturated', true],
+    [180_000, 'saturated', false],
+  ]) {
+    const result = assessContextHealth({ ...base, usage: { used, size: 200_000 } })
+    assert.equal(result.state, state, `${used}`)
+    assert.equal(result.contextOverrideEligible, eligible, `${used}`)
+  }
+  const eligible = assessContextHealth({ ...base, usage: { used: 170_000, size: 200_000 } })
+  assert.equal(eligible.resumeAllowed, false)
+  assert.match(eligible.message, /사용률이 90% 미만이므로 같은 업무의 후속 작업이 카드에 기록되지 않은 대화 맥락에 의존하거나 사용자가 이 대화를 이어가라고 직접 지시한 경우에만 contextOverride/)
+})
+
+test('응급 OFF에서는 높은 사용률·주의·긴 대화·연속 재사용·통계 미확인도 교체 사유로 삼지 않는다', () => {
   for (const input of [
+    { ...base, usage: { used: 190_000, size: 200_000 } },
     { ...base, usage: { used: 140_000, size: 200_000 } },
     { ...base, usage: {}, conversationTurnCount: 100, consecutiveResumeCount: 15 },
     { ...base, usage: {}, conversationTurnCount: null, conversationTurnCountExact: false },
   ]) {
-    const result = assessContextHealth(input)
+    const result = assessOff(input)
     assert.equal(result.contextReuseGuardEnabled, false)
     assert.equal(result.resumeAllowed, true)
     assert.equal(result.recommendation, 'resume')
+    assert.equal(result.contextOverrideEligible, false)
   }
+  const saturated = assessOff({ ...base, usage: { used: 190_000, size: 200_000 } })
+  assert.equal(saturated.state, 'saturated', '관측 지표와 판정 자체는 참고용으로 남긴다.')
+  assert.match(saturated.message, /임시로 OFF/)
+  assert.doesNotMatch(saturated.message, /새 대화로 시작해야/)
 })
 
-test('OFF를 다시 ON으로 바꾸면 기존 포화 차단을 복원하고 이전 평가 ID를 구분한다', () => {
+test('스위치 ON·OFF 전환은 같은 지표라도 평가 ID를 구분한다', () => {
   const input = { ...base, usage: { used: 190_000, size: 200_000 } }
-  const off = assessContextHealth(input)
-  const on = assessContextHealth(input, undefined, { contextReuseGuardEnabled: true })
-  assert.equal(on.contextReuseGuardEnabled, true)
+  const off = assessOff(input)
+  const on = assessContextHealth(input)
   assert.equal(on.resumeAllowed, false)
-  assert.equal(on.recommendation, 'new')
+  assert.equal(off.resumeAllowed, true)
   assert.deepEqual(off.metrics, on.metrics)
   assert.notEqual(off.assessmentId, on.assessmentId)
 })
 
+test('포화 예외는 90% 미만 포화 대화에만 적용하고 적용한 예외만 기록 값으로 돌려준다', () => {
+  const eligible = assessContextHealth({ ...base, usage: { used: 170_000, size: 200_000 } })
+  const blocked = resolveAiConversationContextOverride(eligible, null)
+  assert.equal(blocked.allowed, false)
+  assert.equal(blocked.code, 'SATURATED')
+  assert.equal(blocked.message, eligible.message)
+  const applied = resolveAiConversationContextOverride(eligible, override)
+  assert.equal(applied.allowed, true)
+  assert.deepEqual(applied.contextOverride, { ...override, contextUsageRatio: 0.85, assessmentId: eligible.assessmentId })
+
+  const limited = assessContextHealth({ ...base, usage: { used: 180_000, size: 200_000 } })
+  const overLimit = resolveAiConversationContextOverride(limited, override)
+  assert.equal(overLimit.allowed, false)
+  assert.equal(overLimit.code, 'OVERRIDE_LIMIT')
+  assert.match(overLimit.message, /90% 이상이라 예외로도 이어갈 수 없습니다.*같은 대화로 다시 요청하지 말고 새 대화로 위임/)
+  assert.equal(resolveAiConversationContextOverride(limited, null).code, 'SATURATED')
+
+  const unknown = assessContextHealth({ ...base, conversationTurnCount: null, conversationTurnCountExact: false })
+  const unknownOverride = resolveAiConversationContextOverride(unknown, override)
+  assert.equal(unknownOverride.allowed, false)
+  assert.equal(unknownOverride.code, 'UNKNOWN')
+  assert.match(unknownOverride.message, /상태를 확인할 수 없는 대화에는 contextOverride를 적용하지 않습니다/)
+  assert.equal(resolveAiConversationContextOverride(unknown, null).message, unknown.message)
+
+  for (const contextHealth of [
+    assessAiConversationContextHealth(base),
+    assessContextHealth({ ...base, usage: { used: 140_000, size: 200_000 } }),
+    assessOff({ ...base, usage: { used: 190_000, size: 200_000 } }),
+  ]) {
+    const ignored = resolveAiConversationContextOverride(contextHealth, override)
+    assert.equal(ignored.allowed, true)
+    assert.equal(ignored.contextOverride, null, '예외가 필요 없는 대화의 예외는 기록하지 않는다.')
+  }
+})
+
+test('금지 모델 대화는 포화 예외로도 이어가지 않는다', () => {
+  const eligible = assessContextHealth({ ...base, usage: { used: 170_000, size: 200_000 } })
+  const blocked = applyAiConversationDelegationModelPolicy(eligible, { linkedModelId: 'gpt-6-sol', runtimeModelId: 'gpt-6.1-sol' })
+  assert.equal(blocked.contextOverrideEligible, false)
+  const decision = resolveAiConversationContextOverride(blocked, override)
+  assert.equal(decision.allowed, false)
+  assert.equal(decision.code, 'MODEL_BLOCKED')
+  assert.equal(decision.contextOverride, null)
+  const allowed = applyAiConversationDelegationModelPolicy(eligible, { linkedModelId: 'gpt-6.1-sol', runtimeModelId: 'gpt-6.1-sol' })
+  assert.equal(allowed.contextOverrideEligible, true)
+  assert.equal(resolveAiConversationContextOverride(allowed, override).allowed, true)
+})
+
+test('예외 인자는 허용 사유 코드와 500자 이하 근거만 받는다', () => {
+  assert.deepEqual(AI_CONVERSATION_CONTEXT_OVERRIDE_REASON_CODES, ['unrecorded-context', 'final-step', 'continued-review', 'user-requested'])
+  assert.equal(normalizeAiConversationContextOverride(undefined), null)
+  assert.equal(normalizeAiConversationContextOverride(null), null)
+  for (const reasonCode of AI_CONVERSATION_CONTEXT_OVERRIDE_REASON_CODES) {
+    assert.deepEqual(normalizeAiConversationContextOverride({ reasonCode, reason: '  근거  ', extra: 'ignored' }), { reasonCode, reason: '근거' })
+  }
+  assert.equal(normalizeAiConversationContextOverride({ reasonCode: 'final-step', reason: '가'.repeat(500) }).reason.length, 500)
+  for (const invalid of [
+    'unrecorded-context', [], {}, { reasonCode: 'convenience', reason: '편의' }, { reasonCode: 'final-step' },
+    { reasonCode: 'final-step', reason: '   ' }, { reasonCode: 'final-step', reason: '가'.repeat(501) },
+    { reasonCode: 'final-step', reason: 1 }, { reasonCode: ['final-step'], reason: '근거' },
+  ]) {
+    assert.equal(normalizeAiConversationContextOverride(invalid), undefined, JSON.stringify(invalid))
+  }
+})
+
 test('컨텍스트 스위치가 OFF여도 금지 모델은 기존·실행 모델 양쪽에서 재사용을 차단한다', () => {
-  const contextHealth = assessContextHealth({ ...base, usage: { used: 190_000, size: 200_000 } })
+  const contextHealth = assessOff({ ...base, usage: { used: 190_000, size: 200_000 } })
   for (const modelId of ['gpt-5.6-sol', 'gpt-6-sol', 'gpt-6.0-sol']) {
     for (const models of [{ linkedModelId: modelId, runtimeModelId: 'gpt-6.1-sol' },
       { linkedModelId: 'gpt-6.1-sol', runtimeModelId: modelId }]) {

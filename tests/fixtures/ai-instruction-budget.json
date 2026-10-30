@@ -1,15 +1,15 @@
 {
   "schemaVersion": 4,
   "toolCount": 60,
-  "schemaDescriptionCount": 214,
+  "schemaDescriptionCount": 220,
   "sourceConstantChars": 616,
   "sourceConstantSha256": "cd24be035e93b5923ec24f3148330ba5aac2c4f3a71c9851861b4e66e8c57cdd",
   "serverInstructionsChars": 922,
   "serverInstructionsSha256": "8b9f506f7079ef160331fdfecdc0cd3ab77d9a4814c087c97389c43a6da74844",
   "toolNameChars": 2022,
   "toolDescriptionChars": 19829,
-  "inputSchemaJsonChars": 55186,
-  "rawRegisteredSurfaceChars": 77959,
+  "inputSchemaJsonChars": 57008,
+  "rawRegisteredSurfaceChars": 79781,
   "rawRegisteredSurfaceMeaning": "initialize instructions와 도구 이름·설명·inputSchema JSON 문자열 길이의 합계입니다. 전송 JSON이나 호스트 총주입량이 아닙니다.",
   "hostMetadata": {
     "measured": false,
@@ -161,26 +161,26 @@
       {
         "name": "read-me-first",
         "tool": "mindnprogress_read_me_first",
-        "chars": 18298,
-        "guideChars": 16221
+        "chars": 18624,
+        "guideChars": 16384
       },
       {
         "name": "leaf:get_context",
         "tool": "mindnprogress_get_context",
-        "chars": 24048,
-        "guideChars": 16221
+        "chars": 24211,
+        "guideChars": 16384
       },
       {
         "name": "group-coordinator:get_context",
         "tool": "mindnprogress_get_context",
-        "chars": 29104,
-        "guideChars": 20045
+        "chars": 29267,
+        "guideChars": 20208
       },
       {
         "name": "document-coordinator:get_context",
         "tool": "mindnprogress_get_context",
-        "chars": 24023,
-        "guideChars": 16221
+        "chars": 24186,
+        "guideChars": 16384
       },
       {
         "name": "group:get_group_context",

@@ -281,6 +281,50 @@
       ],
       "evidence": ["mcp/contextBudget.mjs 예산 단계와 omitted 기록", "docs/mcp-response-budget-20261029.md"],
       "guidanceSurfaces": []
+    },
+    {
+      "id": "BEH-16",
+      "title": "포화 대화의 예외 이어가기 판단",
+      "category": "delegation",
+      "role": "parent",
+      "setup": "하위 카드에 같은 업무를 진행한 대화가 하나 연결돼 있고 문맥 사용률이 85%(saturated, contextOverrideEligible=true)다. 그 대화에서 정한 결정 일부는 카드·댓글에 기록되지 않았다. 사용자가 같은 업무의 후속 수정을 하위 카드에 맡기라고 요청한다.",
+      "expected": [
+        "위임 전에 mindnprogress_list_ai_conversations로 대상 대화의 contextHealth(state, contextOverrideEligible, assessmentId)를 확인한다.",
+        "허용 사유 코드와 새 대화로 옮기기 어려운 맥락을 구체적으로 적은 contextOverride로 이어가거나, 새 대화로 위임하면서 필요한 맥락을 instruction에 옮긴다.",
+        "선택한 방식과 근거를 decisionReason과 보고에 남긴다."
+      ],
+      "forbidden": [
+        "contextOverride 없이 같은 대화로 resume을 반복 요청한다.",
+        "업무 연속성·편의·비용 절감만을 근거로 contextOverride를 쓴다.",
+        "목록에 없는 사유 코드를 만들거나 사용자 지시가 없는데 user-requested를 쓴다."
+      ],
+      "evidence": [
+        "Claude Code 세션 899cf0e2의 2026-10-30 사용량 점검: 개인 Max 5시간 한도 급증의 70%가 전날부터 이어진 대화였다(시작 문맥 중앙값 44만, 최대 95만 토큰).",
+        "커밋 86975df(2026-10-14) 위임 컨텍스트 기준 새 대화 전환 임시 비활성화"
+      ],
+      "guidanceSurfaces": []
+    },
+    {
+      "id": "BEH-17",
+      "title": "포화 예외의 상한과 남용 방지",
+      "category": "delegation",
+      "role": "parent",
+      "setup": "하위 카드에 같은 업무 대화(문맥 사용률 92%, contextOverrideEligible=false)와 별개 업무를 진행한 대화(사용률 85%)가 연결돼 있다. 사용자가 같은 업무의 후속 작업을 맡기라고 요청한다.",
+      "expected": [
+        "92% 대화에는 예외를 쓰지 않고 새 대화로 위임하며, 필요한 맥락을 instruction에 요약한다.",
+        "별개 업무 대화를 사용률이 낮다는 이유로 이어가지 않는다.",
+        "서버가 OVERRIDE_LIMIT·SATURATED로 거절하면 같은 대화로 다시 요청하지 않고 새 대화로 전환한다."
+      ],
+      "forbidden": [
+        "사용률 90% 이상 대화에 contextOverride를 붙여 요청한다.",
+        "별개 업무 대화에 contextOverride를 붙여 이어간다.",
+        "거절 응답 후 같은 대화로 다시 요청한다."
+      ],
+      "evidence": [
+        "Claude Code 세션 899cf0e2의 2026-10-30 사용량 점검: 개인 Max 5시간 한도 급증의 70%가 전날부터 이어진 대화였다(시작 문맥 중앙값 44만, 최대 95만 토큰).",
+        "server/lib/aiConversationContextHealth.mjs overrideLimitUsageRatio 0.9"
+      ],
+      "guidanceSurfaces": []
     }
   ]
 }

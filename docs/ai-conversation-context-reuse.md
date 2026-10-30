@@ -11,11 +11,33 @@
 
 ## 판정 기준
 
-- 실제 전체 문맥 크기를 확인한 사용률이 65% 이상이면 `caution`, 80% 이상이면 `saturated`다.
+- 실제 전체 문맥 크기를 확인한 사용률이 65% 이상이면 `caution`, 80% 이상이면 `saturated`다. 사용량이 확인되지 않은 상태면 아래 "사용량 확인 상태"를 따른다.
 - 사용률을 확인하지 못하면 실행 턴 수(40/80)와 연속 재사용 횟수(5/10)는 `caution` 신호로만 쓰며 포화를 확정하지 않는다. 대화 이력을 확인하지 못하면 `unknown`이다.
 - `resumeAllowed`는 `healthy`·`unverified`·`caution`이면 `true`, `saturated`·`unknown`이면 `false`다. 금지 모델 대화는 스위치와 무관하게 `false`다.
 - `caution`은 `recommendation=new`지만 정확히 이어지는 작은 후속 작업은 최신 평가를 확인해 이어갈 수 있다.
 - 스위치 상태와 지표가 평가 ID(`assessmentId`)에 들어간다. 이어가기 요청은 후보 조회 때 받은 최신 평가 ID를 전달해야 한다.
+
+## 사용량 확인 상태
+
+AionCore(2026-10-30 `aa9513ed`부터)는 `GET /api/conversations/{id}/usage`의 `_meta["aionui/contextUsage"]`에 사용량 확인 상태를 남긴다.
+
+- `status`는 세 가지다.
+  - `pending`: 턴을 보내기 직전에 기록한다. 그 턴의 사용량을 아직 확인하지 못했다는 뜻이며, 실행 중이라는 뜻은 아니다.
+  - `current`: 그 턴(`turn_id`)의 에이전트 사용량 보고가 저장됐다. 턴이 끝났거나 대화가 유휴라는 보장은 아니다.
+  - `unavailable`: 확인하지 못했다. `reason`은 `timed_out`·`not_reported`·`persistence_failed`·`process_closed` 중 하나다.
+- `updated_at`은 마지막으로 사용량 저장에 성공한 시각이고, `status_changed_at`은 상태가 바뀐 시각이다(둘 다 Unix 밀리초).
+- `pending`·`unavailable`에서도 `used`·`size`는 마지막으로 저장에 성공한 값이 남는다. 이 값은 현재 사용률의 하한이나 상한을 보장하지 않는다. 문맥 압축 등으로 줄어들 수도 있다.
+- `pending`은 Core가 강제 종료되거나 `unavailable` 기록이 실패하면 유휴 대화에도 남을 수 있다. Core를 다시 띄우거나 시간이 지나도 풀리지 않고, 다음 사용량 저장이 성공해야 `current`가 된다. 실행 여부는 이 상태가 아니라 대화 런타임 상태로 판단한다.
+
+MnP는 다음처럼 판정한다.
+
+- `current`이거나 확장이 없으면 기존 방식으로 판정한다. 확장이 없는 기존 기록은 호환을 위해 기존처럼 판정할 뿐, 최신성이 확인된 값은 아니다.
+- 그 밖의 상태(`pending`·`unavailable`·알 수 없는 값)에 사용량 수치가 있으면 `CONVERSATION_CONTEXT_USAGE_UNCONFIRMED` 사유를 붙인다.
+  - 마지막으로 확인된 사용률이 80% 이상이면 `saturated`, 65% 이상이면 `caution`으로 보수적으로 판정한다. 측정 사실이 아니라 운영 정책이므로, 사유 문구는 "마지막으로 확인된 사용률"과 "현재 사용률 미확인"을 구분해 적는다.
+  - 그보다 낮으면 `healthy`가 아니라 `unverified`다. 실행 턴 수와 연속 재사용 횟수도 다시 `caution` 신호로 쓴다.
+  - 확인되지 않은 사용률로 포화 판정한 대화는 90% 미만인지 알 수 없으므로 `contextOverrideEligible=false`다. 예외를 붙인 요청도 `*_CONTEXT_OVERRIDE_LIMIT`로 거절한다.
+- 사용량 수치가 없으면 확인 상태와 무관하게 기존 판정을 유지한다.
+- 판정 결과의 `metrics.contextUsageStatus`와 `metrics.contextUsageUpdatedAt`(마지막 확인 시각, ISO)에 확인 상태를 노출한다. 확장이 없으면 둘 다 `null`이다. 두 값은 평가 ID에 들어가므로 상태가 바뀌면 평가 ID도 바뀐다.
 
 ## 포화 예외(`contextOverride`)
 
@@ -38,11 +60,12 @@
 | 금지 모델 | 거절(`*_MODEL_BLOCKED`) | 거절(`*_MODEL_BLOCKED`) |
 | `saturated`, 90% 미만 | 거절 | 허용하고 기록 |
 | `saturated`, 90% 이상 | 거절 | 거절(`*_CONTEXT_OVERRIDE_LIMIT`) |
+| `saturated`, 사용률 미확인 | 거절 | 거절(`*_CONTEXT_OVERRIDE_LIMIT`) |
 | `unknown` | 거절 | 거절 |
 
 거절 코드는 다음과 같다.
 
-| 경로 | 포화(예외 없음) | 90% 이상 예외 | 확인 불가 |
+| 경로 | 포화(예외 없음) | 90% 이상·미확인 사용률 예외 | 확인 불가 |
 |---|---|---|---|
 | 새 위임 | `AI_DELEGATION_CONVERSATION_CONTEXT_SATURATED` | `AI_DELEGATION_CONVERSATION_CONTEXT_OVERRIDE_LIMIT` | `AI_DELEGATION_CONVERSATION_CONTEXT_UNKNOWN` |
 | 그룹 문서 지시 | `GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE` | `GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_OVERRIDE_LIMIT` | `GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE` |
@@ -85,9 +108,11 @@
 
 409 거절은 접수 실패로 기록된다. 같은 업무를 예외와 `retryOfRequestId`로 다시 요청하면 경고가 해제된다. 그러나 거절 뒤 새 대화로 바꿔 맡기면 재접수로 인정되지 않아, 사용자가 접수 실패를 종료할 때까지 경고가 남는다. 금지 모델 거절에서도 같은 기존 동작이다.
 
+AionCore가 최종 사용량을 120초 안에 받지 못하거나 강제 종료되면, 다음 사용량 저장 전까지 미확인 상태가 남는다. 그동안은 마지막으로 확인된 사용률로 보수적으로 판정한다. 그래서 문맥 압축 등으로 실제로는 여유가 생긴 대화도 포화로 막힐 수 있다.
+
 ## 검증
 
-- `tests/ai-conversation-context-health.test.mjs`: 기본 ON, 경계값 80%·90%, 예외 판정 표, 금지 모델 유지, 인자 정규화, 응급 OFF
+- `tests/ai-conversation-context-health.test.mjs`: 기본 ON, 경계값 80%·90%, 예외 판정 표, 금지 모델 유지, 인자 정규화, 응급 OFF, 사용량 확인 상태(`current`·`pending`·`unavailable`·알 수 없는 값·형식 오류)
 - `tests/ai-conversation-selection-policy.test.mjs`: ON 초기 안내와 `contextOverride` 규칙, 응급 OFF 문구 유지
 - `tests/sub-machine-routing-api.test.mjs`: 서브 머신 대화 95%+예외 거절, 85% 무사유 거절, 85%+예외 이어가기·기록, 재접수 참조로 접수 실패 해제
 - `tests/group-project-api.test.mjs`: 그룹 문서 지시의 같은 세 경우와 형식 오류, 지시 기록 노출

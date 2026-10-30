@@ -36,15 +36,53 @@ function finiteCount(value) {
   return Number.isFinite(Number(value)) ? Math.max(0, Math.trunc(Number(value))) : null
 }
 
+// AionCore가 /usage의 _meta에 남기는 사용량 확인 상태 확장이다. status가 current가 아니면(pending·unavailable)
+// used·size는 마지막으로 저장에 성공한 값이며, 현재 사용률의 하한이나 상한을 보장하지 않는다.
+export const AI_CONVERSATION_CONTEXT_USAGE_FRESHNESS_KEY = 'aionui/contextUsage'
+const MAX_DATE_MS = 8_640_000_000_000_000
+
+function boundedText(value, maxLength) {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, maxLength) : null
+}
+
+function contextUsageFreshness(value) {
+  const freshness = value?._meta?.[AI_CONVERSATION_CONTEXT_USAGE_FRESHNESS_KEY]
+  if (!freshness || typeof freshness !== 'object' || Array.isArray(freshness)) return null
+  const updatedAt = Number(freshness.updated_at)
+  return {
+    status: boundedText(freshness.status, 32),
+    reason: boundedText(freshness.reason, 64),
+    updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 && updatedAt <= MAX_DATE_MS
+      ? new Date(updatedAt).toISOString()
+      : null,
+  }
+}
+
 function contextUsage(value) {
   const used = finiteCount(value?.used)
   const reportedSize = finiteCount(value?.size)
   const size = reportedSize > 0 ? reportedSize : null
+  const freshness = contextUsageFreshness(value)
   return {
     used,
     size,
     ratio: used !== null && size ? used / size : null,
+    status: freshness?.status ?? null,
+    statusReason: freshness?.reason ?? null,
+    updatedAt: freshness?.updatedAt ?? null,
+    // 확장이 있으면 current일 때만 확인된 값이다. 확장이 없는 기존 기록은 호환을 위해 기존 방식으로 판정한다.
+    unconfirmed: freshness !== null && freshness.status !== 'current',
   }
+}
+
+function unconfirmedUsageMessage(usage) {
+  const status = usage.status === 'pending'
+    ? '이번 턴의 문맥 사용량을 아직 확인하지 못했습니다(pending)'
+    : usage.status === 'unavailable'
+      ? `마지막 턴의 문맥 사용량을 확인하지 못했습니다(unavailable${usage.statusReason ? `, ${usage.statusReason}` : ''})`
+      : `문맥 사용량의 확인 상태를 알 수 없습니다(${usage.status ?? '상태 없음'})`
+  const confirmedAt = usage.updatedAt ? ` 마지막 확인 시각은 ${usage.updatedAt}입니다.` : ''
+  return `${status}. 표시된 사용량은 마지막으로 확인된 값이라 현재 사용률과 다를 수 있습니다.${confirmedAt} 확인 전까지는 이 값으로 포화·주의를 보수적으로 판정하며, 여유가 있다고 판정하지 않습니다.`
 }
 
 function reason(code, message) {
@@ -55,6 +93,13 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
   contextReuseGuardEnabled = AI_CONVERSATION_CONTEXT_REUSE_GUARD_ENABLED,
 } = {}) {
   const usage = contextUsage(input?.usage)
+  // 미확인 사용량으로는 포화·주의만 보수적으로 판정한다. 여유(healthy)나 포화 예외 가능은 확인된 사용률로만 판정한다.
+  const unconfirmedUsage = usage.unconfirmed && usage.used !== null
+  const confirmedRatio = usage.unconfirmed ? null : usage.ratio
+  const usagePercent = usage.ratio === null ? null : Math.round(usage.ratio * 100)
+  const usageRatioMessage = unconfirmedUsage
+    ? `마지막으로 확인된 문맥 사용률이 ${usagePercent}%입니다. 현재 사용률은 확인되지 않았습니다.`
+    : `문맥 사용률이 ${usagePercent}%입니다.`
   const conversationTurnCount = finiteCount(input?.conversationTurnCount ?? input?.messageCount)
   const conversationTurnCountExact = input?.conversationTurnCountExact === true
     || input?.messageCountExact === true
@@ -69,21 +114,21 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
   const coverageReasons = []
 
   if (usage.ratio !== null && usage.ratio >= AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedUsageRatio) {
-    saturatedReasons.push(reason('CONVERSATION_CONTEXT_USAGE_HIGH', `문맥 사용률이 ${Math.round(usage.ratio * 100)}%입니다.`))
+    saturatedReasons.push(reason('CONVERSATION_CONTEXT_USAGE_HIGH', usageRatioMessage))
   } else if (usage.ratio !== null && usage.ratio >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionUsageRatio) {
-    cautionReasons.push(reason('CONVERSATION_CONTEXT_USAGE_CAUTION', `문맥 사용률이 ${Math.round(usage.ratio * 100)}%입니다.`))
+    cautionReasons.push(reason('CONVERSATION_CONTEXT_USAGE_CAUTION', usageRatioMessage))
   }
-  if (usage.ratio === null && conversationTurnCount !== null
+  if (confirmedRatio === null && conversationTurnCount !== null
     && conversationTurnCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.highConversationTurnCount) {
     cautionReasons.push(reason('CONVERSATION_TURN_COUNT_HIGH', `확인된 대화 실행 턴이 ${conversationTurnCount}개입니다. 실제 문맥 포화 여부는 확인되지 않았습니다.`))
-  } else if (usage.ratio === null && conversationTurnCount !== null
+  } else if (confirmedRatio === null && conversationTurnCount !== null
     && conversationTurnCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionConversationTurnCount) {
     cautionReasons.push(reason('CONVERSATION_TURN_COUNT_CAUTION', `확인된 대화 실행 턴이 ${conversationTurnCount}개입니다.`))
   }
-  if (usage.ratio === null
+  if (confirmedRatio === null
     && consecutiveResumeCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.highConsecutiveResumeCount) {
     cautionReasons.push(reason('CONVERSATION_RESUME_STREAK_HIGH', `같은 대화를 연속 ${consecutiveResumeCount}회 이어갔습니다. 실제 문맥 포화 여부는 확인되지 않았습니다.`))
-  } else if (usage.ratio === null
+  } else if (confirmedRatio === null
     && consecutiveResumeCount >= AI_CONVERSATION_CONTEXT_THRESHOLDS.cautionConsecutiveResumeCount) {
     cautionReasons.push(reason('CONVERSATION_RESUME_STREAK_CAUTION', `같은 대화를 연속 ${consecutiveResumeCount}회 이어갔습니다.`))
   }
@@ -101,6 +146,9 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
       `Aion이 문맥 사용량 ${usage.used.toLocaleString('ko-KR')}은 제공했지만 전체 문맥 크기는 제공하지 않아 사용률로 환산하지 않았습니다.`,
     ))
   }
+  if (unconfirmedUsage) {
+    coverageReasons.push(reason('CONVERSATION_CONTEXT_USAGE_UNCONFIRMED', unconfirmedUsageMessage(usage)))
+  }
 
   const state = saturatedReasons.length > 0
     ? 'saturated'
@@ -110,6 +158,7 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
         ? 'caution'
         : (usage.used !== null && usage.size === null)
           || (usage.used === null && historyComplete && !conversationTurnCountExact)
+          || unconfirmedUsage
           ? 'unverified'
           : 'healthy'
   const reasons = state === 'saturated'
@@ -119,13 +168,16 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
       : [...cautionReasons, ...coverageReasons]
   const recommendation = !contextReuseGuardEnabled || state === 'healthy' || state === 'unverified' ? 'resume' : 'new'
   const resumeAllowed = !contextReuseGuardEnabled || state === 'healthy' || state === 'unverified' || state === 'caution'
-  // 포화 판정은 실제 사용률로만 내려지므로 saturated이면 사용률이 항상 있다.
-  const belowOverrideLimit = usage.ratio !== null && usage.ratio < AI_CONVERSATION_CONTEXT_THRESHOLDS.overrideLimitUsageRatio
+  // 포화 예외는 확인된 사용률이 상한 미만일 때만 허용한다. 미확인 사용량으로 포화 판정한 대화는 상한 미만인지 알 수 없다.
+  const belowOverrideLimit = confirmedRatio !== null && confirmedRatio < AI_CONVERSATION_CONTEXT_THRESHOLDS.overrideLimitUsageRatio
   const contextOverrideEligible = contextReuseGuardEnabled && state === 'saturated' && belowOverrideLimit
   const metrics = {
     contextUsed: usage.used,
     contextSize: usage.size,
     contextUsageRatio: usage.ratio,
+    // AionCore의 사용량 확인 상태(current·pending·unavailable)와 마지막 확인 시각이다. 확장이 없는 기존 기록은 null이다.
+    contextUsageStatus: usage.status,
+    contextUsageUpdatedAt: usage.updatedAt,
     // 기존 응답 소비자와의 호환을 위해 필드는 유지하되, 알 수 없는 크기를 추정하지 않습니다.
     estimatedContextSize: null,
     estimatedContextUsageRatio: null,
@@ -158,13 +210,17 @@ export function assessAiConversationContextHealth(input, observedAt = new Date()
     : state === 'unverified'
       ? usage.used === null
         ? '문맥 사용량이 아직 보고되지 않았고 일부 실행 턴 ID가 없어 포화 여부를 검증할 수 없습니다. 같은 흐름의 후속 작업은 최신 상태를 확인한 뒤 이어갈 수 있습니다.'
-        : '전체 문맥 크기가 없어 포화 여부를 검증할 수 없습니다. 실제 사용량과 업무 연속성을 확인한 뒤, 같은 흐름의 후속 작업에 한해 이어가기를 시도할 수 있습니다.'
+        : usage.size === null
+          ? '전체 문맥 크기가 없어 포화 여부를 검증할 수 없습니다. 실제 사용량과 업무 연속성을 확인한 뒤, 같은 흐름의 후속 작업에 한해 이어가기를 시도할 수 있습니다.'
+          : `현재 문맥 사용량이 확인되지 않아 포화 여부를 검증할 수 없습니다. 마지막으로 확인된 사용률은 ${usagePercent}%입니다. 같은 흐름의 후속 작업은 최신 상태를 확인한 뒤 이어갈 수 있습니다.`
     : state === 'caution'
       ? '문맥 사용률 또는 대화 길이에서 주의 신호가 있습니다. 새 대화를 고려하되, 정확히 이어지는 후속 작업은 현재 평가를 확인한 뒤 재사용할 수 있습니다.'
       : state === 'saturated'
-        ? `대화 문맥이 포화 기준에 도달해 일반적인 새 위임은 새 대화로 시작해야 합니다. ${belowOverrideLimit
-          ? `사용률이 ${overrideLimitPercent} 미만이므로 같은 업무의 후속 작업이 카드에 기록되지 않은 대화 맥락에 의존하거나 사용자가 이 대화를 이어가라고 직접 지시한 경우에만 contextOverride에 사유를 붙여 예외로 이어갈 수 있습니다.`
-          : `사용률이 ${overrideLimitPercent} 이상이라 contextOverride 예외도 허용하지 않습니다.`}`
+        ? unconfirmedUsage
+          ? `마지막으로 확인된 문맥 사용률이 포화 기준 이상이고 현재 사용률은 확인되지 않아, 일반적인 새 위임은 새 대화로 시작해야 합니다. 사용률이 ${overrideLimitPercent} 미만인지 알 수 없으므로 contextOverride 예외도 허용하지 않습니다.`
+          : `대화 문맥이 포화 기준에 도달해 일반적인 새 위임은 새 대화로 시작해야 합니다. ${belowOverrideLimit
+            ? `사용률이 ${overrideLimitPercent} 미만이므로 같은 업무의 후속 작업이 카드에 기록되지 않은 대화 맥락에 의존하거나 사용자가 이 대화를 이어가라고 직접 지시한 경우에만 contextOverride에 사유를 붙여 예외로 이어갈 수 있습니다.`
+            : `사용률이 ${overrideLimitPercent} 이상이라 contextOverride 예외도 허용하지 않습니다.`}`
         : '대화 문맥 상태를 확인하지 못해 일반적인 새 위임은 새 대화로 시작해야 합니다.'
   const message = contextReuseGuardEnabled ? assessedMessage
     : '컨텍스트 기준 새 대화 전환은 임시로 OFF입니다. 문맥 지표는 참고용이며 크기·길이·통계 미확인만으로 새 대화를 요구하거나 이어가기를 차단하지 않습니다.'
@@ -233,10 +289,13 @@ export function resolveAiConversationContextOverride(contextHealth, contextOverr
   if (contextHealth.state === 'saturated') {
     if (!contextOverride) return { allowed: false, code: 'SATURATED', message: contextHealth.message, contextOverride: null }
     if (!contextHealth.contextOverrideEligible) {
+      const limitReason = contextHealth.reasonCodes.includes('CONVERSATION_CONTEXT_USAGE_UNCONFIRMED')
+        ? `현재 문맥 사용률이 확인되지 않아 ${overrideLimitPercent} 미만인지 알 수 없으므로`
+        : `문맥 사용률이 ${overrideLimitPercent} 이상이라`
       return {
         allowed: false,
         code: 'OVERRIDE_LIMIT',
-        message: `문맥 사용률이 ${overrideLimitPercent} 이상이라 예외로도 이어갈 수 없습니다. 같은 대화로 다시 요청하지 말고 새 대화로 위임하며, 필요한 맥락은 instruction에 요약하세요.`,
+        message: `${limitReason} 예외로도 이어갈 수 없습니다. 같은 대화로 다시 요청하지 말고 새 대화로 위임하며, 필요한 맥락은 instruction에 요약하세요.`,
         contextOverride: null,
       }
     }

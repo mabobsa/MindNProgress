@@ -348,3 +348,126 @@ test('GPT-5.6-Sol과 GPT-6-Sol로 기록되었거나 현재 사용하는 대화�
   assert.equal(isAiDelegationModelBlocked('gpt-6.1-sol'), false)
   assert.equal(isAiDelegationModelBlocked('gpt-5.6-solution'), false)
 })
+
+// AionCore가 /usage의 _meta에 남기는 사용량 확인 상태 확장을 붙인 응답이다.
+const confirmedAtMs = Date.parse('2026-10-30T14:00:00.000Z')
+function usageWith(used, status, freshness = {}) {
+  return {
+    used,
+    size: 200_000,
+    _meta: {
+      'aionui/contextUsage': {
+        status,
+        turn_id: 'turn-1',
+        updated_at: confirmedAtMs,
+        status_changed_at: confirmedAtMs + 100,
+        reason: null,
+        ...freshness,
+      },
+    },
+  }
+}
+
+test('사용량 확인 상태가 current이거나 확장이 없으면 기존 사용률 판정을 그대로 따른다', () => {
+  for (const used of [20_000, 140_000, 170_000, 190_000]) {
+    const legacy = assessAiConversationContextHealth({ ...base, usage: { used, size: 200_000 } })
+    const current = assessAiConversationContextHealth({ ...base, usage: usageWith(used, 'current') })
+    for (const key of ['state', 'resumeAllowed', 'recommendation', 'contextOverrideEligible', 'reasonCodes', 'message']) {
+      assert.deepEqual(current[key], legacy[key], `${used} ${key}`)
+    }
+    assert.equal(legacy.metrics.contextUsageStatus, null)
+    assert.equal(legacy.metrics.contextUsageUpdatedAt, null)
+    assert.equal(current.metrics.contextUsageStatus, 'current')
+    assert.equal(current.metrics.contextUsageUpdatedAt, '2026-10-30T14:00:00.000Z')
+  }
+})
+
+test('확인되지 않은 낮은 사용률은 여유로 판정하지 않고 확인 불가로 둔다', () => {
+  const result = assessAiConversationContextHealth({ ...base, usage: usageWith(20_000, 'pending') })
+  assert.equal(result.state, 'unverified')
+  assert.equal(result.resumeAllowed, true)
+  assert.equal(result.recommendation, 'resume')
+  assert.equal(result.contextOverrideEligible, false)
+  assert.deepEqual(result.reasonCodes, ['CONVERSATION_CONTEXT_USAGE_UNCONFIRMED'])
+  assert.equal(result.metrics.contextUsageRatio, 0.1, '마지막으로 확인된 값은 그대로 보여 준다.')
+  assert.equal(result.metrics.contextUsageStatus, 'pending')
+  assert.match(result.message, /^현재 문맥 사용량이 확인되지 않아 포화 여부를 검증할 수 없습니다\. 마지막으로 확인된 사용률은 10%입니다\./)
+  const [unconfirmed] = result.reasons
+  assert.match(unconfirmed.message, /^이번 턴의 문맥 사용량을 아직 확인하지 못했습니다\(pending\)\. 표시된 사용량은 마지막으로 확인된 값이라 현재 사용률과 다를 수 있습니다\./)
+  assert.match(unconfirmed.message, /마지막 확인 시각은 2026-10-30T14:00:00\.000Z입니다\./)
+})
+
+test('확인되지 않은 사용률이 주의·포화 기준 이상이면 보수적으로 판정하고 포화 예외를 허용하지 않는다', () => {
+  const caution = assessAiConversationContextHealth({ ...base, usage: usageWith(140_000, 'unavailable', { reason: 'timed_out' }) })
+  assert.equal(caution.state, 'caution')
+  assert.equal(caution.resumeAllowed, true)
+  assert.equal(caution.recommendation, 'new')
+  assert.deepEqual(caution.reasonCodes, ['CONVERSATION_CONTEXT_USAGE_CAUTION', 'CONVERSATION_CONTEXT_USAGE_UNCONFIRMED'])
+  assert.equal(caution.reasons[0].message, '마지막으로 확인된 문맥 사용률이 70%입니다. 현재 사용률은 확인되지 않았습니다.')
+  assert.match(caution.reasons[1].message, /^마지막 턴의 문맥 사용량을 확인하지 못했습니다\(unavailable, timed_out\)\./)
+
+  const legacy = assessAiConversationContextHealth({ ...base, usage: { used: 170_000, size: 200_000 } })
+  const saturated = assessAiConversationContextHealth({ ...base, usage: usageWith(170_000, 'unavailable', { reason: 'timed_out' }) })
+  assert.equal(legacy.contextOverrideEligible, true, '확인된 85%는 예외 대상이다.')
+  assert.equal(saturated.state, 'saturated')
+  assert.equal(saturated.resumeAllowed, false)
+  assert.equal(saturated.contextOverrideEligible, false, '미확인 사용률로는 90% 미만인지 알 수 없다.')
+  assert.deepEqual(saturated.reasonCodes, ['CONVERSATION_CONTEXT_USAGE_HIGH', 'CONVERSATION_CONTEXT_USAGE_UNCONFIRMED'])
+  assert.equal(saturated.message, '마지막으로 확인된 문맥 사용률이 포화 기준 이상이고 현재 사용률은 확인되지 않아, 일반적인 새 위임은 새 대화로 시작해야 합니다. 사용률이 90% 미만인지 알 수 없으므로 contextOverride 예외도 허용하지 않습니다.')
+  assert.equal(resolveAiConversationContextOverride(legacy, override).allowed, true)
+  const decision = resolveAiConversationContextOverride(saturated, override)
+  assert.equal(decision.allowed, false)
+  assert.equal(decision.code, 'OVERRIDE_LIMIT')
+  assert.equal(decision.contextOverride, null)
+  assert.match(decision.message, /^현재 문맥 사용률이 확인되지 않아 90% 미만인지 알 수 없으므로 예외로도 이어갈 수 없습니다\./)
+  assert.match(resolveAiConversationContextOverride(assessAiConversationContextHealth({ ...base, usage: { used: 190_000, size: 200_000 } }), override).message,
+    /^문맥 사용률이 90% 이상이라 예외로도 이어갈 수 없습니다\./)
+
+  const off = assessOff({ ...base, usage: usageWith(190_000, 'unavailable') })
+  assert.equal(off.resumeAllowed, true, '응급 OFF에서는 미확인 포화도 이어가기를 막지 않는다.')
+  assert.equal(off.contextOverrideEligible, false)
+})
+
+test('확인되지 않은 사용량에서는 실행 턴 수와 연속 재사용을 주의 신호로 다시 쓴다', () => {
+  const longConversation = { ...base, conversationTurnCount: 85, consecutiveResumeCount: 6 }
+  const legacy = assessAiConversationContextHealth({ ...longConversation, usage: { used: 20_000, size: 200_000 } })
+  const pending = assessAiConversationContextHealth({ ...longConversation, usage: usageWith(20_000, 'pending') })
+  assert.equal(legacy.state, 'healthy', '확인된 낮은 사용률이면 길이 신호를 쓰지 않는다.')
+  assert.equal(pending.state, 'caution')
+  assert.equal(pending.resumeAllowed, true)
+  assert.deepEqual(pending.reasonCodes, [
+    'CONVERSATION_TURN_COUNT_HIGH',
+    'CONVERSATION_RESUME_STREAK_CAUTION',
+    'CONVERSATION_CONTEXT_USAGE_UNCONFIRMED',
+  ])
+})
+
+test('알 수 없는 확인 상태는 미확인으로 다루고 사용량 수치가 없으면 기존 판정을 유지한다', () => {
+  const unknownStatus = assessAiConversationContextHealth({ ...base, usage: usageWith(20_000, 'estimated', { updated_at: 'x' }) })
+  assert.equal(unknownStatus.state, 'unverified')
+  assert.equal(unknownStatus.metrics.contextUsageStatus, 'estimated')
+  assert.equal(unknownStatus.metrics.contextUsageUpdatedAt, null)
+  assert.match(unknownStatus.reasons[0].message, /^문맥 사용량의 확인 상태를 알 수 없습니다\(estimated\)\./)
+  assert.doesNotMatch(unknownStatus.reasons[0].message, /마지막 확인 시각/)
+
+  const legacyEmpty = assessAiConversationContextHealth({ ...base, usage: {} })
+  const pendingEmpty = assessAiConversationContextHealth({ ...base, usage: { _meta: usageWith(null, 'pending')._meta } })
+  assert.equal(pendingEmpty.state, legacyEmpty.state)
+  assert.deepEqual(pendingEmpty.reasonCodes, legacyEmpty.reasonCodes)
+  assert.equal(pendingEmpty.metrics.contextUsageStatus, 'pending')
+
+  const malformed = assessAiConversationContextHealth({ ...base, usage: { used: 20_000, size: 200_000, _meta: { 'aionui/contextUsage': ['pending'] } } })
+  assert.equal(malformed.state, 'healthy', '형식이 맞지 않는 확장은 없는 것으로 본다.')
+  assert.equal(malformed.metrics.contextUsageStatus, null)
+  const farFuture = assessAiConversationContextHealth({ ...base, usage: usageWith(20_000, 'current', { updated_at: 9e15 }) })
+  assert.equal(farFuture.metrics.contextUsageUpdatedAt, null)
+})
+
+test('사용량 확인 상태가 바뀌면 같은 수치라도 평가 ID가 달라진다', () => {
+  const pending = assessAiConversationContextHealth({ ...base, usage: usageWith(20_000, 'pending') })
+  const current = assessAiConversationContextHealth({ ...base, usage: usageWith(20_000, 'current') })
+  const unavailable = assessAiConversationContextHealth({ ...base, usage: usageWith(20_000, 'unavailable', { reason: 'not_reported' }) })
+  assert.notEqual(pending.assessmentId, current.assessmentId)
+  assert.notEqual(pending.assessmentId, unavailable.assessmentId)
+  assert.notEqual(current.assessmentId, unavailable.assessmentId)
+})

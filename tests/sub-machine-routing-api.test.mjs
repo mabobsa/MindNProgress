@@ -92,9 +92,6 @@ async function requestWithRunner(baseUrl, token, pendingRequest, resolver) {
   return outcome.value
 }
 
-// 포화 예외 검증에서 이어갈 Mac 대화의 문맥 사용량을 단계별로 바꾼다.
-let resumeOnMacUsage = { used: 190_000, size: 200_000 }
-
 function subMachineResponse(request, conversationId = 'conversation-on-mac') {
   // 하위 대화를 이어갈 때도 출처 표시에 쓰는 상위 대화 제목을 조회한다.
   if (conversationId !== 'conversation-on-mac' && request.pathname === '/api/conversations/conversation-on-mac') {
@@ -140,7 +137,7 @@ function subMachineResponse(request, conversationId = 'conversation-on-mac') {
     }
   }
   if (request.pathname === `/api/conversations/${conversationId}/usage`) {
-    if (conversationId === 'resume-on-mac') return resumeOnMacUsage
+    if (conversationId === 'resume-on-mac') return { used: 190_000, size: 200_000 }
     return { used: 8_000, size: 200_000 }
   }
   if (request.pathname.startsWith(`/api/conversations/${conversationId}/messages`)) {
@@ -462,72 +459,36 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
       request(baseUrl, '', new URL(resumeAttribution.body.completionUrl).pathname, 'POST', { conversationId: 'resume-on-mac' }),
       operation => subMachineResponse(operation, 'resume-on-mac'))
     assert.equal(resumeLink.response.status, 200)
-    const listResumeHealth = async () => {
-      const candidates = await requestWithRunner(baseUrl, runnerToken,
-        request(baseUrl, cookie, `/api/maps/${mapId}/cards/resume-child/ai-conversations`),
-        operation => subMachineResponse(operation, 'resume-on-mac'))
-      return candidates.body.conversations.find(item => item.conversationId === 'resume-on-mac').contextHealth
-    }
-    // 사용률 95% 대화는 일반 이어가기와 포화 예외 모두 거절한다.
-    resumeOnMacUsage = { used: 190_000, size: 200_000 }
-    const resumeHealth = await listResumeHealth()
-    assert.equal(resumeHealth.contextReuseGuardEnabled, true)
+    const candidates = await requestWithRunner(baseUrl, runnerToken,
+      request(baseUrl, cookie, `/api/maps/${mapId}/cards/resume-child/ai-conversations`),
+      operation => subMachineResponse(operation, 'resume-on-mac'))
+    const resumeHealth = candidates.body.conversations.find(item => item.conversationId === 'resume-on-mac').contextHealth
+    assert.equal(resumeHealth.contextReuseGuardEnabled, false)
     assert.equal(resumeHealth.state, 'saturated')
-    assert.equal(resumeHealth.resumeAllowed, false)
-    assert.equal(resumeHealth.recommendation, 'new')
-    assert.equal(resumeHealth.contextOverrideEligible, false)
+    assert.equal(resumeHealth.resumeAllowed, true)
+    assert.equal(resumeHealth.recommendation, 'resume')
+    const assessment = resumeHealth.assessmentId
     const beforeResume = (await request(baseUrl, cookie, `/api/maps/${mapId}`)).body.map
-    const contextOverride = { reasonCode: 'unrecorded-context', reason: 'Mac 대화에만 있는 작업 결정을 이어서 마무리해야 합니다.' }
-    const resumeBody = (conversationAssessmentId, extra) => ({
-      targetCardId: 'resume-child', sourceRevision: beforeResume.version, strategy: 'resume', machineId: 'macbook',
-      conversationId: 'resume-on-mac', conversationAssessmentId,
-      instruction: '일반 Mac 작업공간에서 이어가세요.', decisionReason: '같은 업무의 후속 작업', ...extra,
-    })
     let resumeDispatch
-    const requestResume = (body) => requestWithRunner(baseUrl, runnerToken,
-      request(baseUrl, cookie, `/api/maps/${mapId}/ai-delegations`, 'POST', body,
-        { 'X-MnP-AI-Map-Id': mapId, 'X-MnP-AI-Card-Id': 'root-card', 'X-MnP-AI-Conversation-Id': conversationId }),
+    const resumed = await requestWithRunner(baseUrl, runnerToken,
+      request(baseUrl, cookie, `/api/maps/${mapId}/ai-delegations`, 'POST', {
+        targetCardId: 'resume-child', sourceRevision: beforeResume.version, strategy: 'resume', machineId: 'macbook',
+        conversationId: 'resume-on-mac', conversationAssessmentId: assessment,
+        instruction: '일반 Mac 작업공간에서 이어가세요.', decisionReason: '같은 업무의 후속 작업', idempotencyKey: 'ordinary-mac-resume',
+      }, { 'X-MnP-AI-Map-Id': mapId, 'X-MnP-AI-Card-Id': 'root-card', 'X-MnP-AI-Conversation-Id': conversationId }),
       operation => {
         if (operation.pathname === '/api/internal/external-conversation-dispatches' && operation.method === 'POST') {
           resumeDispatch = operation.body
           return { conversationId: 'resume-on-mac', state: 'running', turnId: 'resume-turn' }
         }
-        // 기능 확인은 전달 상태 조회 응답보다 먼저 서브 머신 기능 응답으로 처리한다.
-        if (operation.pathname.endsWith('/capabilities')) return subMachineResponse(operation, 'resume-on-mac')
         if (operation.pathname.includes('/api/internal/external-conversation-dispatches/')) return { state: 'running', conversationId: 'delegated-on-mac' }
         return subMachineResponse(operation, 'resume-on-mac')
       })
-    const overLimit = await requestResume(resumeBody(resumeHealth.assessmentId, { contextOverride, idempotencyKey: 'mac-resume-over-limit' }))
-    assert.equal(overLimit.response.status, 409, JSON.stringify(overLimit.body))
-    assert.equal(overLimit.body.reasonCode, 'AI_DELEGATION_CONVERSATION_CONTEXT_OVERRIDE_LIMIT')
-    assert.match(overLimit.body.message, /90% 이상이라 예외로도 이어갈 수 없습니다/)
-    assert.equal(resumeDispatch, undefined)
-
-    // 사용률 85% 대화는 사유 없이 거절하고, 허용 사유를 붙이면 실제로 이어가며 예외를 기록한다.
-    resumeOnMacUsage = { used: 170_000, size: 200_000 }
-    const eligibleHealth = await listResumeHealth()
-    assert.equal(eligibleHealth.state, 'saturated')
-    assert.equal(eligibleHealth.resumeAllowed, false)
-    assert.equal(eligibleHealth.contextOverrideEligible, true)
-    const saturated = await requestResume(resumeBody(eligibleHealth.assessmentId, { idempotencyKey: 'mac-resume-saturated' }))
-    assert.equal(saturated.response.status, 409, JSON.stringify(saturated.body))
-    assert.equal(saturated.body.reasonCode, 'AI_DELEGATION_CONVERSATION_CONTEXT_SATURATED')
-    assert.match(saturated.body.message, /90% 미만이므로.*contextOverride/)
-    assert.equal(resumeDispatch, undefined)
-    const resumed = await requestResume(resumeBody(eligibleHealth.assessmentId, {
-      contextOverride, idempotencyKey: 'ordinary-mac-resume', retryOfRequestId: saturated.body.requestFailure.retryReference.requestId,
-    }))
     assert.equal(resumed.response.status, 202, JSON.stringify(resumed.body))
     assert.equal(resumeDispatch.strategy, 'resume')
     assert.equal(resumeDispatch.workspaceLease, undefined)
     assert.equal(resumed.body.delegation.targetHomeMachineId, 'macbook')
     assert.equal(resumed.body.delegation.workspaceLease, null)
-    const { appliedAt, ...recordedOverride } = resumed.body.delegation.contextOverride
-    assert.deepEqual(recordedOverride, { ...contextOverride, contextUsageRatio: 0.85, assessmentId: eligibleHealth.assessmentId })
-    assert.ok(Number.isFinite(Date.parse(appliedAt)))
-    const storedResume = JSON.parse(await readFile(path.join(dataDirectory, '_ai-delegations.json'), 'utf8'))
-      .find(item => item.id === 'ordinary-mac-resume')
-    assert.deepEqual(storedResume.contextOverride, resumed.body.delegation.contextOverride)
 
     const remoteBefore = JSON.parse(await readFile(path.join(dataDirectory, '_remote-workspace-pools.json'), 'utf8'))
     assert.deepEqual(remoteBefore.leases, {})
@@ -558,12 +519,8 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
     const finalList = (await request(baseUrl, cookie, `/api/maps/${mapId}/ai-delegations`)).body
     assert.equal(finalList.delegations.length, 2)
     assert.equal(finalList.delegations.some(item => item.id === 'rejected-managed-fork'), false)
-    // 문맥 거절 두 건은 접수 실패로 남고, 같은 업무를 예외와 재접수 참조로 다시 요청한 건만 해제된다.
-    const failuresByRequest = new Map(finalList.requestFailures.map(item => [item.requestedDelegationId, item]))
-    assert.deepEqual([...failuresByRequest.keys()].sort(), ['mac-resume-over-limit', 'mac-resume-saturated', 'rejected-managed-fork'])
-    assert.equal(failuresByRequest.get('rejected-managed-fork').reasonCode, rejected.body.reasonCode)
-    assert.equal(failuresByRequest.get('mac-resume-saturated').resolvedByDelegationId, 'ordinary-mac-resume')
-    assert.equal(failuresByRequest.get('mac-resume-over-limit').resolvedByDelegationId, null)
+    assert.equal(finalList.requestFailures.length, 1)
+    assert.equal(finalList.requestFailures[0].reasonCode, rejected.body.reasonCode)
     const failureRecords = await readFile(path.join(dataDirectory, '_ai-delegation-request-failures.json'), 'utf8')
     assert.equal(failureRecords.includes(privateInstruction), false)
     assert.equal(diagnosticLog.includes(privateInstruction), false)

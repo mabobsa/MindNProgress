@@ -6,7 +6,6 @@ import vm from 'node:vm'
 import { buildGroupDocumentInstruction, groupDocumentInstructionOperationId } from '../server/lib/groupDocumentInstructions.mjs'
 import { createAionUiConversationWebUrl } from '../server/lib/aionUiExternalLaunch.mjs'
 import { claudeAccountRequestId } from '../server/lib/aiClaudeAccounts.mjs'
-import { resolveAiConversationContextOverride } from '../server/lib/aiConversationContextHealth.mjs'
 import {
   formatAiConversationDisplay,
   normalizeAiConversationName,
@@ -41,7 +40,6 @@ function deliveryHarness({ remote = false, unavailable = false } = {}) {
     'processAiDelegationIntegrationCleanWaitNotice', 'processAiDelegationRecoveryNotice',
     'workspaceCheckpointInstruction', 'workspaceConflictInstruction',
     'startWorkspaceCheckpointResolution', 'startWorkspaceConflictResolution', 'runGroupDocumentInstructionDispatch',
-    'groupDocumentInstructionContextReasonCode',
   ]
   const functions = vm.runInNewContext(names.map(serverFunction).join('\n') + '\n({' + names.join(',') + '})', {
     createHash, prependAiConversationSource, resolveConversationSource, resolveConversationDisplay, createAionUiConversationWebUrl,
@@ -76,7 +74,6 @@ function deliveryHarness({ remote = false, unavailable = false } = {}) {
     }),
     targetReadyForGroupDocumentInstruction: async () => true,
     inspectAiConversationContextHealth: async () => ({ assessmentId: 'assessment-1', resumeAllowed: true }),
-    resolveAiConversationContextOverride,
     aiConversationLinksFromData: () => [],
     aiDelegationSelectionFromSource: () => ({
       agent: { id: 'codex' }, model: { id: 'allowed-model' }, enabledSkillIds: [], disabledBuiltinSkillIds: [], mcpIds: [],

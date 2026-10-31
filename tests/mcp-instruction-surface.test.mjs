@@ -37,15 +37,6 @@ function countSchemaDescriptions(value) {
   return (typeof value.description === 'string' ? 1 : 0)
     + Object.values(value).reduce((sum, child) => sum + countSchemaDescriptions(child), 0)
 }
-// 기준선 설명 전문 뒤에 덧붙인 안내를 확인한다. 안내를 덧붙인 뒤 재생성한 기준선(2026-10-30 3차)에는 안내가 이미 들어 있으므로,
-// 그때는 현재 설명이 기준선 전문과 같고 덧붙였던 안내가 기준선 안에 그대로 남아 있어야 한다.
-function assertAppendedGuidance(description, original, appendix, label) {
-  const baselineText = original.slice(1, -1)
-  assert.ok(description.startsWith(baselineText), `${label}의 기준선 설명 문장을 그대로 유지한다.`)
-  const appended = description.slice(baselineText.length)
-  if (appended) return assert.match(appended, appendix, `${label} 기준선 뒤에 덧붙인 안내`)
-  assert.match(baselineText, new RegExp(appendix.source.replace(/^\^/, ''), appendix.flags), `${label} 기준선에 포함된 덧붙인 안내`)
-}
 
 test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검증한다', async () => {
   const transport = new StdioClientTransport({
@@ -65,10 +56,8 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
     // 2026-10-29: get_group_context의 detailLevel·mapId와 list_group_document_instructions의 instructionId를 추가했다.
     // 2026-10-29: get_context 응답 예산의 회수 경로로 get_card에 fields·includeComments를 추가했다.
     // 2026-10-29: list_ai_delegations 응답 예산의 회수 경로로 delegationId를 추가했다.
-    // 2026-10-30: delegate_ai_work·send_group_document_instruction에 문맥 포화 예외 인자 contextOverride를 추가했다(설명 3개씩).
-    // 도구 설명 본문은 바꾸지 않았으므로 아래 기준선 설명 전문 비교는 그대로 적용된다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'cdcda4dda7f05f9ebcb24c320bdf660840399743b060ee04f7f65c224b86a9e6')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 220)
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'fb4e0692df19eadcc8bd9ae28773ee87da0b3dc6e3d0f96800b5278809a86512')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 214)
     for (const tool of tools.filter((tool) => storageWriteTools.has(tool.name))) {
       assert.ok(tool.inputSchema.properties.requestId.pattern || tool.inputSchema.properties.proposalRequestId)
       assert.equal(tool.inputSchema.properties.resultOnly.type, 'boolean')
@@ -78,7 +67,7 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
     assert.deepEqual(metaRecovery.required, ['path', 'expectedSha256', 'mainCommit'])
     assert.equal(metaRecovery.additionalProperties, false)
     assert.match(metaRecovery.description, /사용자가 승인한.*원본 보존.*같은 GUID.*다른 변경은 정리하지/s)
-    // 작업 트리 기준 재생성 기준선(capture-guidance-evidence.mjs --rebaseline-working-tree, 2026-10-30 3차)의 registerTool 직접 등록 수
+    // 2026-10-22 작업 트리 기준 재생성 기준선(capture-guidance-evidence.mjs --rebaseline-working-tree)의 registerTool 직접 등록 수
     assert.equal(baselineDescriptions.size, 58)
     for (const tool of tools) {
       if (safetyTools.has(tool.name) || tool.name ==='mindnprogress_search_content' || tool.name === 'mindnprogress_patch_card_text'
@@ -88,14 +77,16 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
       const currentDescription = storageWriteTools.has(tool.name) ? tool.description.split(' requestId를 보존해 재전송하세요.')[0] : tool.description
       // 그룹 문맥 요약 기본값(2026-10-29)은 기준선 설명을 그대로 두고 summary·full 안내만 뒤에 덧붙였다.
       if (tool.name === 'mindnprogress_get_group_context') {
-        assertAppendedGuidance(currentDescription, original, /^ 기본 detailLevel=summary는 project·guide 전문.*회수 경로를 detail.*판단하기 전에는 그 경로로 해당 원문을 읽으세요.*full.*도구 출력 한도/s, tool.name)
+        assert.ok(currentDescription.startsWith(original.slice(1, -1)), `${tool.name}의 기준선 설명 문장을 그대로 유지한다.`)
+        assert.match(currentDescription.slice(original.length - 2), /^ 기본 detailLevel=summary는 project·guide 전문.*회수 경로를 detail.*판단하기 전에는 그 경로로 해당 원문을 읽으세요.*full.*도구 출력 한도/s)
         // 코드로 필드를 꺼내는 AI가 summary에 없는 경로를 조용히 빈 값으로 읽지 않도록 생략 필드를 이름으로 밝힌다.
         assert.match(currentDescription, /root\.data에는 description·sharedKnowledge가 없고 길이·SHA-256만 root\.textIntegrity에 있으며, documentInstructions에는 지시·응답 원문이 없습니다/)
         continue
       }
       // 응답 크기 예산(2026-10-29)도 기준선 설명을 그대로 두고 생략·회수 안내만 뒤에 덧붙였다.
       if (responseBudgetAppendices.has(tool.name)) {
-        assertAppendedGuidance(currentDescription, original, responseBudgetAppendices.get(tool.name), tool.name)
+        assert.ok(currentDescription.startsWith(original.slice(1, -1)), `${tool.name}의 기준선 설명 문장을 그대로 유지한다.`)
+        assert.match(currentDescription.slice(original.length - 2), responseBudgetAppendices.get(tool.name))
         continue
       }
       // 과거 기준선은 보존하고 사용자가 변경한 화면 명칭만 현재 이름으로 대조한다.
@@ -117,7 +108,7 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
     assert.match(getDocumentSchema.properties.ifNoneMatch.description, /같은 view·cardIds로 받은.*다른 view·cardIds 응답의 documentEtag는 일치하지 않음/s)
     assert.match(getDocumentSchema.properties.knownVersion.description, /본문은 생략하지 않음.*full 응답에는 freshness가 없으므로/s)
     // outline 응답 예산(2026-10-29)은 기준선 설명 전문 뒤에 안내만 덧붙였다.
-    assertAppendedGuidance(getDocument, baselineDescriptions.get('mindnprogress_get_document'), responseBudgetAppendices.get('mindnprogress_get_document'), 'get_document outline 예산 안내')
+    assert.match(getDocument.slice(baselineDescriptions.get('mindnprogress_get_document').length - 2), responseBudgetAppendices.get('mindnprogress_get_document'), 'get_document 기준선 설명 뒤에 outline 예산 안내만 덧붙인다')
     assert.equal(descriptions.get('mindnprogress_send_group_document_instruction'), baselineDescriptions.get('mindnprogress_send_group_document_instruction').slice(1, -1), 'send_group_document_instruction 기준선 설명 전문')
     assert.deepEqual(getDocumentSchema.required, ['mapId'])
     assert.deepEqual(getDocumentSchema.properties.view.enum, ['full', 'compact', 'outline', 'version'])

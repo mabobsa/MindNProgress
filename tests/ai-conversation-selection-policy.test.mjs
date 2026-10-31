@@ -3,7 +3,6 @@ import test from 'node:test'
 import { AI_CONVERSATION_SELECTION_INSTRUCTION, aiConversationSelectionInstruction, aiConversationSelectionRules as selectionRules } from '../mcp/aiConversationSelectionPolicy.mjs'
 import { blockedAiModelLabels } from '../server/lib/aiModelPolicy.mjs'
 
-// ON 규칙을 명시해 기본값과 무관하게 같은 기준을 검증한다.
 function aiConversationSelectionRules() {
   return selectionRules({ contextReuseGuardEnabled: true })
 }
@@ -18,36 +17,11 @@ test('초기 안내도 같은 카드의 연속 검수 재사용과 독립성 구
   assert.doesNotMatch(instruction, /caution·saturated·unknown 또는 독립 검수·새 범위는 새 대화를 선택/)
 })
 
-test('기본 ON 안내는 포화 대화의 새 대화 기본값과 90% 미만 예외 조건을 함께 전달한다', () => {
-  assert.equal(AI_CONVERSATION_SELECTION_INSTRUCTION, aiConversationSelectionInstruction({ contextReuseGuardEnabled: true }))
-  assert.deepEqual(selectionRules(), aiConversationSelectionRules())
-  assert.match(AI_CONVERSATION_SELECTION_INSTRUCTION, /포화·상태 확인 불가·금지 모델·호환 불가·역할 충돌 또는 의도적인 별도 관점 검수는 새 대화가 필요합니다\. caution은 정확히 이어지는 작은 후속 작업에 한해 최신 평가를 확인하고 예외적으로 이어가세요\. /)
-  assert.match(AI_CONVERSATION_SELECTION_INSTRUCTION, /포화\(문맥 사용률 80% 이상\) 대화도 90% 미만이면, 같은 업무의 후속 작업이 카드에 기록되지 않은 대화 맥락에 의존하거나 사용자가 그 대화를 이어가라고 직접 지시한 경우에 한해 contextOverride/)
-  assert.match(AI_CONVERSATION_SELECTION_INSTRUCTION, /90% 이상·상태 확인 불가·금지 모델 대화에는 예외를 쓰지 마세요\.$/)
-  assert.doesNotMatch(AI_CONVERSATION_SELECTION_INSTRUCTION, /임시로 OFF/)
-  const rules = aiConversationSelectionRules()
-  assert.match(rules.exclude, /resumeAllowed=false인 대화는 일반 위임의 이어가기 후보에서 제외.*단, contextHealth\.contextOverrideEligible=true인 포화 대화는 contextOverride 규칙의 조건을 모두 충족할 때만 예외 후보/s)
-  assert.match(rules.chooseNew, /포화 대화를 예외로 이어갈지는 contextOverride 규칙을 따르세요\.$/)
-  assert.match(rules.contextOverride, /^contextHealth\.state=saturated인 대화는 기본적으로 새 대화를 선택하세요\./)
-  assert.match(rules.contextOverride, /contextOverrideEligible=true\(문맥 사용률 80% 이상 90% 미만\)/)
-  for (const reasonCode of ['unrecorded-context', 'final-step', 'continued-review', 'user-requested']) {
-    assert.match(rules.contextOverride, new RegExp(`${reasonCode}[은는] `), `${reasonCode} 설명`)
-  }
-  assert.match(rules.contextOverride, /user-requested이면 사용자의 지시 발언을 적으세요/)
-  assert.match(rules.contextOverride, /업무 연속성·편의·비용 절감만을 근거로 삼지 마세요/)
-  assert.match(rules.contextOverride, /사용률 90% 이상인 대화는 사용자 지시가 있어도 이어가지 말고, unknown·금지 모델·실행 환경 호환 불가·역할 충돌 대화에도 쓰지 마세요/)
-  assert.match(rules.contextOverride, /서버가 예외를 거절하면 같은 대화로 다시 요청하지 말고 새 대화로 위임하며 필요한 맥락은 instruction에 요약/)
-})
-
-test('응급 OFF 안내는 높은 문맥 지표와 상태 미확인 때문에 대화를 교체하지 않으며 포화 예외를 안내하지 않는다', () => {
-  const rules = selectionRules({ contextReuseGuardEnabled: false })
-  const instruction = aiConversationSelectionInstruction({ contextReuseGuardEnabled: false })
-  assert.match(instruction, /컨텍스트 기준 새 대화 전환은 임시로 OFF/)
-  assert.doesNotMatch(instruction, /contextOverride/)
+test('기본 OFF 안내는 높은 문맥 지표와 상태 미확인 때문에 대화를 교체하지 않도록 한다', () => {
+  const rules = selectionRules()
+  assert.match(AI_CONVERSATION_SELECTION_INSTRUCTION, /컨텍스트 기준 새 대화 전환은 임시로 OFF/)
   assert.match(rules.preferResume, /문맥 크기·사용률·실행 턴 수·연속 재사용 횟수·통계 미확인만을 이유로 새 대화를 만들지/)
-  assert.doesNotMatch(rules.chooseNew, /saturated·unknown|caution은|contextOverride/)
-  assert.equal(Object.hasOwn(rules, 'contextOverride'), false)
-  assert.doesNotMatch(rules.exclude, /contextOverride/)
+  assert.doesNotMatch(rules.chooseNew, /saturated·unknown|caution은/)
   assert.match(rules.exclude, /available=false.*resumeAllowed=false/)
   assert.ok(rules.exclude.includes(blockedAiModelLabels()))
   assert.match(rules.busy, /같은 업무의 새 대화를 열거나 새 위임을 자동 예약하지/)

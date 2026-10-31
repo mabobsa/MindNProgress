@@ -91,7 +91,6 @@ export function createGroupDocumentInstructionSignature({
   decisionReason,
   replyTarget,
   newConversation,
-  contextOverride = null,
 }) {
   const requestedConversation = newConversation && typeof newConversation === 'object'
     ? {
@@ -123,8 +122,6 @@ export function createGroupDocumentInstructionSignature({
     decisionReason,
     ...(normalizedReplyTarget?.mode === 'explicit' ? { replyTarget: normalizedReplyTarget } : {}),
     newConversation: strategy === 'new' ? requestedConversation : null,
-    // 예외가 없는 요청의 서명은 이전과 같게 유지한다.
-    ...(contextOverride ? { contextOverride: { reasonCode: contextOverride.reasonCode, reason: contextOverride.reason } } : {}),
   })).digest('hex')
 }
 

@@ -1264,16 +1264,14 @@ async function main() {
     assert.match(conversationCandidates.selectionRule.busy, /현재 실행과 관련 위임의 통합이 끝난 뒤 후보 목록을 다시 조회/)
     assert.equal(Object.hasOwn(conversationCandidates.selectionRule, 'queuedResume'), false)
     assert.match(conversationCandidates.selectionRule.preferResume, /workspaceBinding=pool-rebindable.*workspacePoolId/)
-    assert.equal(conversationCandidates.conversations[0].contextHealth.contextReuseGuardEnabled, true)
-    assert.equal(conversationCandidates.conversations[0].contextHealth.contextOverrideEligible, false)
-    assert.doesNotMatch(conversationCandidates.selectionRule.preferResume, /임시로 OFF/)
-    assert.match(conversationCandidates.selectionRule.contextOverride, /contextOverrideEligible=true\(문맥 사용률 80% 이상 90% 미만\)/)
+    assert.equal(conversationCandidates.conversations[0].contextHealth.contextReuseGuardEnabled, false)
+    assert.match(conversationCandidates.selectionRule.preferResume, /컨텍스트 기준 새 대화 전환은 임시로 OFF/)
     assert.match(conversationCandidates.selectionRule.chooseNew, /같은 workspacePoolId 안의 Fork 경로 차이만으로 새 대화를 만들지 마세요/)
     assert.deepEqual(conversationCandidates.selectionRule, aiConversationSelectionRules())
     assert.match(conversationCandidates.selectionRule.candidateSelection, /선택한 conversationId의 contextHealth와 assessmentId/)
     assert.match(conversationCandidates.selectionRule.preferResume, /입력 파일·구현 담당자·검수 단계가 바뀌었다는 사실만으로 새 대화를 선택하지/)
     assert.match(conversationCandidates.selectionRule.reviewIndependence, /독립 검수는 구현자와 검수자의 분리이며 매번 새 대화를 뜻하지 않습니다/)
-    assert.match(conversationCandidates.selectionRule.chooseNew, /한 후보의 포화·금지 모델을 다른 관련 후보에 적용하지/)
+    assert.match(conversationCandidates.selectionRule.chooseNew, /한 후보의 금지 모델을 다른 관련 후보에 적용하지/)
     const emptyDelegations = await invoke('mindnprogress_list_ai_delegations', { mapId, parentCardId: 'task-a' })
     assert.deepEqual(emptyDelegations.delegations, [])
     await invokeExpectError('mindnprogress_delegate_ai_work', {
@@ -1285,17 +1283,6 @@ async function main() {
       sourceRevision: documentResult.map.version,
       idempotencyKey: 'mcp-regression-invalid-parent',
     }, /하위 카드에만 AI 작업을 위임/, 'AI_DELEGATION_TARGET_OUTSIDE_SOURCE')
-    // 도구가 contextOverride를 서버로 그대로 전달하는지 확인한다. 서버는 resume이 아닌 예외를 요청 값 오류로 거절한다.
-    await invokeExpectError('mindnprogress_delegate_ai_work', {
-      mapId,
-      targetCardId: 'branch-a',
-      strategy: 'new',
-      contextOverride: { reasonCode: 'final-step', reason: '새 대화에는 포화 예외를 붙이지 않습니다.' },
-      instruction: '하위 카드 작업을 실제로 수행하세요.',
-      decisionReason: '회귀 테스트에서 포화 예외 인자 전달 검증',
-      sourceRevision: documentResult.map.version,
-      idempotencyKey: 'mcp-regression-context-override-new',
-    }, /AI 작업 위임 값이 올바르지 않습니다/, 'AI_DELEGATION_REQUEST_INVALID')
     const versionBeforeAiWorkStateRead = documentResult.map.version
     const aiWorkStates = await invoke('mindnprogress_get_ai_work_states', {
       mapId,
@@ -2905,14 +2892,6 @@ async function main() {
       assert.ok(groupInstructionSchema.required.includes(field), `그룹 문서 지시 필수 필드 누락: ${field}`)
     }
     assert.equal(Object.hasOwn(groupInstructionSchema.properties, 'targetCardId'), false)
-    for (const [toolName, recordLabel] of [['mindnprogress_send_group_document_instruction', '지시 기록'], ['mindnprogress_delegate_ai_work', '위임 기록']]) {
-      const contextOverrideSchema = toolSchema(toolName).properties.contextOverride
-      assert.deepEqual(contextOverrideSchema.properties.reasonCode.enum, ['unrecorded-context', 'final-step', 'continued-review', 'user-requested'], toolName)
-      assert.equal(contextOverrideSchema.properties.reason.maxLength, 500, toolName)
-      assert.deepEqual([...contextOverrideSchema.required].sort(), ['reason', 'reasonCode'], toolName)
-      assert.equal(toolSchema(toolName).required.includes('contextOverride'), false, toolName)
-      assert.match(contextOverrideSchema.description, new RegExp(`contextOverrideEligible=true\\(포화, 문맥 사용률 80% 이상 90% 미만\\).*selectionRule\\.contextOverride.*서버가 사유를 ${recordLabel}에 남깁니다`, 's'), toolName)
-    }
     const emptyInstructionList = await invoke('mindnprogress_list_group_document_instructions', { mapId: managedGroup.coordinator.id })
     assert.equal(emptyInstructionList.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_LISTED')
     assert.deepEqual(emptyInstructionList.instructions, [])

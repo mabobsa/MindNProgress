@@ -44,8 +44,6 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
   let failWake = false
   let holdRecoveryResponse = false
   let busyGroupInstructionConversationReads = 0
-  // 문맥 포화 예외 검증에서 대화별 사용량을 바꾼다. 없으면 여유 있는 기본 사용량을 준다.
-  const usageByConversation = new Map()
   let assistantResult = '문서 분석과 하위 업무 검증 결과입니다.'
   let child
   const fake = createServer(async (req, res) => {
@@ -95,8 +93,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       }
       return send({ ...saved, runtime: { state: 'idle', is_processing: false, can_send_message: true, pending_confirmations: 0 } })
     }
-    const usage = url.pathname.match(/^\/api\/conversations\/([^/]+)\/usage$/)
-    if (usage) return send(usageByConversation.get(decodeURIComponent(usage[1])) ?? { used: 8_000, size: 200_000 })
+    if (/^\/api\/conversations\/[^/]+\/usage$/.test(url.pathname)) return send({ used: 8_000, size: 200_000 })
     if (url.pathname.endsWith('/messages')) return send({ items: [{ type: 'text', position: 'left', content: assistantResult }] })
     return send({}, 404)
   })
@@ -697,60 +694,6 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     await until(async () => (await api(instructionUrl)).body.instructions
       .some((item) => item.id === 'group-instruction-queued' && item.state === 'delivered'), '대기 중 지시가 대상 대화의 유휴 상태에서 자동 전달되지 않았습니다.')
     assert.equal(calls.filter((call) => call.operationId === 'gdi:group-instruction-queued').length, 1)
-
-    // 문맥 포화 예외: 사유 없는 이어가기와 90% 이상 예외는 거절하고, 90% 미만 예외만 전달하며 지시 기록에 남긴다.
-    const groupContextOverride = { reasonCode: 'unrecorded-context', reason: '문서 담당 대화에만 있는 정비 판단을 이어서 확인해야 합니다.' }
-    const instructedCandidate = async () => (await api(`/api/maps/${instructionDocument.id}/cards/${instructionDocument.nodes[0].id}/ai-conversations`))
-      .body.conversations.find((item) => item.conversationId === instructedConversationId).contextHealth
-    const overrideInstructionArgs = async (extra) => ({
-      ...queuedInstructionArgs,
-      targetRevision: (await api(`/api/maps/${instructionDocument.id}`)).body.map.version,
-      instruction: '같은 승인 범위에서 남은 정비 판단을 마무리하세요.',
-      ...extra,
-    })
-    usageByConversation.set(instructedConversationId, { used: 184_000, size: 200_000 })
-    const overLimitHealth = await instructedCandidate()
-    assert.equal(overLimitHealth.state, 'saturated')
-    assert.equal(overLimitHealth.resumeAllowed, false)
-    assert.equal(overLimitHealth.contextOverrideEligible, false)
-    const overLimitInstruction = await api(instructionUrl, 'POST', await overrideInstructionArgs({
-      conversationAssessmentId: overLimitHealth.assessmentId, contextOverride: groupContextOverride, idempotencyKey: 'group-instruction-override-limit',
-    }), sourceHeaders)
-    assert.equal(overLimitInstruction.status, 409, JSON.stringify(overLimitInstruction.body))
-    assert.equal(overLimitInstruction.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_OVERRIDE_LIMIT')
-    usageByConversation.set(instructedConversationId, { used: 170_000, size: 200_000 })
-    const eligibleHealth = await instructedCandidate()
-    assert.equal(eligibleHealth.resumeAllowed, false)
-    assert.equal(eligibleHealth.contextOverrideEligible, true)
-    const unexplainedInstruction = await api(instructionUrl, 'POST', await overrideInstructionArgs({
-      conversationAssessmentId: eligibleHealth.assessmentId, idempotencyKey: 'group-instruction-saturated',
-    }), sourceHeaders)
-    assert.equal(unexplainedInstruction.status, 409, JSON.stringify(unexplainedInstruction.body))
-    assert.equal(unexplainedInstruction.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE')
-    assert.match(unexplainedInstruction.body.message, /90% 미만이므로.*contextOverride/)
-    for (const [key, extra] of [
-      ['group-instruction-invalid-override', { conversationAssessmentId: eligibleHealth.assessmentId, contextOverride: { reasonCode: 'convenience', reason: '편합니다.' } }],
-      ['group-instruction-new-override', { strategy: 'new', conversationId: undefined, conversationAssessmentId: undefined, newConversation: instructionArgs.newConversation, contextOverride: groupContextOverride }],
-    ]) {
-      const invalid = await api(instructionUrl, 'POST', await overrideInstructionArgs({ ...extra, idempotencyKey: key }), sourceHeaders)
-      assert.equal(invalid.status, 400, key)
-      assert.equal(invalid.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_REQUEST_INVALID', key)
-    }
-    const overriddenInstruction = await api(instructionUrl, 'POST', await overrideInstructionArgs({
-      conversationAssessmentId: eligibleHealth.assessmentId, contextOverride: groupContextOverride, idempotencyKey: 'group-instruction-override',
-    }), sourceHeaders)
-    assert.equal(overriddenInstruction.status, 202, JSON.stringify(overriddenInstruction.body))
-    assert.equal(overriddenInstruction.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_DELIVERED')
-    const { appliedAt: groupOverrideAppliedAt, ...groupOverrideRecord } = overriddenInstruction.body.instruction.contextOverride
-    assert.deepEqual(groupOverrideRecord, { ...groupContextOverride, contextUsageRatio: 0.85, assessmentId: eligibleHealth.assessmentId })
-    assert.ok(Number.isFinite(Date.parse(groupOverrideAppliedAt)))
-    assert.equal(calls.filter((call) => call.operationId === 'gdi:group-instruction-override').length, 1)
-    for (const key of ['override-limit', 'saturated', 'invalid-override', 'new-override']) {
-      assert.equal(calls.some((call) => call.operationId === `gdi:group-instruction-${key}`), false, key)
-    }
-    const listedOverride = (await api(`${instructionUrl}?instructionId=group-instruction-override`)).body.instructions[0]
-    assert.deepEqual(listedOverride.contextOverride, overriddenInstruction.body.instruction.contextOverride)
-    usageByConversation.delete(instructedConversationId)
 
     const versionConflict = await api(instructionUrl, 'POST', {
       ...instructionArgs,

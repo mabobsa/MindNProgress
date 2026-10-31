@@ -9,12 +9,6 @@ import { MNP_CONTEXT_LIFECYCLE, MNP_MCP_SERVER_INSTRUCTIONS } from '../src/utils
 import { AI_DELEGATION_ID_PATTERN } from '../server/lib/aiDelegations.mjs'
 import { GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN } from '../server/lib/groupDocumentInstructions.mjs'
 import { AI_CONVERSATION_SELECTION_INSTRUCTION, aiConversationSelectionRules } from './aiConversationSelectionPolicy.mjs'
-import {
-  AI_CONVERSATION_CONTEXT_OVERRIDE_REASON_CODES,
-  AI_CONVERSATION_CONTEXT_OVERRIDE_REASON_MAX_LENGTH,
-  AI_CONVERSATION_CONTEXT_THRESHOLDS,
-  aiConversationContextUsagePercent,
-} from '../server/lib/aiConversationContextHealth.mjs'
 import { AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION, GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION, GROUP_DOCUMENT_INSTRUCTION_FOLLOWUP_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
 import {
   sharedKnowledgeAuthoringPolicy,
@@ -950,13 +944,6 @@ const checkpointCommitMessageSchema = z.object({
   scope: z.string().min(1).max(2000).optional()
     .describe('영향 범위나 부작용 없음의 근거가 필요할 때 작성하는 [적용 범위] 본문'),
 }).strict()
-// 포화 대화의 예외 이어가기 인자다. 조건 전문은 list_ai_conversations의 selectionRule.contextOverride에 있다.
-const contextOverrideSchema = (recordLabel) => z.object({
-  reasonCode: z.enum(AI_CONVERSATION_CONTEXT_OVERRIDE_REASON_CODES)
-    .describe('unrecorded-context: 카드·댓글·위임 기록에 없는 같은 흐름의 대화 맥락에 의존 / final-step: 같은 위임을 마무리하는 짧은 마지막 단계 / continued-review: 같은 검수 대화가 이전 판단·결함을 이어서 검수 / user-requested: 사용자가 이번 요청에서 이 대화를 이어가라고 직접 지시'),
-  reason: z.string().min(1).max(AI_CONVERSATION_CONTEXT_OVERRIDE_REASON_MAX_LENGTH)
-    .describe('새 대화의 지시로 옮기기 어려운 구체적인 맥락이나 남은 작업의 크기. user-requested이면 사용자의 지시 발언을 적습니다. 업무 연속성·편의·비용 절감만으로 쓰지 않습니다.'),
-}).optional().describe(`resume 대상 대화가 contextHealth.contextOverrideEligible=true(포화, 문맥 사용률 ${aiConversationContextUsagePercent(AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedUsageRatio)} 이상 ${aiConversationContextUsagePercent(AI_CONVERSATION_CONTEXT_THRESHOLDS.overrideLimitUsageRatio)} 미만)일 때만 쓰는 예외입니다. 같은 업무의 후속 작업이 카드에 기록되지 않은 대화 맥락에 의존하거나 사용자가 그 대화를 이어가라고 직접 지시했을 때만 붙이고, new나 다른 상태의 대화에는 보내지 마세요. 조건은 mindnprogress_list_ai_conversations의 selectionRule.contextOverride를 따르며, 서버가 사유를 ${recordLabel}에 남깁니다.`)
 const documentColor = z.enum(['violet', 'indigo', 'blue', 'cyan', 'teal', 'green', 'amber', 'orange', 'red', 'pink'])
 const knowledgePolicySchema = z.enum(['reuse-first', 'inspect-if-insufficient'])
 const outlineKey = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/, '카드 key는 영문, 숫자, 밑줄, 하이픈만 사용할 수 있습니다.')
@@ -1873,7 +1860,6 @@ async function main() {
     strategy: z.enum(['resume', 'new']).describe('resume은 대상 문서 루트에 연결된 기존 대화 이어가기, new는 새 문서 담당 대화 생성'),
     conversationId: z.string().min(1).max(120).optional().describe('resume일 때 이어갈 대상 문서 루트의 conversationId'),
     conversationAssessmentId: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('resume일 때 mindnprogress_list_ai_conversations가 대상 루트 대화의 contextHealth.assessmentId로 반환한 최신 평가 ID'),
-    contextOverride: contextOverrideSchema('지시 기록'),
     machineId: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/).optional().describe('new일 때 실행할 머신. resume은 기존 대화의 머신으로 고정됩니다.'),
     instruction: z.string().min(1).max(100000).describe('대상 문서 AI가 수행할 작업·제외 범위·완료 및 회신 조건. 승인 범위를 넘는 변경은 포함하지 않습니다. 사용자 승인 발언과 승인 출처는 approvalEvidence에만 전달하며 동일 전문을 반복하지 않습니다.'),
     replyTarget: z.union([
@@ -1935,7 +1921,6 @@ async function main() {
     strategy: z.enum(['resume', 'new']).describe('resume은 연결된 기존 대화 이어가기, new는 새 대화 생성'),
     conversationId: z.string().min(1).max(120).optional().describe('resume일 때 이어갈 대상 카드의 conversationId'),
     conversationAssessmentId: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('일반 resume일 때 mindnprogress_list_ai_conversations가 해당 대화의 contextHealth.assessmentId로 반환한 최신 평가 ID. 중단된 동일 위임의 직접 재개에는 생략 가능'),
-    contextOverride: contextOverrideSchema('위임 기록'),
     machineId: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/).optional().describe('new일 때 풀 lease 없는 일반 작업을 실행할 머신 ID. 생략하면 편집자의 기본 머신을 사용합니다. resume은 기존 대화의 homeMachineId로 고정되며, 등록된 Unity 작업공간 pool 위임은 현재 메인 머신만 지원합니다.'),
     instruction: z.string().min(1).max(100000).describe('같은 문서의 하위 AI가 제안에 그치지 않고 실제로 수행할 작업 범위·허용 작업·제외 범위·완료 조건. 분석·제안만 맡기는 경우 구현·추가 위임 금지를 명시합니다.'),
     decisionReason: z.string().min(1).max(1000).describe('이 기존 대화를 선택했거나 새 대화가 필요하다고 판단한 근거'),

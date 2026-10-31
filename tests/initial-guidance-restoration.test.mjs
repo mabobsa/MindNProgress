@@ -12,15 +12,14 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 // 기준선 재생성은 사용자가 승인한 경우에만 실행하고, 그 승인 근거를 --approval-ref·--approved-at 인자로 기록한다.
 // 재생성하면 아래 APPROVED_REBASELINE 상수도 함께 바꿔야 하므로 기준선 교체가 diff에 의도적 변경으로 드러난다.
 // 이전 기준선 증거는 rebaseline 기록의 previousEvidenceRecovery(Git HEAD)에서 복구한다.
-// 2026-10-30 3차 재생성: 위임 대화 문맥 기준 재사용을 다시 켜며 대화 선택 안내 문구만 바뀌었다(전달 필드 4개는 이전 기준선과 같음).
 const APPROVED_REBASELINE = Object.freeze({
-  approvedAt: '2026-10-30',
-  approvalRef: '사용자 승인 2026-10-30(AionUi 대화 19f80b56, Claude Code 세션 5d96caba): "기준선 재생성 승인." 위임 대화 문맥 기준 재사용 재활성화(80% 기본 새 대화·90% 상한·contextOverride 예외, 사유 코드 4개) 구현(브랜치 feat/context-reuse-override)의 대화 선택 안내 문구 변경을 기준선에 반영',
-  head: '131eacefa9d15ab6c95414e2cae88ef9bbdaaac4',
-  workingTreeDiffSha256: 'bd0aa1648775cd10baa8581205924fa47f8e05f33200863cf8d75e520c5b6e9d',
-  capturedTree: 'f00cff4fd2a8d5323416ac4a4a1e8540ed2d73b1',
-  previousBaselineCommit: 'c5628e62accddcb6f6811cd75caf0de76a0a4cdb',
-  previousWorkingTreeDiffSha256: 'a1796933fe67fe221ac6d67e9c6c1cfe9a16b40344715ace167bc05967155dff',
+  approvedAt: '2026-10-22',
+  approvalRef: '사용자 결정 2026-10-22 4차 1번(AionUi docs/superpowers/mnp-guidance-audit/decisions.md): 지침 감사 위험 복구 1안 승인. R1(M1·M2·M3·L31·L32·L33·L35·L36)과 R2 1안(M7·L19·L20·L25~L29) 구현·검수·커밋, L13 제외. 이 재생성은 R2 지침 문구 변경을 R1 절차로 기준선에 반영한다.',
+  head: 'c5628e62accddcb6f6811cd75caf0de76a0a4cdb',
+  workingTreeDiffSha256: 'a1796933fe67fe221ac6d67e9c6c1cfe9a16b40344715ace167bc05967155dff',
+  capturedTree: 'f05aaf176c37468e9618c4707db7f0b537ec7755',
+  previousBaselineCommit: '7b04f8f10d0e49f676c16f0f4736413fd2858a86',
+  previousWorkingTreeDiffSha256: 'c54b42c6fba892fc870efb06e31faf825df0b81f458dca609f7d89721823dc7e',
 })
 // get_document 개선(2026-10-21 승인)의 검증 지침과 그 제한 절(full 필수 조건, 원문 재사용 조건, 원문 대조 조건)은
 // 재생성 기준선에도 남아 있어야 한다. 허용 절만 남기고 뒤쪽 제한 절을 자르지 않도록 원소 전체 문장을 고정한다.
@@ -93,7 +92,7 @@ function mutateResponse(run, name, keys, change) {
   session.response.text = JSON.stringify(response)
 }
 
-test('실제 초기 guide와 네 전달 필드는 2026-10-30 재생성 기준선 원문을 보존한다', async (t) => {
+test('실제 초기 guide와 네 전달 필드는 2026-10-22 재생성 기준선 원문을 보존한다', async (t) => {
   const temp = await mkdtemp(path.join(root, '.initial-guide-test-'))
   t.after(() => rm(temp, { recursive: true, force: true }))
   const evidence = JSON.parse(await readFile(path.join(root, 'docs/ai-guidance-rollback-2026-10-01/initial-response-evidence.json'), 'utf8'))

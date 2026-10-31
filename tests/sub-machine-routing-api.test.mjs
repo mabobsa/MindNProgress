@@ -481,6 +481,8 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
           resumeDispatch = operation.body
           return { conversationId: 'resume-on-mac', state: 'running', turnId: 'resume-turn' }
         }
+        // 기능 확인은 전달 상태 조회 응답보다 먼저 서브 머신 기능 응답으로 처리한다(77581d7의 테스트 결함 수정).
+        if (operation.pathname.endsWith('/capabilities')) return subMachineResponse(operation, 'resume-on-mac')
         if (operation.pathname.includes('/api/internal/external-conversation-dispatches/')) return { state: 'running', conversationId: 'delegated-on-mac' }
         return subMachineResponse(operation, 'resume-on-mac')
       })

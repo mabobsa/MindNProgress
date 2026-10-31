@@ -341,6 +341,7 @@ export function createAiDelegationRequestSignature({
   decisionReason,
   sourceRevision,
   newConversation,
+  contextOverride = null,
 }) {
   const normalizedMachineId = String(machineId ?? '').trim()
   const requested = newConversation && typeof newConversation === 'object'
@@ -368,6 +369,8 @@ export function createAiDelegationRequestSignature({
     decisionReason,
     sourceRevision,
     newConversation: strategy === 'new' ? requested : null,
+    // 예외가 없는 요청의 서명은 이전과 같게 유지한다.
+    ...(contextOverride ? { contextOverride: { reasonCode: contextOverride.reasonCode, reason: contextOverride.reason } } : {}),
   })).digest('hex')
 }
 

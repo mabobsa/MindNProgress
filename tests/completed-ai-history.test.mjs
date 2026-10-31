@@ -43,6 +43,10 @@ test('7일 경과·명시적 수신·반환이 확인된 완료만 정리하며 
   assert.deepEqual([...completedDelegationIds([withLease], { now, leases: { l: lease('l') }, remoteLeaseIds: new Set(['l']) })], [])
   assert.deepEqual([...completedDelegationIds([withLease], { now, leases: { l: lease('l', { cleanupPending: true }) } })], [])
   assert.equal(Object.hasOwn(completedRequestReceipt(done('old', { childResultSnapshot: '원문', requestSignature: 'signature' })), 'childResultSnapshot'), false)
+  // 문맥 포화 예외는 남용 확인을 위해 상세 정리 뒤에도 영수증에 남긴다. 예외가 없던 기록의 영수증 형태는 그대로다.
+  const contextOverride = { reasonCode: 'final-step', reason: '같은 위임의 마지막 보고만 남았습니다.', contextUsageRatio: 0.85, assessmentId: 'c'.repeat(64), appliedAt: old }
+  assert.deepEqual(completedRequestReceipt(done('override', { requestSignature: 'signature', strategy: 'resume', targetConversationId: 'child', contextOverride })).contextOverride, contextOverride)
+  assert.equal(Object.hasOwn(completedRequestReceipt(done('plain', { requestSignature: 'signature', strategy: 'resume' })), 'contextOverride'), false)
 })
 
 test('완료 lease의 활성 참조·반환 미확인·백업 이후 변경은 삭제에서 제외한다', () => {

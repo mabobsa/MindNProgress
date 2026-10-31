@@ -68,7 +68,7 @@ import { detectReleasedWaitingItems } from './lib/waitingItems.mjs'
 import { resolveAttributionWithoutToken, resolveScopedAttribution } from './lib/attributionScope.mjs'
 import { readAionUiSubscriptionUsage } from './lib/aionUiSubscriptionUsage.mjs'
 import { prependAiConversationSource, resolveConversationDisplay, resolveConversationSource } from './lib/aiConversationDisplay.mjs'
-import { applyAiConversationDelegationModelPolicy, assessAiConversationContextHealth, isAiDelegationModelBlocked } from './lib/aiConversationContextHealth.mjs'
+import { AI_CONVERSATION_CONTEXT_REUSE_GUARD_ENABLED, applyAiConversationDelegationModelPolicy, assessAiConversationContextHealth, isAiDelegationModelBlocked, normalizeAiConversationContextOverride, resolveAiConversationContextOverride } from './lib/aiConversationContextHealth.mjs'
 import { blockedAiModelLabels, filterAutomatedAiAgents } from './lib/aiModelPolicy.mjs'
 import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
@@ -2884,13 +2884,13 @@ async function runGroupDocumentInstructionDispatch(instruction, user) {
             conversationContextHealth: contextHealth,
           })
         }
-        if (!contextHealth.resumeAllowed) {
+        // 요청 때 인정한 포화 예외는 같은 평가(assessmentId)에서만 다시 인정한다.
+        const contextDecision = resolveAiConversationContextOverride(contextHealth, instruction.contextOverride ?? null)
+        if (!contextDecision.allowed) {
           return updateGroupDocumentInstruction(instruction.id, {
             state: 'expired',
-            reasonCode: contextHealth.reasonCodes.includes('CONVERSATION_MODEL_REUSE_BLOCKED')
-              ? 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_MODEL_BLOCKED'
-              : 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE',
-            message: contextHealth.message,
+            reasonCode: groupDocumentInstructionContextReasonCode(contextDecision.code),
+            message: contextDecision.message,
             conversationContextHealth: contextHealth,
           })
         }
@@ -5113,13 +5113,15 @@ async function drainWaitingWorkspaceDelegations() {
             { excludeDelegationId: queued.id },
             aiConversationLinksFromData(targetCard.data).find((link) => link.conversationId === queued.targetConversationId)?.model?.id,
           )
-          if (contextHealth.assessmentId !== queued.conversationAssessmentId || !contextHealth.resumeAllowed) {
+          // 요청 때 인정한 포화 예외는 같은 평가(assessmentId)에서만 다시 인정한다.
+          const contextDecision = resolveAiConversationContextOverride(contextHealth, queued.contextOverride ?? null)
+          if (contextHealth.assessmentId !== queued.conversationAssessmentId || !contextDecision.allowed) {
             await updateAiDelegation(queued.id, {
               state: 'failed',
               childStatus: 'rejected',
               childError: contextHealth.assessmentId !== queued.conversationAssessmentId
                 ? '작업공간 대기 중 대상 대화의 문맥 상태가 변경되었습니다. 최신 후보를 확인해 새 위임을 검토하세요.'
-                : contextHealth.message,
+                : contextDecision.message,
               conversationContextHealth: contextHealth,
               resource: null,
             })
@@ -6128,6 +6130,26 @@ async function inspectAiConversationContextHealth(
     linkedModelId,
     runtimeModelId: resolvedConversation?.extra?.current_model_id,
   })
+}
+
+// 문맥 기준 재사용이 OFF이면 개선 전처럼 요청의 contextOverride를 모르는 필드로 무시한다(검증·서명·기록 없음).
+function requestedAiConversationContextOverride(body) {
+  return AI_CONVERSATION_CONTEXT_REUSE_GUARD_ENABLED ? normalizeAiConversationContextOverride(body.contextOverride) : null
+}
+
+function aiDelegationContextReasonCode(code) {
+  return {
+    MODEL_BLOCKED: 'AI_DELEGATION_CONVERSATION_MODEL_BLOCKED',
+    SATURATED: 'AI_DELEGATION_CONVERSATION_CONTEXT_SATURATED',
+    OVERRIDE_LIMIT: 'AI_DELEGATION_CONVERSATION_CONTEXT_OVERRIDE_LIMIT',
+  }[code] ?? 'AI_DELEGATION_CONVERSATION_CONTEXT_UNKNOWN'
+}
+
+function groupDocumentInstructionContextReasonCode(code) {
+  return {
+    MODEL_BLOCKED: 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_MODEL_BLOCKED',
+    OVERRIDE_LIMIT: 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_OVERRIDE_LIMIT',
+  }[code] ?? 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE'
 }
 
 function resolveAiConversationDisplay(conversationId, machineId = conversationHomeMachineId(conversationId)) {
@@ -10967,6 +10989,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const strategy = String(body.strategy ?? '').trim()
       const requestedConversationId = String(body.conversationId ?? '').trim()
       const conversationAssessmentId = String(body.conversationAssessmentId ?? '').trim()
+      const contextOverride = requestedAiConversationContextOverride(body)
       const instructionType = String(body.instructionType ?? '').trim()
       const approvalScope = String(body.approvalScope ?? '').trim()
       const approvalEvidence = String(body.approvalEvidence ?? '').trim()
@@ -10981,6 +11004,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         || !['resume', 'new'].includes(strategy)
         || (strategy === 'resume' && !validAiConversationId(requestedConversationId))
         || (conversationAssessmentId && !/^[a-f0-9]{64}$/.test(conversationAssessmentId))
+        || contextOverride === undefined || (contextOverride && strategy !== 'resume')
         || !GROUP_DOCUMENT_INSTRUCTION_TYPES.includes(instructionType)
         || !GROUP_DOCUMENT_INSTRUCTION_SCOPES.includes(approvalScope)
         || !approvalEvidence || approvalEvidence.length > 10_000
@@ -11033,6 +11057,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           decisionReason,
           replyTarget: requestedReplyTarget,
           newConversation: body.newConversation,
+          contextOverride,
         })
         const existing = groupDocumentInstructions.get(id)
         if (existing) {
@@ -11087,6 +11112,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         }
 
         let selection
+        let appliedContextOverride = null
         if (strategy === 'resume') {
           const linked = aiConversationLinksFromData(targetCard.data)
             .find((candidate) => candidate.conversationId === requestedConversationId)
@@ -11107,13 +11133,13 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
               '대상 문서 AI 대화가 후보 조회 이후 변경되었습니다. 최신 문맥 상태를 다시 확인하세요.',
               { contextHealth },
             )
-            if (!contextHealth.resumeAllowed) return sendGroupDocumentInstructionResponse(
-              response, 409, contextHealth.reasonCodes.includes('CONVERSATION_MODEL_REUSE_BLOCKED')
-                ? 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_MODEL_BLOCKED'
-                : 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_CONTEXT_UNAVAILABLE',
-              contextHealth.message,
+            const contextDecision = resolveAiConversationContextOverride(contextHealth, contextOverride)
+            if (!contextDecision.allowed) return sendGroupDocumentInstructionResponse(
+              response, 409, groupDocumentInstructionContextReasonCode(contextDecision.code),
+              contextDecision.message,
               { contextHealth },
             )
+            appliedContextOverride = contextDecision.contextOverride
             const recovered = aiConversationLinkFromAionUiConversation(conversation)
             selection = aiDelegationSelectionFromSource({
               ...recovered,
@@ -11177,6 +11203,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           targetHomeMachineId,
           requestedConversationId: strategy === 'resume' ? requestedConversationId : null,
           conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
+          ...(appliedContextOverride ? { contextOverride: { ...appliedContextOverride, appliedAt: now } } : {}),
           strategy,
           instructionType,
           approvalScope,
@@ -11298,6 +11325,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const strategy = String(body.strategy ?? '').trim()
       const conversationId = String(body.conversationId ?? '').trim()
       const conversationAssessmentId = String(body.conversationAssessmentId ?? '').trim()
+      const contextOverride = requestedAiConversationContextOverride(body)
       const instruction = String(body.instruction ?? '').trim()
       const decisionReason = String(body.decisionReason ?? '').trim()
       const taskSummary = body.taskSummary === undefined ? '' : body.taskSummary
@@ -11306,6 +11334,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         || !targetCardId || targetCardId.length > 120
         || !['resume', 'new'].includes(strategy)
         || (conversationAssessmentId && !/^[a-f0-9]{64}$/.test(conversationAssessmentId))
+        || contextOverride === undefined || (contextOverride && strategy !== 'resume')
         || !instruction || instruction.length > 100_000
         || !decisionReason || decisionReason.length > 1_000
         || typeof taskSummary !== 'string' || taskSummary.length > 240
@@ -11366,6 +11395,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         decisionReason,
         sourceRevision,
         newConversation: body.newConversation,
+        contextOverride,
       })
       const existingDelegation = aiDelegations.get(id)
       const completedReceipt = aiRequestReceipts.get(id)
@@ -11527,6 +11557,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
       let selection = null
       let targetConversationId = conversationId
+      let appliedContextOverride = null
       if (strategy === 'resume') {
         if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(targetConversationId)
           || !isAiConversationLinked(targetCard.data, targetConversationId)) {
@@ -11562,14 +11593,12 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
                 contextHealth,
               })
             }
-            if (!contextHealth.resumeAllowed) {
-              const reasonCode = contextHealth.reasonCodes.includes('CONVERSATION_MODEL_REUSE_BLOCKED')
-                ? 'AI_DELEGATION_CONVERSATION_MODEL_BLOCKED'
-                : contextHealth.state === 'saturated'
-                  ? 'AI_DELEGATION_CONVERSATION_CONTEXT_SATURATED'
-                  : 'AI_DELEGATION_CONVERSATION_CONTEXT_UNKNOWN'
-              return sendAiDelegationResponse(response, 409, reasonCode, contextHealth.message, { contextHealth })
+            const contextDecision = resolveAiConversationContextOverride(contextHealth, contextOverride)
+            if (!contextDecision.allowed) {
+              return sendAiDelegationResponse(response, 409, aiDelegationContextReasonCode(contextDecision.code),
+                contextDecision.message, { contextHealth })
             }
+            appliedContextOverride = contextDecision.contextOverride
           }
           const recovered = aiConversationLinkFromAionUiConversation(conversation)
           selection = aiDelegationSelectionFromSource({
@@ -11723,6 +11752,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           childOperationId: id,
           strategy,
           conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
+          ...(appliedContextOverride ? { contextOverride: { ...appliedContextOverride, appliedAt: now } } : {}),
           decisionReason,
           sourceRevision,
           instructionPreview: instruction.replace(/\s+/g, ' ').slice(0, 240),
@@ -11817,6 +11847,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
               childOperationId: id,
               strategy,
               conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
+              ...(appliedContextOverride ? { contextOverride: { ...appliedContextOverride, appliedAt: now } } : {}),
               decisionReason,
               sourceRevision,
               instructionPreview: instruction.replace(/\s+/g, ' ').slice(0, 240),
@@ -12065,6 +12096,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         childOperationId: id,
         strategy,
         conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
+        ...(appliedContextOverride ? { contextOverride: { ...appliedContextOverride, appliedAt: now } } : {}),
         decisionReason,
         sourceRevision,
         instructionPreview: instruction.replace(/\s+/g, ' ').slice(0, 240),

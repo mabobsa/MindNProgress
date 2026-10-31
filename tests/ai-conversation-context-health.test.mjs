@@ -51,7 +51,10 @@ test('OFF를 다시 ON으로 바꾸면 기존 포화 차단을 복원하고 이�
   assert.equal(on.contextReuseGuardEnabled, true)
   assert.equal(on.resumeAllowed, false)
   assert.equal(on.recommendation, 'new')
-  assert.deepEqual(off.metrics, on.metrics)
+  // ON은 사용량 확인 상태 필드를 더한다. OFF가 개선 전과 같은지는 ai-context-reuse-off-equivalence가 확인한다.
+  const { contextUsageStatus, contextUsageUpdatedAt, ...onMetrics } = on.metrics
+  assert.deepEqual({ contextUsageStatus, contextUsageUpdatedAt }, { contextUsageStatus: null, contextUsageUpdatedAt: null })
+  assert.deepEqual(off.metrics, onMetrics)
   assert.notEqual(off.assessmentId, on.assessmentId)
 })
 

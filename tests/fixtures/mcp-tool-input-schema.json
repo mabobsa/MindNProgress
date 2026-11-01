@@ -3367,6 +3367,140 @@
     }
   },
   {
+    "name": "mindnprogress_start_card_conversation",
+    "description": "사용자가 요청한 대화 인계를 위해 현재 대화가 연결된 자기 원본 카드에 후속 AionUi 대화를 생성하고 첫 메시지를 전달합니다. 같은 실행 머신만 지원하며 하위 카드 위임이나 worker 배정이 아닙니다. 현재 대화는 중지하지 않고, 새 대화의 실행 시작을 확인한 뒤 대표 연결을 전환하며 이전 대화는 이력에 남깁니다. 진행 중인 위임·그룹 지시·복구가 있으면 먼저 마치세요. 최초 호출에는 predecessorConversationId, newConversation, initialMessage, decisionReason, approvalEvidence가 필요합니다. 재시도에는 같은 requestId를 유지하고 resultOnly=true로 처리 결과만 확인할 수 있습니다. starting·observing은 완료가 아니며 runtimeConfig의 source=snapshot은 실제 실행값 확인이 아닙니다. 외부 총괄의 회신 주소는 자동으로 바뀌지 않습니다.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "mapId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "현재 대화가 연결된 문서 ID"
+        },
+        "cardId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "현재 대화가 연결된 자기 원본 카드 ID"
+        },
+        "requestId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_:-]{0,95}$",
+          "description": "인계 요청마다 새로 정하는 안정적인 멱등 키. 재시도와 결과 조회에는 같은 키를 유지"
+        },
+        "resultOnly": {
+          "type": "boolean",
+          "description": "true이면 mapId, cardId, requestId만으로 기존 요청 결과를 확인하고 미완료 단계를 복구"
+        },
+        "predecessorConversationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "최초 호출 필수. 이 도구를 호출한 현재 대화 ID이며 카드 대표 대화와 일치해야 함"
+        },
+        "machineId": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "생략하면 현재 대화의 실행 머신. 다른 머신으로 이전하지 않음"
+        },
+        "initialMessage": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100000,
+          "description": "최초 호출 필수. 새 대화에 전달할 첫 메시지 원문. 파일 경로 대신 읽은 원문을 그대로 전달"
+        },
+        "decisionReason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "최초 호출 필수. 새 대화로 인계하는 이유"
+        },
+        "approvalEvidence": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10000,
+          "description": "최초 호출 필수. 사용자의 실제 인계 요청과 확인 가능한 출처. 새 작업 범위의 승인을 만들어내지 않음"
+        },
+        "newConversation": {
+          "type": "object",
+          "properties": {
+            "agentId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "modelId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "modeId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "thoughtLevelId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "enabledSkillIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "maxItems": 128
+            },
+            "disabledBuiltinSkillIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "maxItems": 128
+            },
+            "mcpIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "maxItems": 128
+            },
+            "workspace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "claudeAccountId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "description": "Claude 새 대화의 계정 ID(list_ai_conversations의 claudeAccount.id). 생략하면 이 도구를 호출한 현재 대화와 같은 계정이며 위임용 계정 정책은 적용하지 않음"
+            }
+          },
+          "required": [
+            "agentId",
+            "modelId"
+          ],
+          "additionalProperties": false,
+          "description": "최초 호출 필수. 그룹 문서 지시의 실행 환경 형식에 claudeAccountId를 더함. 생략한 선택 항목은 이전 대화 설정을 상속"
+        }
+      },
+      "required": [
+        "mapId",
+        "cardId",
+        "requestId"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  {
     "name": "mindnprogress_submit_card_layout_proposal",
     "description": "사용자가 요청한 배치안만 제안함에 제출합니다. plan.order에는 모든 카드 ID를 정확히 한 번, reason에는 배치 이유를 적습니다. 계층·종류·카드·좌표를 직접 바꾸지 않습니다. 제품이 실측 배치를 만들고 사용자가 실제 화면을 확인해 적용합니다. requestId를 보존해 재전송하세요. resultOnly=true는 변경 본문 없이 결과만 조회합니다. 응답 유실은 unknown이며 같은 ID로 확인합니다. 기존 제안 대상 requestId 호출도 유지합니다. 이 호출의 응답은 기존 requestId와 논리 저장 storageRequestId를 함께 반환합니다. 새 호출은 proposalRequestId와 mnpw 형식 requestId를 구분하세요.",
     "inputSchema": {

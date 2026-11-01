@@ -38,7 +38,7 @@ function countSchemaDescriptions(value) {
     + Object.values(value).reduce((sum, child) => sum + countSchemaDescriptions(child), 0)
 }
 
-test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검증한다', async () => {
+test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검증한다', async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(root, 'mcp/server.mjs')],
@@ -51,13 +51,22 @@ test('최신 60개 이름·input schema와 복구한 도구 설명 전문을 검
     const registeredInstructions = client.getInstructions()
     const tools = [...(await client.listTools()).tools].sort((a, b) => a.name.localeCompare(b.name))
     assert.deepEqual(tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), fixture)
-    assert.equal(tools.length, 60)
+    assert.equal(tools.length, 61)
     // REQ-MNP-04: 기존 변경 도구의 requestId/resultOnly 호환 확장. 도구 개수는 유지한다.
     // 2026-10-29: get_group_context의 detailLevel·mapId와 list_group_document_instructions의 instructionId를 추가했다.
     // 2026-10-29: get_context 응답 예산의 회수 경로로 get_card에 fields·includeComments를 추가했다.
     // 2026-10-29: list_ai_delegations 응답 예산의 회수 경로로 delegationId를 추가했다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'fb4e0692df19eadcc8bd9ae28773ee87da0b3dc6e3d0f96800b5278809a86512')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 214)
+    // 2026-11-01: 사용자 승인으로 자기 카드 후속 대화 도구 하나를 추가한다. 기존 60개 계약은 유지한다.
+    // 2026-11-01: 같은 도구의 newConversation에 Claude 계정 선택(claudeAccountId)을 추가한다. 기존 60개 계약은 유지한다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'c1583afb2823b6f4b61515f72e7916609410038d5e2b59ef53911fb19f1e59dd')
+    const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
+    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'fb4e0692df19eadcc8bd9ae28773ee87da0b3dc6e3d0f96800b5278809a86512')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 225)
+    const handoff = tools.find((tool) => tool.name === 'mindnprogress_start_card_conversation')
+    assert.deepEqual(handoff.inputSchema.required, ['mapId', 'cardId', 'requestId'])
+    assert.equal(handoff.inputSchema.properties.resultOnly.type, 'boolean')
+    assert.equal(handoff.inputSchema.properties.newConversation.properties.claudeAccountId.maxLength, 120)
+    assert.match(handoff.description, /자기 원본 카드.*첫 메시지.*현재 대화는 중지하지.*같은 requestId/s)
     for (const tool of tools.filter((tool) => storageWriteTools.has(tool.name))) {
       assert.ok(tool.inputSchema.properties.requestId.pattern || tool.inputSchema.properties.proposalRequestId)
       assert.equal(tool.inputSchema.properties.resultOnly.type, 'boolean')

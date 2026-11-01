@@ -14,7 +14,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 test('실제 삭제 API는 보관 검증·실행 및 공용 연결 보호·재시도를 수행한다', { timeout: 60_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'mnp-conversation-removal-'))
-  const ids = ['active', 'archived', 'missing', 'running', 'waiting-confirmation', 'unknown', 'unsupported', 'lost', 'rejected', 'shared', 'delegated', 'expired-instruction', 'queued-instruction', 'delivered-instruction', 'delayed']
+  const ids = ['active', 'archived', 'missing', 'running', 'waiting-confirmation', 'unknown', 'unsupported', 'lost', 'rejected', 'shared', 'delegated', 'expired-instruction', 'failed-instruction', 'queued-instruction', 'delivered-instruction', 'delayed']
   const archived = new Set(['archived'])
   const archivedCalls = []
   const conversationQueries = []
@@ -72,7 +72,7 @@ test('실제 삭제 API는 보관 검증·실행 및 공용 연결 보호·재�
       parentConversationId: 'parent', targetConversationId: 'delegated', state: 'integration-recovery-required',
       childStatus: 'completed', workspaceError: '통합 복구 필요', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     }]))
-    const instructions = ['expired', 'queued', 'delivered'].map((state) => ({
+    const instructions = ['expired', 'failed', 'queued', 'delivered'].map((state) => ({
       id: `instruction-${state}`, state, parentMapId: mapId, parentCardId: 'other', parentConversationId: 'parent',
       targetMapId: mapId, targetCardId: 'root', targetConversationId: `${state}-instruction`,
       requestedConversationId: `${state}-instruction`,
@@ -132,16 +132,16 @@ test('실제 삭제 API는 보관 검증·실행 및 공용 연결 보호·재�
     assert.deepEqual(compact.body.conversations.map((item) => item.conversationId), detailed.body.conversations.map((item) => item.conversationId),
       '상세 AI 대화 열기와 간략 목록의 대화 순서가 일치한다')
     assert.equal((await fetch(`${base}${endpoint}/active`, { method: 'DELETE' })).status, 401)
-    for (const id of ['active', 'archived', 'missing', 'lost', 'expired-instruction']) {
+    for (const id of ['active', 'archived', 'missing', 'lost', 'expired-instruction', 'failed-instruction']) {
       const result = await remove(id)
       assert.equal(result.status, 200, JSON.stringify(result.body))
       assert.equal(result.body.archiveState, id === 'missing' ? 'missing' : 'archived')
       assert.ok(!result.body.card.data.aiConversations.some((link) => link.conversationId === id))
     }
-    assert.deepEqual(archivedCalls, ['active', 'lost', 'expired-instruction'])
+    assert.deepEqual(archivedCalls, ['active', 'lost', 'expired-instruction', 'failed-instruction'])
     const remainingDocument = (await request(documentEndpoint)).body
     assert.deepEqual(linkInfo(remainingDocument.cards[1].conversations), linkInfo(documentList.body.cards[1].conversations), '다른 카드의 연결은 변경하지 않는다')
-    assert.ok(remainingDocument.cards[0].conversations.every((item) => !['active', 'archived', 'missing', 'lost', 'expired-instruction'].includes(item.conversationId)),
+    assert.ok(remainingDocument.cards[0].conversations.every((item) => !['active', 'archived', 'missing', 'lost', 'expired-instruction', 'failed-instruction'].includes(item.conversationId)),
       '삭제한 대화는 문서 전체 목록에서도 제외한다')
     assert.deepEqual(JSON.parse(await readFile(path.join(directory, '_group-document-instructions.json'), 'utf8')), instructions,
       '만료 지시를 강제로 완료 처리하거나 지우지 않고 대화 연결만 삭제한다')
@@ -158,7 +158,7 @@ test('실제 삭제 API는 보관 검증·실행 및 공용 연결 보호·재�
       assert.ok(remaining.body.conversations.some((item) => item.conversationId === id), `${id} 연결을 유지한다`)
       assert.ok(!archivedCalls.includes(id), `${id} 보관 요청을 보내지 않는다`)
     }
-    assert.deepEqual(archivedCalls, ['active', 'lost', 'expired-instruction', 'rejected'])
+    assert.deepEqual(archivedCalls, ['active', 'lost', 'expired-instruction', 'failed-instruction', 'rejected'])
 
     const deleting = remove('delayed')
     await entered

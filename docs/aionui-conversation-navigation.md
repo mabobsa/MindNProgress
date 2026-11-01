@@ -4,6 +4,50 @@ AionUi 백엔드는 현재 대화가 MindNProgress 카드에 연결되어 있는
 
 브라우저에 MindNProgress 연동 토큰을 노출하지 않도록 두 API는 AionUi 백엔드에서 호출한다.
 
+## 자기 카드의 후속 대화 시작
+
+`mindnprogress_start_card_conversation`은 사용자가 요청한 인계를 위해 현재 대화의 원본 카드에 후속 대화를 만든다. 그룹 총괄 루트도 사용할 수 있으며, 하위 카드 위임이나 worker 배정을 수행하지 않는다. 현재 대화와 같은 실행 머신만 지원한다.
+
+서버 경로는 `POST /api/maps/{mapId}/cards/{cardId}/ai-conversation-starts`다. 호출 대화의 원본 카드·시작 편집자·머신 접근 권한을 확인한다. 보관·휴지통 문서, Ref·이미지 카드, 진행 중인 위임·그룹 지시·작업공간 복구가 있는 경우에는 새 인계를 시작하지 않는다. 호출하는 현재 대화의 실행 중 상태 자체는 차단 조건이 아니다.
+
+최초 호출에는 `requestId`, `predecessorConversationId`, `newConversation`, `initialMessage`, `decisionReason`, `approvalEvidence`가 필요하다. `newConversation`은 그룹 문서 지시와 같은 형식으로 `agentId`, `modelId`, 선택적인 `modeId`, `thoughtLevelId`, `enabledSkillIds`, `disabledBuiltinSkillIds`, `mcpIds`, `workspace`를 받는다. 생략한 선택 항목은 이전 대화 설정을 상속하고 필수 MnP MCP를 포함한다.
+
+Claude는 선택적인 `claudeAccountId`로 새 대화의 계정을 고를 수 있다. 값은 `list_ai_conversations`가 반환하는 `claudeAccount.id`와 같다. 생략하면 이 도구를 호출한 현재 대화와 같은 계정을 쓴다. AionUi가 반환한 현재 대화의 실제 계정을 우선하며, 값이 없으면 기본 계정이다. AionUi에서 그 대화를 확인하지 못하면 MnP 연결 기록, 그다음 기본 계정을 쓴다. 위임·그룹 지시가 쓰는 '그 외' 용도 계정 정책은 인계에 적용하지 않는다. 새 대화의 AI 종류에서 고를 수 없는 계정을 지정하면 `CARD_CONVERSATION_START_CLAUDE_ACCOUNT_INVALID`로 생성 전에 거절한다. 확정한 계정은 `requestedConfig.claudeAccountId`·`claudeAccount`로 반환한다.
+
+상속할 기본 외 계정이 목록에 없거나 목록 조회가 불완전하면 기본 계정으로 바꾸지 않고 같은 코드로 거절한다. 단일 계정 환경에서도 `claudeAccountId: "default"`는 허용한다. 기존 대화의 MCP 서버가 이전 스키마를 사용 중이면 새 계정 인자가 누락될 수 있으므로, 적용 시 MnP 서버 재시작과 함께 해당 대화의 MnP MCP도 재연결해야 한다.
+
+`initialMessage`에는 파일 경로 대신 파일에서 읽은 원문을 전달한다. 원문 앞에 작성자 귀속과 `get_context` 안내를 붙이며, 원문의 공백·줄바꿈은 보존한다. 입력 10만 자 또는 안내 포함 256 KiB를 넘으면 원문을 자르지 않고 거절한다. 응답에는 원문의 길이와 SHA-256만 반환하고 본문·귀속 토큰은 노출하지 않는다.
+
+요청은 `_card-conversation-starts.json`에 저장하며, 원격 호출은 문서 잠금 밖에서 수행한다. 같은 `requestId`에 다른 본문을 전달하면 거절한다. 동일 요청의 결과 조회와 미완료 단계 복구에는 다음 인자만 사용한다.
+
+```json
+{
+  "mapId": "map-example",
+  "cardId": "root-example",
+  "requestId": "handoff:example:1",
+  "resultOnly": true
+}
+```
+
+처리 상태는 다음과 같다.
+
+| 상태 | 의미 |
+|---|---|
+| `reserved`, `prepared`, `dispatching` | 요청 저장, 실행 환경 준비 또는 생성·전달 요청 중 |
+| `observing` | 대화가 생성됐지만 첫 실행 시작은 아직 확인하지 못함 |
+| `linked` | 첫 실행 시작을 확인하고 대표 연결을 옮겼으며, 실제 설정 확인은 남음 |
+| `ready` | 대표 연결과 런타임이 반환한 필수 설정값을 확인함. AI 작업 완료를 뜻하지 않음 |
+| `recovery-required` | 원격 결과 또는 연결을 확정하지 못함. 같은 요청을 조회하여 복구 |
+| `failed` | MnP 검증 또는 Core의 생성 전 검사에서 거절됨. 사유를 해결한 뒤 새 요청 필요 |
+
+AionCore가 반환하는 `starting`만으로는 대표 연결을 바꾸지 않는다. `running` 또는 `completed`와 `turnId`를 확인한 뒤 현재 대표가 이전 대화와 같은지 다시 검사한다. 다른 대화가 대표가 됐다면 덮어쓰지 않는다. 새 대화의 연결 이력과 이전 대화는 보존한다.
+
+생성 요청 이후 응답이 유실되거나 서버가 재시작돼도 같은 `operationId`를 조회한다. 원격 처리 결과 자체를 찾을 수 없다면 임의로 다시 생성하지 않고 `recovery-required`를 유지한다. 카드 연결 저장만 실패한 경우에는 이미 생성된 대화의 연결 단계만 복구한다. 자동 확인은 최초 접수 후 10분까지이며, 이후에도 같은 요청의 명시적 조회로 복구할 수 있다.
+
+`requestedConfig`는 요청·상속으로 확정한 설정이고 `runtimeConfig`는 AionCore의 조회 결과다. 각 값의 `source`는 `runtime`, `snapshot`, `unavailable`로 구분한다. 저장된 스냅샷을 실제 실행 확인으로 표시하지 않는다. 모드를 포함하는 AionCore `runtime-config`가 필요하며, 구버전 Core에서는 모드를 확인할 수 없어 `linked`로 남을 수 있다. 반환된 실제 모델 ID는 요청의 별칭과 다를 수 있으므로 요청값과 함께 확인한다.
+
+기존 대화를 중지하거나 외부 총괄의 회신 주소를 변경하지 않는다. 인계 요청 기록도 해당 문서를 영구 삭제할 때 함께 정리한다. 운영 로그에는 요청·문서·카드·대화 ID와 상태만 남긴다.
+
 ## 서브 머신 Runner 중계
 
 서브 머신의 AionCore는 로컬 MnP를 사용할 수 없으면 AionUi Runner의 로컬 중계 정보를 읽어 같은 조회·선택 API를 호출한다. Runner는 로컬 전용 토큰을 검증하고 메인 MnP로 보낼 때만 머신 토큰을 사용한다. 브라우저와 AionCore에는 머신 토큰을 전달하지 않는다.

@@ -13,10 +13,11 @@ import { normalizeUntrackedMetaRecovery } from './lib/workspaceMetaRecovery.mjs'
 import { createIntegrationRecoveryQueue, integrationRecoveryPending, integrationRecoveryPublicView } from './lib/aiIntegrationRecovery.mjs'
 import { createAiDelegationRequestFailures, safeDelegationFailureMessage, withDelegationTaskCompletion } from './lib/aiDelegationRequestFailures.mjs'
 import { aiRecordReferencesMaps, createAiDocumentRecordMap, removeAiDocumentRecords, aiDocumentDeletionBusy } from './lib/aiDocumentCleanup.mjs'
+import { buildCardConversationStartPrompt, cardConversationStartError, createCardConversationStarts, isCardConversationWorkerWorkspace } from './lib/cardConversationStarts.mjs'
 import { createRuntimeLifecycle, installRuntimeShutdown } from './lib/runtimeLifecycle.mjs'
 import { retryDispatchStatus, throwIfRuntimeStopping } from './lib/runtimeStopping.mjs'
 import { createAiWorkspaceSettings } from './lib/aiWorkspaceSettings.mjs'
-import { claudeAccountRequestId, claudeAccountRoleForPurpose, createAiClaudeAccountPolicy, findClaudeAccount,
+import { DEFAULT_CLAUDE_ACCOUNT_ID, claudeAccountRequestId, claudeAccountRoleForPurpose, createAiClaudeAccountPolicy, findClaudeAccount,
   formatAiAuthorName, normalizeClaudeAccounts, resolveClaudeAccountSelection } from './lib/aiClaudeAccounts.mjs'
 import { createAiDialogPreferences } from './lib/aiDialogPreferences.mjs'
 import { createStorageResources, storageResourceError } from './lib/storageResources.mjs'
@@ -286,6 +287,7 @@ const aiDelegationsFile = path.join(dataDirectory, '_ai-delegations.json')
 const aiRequestReceiptsFile = path.join(dataDirectory, '_ai-request-receipts.json')
 const cardMoveOperationsFile = path.join(dataDirectory, '_card-move-operations.json')
 const groupDocumentInstructionsFile = path.join(dataDirectory, '_group-document-instructions.json')
+const cardConversationStartsFile = path.join(dataDirectory, '_card-conversation-starts.json')
 const workspacePoolStateFile = path.join(dataDirectory, '_workspace-pool.json')
 const aiWorkspaceHistoriesFile = path.join(dataDirectory, '_ai-workspace-histories.json')
 const machineRegistryFile = path.join(dataDirectory, '_machines.json')
@@ -293,7 +295,7 @@ const distributedWorkSettingsFile = path.join(dataDirectory, '_distributed-work-
 const integrationTokenFile = path.join(dataDirectory, '_integration-token')
 const mapOrderFile = path.join(dataDirectory, '_map-order.json')
 const sharedAiStateFiles = [aiAttributionsFile, aiConversationAttributionsFile, aiConversationOriginsFile,
-  aiDelegationsFile, aiRequestReceiptsFile, groupDocumentInstructionsFile, cardMoveOperationsFile,
+  aiDelegationsFile, aiRequestReceiptsFile, groupDocumentInstructionsFile, cardMoveOperationsFile, cardConversationStartsFile,
   path.join(dataDirectory, '_ai-delegation-request-failures.json')]
 const storageResources = createStorageResources()
 function resourceForFile(file) {
@@ -425,6 +427,7 @@ let aiDelegationRequestFailures
 const aiDelegationActions = new Set()
 let aiDelegationPollRunning = false
 const groupDocumentInstructions = createAiDocumentRecordMap(deletedAiDocumentIds)
+const cardConversationStartRecords = createAiDocumentRecordMap(deletedAiDocumentIds)
 const groupDocumentInstructionActions = createGroupDocumentInstructionDispatchCoordinator()
 let groupDocumentInstructionPollRunning = false
 const aiDelegationWaitPolls = new Map()
@@ -2591,7 +2594,7 @@ function isHierarchyDescendant(map, parentCardId, targetCardId) {
   return false
 }
 
-async function delegationCreateSelection(targetCard, requestedSelection, parentAttribution, machineId) {
+async function delegationCreateSelection(targetCard, requestedSelection, parentAttribution, machineId, { inheritClaudeAccount = false } = {}) {
   const linkedConversations = aiConversationLinksFromData(targetCard.data)
   const latestLink = [...linkedConversations].reverse()
     .find((link) => conversationHomeMachineId(link.conversationId, link) === machineId)
@@ -2634,12 +2637,22 @@ async function delegationCreateSelection(targetCard, requestedSelection, parentA
   selection.providerId = resolvedModel.providerId ?? selection.providerId
   // Claude 멀티 계정: AI가 만드는 새 대화(위임·그룹 지시)는 '그 외' 용도 정책 계정을 쓰고,
   // 정책이 없으면 상위 대화의 계정을 물려받는다. 계정이 1개면 값이 비워진다.
-  selection.claudeAccountId = resolveClaudeAccountSelection({
-    accounts: resolvedAgent.claudeAccounts,
-    requested: selection.claudeAccountId,
-    policyAccountId: aiClaudeAccountPolicy.get(machineId).others,
-    enforcePolicy: true,
-  })
+  // 같은 카드의 대화 인계(inheritClaudeAccount)는 정책을 적용하지 않고 호출자가 정한 계정만 쓴다.
+  if (inheritClaudeAccount && resolvedAgent.backend === 'claude') {
+    const accountId = selection.claudeAccountId || DEFAULT_CLAUDE_ACCOUNT_ID
+    if (accountId !== DEFAULT_CLAUDE_ACCOUNT_ID && !resolvedAgent.claudeAccounts?.some((account) => account.id === accountId)) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_CLAUDE_ACCOUNT_INVALID',
+        '선택하거나 상속할 Claude 계정을 확인할 수 없습니다. 기본 계정으로 변경하지 않았습니다. 계정 설정을 확인한 뒤 새 requestId로 요청하세요.', 400)
+    }
+    // 단일 계정 환경도 default는 유효하다. 목록 조회 실패를 다른 계정 사용으로 우회하지 않는다.
+    selection.claudeAccountId = accountId
+  } else {
+    selection.claudeAccountId = resolveClaudeAccountSelection({
+      accounts: resolvedAgent.claudeAccounts,
+      requested: selection.claudeAccountId,
+      ...(inheritClaudeAccount ? {} : { policyAccountId: aiClaudeAccountPolicy.get(machineId).others, enforcePolicy: true }),
+    })
+  }
   selection.claudeAccount = findClaudeAccount(resolvedAgent.claudeAccounts, selection.claudeAccountId)
 
   const mcpServers = normalizeAionUiMcpServers(rawMcpServers)
@@ -5730,6 +5743,149 @@ function fetchAiConversationRuntimeSnapshot(machineId = machineRegistry.mainMach
   return request
 }
 
+const persistCardConversationStarts = () => persistSharedState(cardConversationStartsFile, () => [...cardConversationStartRecords.values()])
+const cardConversationStarts = createCardConversationStarts({
+  records: cardConversationStartRecords,
+  persist: persistCardConversationStarts,
+  mutate: (mapId, action) => withAiResources([mapId], () => storageChanges.run(async () => {
+    const stores = [cardConversationStartRecords, aiAttributions, aiConversationOrigins, aiConversationAttributions]
+    const snapshots = stores.map((store) => structuredClone([...store]))
+    storageChanges.onRollback(() => stores.forEach((store, index) => { store.clear(); for (const [key, value] of snapshots[index]) store.set(key, value) }))
+    return action()
+  })),
+  async validate(record, { initial, resultOnly } = {}) {
+    if (!record) throw cardConversationStartError('CARD_CONVERSATION_START_NOT_FOUND', '인계 요청을 찾을 수 없습니다.', 404)
+    const user = users.find((item) => item.id === record.startedBy && item.active !== false)
+    if (!user || !canEdit(user) || !machineAccessibleByUser(user, record.machineId)) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_FORBIDDEN', '인계 요청의 편집자 또는 실행 머신 권한을 확인할 수 없습니다.', 403)
+    }
+    const map = await readMap(record.mapId)
+    const card = map?.nodes.find((node) => node.id === record.cardId)
+    if (!map || map.trashedAt || !card) throw cardConversationStartError('CARD_CONVERSATION_START_CARD_NOT_FOUND', '인계할 카드를 찾을 수 없습니다.', 404)
+    if (resultOnly) return
+    documentReconstruction.assertWritable(record.mapId)
+    if (map.archivedAt || card.data.reference || card.data.kind === 'image') {
+      throw cardConversationStartError('CARD_CONVERSATION_START_ORIGINAL_CARD_REQUIRED', '편집 가능한 원본 카드에서만 대화를 인계할 수 있습니다.')
+    }
+    const origin = aiConversationOrigins.get(record.predecessorConversationId)
+    if (!origin || origin.mapId !== record.mapId || origin.cardId !== record.cardId) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_ORIGIN_CHANGED', '이전 대화의 원본 카드 연결이 변경되었습니다.')
+    }
+    if (record.machineId !== conversationHomeMachineId(record.predecessorConversationId, origin)) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_MACHINE_MISMATCH', '현재 대화와 같은 실행 머신에서 인계하세요. 머신 간 대화 이전은 지원하지 않습니다.')
+    }
+    if (initial && card.data.aiConversationId !== record.predecessorConversationId) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_REPRESENTATIVE_CHANGED', '현재 카드의 대표 대화가 이전 대화와 다릅니다.')
+    }
+    if (record.linkedAt) return
+    const references = (item) => ['conversationId', 'parentConversationId', 'targetConversationId', 'requestedConversationId', 'sourceConversationId', 'replyConversationId']
+      .some((key) => item?.[key] === record.predecessorConversationId)
+    const busy = [...aiDelegations.values()].some((item) => references(item)
+      && (!['completed', 'cancelled', 'closed'].includes(item.state) || item.reportPending || item.pendingRecovery
+        || aiDelegationActions.has(item.id) || integrationRecoveryQueue.running.has(item.id)))
+      // failed 그룹 지시는 폴링·재전송으로 다시 처리되지 않는 종료 상태라 인계를 막지 않는다.
+      || [...groupDocumentInstructions.values()].some((item) => references(item)
+        && (!['replied', 'failed', 'cancelled', 'closed', 'expired'].includes(item.state) || groupDocumentInstructionActions.has(item.id)))
+      || [...Object.values(localWorkspacePoolManager.state?.leases ?? {}), ...Object.values(remoteWorkspacePool.state?.leases ?? {})]
+        .some((item) => references(item) && !['completed', 'cancelled'].includes(item.status))
+    if (busy) throw cardConversationStartError('CARD_CONVERSATION_START_WORK_BUSY', '진행 중인 위임·그룹 지시 또는 작업공간 복구·보고를 마친 뒤 인계하세요.')
+    if (aiConversationRemoval.isRemoving(record.predecessorConversationId)) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_REMOVAL_PENDING', '이전 대화의 삭제 처리가 진행 중입니다.')
+    }
+  },
+  async prepare(record) {
+    const map = await readMap(record.mapId)
+    const card = map?.nodes.find((node) => node.id === record.cardId)
+    const previous = aiConversationLinksFromData(card?.data).find((item) => item.conversationId === record.predecessorConversationId)
+    // Claude 계정은 요청값을 쓰고, 없으면 이 도구를 호출한 현재 대화와 같은 계정을 쓴다.
+    // AionUi가 반환한 현재 대화의 실제 계정(값이 없으면 기본 계정)을 우선하고, 대화를 확인하지 못하면 연결 기록을 쓴다.
+    const requestedClaudeAccountId = record.input.newConversation.claudeAccountId
+    let claudeAccountId = requestedClaudeAccountId
+    if (!claudeAccountId) {
+      const current = await fetchAionUiOn(record.machineId,
+        `/api/conversations/${encodeURIComponent(record.predecessorConversationId)}`, { timeoutMs: 5_000 })
+      claudeAccountId = current && !Array.isArray(current) && String(current.id ?? '') === record.predecessorConversationId
+        ? String(current.extra?.claude_account_id ?? '').trim() || DEFAULT_CLAUDE_ACCOUNT_ID
+        : previous?.claudeAccountId ?? DEFAULT_CLAUDE_ACCOUNT_ID
+    }
+    const selection = await delegationCreateSelection({ ...card, data: { ...card.data, aiConversations: previous ? [previous] : [] } },
+      { ...record.input.newConversation, claudeAccountId }, { ...previous, conversationId: record.predecessorConversationId, selection: previous,
+        homeMachineId: record.machineId }, record.machineId, { inheritClaudeAccount: true })
+    if (requestedClaudeAccountId && selection.claudeAccountId !== requestedClaudeAccountId) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_CLAUDE_ACCOUNT_INVALID',
+        '새 대화의 AI 종류에서 선택할 수 없는 Claude 계정입니다. 계정 목록을 확인한 뒤 새 requestId로 요청하세요.', 400)
+    }
+    if (isAiDelegationModelBlocked(selection.model.id)) throw cardConversationStartError('CARD_CONVERSATION_START_MODEL_BLOCKED', '공통 모델 정책에서 허용된 모델로 인계하세요.')
+    const workerRoots = record.machineId === machineRegistry.mainMachineId
+      ? (localWorkspacePoolManager.registry?.workspaces ?? []).filter((item) => item.role === 'worker').map((item) => item.root)
+      : [
+        ...[...Object.values(remoteWorkspacePool.state?.reports ?? {}), ...Object.values(remoteWorkspacePool.state?.pools ?? {})]
+          .filter((item) => item.machineId === record.machineId).flatMap((item) => item.workspaces.map((worker) => worker.projectRoot)),
+        ...Object.values(remoteWorkspacePool.state?.leases ?? {}).filter((item) => item.ownership?.machineId === record.machineId).map((item) => item.projectRoot),
+      ]
+    if (isCardConversationWorkerWorkspace(selection.workspace, workerRoots)) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_WORKER_FORBIDDEN', 'worker 작업공간은 위임으로만 배정할 수 있습니다. 이 도구로 점유하거나 인계하지 마세요.')
+    }
+    const title = await formatAiCardConversationTitle(map, card)
+    return { async materialize() {
+      const { token, attribution } = issueDelegatedAttribution({ mapId: record.mapId, cardId: record.cardId,
+        selection, startedBy: record.startedBy, homeMachineId: record.machineId })
+      await persistAiAttributions()
+      return { attributionKey: sessionTokenKey(token), selection: attribution.selection,
+        requestedConfig: { agentId: selection.agent.id, modelId: selection.model.id, modeId: selection.mode?.id ?? null,
+          thoughtLevelId: selection.thoughtLevel?.id ?? null, enabledSkillIds: selection.enabledSkillIds,
+          disabledBuiltinSkillIds: selection.disabledBuiltinSkillIds, mcpIds: selection.mcpIds, workspace: selection.workspace,
+          claudeAccountId: selection.claudeAccountId ?? null, claudeAccount: selection.claudeAccount ?? null },
+        payload: { operationId: record.id, actorConversationId: record.predecessorConversationId, strategy: 'new',
+          create: { agentId: selection.agent.id, title, modelId: selection.model.id, mode: selection.mode?.id ?? null,
+            thoughtLevel: selection.thoughtLevel?.id ?? null, enabledSkillIds: selection.enabledSkillIds,
+            disabledBuiltinSkillIds: selection.disabledBuiltinSkillIds, mcpIds: selection.mcpIds, workspace: selection.workspace,
+            ...(claudeAccountRequestId(selection.claudeAccountId) ? { claudeAccountId: claudeAccountRequestId(selection.claudeAccountId) } : {}) },
+          instruction: buildCardConversationStartPrompt(record, token) } }
+    } }
+  },
+  async bind(record, conversationId) {
+    const origin = aiConversationOrigins.get(conversationId)
+    if (origin && (origin.mapId !== record.mapId || origin.cardId !== record.cardId || origin.homeMachineId !== record.machineId)) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_BINDING_CONFLICT', '생성된 대화가 다른 카드 또는 머신에 연결되어 있습니다.')
+    }
+    const attribution = aiAttributions.get(record.attributionKey)
+    if (!attribution) throw cardConversationStartError('CARD_CONVERSATION_START_ATTRIBUTION_MISSING', '새 대화의 작성자 귀속 정보를 찾을 수 없습니다.')
+    aiAttributions.set(record.attributionKey, { ...attribution, conversationId })
+    const link = normalizeAiConversationLink({ ...record.selection, conversationId, homeMachineId: record.machineId,
+      startedBy: { id: record.startedBy, label: users.find((item) => item.id === record.startedBy)?.name ?? record.startedBy },
+      startedAt: record.attemptedAt, linkedAt: new Date().toISOString() })
+    rememberAiConversationOrigin({ ...link, mapId: record.mapId, cardId: record.cardId, startedBy: record.startedBy })
+    const map = await readMap(record.mapId)
+    const user = users.find((item) => item.id === record.startedBy)
+    await saveMap(map.id, { nodes: map.nodes.map((node) => node.id === record.cardId
+      ? { ...node, data: { ...node.data, aiConversations: appendAiConversationLink(node.data, link) } } : node), edges: map.edges },
+    user, map.title, map.color, 'content', { expectedVersion: map.version })
+    await persistAiAttributions()
+    await persistAiConversationOrigins()
+  },
+  async promote(record) {
+    const map = await readMap(record.mapId)
+    const card = map.nodes.find((node) => node.id === record.cardId)
+    if (![record.predecessorConversationId, record.conversationId].includes(card.data.aiConversationId)) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_REPRESENTATIVE_CHANGED', '인계 중 다른 대화가 대표로 연결되었습니다. 기존 연결을 덮어쓰지 않았습니다.')
+    }
+    const user = users.find((item) => item.id === record.startedBy)
+    const link = aiConversationLinksFromData(card.data).find((item) => item.conversationId === record.conversationId)
+    if (!link) throw cardConversationStartError('CARD_CONVERSATION_START_LINK_MISSING', '새 대화의 카드 연결 이력을 찾을 수 없습니다.')
+    const updated = await linkStoredConversation(map.id, card.id, record.conversationId, link, user)
+    const attribution = aiAttributions.get(record.attributionKey)
+    aiConversationAttributions.set(conversationAttributionKey(map.id, card.id), { ...attribution,
+      conversationId: record.conversationId, linkedAt: link.linkedAt, refreshedAt: new Date().toISOString() })
+    await persistAiConversationAttributions()
+    broadcastEvent({ type: 'ai-conversation-linked', mapId: map.id, nodeId: card.id, conversationId: record.conversationId,
+      conversation: link, sourceClientId: null, updatedAt: updated.updatedAt, updatedBy: publicUser(user) })
+  },
+  call: fetchAionUiOn,
+  background: (action) => trackStorageBackground(action, 'Card conversation start'),
+  log: (record) => console.info('[Card conversation start]', JSON.stringify(record)),
+})
+
 const aiConversationConnection = createAiConversationConnection({
   async readContext(_user, mapId, cardId) {
     documentReconstruction.assertWritable(mapId)
@@ -5836,9 +5992,9 @@ const aiConversationRemoval = createAiConversationRemoval({
     const busyDelegation = [...aiDelegations.values()].some((item) => references(item)
       && (!['completed', 'cancelled', 'closed'].includes(item.state)
         || item.reportPending || item.pendingRecovery || aiDelegationActions.has(item.id) || integrationRecoveryQueue.running.has(item.id)))
-    // 만료된 지시는 자동 전달 대상이 아니다. 남은 과거 전달 정보만으로 삭제를 막지 않는다.
+    // 만료·실패한 지시는 자동 전달 대상이 아니다. 남은 과거 전달 정보만으로 삭제를 막지 않는다.
     const busyInstruction = [...groupDocumentInstructions.values()].some((item) => references(item)
-      && (!['replied', 'cancelled', 'closed', 'expired'].includes(item.state) || groupDocumentInstructionActions.has(item.id)))
+      && (!['replied', 'failed', 'cancelled', 'closed', 'expired'].includes(item.state) || groupDocumentInstructionActions.has(item.id)))
     const busyLease = [...Object.values(localWorkspacePoolManager.state?.leases ?? {}), ...Object.values(remoteWorkspacePool.state?.leases ?? {})]
       .some((item) => references(item) && !['completed', 'cancelled'].includes(item.status))
     if (busyDelegation || busyInstruction || busyLease) {
@@ -7928,6 +8084,9 @@ async function permanentlyDeleteTrashedMaps(mapIds) {
   const uniqueMapIds = [...new Set(mapIds)]
   const maps = await Promise.all(uniqueMapIds.map((mapId) => readMap(mapId)))
   if (maps.some((map) => !map?.trashedAt)) return null
+  if (uniqueMapIds.some((id) => cardConversationStarts.isActive(id))) {
+    throw reconstructionError('AI 대화 인계 처리 중인 문서는 영구 삭제할 수 없습니다. 처리가 끝난 뒤 다시 시도하세요.', 409, 'TRASH_AI_WORK_BUSY')
+  }
 
   if (aiDocumentDeletionBusy(uniqueMapIds, {
     delegations: aiDelegations.values(), instructions: groupDocumentInstructions.values(),
@@ -7938,7 +8097,7 @@ async function permanentlyDeleteTrashedMaps(mapIds) {
 
   const deletedMapIds = new Set(uniqueMapIds)
   const recordMaps = [aiAttributions, aiConversationAttributions, aiConversationOrigins, aiDelegations,
-    aiRequestReceipts, groupDocumentInstructions, aiConversationLaunches]
+    aiRequestReceipts, groupDocumentInstructions, aiConversationLaunches, cardConversationStartRecords]
   const beforeRecords = recordMaps.map((records) => [...records.entries()])
   const beforeDeletedIds = [...deletedAiDocumentIds]
   storageChanges.onRollback(() => {
@@ -7950,14 +8109,14 @@ async function permanentlyDeleteTrashedMaps(mapIds) {
     if (aiRecordReferencesMaps(launch, deletedMapIds)) aiLaunchTracking.remove(key)
   }
   removeAiDocumentRecords(uniqueMapIds, deletedAiDocumentIds, [
-    aiAttributions, aiConversationAttributions, aiConversationOrigins, aiDelegations, aiRequestReceipts, groupDocumentInstructions, aiConversationLaunches,
+    aiAttributions, aiConversationAttributions, aiConversationOrigins, aiDelegations, aiRequestReceipts, groupDocumentInstructions, aiConversationLaunches, cardConversationStartRecords,
   ])
   for (const id of removedDelegationIds) aiDelegationWaitPolls.delete(id)
   for (const id of uniqueMapIds) clearAiConversationRuntimeMap(id)
   // 실패하면 문서를 휴지통에 남겨 재시도할 수 있게 한다. 재시도도 모든 저장소를 다시 기록한다.
   const cleanupResults = await Promise.allSettled([
     persistAiAttributions(), persistAiConversationAttributions(), persistAiConversationOrigins(),
-    persistAiDelegations(), persistGroupDocumentInstructions(), aiDelegationRequestFailures.purgeMaps(uniqueMapIds),
+    persistAiDelegations(), persistGroupDocumentInstructions(), persistCardConversationStarts(), aiDelegationRequestFailures.purgeMaps(uniqueMapIds),
     writeStoredArray(aiRequestReceiptsFile, [...aiRequestReceipts.values()]),
   ])
   if (cleanupResults.some((result) => result.status === 'rejected')) {
@@ -8057,6 +8216,12 @@ aiDelegationRequestFailures = await createAiDelegationRequestFailures({
   deletedMapIds: deletedAiDocumentIds,
 })
 await loadGroupDocumentInstructions()
+for (const record of await readStoredArray(cardConversationStartsFile)) {
+  if (/^ccs:[a-f0-9]{64}$/.test(record?.id ?? '') && isValidMapId(record.mapId)
+    && typeof record.cardId === 'string' && typeof record.input?.initialMessage === 'string') {
+    cardConversationStartRecords.set(record.id, record)
+  }
+}
 await loadAiWorkspaceHistories()
 await loadDistributedWorkSettings()
 documentReconstruction = await createDocumentReconstruction({
@@ -8268,6 +8433,7 @@ async function requestStoragePlan(request, url, body) {
   if (request.method === 'DELETE' && /^\/api\/maps\/[^/]+\/cards\/[^/]+\/ai-conversations\/[^/]+$/.test(url.pathname)) return { keys: [] }
   if ((request.method === 'GET' || request.method === 'POST')
     && /^\/api\/maps\/[^/]+\/cards\/[^/]+\/ai-conversations\/(lookup|connect)$/.test(url.pathname)) return { keys: [] }
+  if (request.method === 'POST' && /^\/api\/maps\/[^/]+\/cards\/[^/]+\/ai-conversation-starts$/.test(url.pathname)) return { keys: [] }
   const matched = url.pathname.match(/^\/api\/maps\/([^/]+)(\/.*)?$/)
   const mapId = matched ? decodeURIComponent(matched[1]) : null
   const route = mapId && isValidMapId(mapId) && !['trash', 'archive', 'layout', 'order'].includes(mapId)
@@ -12188,6 +12354,30 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
     }
 
+    const cardConversationStartRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/cards\/([^/]+)\/ai-conversation-starts$/)
+    if (cardConversationStartRoute && request.method === 'POST') {
+      const user = requireUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { code: 'CARD_CONVERSATION_START_FORBIDDEN', error: '편집자만 카드 대화를 인계할 수 있습니다.' })
+      const mapId = decodeURIComponent(cardConversationStartRoute[1])
+      const cardId = decodeURIComponent(cardConversationStartRoute[2])
+      if (!isValidMapId(mapId) || !cardId || cardId.length > 120) return sendJson(response, 400, { error: '문서 또는 카드 ID가 올바르지 않습니다.' })
+      const scope = integrationRequestScope(request)
+      const origin = delegationSourceForRequest(scope, mapId)
+      const source = origin ? { ...origin, homeMachineId: conversationHomeMachineId(origin.conversationId, origin) } : null
+      response.setHeader('Cache-Control', 'no-store')
+      try {
+        const result = await cardConversationStarts.submit({ userId: user.id, mapId, cardId, source }, await readJsonBody(request))
+        return sendJson(response, ['ready', 'linked', 'failed', 'recovery-required'].includes(result.state) ? 200 : 202, result)
+      } catch (error) {
+        console.warn('[Card conversation start request]', { mapId, cardId, code: error.code ?? 'CARD_CONVERSATION_START_FAILED' })
+        return sendJson(response, error.cardConversationStartError ? error.status : 503, {
+          code: error.cardConversationStartError ? error.code : 'CARD_CONVERSATION_START_RETRY_REQUIRED',
+          error: error.cardConversationStartError ? error.message : '인계 요청을 저장하지 못했습니다. 같은 requestId로 다시 확인하세요.',
+        })
+      }
+    }
+
     const cardAiConversationConnectionRoute = url.pathname.match(/^\/api\/maps\/([^/]+)\/cards\/([^/]+)\/ai-conversations\/(lookup|connect)$/)
     if (cardAiConversationConnectionRoute && ((request.method === 'GET' && cardAiConversationConnectionRoute[3] === 'lookup')
       || (request.method === 'POST' && cardAiConversationConnectionRoute[3] === 'connect'))) {
@@ -14312,6 +14502,7 @@ runtimeLifecycle.interval(() => {
 }, aiDelegationPollIntervalMs, 'AI integration recovery queue')
 
 runtimeLifecycle.interval(() => pollGroupDocumentInstructions(), aiDelegationPollIntervalMs, 'Group document instruction poll')
+runtimeLifecycle.interval(() => cardConversationStarts.poll(), 3_000, 'Card conversation start poll')
 
 runtimeLifecycle.interval(() => doorayResponses.poll(), 3_000, 'Dooray response poll')
 

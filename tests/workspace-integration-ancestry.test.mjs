@@ -79,7 +79,7 @@ test('미반영 후보의 최초 반영은 기존 안전 검사 후 fetch·fast-
   assert.equal(calls.some(call => call.args[0] === 'merge-base'), false)
 })
 
-for (const type of ['integration-git-lock', 'integration-head-changed', integrationCandidateDirtyReasonCode]) {
+for (const type of ['integration-git-lock', 'integration-head-changed', integrationCandidateDirtyReasonCode, 'integration-git-status-failed']) {
 test(`${type}: 복구 접수 후 finalize도 main에 없는 후보를 재격리하지 않는다`, async () => {
   const source = 'b'.repeat(40), worker = { id: 'fork2', root: 'worker' }
   const lease = { leaseId: 'lease-test', workspaceId: worker.id, status: 'waiting-integration',

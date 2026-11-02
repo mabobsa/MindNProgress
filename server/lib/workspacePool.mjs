@@ -4,7 +4,7 @@ import { copyFile, lstat, mkdir, readFile, readlink, rename, rm, stat, writeFile
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
-import { aiDelegationBusyDispatchRejected, aiDelegationWorkspaceLeaseMatches, integrationGitLockFailure, integrationHeadChangedFailure, integrationCandidateWorktreeFailure, integrationCandidateDirtyReasonCode, localChangesIntegrationCommits, retryableExternalLimitCategory } from './aiDelegations.mjs'
+import { aiDelegationBusyDispatchRejected, aiDelegationWorkspaceLeaseMatches, integrationGitLockFailure, integrationHeadChangedFailure, integrationCandidateWorktreeFailure, integrationCandidateDirtyReasonCode, integrationGitStatusFailure, integrationGitStatusFailureReasonCode, localChangesIntegrationCommits, retryableExternalLimitCategory } from './aiDelegations.mjs'
 import { replaceFileWithRetry } from './replaceFileWithRetry.mjs'
 import { completedWorkspaceLeaseIds, latestHistoryTime } from './completedAiHistory.mjs'
 import { assertAiDelegationSourceCompletionLease } from './aiDelegationSourceCompletion.mjs'
@@ -25,7 +25,7 @@ export const integrationWorktreeDirtyReasonCode = 'integration-worktree-dirty'
 export const integrationUntrackedCollisionReasonCode = 'integration-untracked-collision'
 export const integrationUntrackedCollisionMessage = '통합 작업공간의 미추적 파일이 반영할 경로와 충돌합니다. 충돌 파일을 정리하면 자동으로 통합됩니다. 재위임하지 마세요.'
 export const integrationStatusRetryReasonCode = 'INTEGRATION_STATUS_RETRY'
-const checkpointIntegrationRecoveryTypes = new Set(['integration-git-lock', 'integration-head-changed', integrationCandidateDirtyReasonCode])
+const checkpointIntegrationRecoveryTypes = new Set(['integration-git-lock', 'integration-head-changed', integrationCandidateDirtyReasonCode, integrationGitStatusFailureReasonCode])
 const conversationBindableLeaseStatuses = new Set(['leased', 'checkpoint-required', 'correcting-result'])
 const conversationReusableLeaseStatuses = new Set(['leased', 'checkpoint-required', 'finalizing'])
 const conversationRebindOnlyLeaseStatuses = new Set([
@@ -2045,6 +2045,10 @@ export class WorkspacePoolManager {
     return this.recoverCheckpointIntegrationFailure(leaseId, scope, { failureType: integrationCandidateDirtyReasonCode })
   }
 
+  async recoverIntegrationGitStatusFailure(leaseId, scope) {
+    return this.recoverCheckpointIntegrationFailure(leaseId, scope, { failureType: integrationGitStatusFailureReasonCode })
+  }
+
   async recoverCheckpointIntegrationFailure(leaseId, scope, { failureType, untrackedMetaRecovery } = {}) {
     if (!checkpointIntegrationRecoveryTypes.has(failureType)) throw new WorkspacePoolUnavailableError('지원하지 않는 통합 복구 유형입니다.', [], 'INTEGRATION_RECOVERY_UNSAFE')
     return this.runExclusive(async () => {
@@ -2060,7 +2064,8 @@ export class WorkspacePoolManager {
         && lease.integrationRecoveryHistory?.at(-1)?.type === failureType) return lease.result
       const result = lease.result
       const failure = failureType === 'integration-git-lock' ? integrationGitLockFailure(result)
-        : failureType === integrationCandidateDirtyReasonCode ? integrationCandidateWorktreeFailure(result) : integrationHeadChangedFailure(result)
+        : failureType === integrationCandidateDirtyReasonCode ? integrationCandidateWorktreeFailure(result)
+          : failureType === integrationGitStatusFailureReasonCode ? integrationGitStatusFailure(result) : integrationHeadChangedFailure(result)
       const previousRetry = lease.integrationRecoveryHistory?.at(-1)
       if (!failure || !workspace || !integration || lease.status !== 'quarantined' || lease.executionUnconfirmed
         || current?.status !== 'quarantined' || current.leaseId !== leaseId || current.jobId !== lease.jobId
@@ -2100,7 +2105,7 @@ export class WorkspacePoolManager {
         || session?.branch !== lease.branch || session?.baseCommit !== lease.baseCommit
         || normalizedPath(session?.projectRoot) !== normalizedPath(workspace.root)) reject('작업공간 메타데이터 또는 AI 세션이 변경되었습니다.')
       const [dirty, branch, head, workHead, mainBranch, mainHead, mainChanges] = await Promise.all([
-        this.git(workspace.root, ['status', '--porcelain', '--untracked-files=all']),
+        this.integrationCandidateStatus(lease, workspace),
         this.git(workspace.root, ['branch', '--show-current']),
         this.git(workspace.root, ['rev-parse', 'HEAD']),
         this.git(workspace.root, ['rev-parse', `refs/heads/${lease.branch}`]),
@@ -3042,8 +3047,28 @@ export class WorkspacePoolManager {
     return result
   }
 
+  async integrationCandidateStatus(lease, workspace) {
+    try {
+      return await this.git(workspace.root, ['status', '--porcelain', '--untracked-files=all'])
+    } catch (error) {
+      const cause = error?.cause ?? error
+      const exitCode = typeof cause?.code === 'number' ? cause.code : null
+      const code = typeof error?.code === 'string' ? error.code.slice(0, 80) : null
+      const signal = typeof cause?.signal === 'string' ? cause.signal.slice(0, 80) : null
+      const detail = [exitCode !== null ? `종료 코드 ${exitCode}` : null, code, signal].filter(Boolean).join(', ')
+      throw Object.assign(new Error(`통합 후보의 Git 상태 조회에 실패했습니다${detail ? ` (${detail})` : ''}. ${error?.message ?? String(error)}`, { cause: error }), {
+        integrationFailure: { reasonCode: integrationGitStatusFailureReasonCode, phase: 'candidate-status',
+          workspaceId: workspace.id, branch: lease.integrationBranch, candidateCommit: lease.integrationHeadCommit ?? null,
+          observedAt: new Date().toISOString(), cwd: workspace.root, command: 'git status --porcelain --untracked-files=all',
+          exitCode, code, signal, killed: cause?.killed === true,
+          timedOut: error?.code === 'GIT_COMMAND_TIMEOUT' || cause?.code === 'ETIMEDOUT',
+          stderr: String(cause?.stderr ?? '').slice(-4_000) },
+      })
+    }
+  }
+
   async applyIntegration(lease, workspace, integration) {
-    const remainingChanges = await this.git(workspace.root, ['status', '--porcelain', '--untracked-files=all'])
+    const remainingChanges = await this.integrationCandidateStatus(lease, workspace)
     const integrationHead = await this.git(workspace.root, ['rev-parse', 'HEAD'])
     if (remainingChanges) {
       const [tracked, untracked] = await Promise.all([
@@ -3220,7 +3245,8 @@ export class WorkspacePoolManager {
       integrationBranch: lease.integrationBranch ?? lease.result?.integrationBranch ?? null,
       integrationHeadCommit: lease.integrationHeadCommit ?? null,
       ...(integrationFailureHeadCommit ? { integrationFailureHeadCommit } : {}),
-      ...(error?.integrationFailure?.reasonCode === integrationCandidateDirtyReasonCode ? { integrationFailure: error.integrationFailure } : {}),
+      ...([integrationCandidateDirtyReasonCode, integrationGitStatusFailureReasonCode].includes(error?.integrationFailure?.reasonCode)
+        ? { integrationFailure: error.integrationFailure } : {}),
       conflictRound: lease.conflictRound ?? lease.result?.conflictRound ?? null,
       unmergedFiles: lease.result?.unmergedFiles ?? [],
       ...resultFields,

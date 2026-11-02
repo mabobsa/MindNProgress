@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { aiDelegationRecoveryAvailability, integrationHeadChangedFailure, integrationCandidateWorktreeFailure, integrationCandidateDirtyReasonCode } from '../server/lib/aiDelegations.mjs'
+import { aiDelegationRecoveryAvailability, integrationHeadChangedFailure, integrationCandidateWorktreeFailure, integrationCandidateDirtyReasonCode, integrationGitStatusFailure, integrationGitStatusFailureReasonCode } from '../server/lib/aiDelegations.mjs'
 import { WorkspacePoolManager } from '../server/lib/workspacePool.mjs'
 
 const base = 'a'.repeat(40), source = 'b'.repeat(40), candidate = 'c'.repeat(40)
@@ -70,6 +70,44 @@ test('통합 후보 변경은 단계·후보 증거 또는 정확한 구버전 �
   assert.equal(integrationCandidateWorktreeFailure({ ...r, integrationHeadCommit: '9'.repeat(40) }), null)
 })
 
+function statusResult(legacy = false) {
+  const r = { ...result(), integrationHeadCommit: null, error: 'Command failed: git status --porcelain --untracked-files=all\n' }
+  if (!legacy) r.integrationFailure = { reasonCode: integrationGitStatusFailureReasonCode, phase: 'candidate-status',
+    workspaceId: r.workspaceId, branch: r.integrationBranch, candidateCommit: null,
+    command: 'git status --porcelain --untracked-files=all', exitCode: 128, signal: null }
+  return r
+}
+
+test('Git 상태 조회 실패는 완료 체크포인트가 있는 통합 단계만 재시도 후보로 표시한다', () => {
+  for (const legacy of [false, true]) {
+    const r = statusResult(legacy)
+    for (const state of ['failed', 'waiting-parent', 'waking-parent', 'parent-wake-failed']) {
+      const delegation = { state, childStatus: 'completed', workspaceLease: { leaseId: r.leaseId }, workspaceResult: r }
+      assert.deepEqual(integrationGitStatusFailure(r), { candidateCommit: null })
+      assert.deepEqual(aiDelegationRecoveryAvailability(delegation), {
+        failurePhase: 'integration', failureCategory: integrationGitStatusFailureReasonCode, recoveryAvailable: true,
+        recommendedAction: 'retry-integration', recoveryTool: 'mindnprogress_recover_ai_delegation',
+      })
+    }
+    for (const patch of [{ childStatus: 'failed' }, { childError: '중단' }, { integratedCommit: candidate },
+      { status: 'completed' }, { conflictRound: 1 }, { unmergedFiles: ['conflict.cs'] },
+      { integrationBranch: null }, { integrationBaseCommit: 'invalid' }, { headCommit: null },
+      { integrationHeadCommit: 'invalid' }, { error: '다른 Git 명령 실패', integrationFailure: undefined }]) {
+      assert.equal(integrationGitStatusFailure({ ...r, ...patch }), null)
+    }
+    for (const state of ['completed', 'closed', 'superseded']) {
+      assert.equal(aiDelegationRecoveryAvailability({ state, workspaceLease: { leaseId: r.leaseId }, workspaceResult: r }), null)
+    }
+  }
+  const r = statusResult()
+  for (const patch of [{ reasonCode: 'unknown' }, { phase: 'child' }, { command: 'git reset --hard' },
+    { candidateCommit: 'invalid' }, { workspaceId: 'other' }, { branch: 'other' }]) {
+    assert.equal(integrationGitStatusFailure({ ...r, integrationFailure: { ...r.integrationFailure, ...patch } }), null)
+  }
+  assert.equal(integrationGitStatusFailure({ ...r, integrationHeadCommit: candidate,
+    integrationFailure: { ...r.integrationFailure, candidateCommit: '9'.repeat(40) } }), null)
+})
+
 async function fixture(t, options = {}) {
   // 실제 Git 프로세스 대신 결정적인 응답으로 원 manager의 모든 복구 검증·기록을 실행한다.
   const root = await mkdtemp(path.join(tmpdir(), 'mnp-head-recovery-'))
@@ -79,7 +117,8 @@ async function fixture(t, options = {}) {
   })
   const mainRoot = path.join(root, 'main'), workerRoot = path.join(root, 'worker'), sharedRoot = path.join(root, 'shared')
   await Promise.all([mkdir(mainRoot), mkdir(workerRoot), mkdir(sharedRoot)])
-  const r = options.kind === 'head-changed' ? result() : candidateResult(options.kind === 'candidate-legacy'), calls = []
+  const r = options.kind === 'head-changed' ? result() : options.kind?.startsWith('status')
+    ? statusResult(options.kind === 'status-legacy') : candidateResult(options.kind === 'candidate-legacy'), calls = []
   const lease = { ...r, projectRoot: workerRoot, integrationWorkspaceId: 'main', commits: [source],
     checkpoints: [{ commit: source, paths: ['implementation.cs'] }] }
   lease.result = r
@@ -88,7 +127,10 @@ async function fixture(t, options = {}) {
   const notFound = () => { throw Object.assign(new Error('not found'), { code: 1 }) }
   const gitRunner = async (cwd, args) => {
     calls.push({ cwd, args })
-    if (args[0] === 'status') return cwd === mainRoot ? options.mainDirty ?? '' : options.workerDirty ?? ''
+    if (args[0] === 'status') {
+      if (cwd === workerRoot && options.statusError) throw options.statusError
+      return cwd === mainRoot ? options.mainDirty ?? '' : options.workerDirty ?? ''
+    }
     if (args[0] === 'branch') return cwd === mainRoot ? lease.baseBranch : options.branch ?? r.integrationBranch
     if (args[0] === 'rev-parse') {
       if (args[1] === '--git-path') return path.join(cwd, '.git', args[2])
@@ -125,10 +167,11 @@ async function fixture(t, options = {}) {
   return { manager, lease, r, options, calls, worker, main, session, root }
 }
 
-for (const kind of ['head-changed', 'candidate', 'candidate-legacy']) {
+for (const kind of ['head-changed', 'candidate', 'candidate-legacy', 'status', 'status-legacy']) {
 const recover = f => kind === 'head-changed'
   ? f.manager.recoverIntegrationHeadChangedFailure(f.lease.leaseId, scope)
-  : f.manager.recoverIntegrationCandidateWorktreeFailure(f.lease.leaseId, scope)
+  : kind.startsWith('status') ? f.manager.recoverIntegrationGitStatusFailure(f.lease.leaseId, scope)
+    : f.manager.recoverIntegrationCandidateWorktreeFailure(f.lease.leaseId, scope)
 test(`${kind}: 최신 main을 기준으로 새 후보를 예약하고 원 실패·후보·체크포인트를 보존한다`, async t => {
   const f = await fixture(t, { kind })
   const recovered = await recover(f)
@@ -140,7 +183,8 @@ test(`${kind}: 최신 main을 기준으로 새 후보를 예약하고 원 실패
   assert.deepEqual(history.previousResult, f.r)
   assert.equal(history.preservedHead, candidate)
   assert.equal(history.mainHeadAtRecovery, newMain)
-  assert.ok(f.calls.some(c => c.args[0] === 'update-ref' && c.args[1].endsWith(kind === 'head-changed' ? '/head-changed-1' : '/candidate-worktree-dirty-1') && c.args[2] === candidate))
+  const suffix = kind === 'head-changed' ? '/head-changed-1' : kind.startsWith('status') ? '/git-status-failed-1' : '/candidate-worktree-dirty-1'
+  assert.ok(f.calls.some(c => c.args[0] === 'update-ref' && c.args[1].endsWith(suffix) && c.args[2] === candidate))
   assert.equal(f.calls.some(c => ['switch', 'cherry-pick', 'reset', 'clean', 'commit', 'merge'].includes(c.args[0])), false)
   assert.equal(f.calls.some(c => c.cwd === f.main.root && c.args[0] === 'merge-base' && c.args[2] === candidate), false,
     'worker에만 있는 후보는 main의 ancestor 검사로 전달하면 안 된다.')
@@ -163,6 +207,7 @@ for (const [label, mutate] of [
   ['다른 통합 작업 진행', f => { f.manager.state.integrationLeaseId = 'another-lease' }],
   ['main의 사용자 변경', f => { f.options.mainDirty = ' M user.cs' }],
   ['worker의 미커밋 변경', f => { f.options.workerDirty = '?? user.txt' }],
+  ['상태 조회 재실패', f => { f.options.statusError = Object.assign(new Error('Git 조회 실패'), { code: 128 }) }],
   ['후보 HEAD 변경', f => { f.options.head = '9'.repeat(40) }],
   ['원 작업 HEAD 변경', f => { f.options.workHead = '9'.repeat(40) }],
   ['후보 tree 변조', f => { f.options.changedTree = true }],
@@ -179,3 +224,24 @@ for (const [label, mutate] of [
   assert.equal(f.lease.integrationRecoveryHistory, undefined)
 })
 }
+
+test('Git 상태 조회 실패의 단계·명령·종료 코드·신호·제한된 stderr를 격리 기록에 보존한다', async t => {
+  const f = await fixture(t, { kind: 'status', statusError: Object.assign(new Error('Git 실행 중단'), {
+    code: 128, signal: 'SIGTERM', killed: true, stderr: '오류'.repeat(3_000), stdout: '출력에 포함하지 않을 내용',
+  }) })
+  let failure
+  await assert.rejects(f.manager.applyIntegration(f.lease, f.worker, f.main), error => { failure = error; return true })
+  assert.match(failure.message, /종료 코드 128.*SIGTERM/)
+  const quarantined = await f.manager.quarantineIntegrationFailure(f.lease, f.worker, failure, { childStatus: 'completed', childError: null })
+  assert.equal(quarantined.details.status, 'quarantined')
+  const stored = JSON.parse(await readFile(path.join(f.root, 'state.json'), 'utf8')).leases[f.lease.leaseId].result
+  assert.deepEqual(stored.integrationFailure, {
+    reasonCode: integrationGitStatusFailureReasonCode, phase: 'candidate-status', workspaceId: f.worker.id,
+    branch: f.lease.integrationBranch, candidateCommit: null, observedAt: failure.integrationFailure.observedAt,
+    cwd: f.worker.root, command: 'git status --porcelain --untracked-files=all',
+    exitCode: 128, code: null, signal: 'SIGTERM', killed: true, timedOut: false, stderr: '오류'.repeat(2_000),
+  })
+  assert.deepEqual(integrationGitStatusFailure(stored), { candidateCommit: null })
+  assert.equal(JSON.stringify(stored).includes('출력에 포함하지 않을 내용'), false)
+  assert.equal(f.calls.some(c => c.cwd === f.main.root), false)
+})

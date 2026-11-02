@@ -633,7 +633,7 @@ export function remoteWorkspaceFacade(local, remote) {
   const methods = new Set(['bindConversation', 'reuseLease', 'checkpoint', 'finalize', 'cancel', 'quarantine', 'reactivateQuarantinedLease'])
   const unsupported = new Set(['completeConflictResolution', 'prepareIntegrationResultCorrection', 'resumeIntegrationResultCorrection',
     'recoverCheckpointedFinalizationFailure', 'recoverLegacyDirtyIntegration', 'recoverLocalChangesIntegrationFailure', 'recoverUntrackedIntegrationFailure',
-    'recoverIntegrationHeadChangedFailure', 'recoverIntegrationCandidateWorktreeFailure', 'recoverCheckpointIntegrationFailure', 'releasePreservedIntegrationFailure'])
+    'recoverIntegrationHeadChangedFailure', 'recoverIntegrationCandidateWorktreeFailure', 'recoverIntegrationGitStatusFailure', 'recoverCheckpointIntegrationFailure', 'releasePreservedIntegrationFailure'])
   return new Proxy(local, { get(target, property) {
     if (property === 'state') return target.state ? { ...target.state, leases: { ...target.state.leases, ...remote.state?.leases } } : target.state
     if (property === 'initialize') return async (options) => { await remote.initialize(); return target.initialize(options) }

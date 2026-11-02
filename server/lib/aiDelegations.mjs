@@ -572,6 +572,24 @@ export function integrationHeadChangedFailure(result) {
 }
 
 export const integrationCandidateDirtyReasonCode = 'integration-candidate-worktree-dirty'
+export const integrationGitStatusFailureReasonCode = 'integration-git-status-failed'
+
+export function integrationGitStatusFailure(result) {
+  if (result?.status !== 'quarantined' || result.childStatus !== 'completed' || result.childError
+    || result.integratedCommit || !result.integrationBranch || result.conflictRound || result.unmergedFiles?.length
+    || !['headCommit', 'integrationBaseCommit'].every(key => /^[a-f0-9]{40}$/u.test(String(result[key] ?? '')))) return null
+  const failure = result.integrationFailure
+  // 구버전은 명령 오류만 저장했다. 후보 HEAD가 없어도 복구 시 모든 체크포인트의 tree와 부모를 검증한다.
+  const legacy = !failure && /^Command failed: git status --porcelain --untracked-files=all\r?\n/u.test(String(result.error ?? ''))
+  if (!legacy && (failure?.reasonCode !== integrationGitStatusFailureReasonCode
+    || failure.phase !== 'candidate-status' || failure.workspaceId !== result.workspaceId
+    || failure.branch !== result.integrationBranch
+    || failure.command !== 'git status --porcelain --untracked-files=all')) return null
+  const candidateCommit = result.integrationHeadCommit ?? failure?.candidateCommit ?? null
+  if ((candidateCommit && !/^[a-f0-9]{40}$/u.test(candidateCommit))
+    || (failure?.candidateCommit && failure.candidateCommit !== candidateCommit)) return null
+  return { candidateCommit }
+}
 
 export function integrationCandidateWorktreeFailure(result) {
   if (result?.status !== 'quarantined' || result.childStatus !== 'completed' || result.childError
@@ -639,6 +657,11 @@ export function aiDelegationRecoveryAvailability(delegation) {
   if (retryCompletedIntegration && delegation.workspaceLease?.leaseId
     && integrationCandidateWorktreeFailure(delegation.workspaceResult)) {
     return { failurePhase: 'integration', failureCategory: integrationCandidateDirtyReasonCode, recoveryAvailable: true,
+      recommendedAction: 'retry-integration', recoveryTool: 'mindnprogress_recover_ai_delegation' }
+  }
+  if (retryCompletedIntegration && delegation.workspaceLease?.leaseId
+    && integrationGitStatusFailure(delegation.workspaceResult)) {
+    return { failurePhase: 'integration', failureCategory: integrationGitStatusFailureReasonCode, recoveryAvailable: true,
       recommendedAction: 'retry-integration', recoveryTool: 'mindnprogress_recover_ai_delegation' }
   }
   if (!['parent-wake-failed', 'failed', 'waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity', 'recovery-required', 'integration-recovery-required', 'waiting-child-resume'].includes(delegation?.state)) return null

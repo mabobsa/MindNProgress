@@ -9,6 +9,8 @@ import test from 'node:test'
 
 const listen = async server => { await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); return server.address().port }
 const cases = [
+  { state: 'failed', name: '구버전 Git 상태 조회 실패도 복구 버튼용 판정과 멱등 접수를 제공하며 원 결과를 보존한다',
+    failureCategory: 'integration-git-status-failed', error: 'Command failed: git status --porcelain --untracked-files=all\n' },
   { state: 'failed', name: '통합 복구 HTTP는 긴 검증 전에 내구 접수를 반환하고 재시작·응답 유실도 같은 요청으로 확인한다',
     failureCategory: 'integration-head-changed', error: '통합 직전에 통합 작업공간의 HEAD가 변경되었습니다.' },
   { state: 'waking-parent', name: '상위 보고가 재개 대기 중이어도 화면에서 통합 잠금 실패를 접수하고 원 결과·권한·중복 방지를 유지한다',

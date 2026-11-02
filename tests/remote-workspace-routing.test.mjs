@@ -23,7 +23,7 @@ test('일반 Mac 경로는 풀 없이 null을 반환하고 Windows worker를 선
 test('HEAD 변경 복구와 공통 내부 복구는 원격 lease를 로컬 manager로 우회시키지 않는다', () => {
   const f = fixture()
   f.remote.state.leases['remote-lease'] = { ownership: { machineId: 'mac' } }
-  for (const method of ['recoverIntegrationHeadChangedFailure', 'recoverIntegrationCandidateWorktreeFailure', 'recoverCheckpointIntegrationFailure', 'releasePreservedIntegrationFailure']) {
+  for (const method of ['recoverIntegrationHeadChangedFailure', 'recoverIntegrationCandidateWorktreeFailure', 'recoverIntegrationGitStatusFailure', 'recoverCheckpointIntegrationFailure', 'releasePreservedIntegrationFailure']) {
     let calls = 0
     f.facade[method] = () => { calls++; return 'local-head-recovery' }
     assert.throws(() => f.facade[method]('remote-lease', {}), { reasonCode: 'REMOTE_WORKSPACE_EXPLICIT_RECOVERY_REQUIRED' })

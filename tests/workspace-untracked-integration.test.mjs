@@ -10,7 +10,7 @@ import test, { describe } from 'node:test'
 import {
   WorkspacePoolManager, integrationUntrackedCollisionReasonCode, legacyUntrackedIntegrationHead,
 } from '../server/lib/workspacePool.mjs'
-import { integrationCandidateDirtyReasonCode } from '../server/lib/aiDelegations.mjs'
+import { integrationCandidateDirtyReasonCode, integrationGitStatusFailureReasonCode } from '../server/lib/aiDelegations.mjs'
 
 const exec = promisify(execFile)
 const realGit = { skip: process.env.MNP_REAL_GIT_TEST !== '1' && 'MNP_REAL_GIT_TEST=1일 때 실행', timeout: Number(process.env.MNP_REAL_GIT_TEST_TIMEOUT_MS) || 300_000 }
@@ -119,6 +119,61 @@ async function candidateWorktreeQuarantine(t, legacy = false) {
   await f.manager.persist()
   return { ...f, artifact }
 }
+
+async function gitStatusQuarantine(t, legacy = false) {
+  const f = await fixture(t, ['first.txt'])
+  const originalGit = f.manager.git
+  f.manager.git = async (cwd, args, ...options) => {
+    if (cwd === f.worker && args.join(' ') === 'status --porcelain --untracked-files=all'
+      && f.manager.state.leases[f.lease.leaseId].status === 'integrating') {
+      throw Object.assign(new Error('Command failed: git status --porcelain --untracked-files=all\n'), {
+        code: 128, signal: 'SIGTERM', killed: true, stderr: '검증용 상태 조회 중단',
+      })
+    }
+    return originalGit(cwd, args, ...options)
+  }
+  await assert.rejects(f.manager.finalize(f.lease.leaseId, { childStatus: 'completed' }), /Git 상태 조회/)
+  f.manager.git = originalGit
+  const stored = f.manager.state.leases[f.lease.leaseId]
+  assert.equal(stored.result.integrationFailure.reasonCode, integrationGitStatusFailureReasonCode)
+  assert.equal(stored.result.integrationFailure.exitCode, 128)
+  assert.equal(stored.result.integrationFailure.signal, 'SIGTERM')
+  assert.equal(stored.result.integrationHeadCommit, null)
+  assert.equal(await git(f.main, ['rev-parse', 'HEAD']), f.lease.baseCommit)
+  if (legacy) {
+    delete stored.result.integrationFailure
+    stored.result.error = 'Command failed: git status --porcelain --untracked-files=all\n'
+  }
+  await f.manager.persist()
+  return f
+}
+
+for (const legacy of [false, true]) test(`Git 상태 조회 실패 뒤 기존 후보를 보존하고 최신 main으로 통합한다: ${legacy ? '구버전' : '구조화 기록'}`, realGit, async t => {
+  const f = await gitStatusQuarantine(t, legacy)
+  const failed = structuredClone(f.manager.state.leases[f.lease.leaseId].result)
+  const candidate = await git(f.worker, ['rev-parse', 'HEAD'])
+  await put(f.main, 'later.txt', '사용자의 후속 작업\n')
+  await git(f.main, ['add', 'later.txt'])
+  await git(f.main, ['commit', '-m', 'later user work'])
+  const mainHead = await git(f.main, ['rev-parse', 'HEAD'])
+  const recovered = await f.manager.recoverIntegrationGitStatusFailure(f.lease.leaseId, localRecoveryScope)
+  assert.equal(recovered.status, 'waiting-integration')
+  const history = f.manager.state.leases[f.lease.leaseId].integrationRecoveryHistory[0]
+  assert.deepEqual(history.previousResult, failed)
+  assert.equal(await git(f.worker, ['rev-parse', history.backupRef]), candidate)
+  assert.equal(await git(f.worker, ['rev-parse', failed.branch]), failed.headCommit)
+  const restarted = new WorkspacePoolManager(f)
+  await restarted.initialize({ recoverWorkspaces: false })
+  assert.deepEqual(await restarted.recoverIntegrationGitStatusFailure(f.lease.leaseId, localRecoveryScope), recovered)
+  const completed = await restarted.finalize(f.lease.leaseId, { childStatus: 'completed' })
+  assert.equal(completed.status, 'completed')
+  assert.equal(completed.integrationBaseCommit, mainHead)
+  assert.equal(await git(f.main, ['rev-list', '--count', `${mainHead}..HEAD`]), '1')
+  assert.equal(await readFile(path.join(f.main, 'first.txt'), 'utf8'), 'worker:first.txt\n')
+  assert.equal(await readFile(path.join(f.main, 'later.txt'), 'utf8'), '사용자의 후속 작업\n')
+  assert.equal(restarted.state.workspaces.fork2.status, 'idle')
+  assert.deepEqual(await restarted.finalize(f.lease.leaseId, { childStatus: 'completed' }), completed)
+})
 
 for (const legacy of [false, true]) test(`ignore 삭제로 드러난 worker 산출물은 보존·정리 후 기존 결과만 통합한다: ${legacy ? '구버전' : '구조화 기록'}`, realGit, async t => {
   const f = await candidateWorktreeQuarantine(t, legacy)
@@ -442,7 +497,7 @@ test(`Git 잠금 복구 접수 후 main 진행(${alreadyApplied ? '기존 후보
 })
 }
 
-for (const failureType of ['integration-git-lock', 'integration-head-changed', integrationCandidateDirtyReasonCode]) test(`${failureType} 재시도 후보 생성 중 재시작은 일부 체크포인트만 완료로 반영하지 않는다`, async () => {
+for (const failureType of ['integration-git-lock', 'integration-head-changed', integrationCandidateDirtyReasonCode, integrationGitStatusFailureReasonCode]) test(`${failureType} 재시도 후보 생성 중 재시작은 일부 체크포인트만 완료로 반영하지 않는다`, async () => {
   const base = 'a'.repeat(40), first = 'b'.repeat(40), head = 'c'.repeat(40), candidate = 'd'.repeat(40)
   const workspace = { root: 'worker' }, integration = { root: 'main' }
   const calls = []
@@ -594,14 +649,20 @@ test('통합 재시도는 소유권·세션·체크포인트·수동 커밋 불�
   assert.equal(f.manager.state.leases[f.lease.leaseId].integrationRecoveryHistory, undefined)
 })
 
-for (const failureType of ['local-changes', 'integration-git-lock', 'integration-git-lock-reporting', 'integration-git-lock-meta', 'integration-head-changed', 'candidate-worktree', 'candidate-worktree-legacy', 'preserved-release', 'released-startup']) {
+for (const failureType of ['local-changes', 'integration-git-lock', 'integration-git-lock-reporting', 'integration-git-lock-meta', 'integration-head-changed', 'candidate-worktree', 'candidate-worktree-legacy', 'git-status', 'git-status-legacy', 'preserved-release', 'released-startup']) {
 test(`통합 복구 API(${failureType})는 최신 승인·유휴 대화를 확인하고 결과 해시를 보존하며 하위 AI 실행 없이 복구한다`, realGit, async (t) => {
   const releasePreserved = ['preserved-release', 'released-startup'].includes(failureType)
   const reporting = failureType === 'integration-git-lock-reporting'
   const candidateWorktree = failureType.startsWith('candidate-worktree')
-  const gitLock = failureType !== 'local-changes' && !releasePreserved && !candidateWorktree
-  const f = candidateWorktree ? await candidateWorktreeQuarantine(t, failureType === 'candidate-worktree-legacy')
+  const gitStatus = failureType.startsWith('git-status')
+  const gitLock = failureType !== 'local-changes' && !releasePreserved && !candidateWorktree && !gitStatus
+  const f = gitStatus ? await gitStatusQuarantine(t, failureType === 'git-status-legacy')
+    : candidateWorktree ? await candidateWorktreeQuarantine(t, failureType === 'candidate-worktree-legacy')
     : await (gitLock ? gitLockQuarantine : localChangesQuarantine)(t)
+  if (gitStatus) {
+    f.artifact = 'untracked-after-status-failure.txt'
+    await put(f.worker, f.artifact, '상태 조회 실패 뒤 보존해야 할 사용자 자료\n')
+  }
   if (failureType === 'integration-head-changed') f.manager.state.leases[f.lease.leaseId].result.error = '통합 직전에 통합 작업공간의 HEAD가 변경되었습니다.'
   let untrackedMetaRecovery
   if (failureType === 'integration-git-lock-meta') {
@@ -763,7 +824,7 @@ test(`통합 복구 API(${failureType})는 최신 승인·유휴 대화를 확�
     assert.equal(dirty.integrationRecoveryRequest.status, 'failed')
     assert.match(dirty.integrationRecoveryRequest.message, gitLock ? /Git 잠금/ : /로컬 변경/)
     assert.equal(JSON.parse(await readFile(path.join(dataDirectory, '_workspace-pool.json'), 'utf8')).leases[f.lease.leaseId].status, 'quarantined')
-    if (candidateWorktree) await rename(path.join(f.worker, f.artifact), path.join(f.root, 'api-preserved-output.dll'))
+    if (candidateWorktree || gitStatus) await rename(path.join(f.worker, f.artifact), path.join(f.root, 'api-preserved-output.dll'))
     else if (gitLock) await rm(f.lockPath)
     else {
       await rename(path.join(f.worker, 'base.txt'), path.join(f.root, 'api-user-backup.txt'))

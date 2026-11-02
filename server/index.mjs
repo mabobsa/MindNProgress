@@ -73,6 +73,7 @@ import { AI_CONVERSATION_CONTEXT_REUSE_GUARD_ENABLED, applyAiConversationDelegat
 import { blockedAiModelLabels, filterAutomatedAiAgents } from './lib/aiModelPolicy.mjs'
 import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
+import { workspaceCheckpointInstruction, rejectedOversizedCheckpointRecoveryPatch } from './lib/aiWorkspaceCheckpointInstruction.mjs'
 import { aiDelegationReportArchived, aiDelegationReportArchivePending, createAiDelegationReportArchiver } from './lib/aiDelegationReportArchive.mjs'
 import { AI_DELEGATION_RESULT_HASH_BASIS, aiDelegationFullResult, buildAiDelegationResultCapture } from './lib/aiDelegationResultCapture.mjs'
 import { createAiParentWakeProcessor, recoverableLegacyParentWake } from './lib/aiParentWake.mjs'
@@ -4385,6 +4386,11 @@ async function settlePendingAiRecovery(delegation, { allowDispatch = false } = {
   } catch (error) {
     throwIfRuntimeStopping(error, runtimeLifecycle.signal)
     const missingOperation = error?.status === 404 || (error instanceof AiDelegationStatusLookupError && error.cause?.status === 404)
+    const rejected = missingOperation ? rejectedOversizedCheckpointRecoveryPatch(delegation) : null
+    if (rejected) {
+      console.warn('[AI delegation oversized checkpoint recovery]', JSON.stringify({ delegationId: delegation.id, ...rejected.rejectedCheckpointRecovery }))
+      return updateAiDelegation(delegation.id, rejected)
+    }
     if (!missingOperation || !allowDispatch || !pending.resultCorrection || !pending.dispatchBody) throw error
     await workspacePoolManager.prepareIntegrationResultCorrection(pending.workspaceLease.leaseId, {
       mapId: delegation.mapId, cardId: delegation.targetCardId, conversationId: delegation.targetConversationId,
@@ -4826,28 +4832,6 @@ function workspaceConflictInstruction(delegation, workspaceResult) {
 ${files}
 
 현재 진행 중인 cherry-pick의 충돌만 해결하세요. 요구사항과 기존 구현 의도를 함께 대조하고, 해결한 파일을 stage한 뒤 모든 cherry-pick이 끝날 때까지 \`git cherry-pick --continue\`를 수행하세요. 이 통합 과정에 필요한 보완 변경은 허용하지만 다른 등록 작업공간이나 main을 직접 수정하지 말고, 브랜치를 바꾸거나 lease를 해제하지 마세요. 관련 검증을 실행한 뒤 해결 내용과 검증 결과를 최종 응답으로 보고하세요. 해결할 수 없다면 임의 선택하지 말고 충돌한 의도와 필요한 판단을 구체적으로 보고하세요.`
-}
-
-function workspaceCheckpointInstruction(delegation, workspaceResult) {
-  const files = Array.isArray(workspaceResult?.changedFiles) && workspaceResult.changedFiles.length > 0
-    ? workspaceResult.changedFiles.map((file) => `- ${file}`).join('\n')
-    : '- Git status로 현재 변경을 다시 확인하세요.'
-  return `# MindNProgress 명시적 체크포인트 요청
-
-하위 작업이 완료되었지만 Unity Play·재임포트·동적 자산 생성 등의 부산물과 구현 변경을 구분할 명시적 체크포인트가 없어 main 통합을 중단했습니다.
-
-- 하위 카드: ${delegation.targetCardLabel} (${delegation.targetCardId})
-- workspaceId: ${delegation.workspaceLease.workspaceId}
-- jobId: ${delegation.workspaceLease.jobId}
-- leaseId: ${delegation.workspaceLease.leaseId}
-- projectRoot: ${delegation.workspaceLease.projectRoot}
-- 요청 회차: ${workspaceResult.checkpointRound}
-
-## 현재 변경 후보
-
-${files}
-
-최신 카드 요구사항과 Git diff를 대조해 의도한 구현 변경과 검증 부산물을 구분하세요. 의도한 파일 변경이 있으면 \`mindnprogress_checkpoint_ai_workspace\`의 \`operation.action=commit-changes\`와 함께 \`paths\` 및 실제 변경을 설명하는 \`commitMessage\`의 \`summary\`·\`background\`·\`cause\`·\`changes\`, 필요한 경우 \`scope\`를 작성하세요. \`summary\`의 커밋 제목 prefix(사용자 커밋 규칙의 이름 머리말 등)와 출처를 나타내는 \`[MnP]\` 및 나머지 본문 섹션은 서버가 추가하므로 직접 넣지 마세요. 자동 변경은 포함하지 마세요. 의도한 파일 변경이 없다면 같은 도구의 \`operation.action=confirm-no-changes\`를 사용하세요. 구현과 자동 변경이 같은 파일에 섞여 있으면 기준 내용으로 되돌린 뒤 의도한 수정만 다시 적용하세요. 체크포인트 후 필수 검증을 다시 수행하고 최종 결과를 보고하세요.`
 }
 
 async function startWorkspaceCheckpointResolution(delegation, workspaceResult) {
@@ -10665,6 +10649,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (delegation.pendingRecovery) {
         try {
           const updated = await settlePendingAiRecovery(delegation, { allowDispatch: resultCorrection })
+          if (updated.rejectedCheckpointRecovery?.operationId === delegation.pendingRecovery.operationId && !updated.pendingRecovery) {
+            return sendJson(response, 409, { error: updated.recoveryDispatchError, code: 'AI_DELEGATION_CHECKPOINT_RECOVERY_RETRY_READY',
+              delegation: delegationPublicView(updated), executionRequested: false })
+          }
           if (updated.recoveryDispatchRejection?.operationId === updated.recoveryOperationId) return sendJson(response, 409, {
             error: '대상 대화가 사용 중이어서 복구 실행을 시작하지 않았습니다. 기존 작업과 작업공간을 보존했습니다.',
             code: 'AI_DELEGATION_RECOVERY_CONVERSATION_BUSY', delegation: delegationPublicView(updated), executionRequested: false,
@@ -10772,7 +10760,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       let replacedWorkspaceLease = Boolean(delegation.recoveryWorkspaceLease && delegation.recoveryWorkspaceLease.leaseId !== delegation.workspaceLease?.leaseId)
       const continuingCorrection = resultCorrection && delegation.resultCorrection?.phase === 'dispatched'
       const recoveryAttempt = delegation.resultCorrection?.phase === 'preparing'
-        ? delegation.resultCorrection.attempt : Number(delegation.recoveryAttempt ?? 0) + 1
+        ? delegation.resultCorrection.attempt : Math.max(Number(delegation.recoveryAttempt ?? 0), Number(delegation.rejectedCheckpointRecovery?.attempt ?? 0)) + 1
       const integrationRecovery = delegation.state === 'integration-recovery-required'
       const operationId = resultCorrection
         ? continuingCorrection ? boundedAionOperationId(delegation.id, `correct-${recoveryAttempt}`)
@@ -10985,10 +10973,12 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         explicitCompletionAfterInterruption: true, targetConversationId: delegation.targetConversationId,
         ...(workspaceLease ? { workspaceLease } : {}), instruction: delegatedInstruction }
       let dispatch
+      const requestedAt = new Date().toISOString()
       await updateAiDelegation(delegation.id, {
         pendingRecovery: { operationId, attempt: recoveryAttempt, sourceState: delegation.state, integrationRecovery, resultCorrection, workspaceLease,
-          ...(resultCorrection ? { dispatchBody } : {}), requestedAt: new Date().toISOString() },
-        attemptHistory: aiDelegationAttemptHistory(delegation, '사용자가 승인 범위의 기존 작업 재개 요청'),
+          ...(integrationRecovery && delegation.workspaceResult?.status === 'checkpoint-required' ? { checkpointInstructionVersion: 1 } : {}),
+          ...(resultCorrection ? { dispatchBody } : {}), requestedAt },
+        attemptHistory: aiDelegationAttemptHistory(delegation, '사용자가 승인 범위의 기존 작업 재개 요청', requestedAt),
         ...(interruptedProof ? { interruptedRecoveryProof: interruptedProof } : {}),
       })
       try {

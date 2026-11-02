@@ -1871,7 +1871,7 @@ async function main() {
       z.object({
         action: z.literal('commit-changes'),
         paths: z.array(z.string().min(1).max(4096)).min(1).max(2000)
-          .describe('검증 전에 고정할 의도된 변경의 projectRoot 상대 경로. git status를 확인해 실제 수정·추가한 파일만 전달'),
+          .describe('검증 전에 고정할 의도된 추가·수정·삭제의 projectRoot 상대 파일 또는 폴더 경로. 폴더는 하위의 모든 실제 변경 파일을 포함하므로 git status로 범위를 확인하세요. 입력 범위는 최대 2,000개이며 폴더에서 확장된 파일 수는 이 제한에 포함하지 않습니다. 와일드카드는 해석하지 않습니다.'),
         commitMessage: checkpointCommitMessageSchema
           .describe('이번 paths의 실제 변경을 설명하는 구조화 커밋 메시지. 서버가 커밋 제목 prefix, [MnP] 출처와 본문 섹션을 생성하므로 prefix와 출처를 직접 넣지 않음'),
       }).strict(),

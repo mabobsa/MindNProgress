@@ -26,6 +26,18 @@ class WorkspacePoolManager extends RealWorkspacePoolManager {
     if (options?.gitRunner) {
       this.claimLocalWorkspace = async () => async () => {}
       this.isRemotelyOwned = async () => false
+      this.withCheckpointIndex = (root, operation) => {
+        const staged = new Set()
+        return operation({
+          git: (args) => args[0] === 'diff' && args.includes('--cached') && staged.size
+            ? [...staged].map((file) => `${file}\0`).join('') : this.git(root, args),
+          stage: async (paths) => {
+            if (!paths.length) return
+            await this.git(root, ['add', '--', ...paths])
+            for (const file of paths) staged.add(file)
+          },
+        })
+      }
     }
   }
 }
@@ -1741,7 +1753,7 @@ test('과거 main dirty 격리는 세션·체크포인트·Git 소유권이 일�
     let integrationDirty = false
     const gitRunner = async (cwd, args) => {
       const worker = cwd === workerRoot
-      if (args[0] === 'status') return worker ? (workerDirty ? '?? unknown.txt' : '') : (integrationDirty ? ' M main.txt' : '')
+      if (args[0] === 'status') return worker ? (workerDirty ? (workerHead === 'base123' ? '?? worker.txt' : '?? unknown.txt') : '') : (integrationDirty ? ' M main.txt' : '')
       if (args[0] === 'diff') return !worker && integrationDirty ? 'main.txt' : ''
       if (args[0] === 'remote') return ''
       if (args[0] === 'rev-parse') return worker ? workerHead : 'base123'
@@ -1841,7 +1853,7 @@ test('체크포인트 이후 인프라 파일로 격리된 완료 작업은 깨�
     let revisionList = 'checkpoint456'
     const gitRunner = async (cwd, args) => {
       const worker = cwd === workerRoot
-      if (args[0] === 'status') return worker ? (workerDirty ? '?? .claude/skills/tool/SKILL.md' : '') : (integrationDirty ? ' M main.txt' : '')
+      if (args[0] === 'status') return worker ? (workerDirty ? (workerHead === 'base123' ? '?? worker.txt' : '?? .claude/skills/tool/SKILL.md') : '') : (integrationDirty ? ' M main.txt' : '')
       if (args[0] === 'diff') return !worker && integrationDirty ? 'main.txt' : ''
       if (args[0] === 'remote') return 'https://example.invalid/holdem.git'
       if (args[0] === 'rev-parse') return worker ? workerHead : 'base123'

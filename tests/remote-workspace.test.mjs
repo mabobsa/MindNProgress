@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -94,6 +94,19 @@ test('실제 Git: 원격 prepare → checkpoint → staging 통합 → 반환 �
   const next = await f.acquire('delegation-2')
   assert.equal(next.ownership.generation, 2)
   assert.notEqual(next.leaseId, lease.leaseId)
+})
+
+test('원격 Fork는 무시 규칙 아래 추적 파일 삭제를 체크포인트하고 통합한다', async (t) => {
+  const f = await fixture(t)
+  const lease = await f.acquire()
+  await writeFile(path.join(f.worker, '.gitignore'), '.ai-session.json\n/feature.txt\n')
+  await unlink(path.join(f.worker, 'feature.txt'))
+  const checkpoint = await f.checkpoint(lease, ['.gitignore', 'feature.txt'])
+  assert.deepEqual(checkpoint.checkpoint.paths, ['.gitignore', 'feature.txt'])
+  const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(result.status, 'completed')
+  await assert.rejects(stat(path.join(f.integration, 'feature.txt')), { code: 'ENOENT' })
+  assert.equal(await git(f.integration, ['status', '--porcelain']), '')
 })
 
 test('원격 Fork 체크포인트 제목은 Runner registry의 commitPrefix를 우선하고 없으면 전달된 계정 이름을 쓴다', async (t) => {

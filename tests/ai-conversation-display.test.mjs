@@ -7,6 +7,7 @@ import { buildGroupDocumentInstruction, groupDocumentInstructionOperationId } fr
 import { createAionUiConversationWebUrl } from '../server/lib/aionUiExternalLaunch.mjs'
 import { claudeAccountRequestId } from '../server/lib/aiClaudeAccounts.mjs'
 import { resolveAiConversationContextOverride } from '../server/lib/aiConversationContextHealth.mjs'
+import { workspaceCheckpointInstruction } from '../server/lib/aiWorkspaceCheckpointInstruction.mjs'
 import {
   formatAiConversationDisplay,
   normalizeAiConversationName,
@@ -39,12 +40,14 @@ function deliveryHarness({ remote = false, unavailable = false } = {}) {
     'resolveAiConversationSource', 'resolveAiConversationDisplay', 'boundedAionOperationId', 'integrationDelegationState',
     'parentRecoveryInstruction', 'parentIntegrationCleanWaitInstruction',
     'processAiDelegationIntegrationCleanWaitNotice', 'processAiDelegationRecoveryNotice',
-    'workspaceCheckpointInstruction', 'workspaceConflictInstruction',
+    'workspaceConflictInstruction',
     'startWorkspaceCheckpointResolution', 'startWorkspaceConflictResolution', 'runGroupDocumentInstructionDispatch',
     'groupDocumentInstructionContextReasonCode',
   ]
   const functions = vm.runInNewContext(names.map(serverFunction).join('\n') + '\n({' + names.join(',') + '})', {
     createHash, prependAiConversationSource, resolveConversationSource, resolveConversationDisplay, createAionUiConversationWebUrl,
+    // 체크포인트 지시는 server/lib/aiWorkspaceCheckpointInstruction.mjs로 옮겨져 서버 소스에서 잘라 오지 않는다.
+    workspaceCheckpointInstruction,
     aionUiWebBaseUrlForMachine: machineId => {
       if (unavailable) throw new Error('발신 머신 주소 조회 실패')
       return 'http://' + machineId + '.example:7777'

@@ -12,6 +12,7 @@ import { assertAiDelegationInterruptedLease } from './aiDelegationInterruptedRec
 import { acquireWorkspaceLock, git as ownershipGit, jsonFile, saveJson } from './remoteWorkspaceProtocol.mjs'
 import { normalizeUntrackedMetaRecovery, preserveUntrackedMeta, consumePreservedMeta } from './workspaceMetaRecovery.mjs'
 import { recoverTrackedCheckoutEol } from './workspaceEolRecovery.mjs'
+import { checkpointPathInScope, checkpointStatusEntries, withCheckpointIndex } from './workspaceCheckpoint.mjs'
 
 const execFileAsync = promisify(execFile)
 const idleDriftReason = '작업공간에 소유자를 확정할 수 없는 변경이 있습니다.'
@@ -271,7 +272,7 @@ async function exists(file) {
   }
 }
 
-async function defaultGitRunner(cwd, args, { timeoutMs = 0, lfCheckout = false } = {}) {
+async function defaultGitRunner(cwd, args, { timeoutMs = 0, lfCheckout = false, env } = {}) {
   try {
     let command = args
     if (lfCheckout) {
@@ -284,6 +285,7 @@ async function defaultGitRunner(cwd, args, { timeoutMs = 0, lfCheckout = false }
       cwd,
       windowsHide: true,
       maxBuffer: 256 * 1024 * 1024,
+      ...(env ? { env: { ...process.env, ...env } } : {}),
       ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
     })
     const output = String(result.stdout ?? '')
@@ -454,7 +456,7 @@ ${sharedRoot ? `- sharedRoot: \`${sharedRoot}\`\n` : ''}- branch: \`${lease.bran
 
 이 작업에서는 위 \`projectRoot\`만 수정하세요. 다른 등록 작업공간으로 이동하거나 브랜치를 바꾸거나 lease를 직접 해제하지 마세요. \`.ai-session.json\`의 값이 위 정보와 일치하는지 먼저 확인하세요.${sharedRoot ? ' 공통 규칙과 지식은 `sharedRoot`에서 읽기 전용으로 사용하세요.' : ''}
 
-Unity Play Mode, 재임포트, 동적 폰트·Atlas 생성 등의 검증은 어떤 tracked 파일이든 자동으로 바꿀 수 있습니다. 구현 수정을 마친 뒤 각 검증을 시작하기 전에 \`mindnprogress_checkpoint_ai_workspace\`를 호출하세요. 의도한 변경이 있으면 \`operation.action=commit-changes\`에 변경 경로와 실제 변경을 설명하는 \`commitMessage\`를 함께 전달합니다. \`summary\`에는 커밋 제목 prefix(사용자 커밋 규칙의 이름 머리말 등)나 \`[MnP]\` 출처를 넣지 말고, \`background\`·\`cause\`·\`changes\`에는 이번 체크포인트의 실제 변경을 작성하며 \`scope\`는 필요한 경우에만 작성하세요. MindNProgress가 현재 문서·카드 제목과 안정적인 ID를 조회해 커밋 본문의 \`[MnP]\` 섹션을 자동으로 추가합니다. 파일 변경이 전혀 없는 조사·검증 작업은 같은 도구의 \`operation.action=confirm-no-changes\`로 확인하세요. 검증 후 보완했다면 새 변경에 맞는 메시지로 다시 체크포인트를 만들고 검증하세요. Git으로 직접 커밋하지 마세요. 완료 시 MindNProgress는 명시적 체크포인트만 main에 통합하고 그 이후의 자동 변경은 복구 자료로 보존한 뒤 worker에서 제거합니다.`
+Unity Play Mode, 재임포트, 동적 폰트·Atlas 생성 등의 검증은 어떤 tracked 파일이든 자동으로 바꿀 수 있습니다. 구현 수정을 마친 뒤 각 검증을 시작하기 전에 \`mindnprogress_checkpoint_ai_workspace\`를 호출하세요. 의도한 변경이 있으면 \`operation.action=commit-changes\`에 변경 경로와 실제 변경을 설명하는 \`commitMessage\`를 함께 전달합니다. 경로는 파일 또는 폴더의 상대 경로로 지정할 수 있고 폴더 아래의 추가·수정·삭제를 한 번의 커밋으로 고정합니다. 대량 정리는 파일을 수만 개 나열하지 말고 의도된 변경만 포함하는 폴더 범위를 지정하세요. 삭제만 있는 변경도 무변경 확인이 아닌 변경 체크포인트로 처리합니다. \`summary\`에는 커밋 제목 prefix(사용자 커밋 규칙의 이름 머리말 등)나 \`[MnP]\` 출처를 넣지 말고, \`background\`·\`cause\`·\`changes\`에는 이번 체크포인트의 실제 변경을 작성하며 \`scope\`는 필요한 경우에만 작성하세요. MindNProgress가 현재 문서·카드 제목과 안정적인 ID를 조회해 커밋 본문의 \`[MnP]\` 섹션을 자동으로 추가합니다. 파일 변경이 전혀 없는 조사·검증 작업은 같은 도구의 \`operation.action=confirm-no-changes\`로 확인하세요. 검증 후 보완했다면 새 변경에 맞는 메시지로 다시 체크포인트를 만들고 검증하세요. Git으로 직접 커밋하지 마세요. 완료 시 MindNProgress는 명시적 체크포인트만 main에 통합하고 그 이후의 자동 변경은 복구 자료로 보존한 뒤 worker에서 제거합니다.`
 }
 
 export class WorkspacePoolManager {
@@ -1137,7 +1139,13 @@ export class WorkspacePoolManager {
       if (lease.resultCorrection?.phase === 'correcting') {
         await this.validateResultCorrectionWorkspace(lease, workspace, { allowDirty: true })
       }
-      const intendedPaths = [...new Set((Array.isArray(paths) ? paths : []).map(safeRelativePath).filter(Boolean))]
+      const requestedPaths = Array.isArray(paths) ? paths : []
+      const normalizedPaths = requestedPaths.map((item) => typeof item === 'string' && !item.includes('\0')
+        ? safeRelativePath(item.replaceAll('\\', '/').replace(/\/+$/, '')) : null)
+      if (normalizedPaths.some((item) => !item)) {
+        throw new WorkspacePoolUnavailableError('체크포인트 경로는 프로젝트 내부의 파일 또는 폴더 상대 경로여야 합니다.', [], 'AI_WORKSPACE_CHECKPOINT_INPUT_INVALID')
+      }
+      const intendedPaths = [...new Set(normalizedPaths)]
       if (intendedPaths.length === 0) {
         if (!confirmNoChanges) {
           throw new WorkspacePoolUnavailableError('체크포인트에 포함할 의도된 변경 경로가 필요합니다. 의도한 파일 변경이 없다면 mindnprogress_checkpoint_ai_workspace의 confirm-no-changes action을 사용하세요.')
@@ -1176,32 +1184,6 @@ export class WorkspacePoolManager {
         authorName: commitAuthorName,
       })
       const normalizedCommitMessage = normalizeCheckpointCommitMessage(commitMessage, { commitPrefix })
-      const scopedStatus = await this.git(workspace.root, [
-        'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...intendedPaths,
-      ])
-      if (!scopedStatus) {
-        return {
-          lease: publicLease(lease),
-          checkpoint: null,
-          noChanges: true,
-          paths: intendedPaths,
-        }
-      }
-      const inboxPaths = knowledgeInboxCheckpointPaths(scopedStatus)
-      if (inboxPaths.length > 0) {
-        throw new WorkspacePoolUnavailableError(
-          `knowledge-inbox 경로는 폐기되어 체크포인트에 포함해 커밋할 수 없습니다. 이 경로를 변경 경로에서 빼고 다시 체크포인트하세요: ${inboxPaths.join(', ')}`,
-          inboxPaths,
-          'AI_WORKSPACE_CHECKPOINT_PATH_REJECTED',
-        )
-      }
-      await this.git(workspace.root, ['add', '--', ...intendedPaths])
-      const stagedPaths = nullSeparated(await this.git(workspace.root, ['diff', '--cached', '--name-only', '-z']))
-      const unexpected = stagedPaths.filter((item) => !intendedPaths.includes(item.replaceAll('\\', '/')))
-      if (unexpected.length > 0) {
-        await this.git(workspace.root, ['restore', '--staged', '--', ...stagedPaths])
-        throw new WorkspacePoolUnavailableError(`의도하지 않은 staged 변경이 포함되어 체크포인트를 중단했습니다: ${unexpected.join(', ')}`)
-      }
       const message = checkpointMessage(normalizedCommitMessage, normalizeCheckpointMnpContext(mnpContext, {
         mapId: lease.mapId,
         cardId: lease.cardId,
@@ -1213,31 +1195,78 @@ export class WorkspacePoolManager {
           conversationId: lease.conversationId ?? null,
         }))
       }
-      await this.git(workspace.root, ['commit', '-m', message.title, '-m', message.body])
-      const commit = await this.git(workspace.root, ['rev-parse', 'HEAD'])
-      const checkpoint = {
-        commit,
-        paths: intendedPaths,
-        commitMessage: message.normalized,
-        commitPrefix,
-        commitPrefixSource,
-        mnpContext: message.mnpContext,
-        createdAt: new Date().toISOString(),
-      }
-      lease.checkpoints ??= []
-      lease.checkpoints.push(checkpoint)
-      if (lease.resultCorrection?.phase === 'correcting') lease.resultCorrection.checkpointCommit = commit
-      lease.status = lease.resultCorrection?.phase === 'correcting' ? 'correcting-result' : 'leased'
-      lease.updatedAt = checkpoint.createdAt
-      this.state.workspaces[workspace.id] = {
-        status: lease.status,
-        jobId: lease.jobId,
-        leaseId: lease.leaseId,
-        updatedAt: checkpoint.createdAt,
-      }
-      await this.persist()
-      return { lease: publicLease(lease), checkpoint, noChanges: false }
+      return this.withCheckpointIndex(workspace.root, async ({ git, stage }) => {
+        const scopes = new Set(intendedPaths)
+        // Read once, then match literal paths in memory. No path list is placed on
+        // a Windows command line, including status and staged-file validation.
+        const entries = checkpointStatusEntries(await git(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames']))
+        const selected = entries.filter((entry) => checkpointPathInScope(entry.path, scopes))
+        if (!selected.length) return { lease: publicLease(lease), checkpoint: null, noChanges: true, paths: intendedPaths }
+        const inboxPaths = knowledgeInboxCheckpointPaths(selected.map((entry) => entry.record).join('\0'))
+        if (inboxPaths.length) {
+          throw new WorkspacePoolUnavailableError(
+            `knowledge-inbox 경로는 폐기되어 체크포인트에 포함해 커밋할 수 없습니다. 이 경로를 변경 경로에서 빼고 다시 체크포인트하세요: ${inboxPaths.join(', ')}`,
+            inboxPaths, 'AI_WORKSPACE_CHECKPOINT_PATH_REJECTED',
+          )
+        }
+        const selectedPaths = new Set(selected.map((entry) => entry.path))
+        const validateStaged = async () => {
+          const staged = String(await git(['diff', '--cached', '--name-only', '--no-renames', '-z'])).split('\0').filter(Boolean)
+          const unexpected = staged.filter((item) => !selectedPaths.has(item))
+          if (unexpected.length) {
+            throw new WorkspacePoolUnavailableError(`의도하지 않은 staged 변경이 포함되어 체크포인트를 중단했습니다: ${unexpected.slice(0, 20).join(', ')}`, unexpected, 'AI_WORKSPACE_CHECKPOINT_STAGED_OUT_OF_SCOPE')
+          }
+          return staged
+        }
+        await validateStaged()
+        await stage(selected.filter((entry) => entry.status !== '??' && entry.status[1] !== ' ').map((entry) => entry.path), { tracked: true })
+        await stage(selected.filter((entry) => entry.status === '??').map((entry) => entry.path))
+        const stagedPaths = await validateStaged()
+        if (!stagedPaths.length) return { lease: publicLease(lease), checkpoint: null, noChanges: true, paths: intendedPaths }
+        await git(['commit', '-m', message.title, '-m', message.body])
+        const commit = await git(['rev-parse', 'HEAD'])
+        const checkpoint = {
+          commit,
+          paths: stagedPaths,
+          requestedPaths: intendedPaths,
+          commitMessage: message.normalized,
+          commitPrefix,
+          commitPrefixSource,
+          mnpContext: message.mnpContext,
+          createdAt: new Date().toISOString(),
+        }
+        lease.checkpoints ??= []
+        lease.checkpoints.push(checkpoint)
+        if (lease.resultCorrection?.phase === 'correcting') lease.resultCorrection.checkpointCommit = commit
+        lease.status = lease.resultCorrection?.phase === 'correcting' ? 'correcting-result' : 'leased'
+        lease.updatedAt = checkpoint.createdAt
+        this.state.workspaces[workspace.id] = {
+          status: lease.status,
+          jobId: lease.jobId,
+          leaseId: lease.leaseId,
+          updatedAt: checkpoint.createdAt,
+        }
+        await this.persist()
+        return { lease: publicLease(lease), checkpoint, noChanges: false }
+      }).catch(async (error) => {
+        if (error.reasonCode === 'AI_WORKSPACE_CHECKPOINT_RECOVERY_REQUIRED') {
+          // A commit exists, but the index/receipt needs repair. Do not allow the
+          // completion poller to integrate or clean this workspace automatically.
+          lease.status = 'quarantined'
+          lease.updatedAt = new Date().toISOString()
+          lease.result = { status: 'quarantined', error: error.message,
+            reasonCode: error.reasonCode, checkpointRecovery: error.details, updatedAt: lease.updatedAt }
+          this.state.workspaces[workspace.id] = { status: 'quarantined', reason: error.message,
+            jobId: lease.jobId, leaseId: lease.leaseId, updatedAt: lease.updatedAt }
+          await this.persist().catch(() => undefined)
+        }
+        throw error
+      })
     })
+  }
+
+  withCheckpointIndex(root, operation) {
+    return withCheckpointIndex(root, this.git, operation)
   }
 
   async isRemotelyOwned(workspace) {

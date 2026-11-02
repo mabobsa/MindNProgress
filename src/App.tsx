@@ -199,6 +199,7 @@ const LAST_LOGIN_EMAIL_KEY = 'mindnprogress-last-login-email'
 const INSPECTOR_TEXTAREA_HEIGHTS_STORAGE_PREFIX = 'mindnprogress-inspector-textarea-heights'
 const INSPECTOR_TEXTAREA_MIN_HEIGHT = 32
 const INSPECTOR_TEXTAREA_MAX_HEIGHT = 10_000
+const DESCRIPTION_PLACEHOLDER = '설명을 입력해 주세요'
 
 type InspectorTextareaField = 'description' | 'sharedKnowledge'
 type InspectorTextareaHeights = Partial<Record<InspectorTextareaField, number>>
@@ -4841,7 +4842,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       position: nextPosition,
       data: {
         label: '새로운 아이디어',
-        description: '설명을 입력해 주세요',
+        description: '',
         sharedKnowledge: '',
         progress: 0,
         status: 'planned',
@@ -8572,8 +8573,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                     <>
                       <textarea
                         ref={descriptionTextareaRef}
-                        value={selectedNode.data.description}
+                        value={selectedNode.data.description === DESCRIPTION_PLACEHOLDER ? '' : selectedNode.data.description}
                         onChange={(event) => updateNode(selectedNode.id, { description: event.target.value })}
+                        placeholder={DESCRIPTION_PLACEHOLDER}
                         rows={3}
                         style={inspectorTextareaHeights.description === undefined
                           ? undefined

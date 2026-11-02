@@ -12,9 +12,11 @@ const executeFile = promisify(execFile)
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const backupScript = path.join(projectDirectory, 'scripts', 'backup-data.ps1')
 const restoreScript = path.join(projectDirectory, 'scripts', 'restore-data.ps1')
+const backupBatch = path.join(projectDirectory, 'MindNProgress_Backup.bat')
+const restoreBatch = path.join(projectDirectory, 'MindNProgress_Restore.bat')
 const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 const powershellArguments = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass']
-const testEnvironment = { ...process.env, MNP_DATA_DIR: '', MNP_BACKUP_DIR: '', MNP_IMAGE_GC_MIN_AGE_HOURS: '' }
+const testEnvironment = { ...process.env, MNP_DATA_DIR: '', MNP_BACKUP_DIR: '', MNP_IMAGE_GC_MIN_AGE_HOURS: '', MNP_BACKUP_NO_PAUSE: '1' }
 
 function psString(value) {
   return `'${value.replaceAll("'", "''")}'`
@@ -33,6 +35,10 @@ function runCommand(command) {
   return runPowerShell(['-Command', `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); ${command}`])
 }
 
+function runBatch(batch, argumentsList) {
+  return runCommand(`& ${psString(batch)} ${argumentsList.map(psString).join(' ')}; exit $LASTEXITCODE`)
+}
+
 async function writeFixtureFile(root, relativePath, bytes) {
   const file = path.join(root, relativePath)
   await mkdir(path.dirname(file), { recursive: true })
@@ -46,6 +52,7 @@ test('Windows 백업은 모든 파일을 보존하고 기존 복원 및 손상 �
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'mindnprogress-backup-test-'))
   const fixtureProject = path.join(temporaryRoot, '한글 프로젝트')
   const backupDirectory = path.join(temporaryRoot, 'backups')
+  const longRelativePath = '_dooray-response-workspaces/user-editor/Dooray AI 대응/requests/dooray-9ba6b8c492d2de87bfcc70f2-review-0/art-inspect.git/objects/19/97022bc12f494c479344cf4732289160c3d00d'
   const dataFiles = new Map([
     ['map-backup.json', Buffer.from(JSON.stringify({ id: 'map-backup', title: '백업 확인', nodes: [], edges: [] }))],
     ['이력 폴더/문서.json', Buffer.from('{"본문":"이력도 그대로 복원합니다."}')],
@@ -53,6 +60,7 @@ test('Windows 백업은 모든 파일을 보존하고 기존 복원 및 손상 �
     ['hidden.json', Buffer.from('{"hidden":true}')],
     ['.gitkeep', Buffer.alloc(0)],
     ['binary.bin', randomBytes(4096)],
+    [longRelativePath, randomBytes(564)],
   ])
   const configFiles = new Map([
     ['.env', Buffer.from('MNP_TEST_SETTING=fixture-only\n')],
@@ -70,7 +78,9 @@ test('Windows 백업은 모든 파일을 보존하고 기존 복원 및 손상 �
     }
     await runCommand(`[IO.File]::SetAttributes(${psString(path.join(fixtureProject, 'server/data/hidden.json'))}, [IO.FileAttributes]::Hidden)`)
 
-    await runPowerShell(['-File', backupScript, '-ProjectPath', fixtureProject, '-Destination', backupDirectory])
+    const stagedLongPath = path.join(backupDirectory, '2026-11-02', `.staging-${'0'.repeat(32)}`, 'server/data', longRelativePath)
+    assert.ok(stagedLongPath.length >= 260, '긴 경로 복사 오류를 재현하는 백업 경로가 필요합니다.')
+    await runBatch(backupBatch, ['-ProjectPath', fixtureProject, '-Destination', backupDirectory])
     const backupFiles = await readdir(backupDirectory, { recursive: true, withFileTypes: true })
     const archives = backupFiles.filter((entry) => entry.isFile() && entry.name.endsWith('.zip'))
     assert.equal(archives.length, 1)
@@ -101,10 +111,13 @@ test('Windows 백업은 모든 파일을 보존하고 기존 복원 및 손상 �
       }
     })
 
-    await t.test('기존 복원 스크립트로 한글 경로와 로컬 설정을 바이트 단위로 복원한다', async () => {
+    await t.test('복원 배치로 긴 한글 경로와 로컬 설정을 바이트 단위로 복원한다', async () => {
       const restoreProject = path.join(temporaryRoot, '복원 프로젝트')
-      await mkdir(restoreProject)
-      await runPowerShell(['-File', restoreScript, '-ProjectPath', restoreProject, '-ArchivePath', archivePath])
+      await mkdir(path.join(restoreProject, 'scripts'), { recursive: true })
+      const fixtureRestoreBatch = path.join(restoreProject, 'MindNProgress_Restore.bat')
+      await copyFile(restoreBatch, fixtureRestoreBatch)
+      await copyFile(restoreScript, path.join(restoreProject, 'scripts/restore-data.ps1'))
+      await runBatch(fixtureRestoreBatch, [archivePath])
       for (const [name, bytes] of dataFiles) {
         assert.deepEqual(await readFile(path.join(restoreProject, 'server/data', name)), bytes)
       }
@@ -176,6 +189,63 @@ test('Windows 백업은 모든 파일을 보존하고 기존 복원 및 손상 �
   } finally {
     assert.equal(path.dirname(temporaryRoot), path.resolve(tmpdir()))
     assert.ok(path.basename(temporaryRoot).startsWith('mindnprogress-backup-test-'))
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
+})
+
+test('백업·복원 배치는 PowerShell 7을 찾고 미설치 및 실행 오류를 전달한다', {
+  skip: process.platform !== 'win32',
+  timeout: 120_000,
+}, async (t) => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'mindnprogress-backup-launch-'))
+  const systemDirectory = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32')
+  try {
+    const { stdout } = await runCommand('(Get-Command pwsh.exe -ErrorAction Stop).Source')
+    const pwshDirectory = path.dirname(stdout.trim())
+    for (const [batch, script, argumentsList] of [
+      [backupBatch, 'backup-data.ps1', []],
+      [restoreBatch, 'restore-data.ps1', ['fixture.zip']],
+    ]) {
+      const fixtureBatch = path.join(temporaryRoot, path.basename(batch))
+      await copyFile(batch, fixtureBatch)
+      await writeFixtureFile(temporaryRoot, `scripts/${script}`, Buffer.from(
+        "param([string]$ArchivePath, [string]$ProjectPath)\nWrite-Output ('runtime=' + $PSVersionTable.PSVersion.Major)\nexit 23\n",
+      ))
+      const runWithSearchPath = async (searchPath) => {
+        // 새 프로세스가 ProgramFiles를 재설정하므로 같은 cmd 안에서 탐색 환경을 설정한다.
+        const launcher = path.join(temporaryRoot, 'launch-test.bat')
+        await writeFile(launcher, [
+          '@echo off',
+          'setlocal DisableDelayedExpansion',
+          'set "ProgramFiles=%~dp0missing"',
+          `set "PATH=${searchPath.replaceAll('%', '%%')}"`,
+          `call "%~dp0${path.basename(batch)}" ${argumentsList.join(' ')}`,
+          'exit /b %ERRORLEVEL%',
+          '',
+        ].join('\r\n'))
+        return runBatch(launcher, [])
+      }
+
+      await t.test(`${path.basename(batch)}: 미설치 시 작업을 실행하지 않는다`, async () => {
+        await assert.rejects(runWithSearchPath(systemDirectory), (error) => {
+          assert.equal(error.code, 1)
+          assert.match(error.stdout, /PowerShell 7/)
+          assert.doesNotMatch(error.stdout, /runtime=/)
+          return true
+        })
+      })
+
+      await t.test(`${path.basename(batch)}: PATH에서 찾아 실행하고 종료 코드를 보존한다`, async () => {
+        await assert.rejects(runWithSearchPath(`${pwshDirectory};${systemDirectory}`), (error) => {
+          assert.equal(error.code, 23)
+          assert.match(error.stdout, /runtime=7/)
+          return true
+        })
+      })
+    }
+  } finally {
+    assert.equal(path.dirname(temporaryRoot), path.resolve(tmpdir()))
+    assert.ok(path.basename(temporaryRoot).startsWith('mindnprogress-backup-launch-'))
     await rm(temporaryRoot, { recursive: true, force: true })
   }
 })

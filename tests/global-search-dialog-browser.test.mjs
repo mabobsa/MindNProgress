@@ -20,6 +20,10 @@ const api=async pathname=>{
   window.audit.calls.push(pathname);
   const url=new URL(pathname,location.origin), cursor=url.searchParams.get('cursor');
   const results=cursor?[base('card-2','두 번째 카드')]:[base('card-1','첫 번째 카드')];
+  if(url.searchParams.get('q')==='1초') {
+    results[0].snippet='…Intel 실행 시 약 2.41초였다. CPU 20.001초 → GPU 2.216초였다.';
+    results[0].matchedTerms=['1초'];
+  }
   return {query:url.searchParams.get('q'),mode:'ranked',coverage:{searchedDocumentCount:2,searchedCardCount:12,semanticCoverage:'not-guaranteed',note:'검색 결과는 후보이며 최신 카드를 확인하세요.'},page:{returned:1,total:2,hasMore:!cursor,nextCursor:cursor?null:'next-page'},results};
 };
 createRoot(document.getElementById('root')).render(React.createElement(GlobalSearchDialog,{
@@ -39,8 +43,10 @@ test('전체 검색 화면이 필터·커서·이동과 다크·모바일 표시
   const server = await createServer({
     configFile: false,
     root: projectDirectory,
+    cacheDir: path.join(profileDirectory, 'vite-cache'),
     logLevel: 'error',
-    server: { host: '127.0.0.1', port: 0, hmr: false },
+    optimizeDeps: { noDiscovery: true, include: ['react', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'react-dom/client'] },
+    server: { host: '127.0.0.1', port: 0, hmr: false, watch: null },
     plugins: [react(), {
       name: 'global-search-fixture',
       resolveId: (id) => id === '/global-search-fixture.js' ? '\0global-search-fixture' : null,
@@ -125,6 +131,10 @@ test('전체 검색 화면이 필터·커서·이동과 다크·모바일 표시
     await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
     await delay(150)
     assert.equal(await evaluate('(()=>{const element=document.querySelector(".global-search-dialog"),rect=element.getBoundingClientRect();return rect.left===0&&rect.right===innerWidth&&element.scrollWidth<=element.clientWidth})()'), true)
+    await evaluate(`(()=>{const input=document.querySelector('.global-search-query input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'1초');input.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+    await waitFor(() => evaluate('document.querySelector(".global-search-result-snippet")?.textContent.startsWith("…Intel")'))
+    assert.deepEqual(await evaluate('Array.from(document.querySelectorAll(".global-search-result-snippet mark"),element=>element.textContent)'), ['1초', '1초'])
+    assert.equal(await evaluate('document.querySelector(".global-search-result-snippet").textContent'), '…Intel 실행 시 약 2.41초였다. CPU 20.001초 → GPU 2.216초였다.')
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape' })
     await waitFor(() => evaluate('window.audit.closed===1'))

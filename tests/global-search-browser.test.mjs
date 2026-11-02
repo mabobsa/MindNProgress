@@ -45,3 +45,34 @@ test('일치 단어가 겹쳐도 문맥을 손실하지 않고 하이라이트 �
   assert.ok(segments.some((segment) => segment.highlighted && segment.text === '담당 카드'))
   assert.ok(segments.some((segment) => segment.highlighted && segment.text === '카드'))
 })
+
+test('줄임표가 포함된 검색 미리보기에서 다음 문자가 아닌 검색어를 강조한다', () => {
+  for (const text of [
+    '…Intel 실행 시 호환 중앙 지연이 약 2.41초였다.',
+    '…CPU 20.001초 → GPU 2.216초였다.',
+    '…1초…다시 1초…',
+  ]) {
+    const segments = globalSearchHighlightSegments(text, ['1초'])
+    assert.equal(segments.map(segment => segment.text).join(''), text)
+    assert.deepEqual(segments.filter(segment => segment.highlighted).map(segment => segment.text),
+      [...text.matchAll(/1초/g)].map(match => match[0]))
+  }
+})
+
+test('정규화로 길이가 바뀌어도 원문 범위와 대소문자 검색을 보존한다', () => {
+  for (const [text, terms, highlighted] of [
+    ['…Ｆｏｏ １초였다.', ['foo', '1초'], ['Ｆｏｏ', '１초']],
+    ['ﬃ 지연 1초였다.', ['ffi', '1초'], ['ﬃ', '1초']],
+    ['İ 지연 1초였다.', ['1초'], ['1초']],
+    ['각 지연 1초였다.', ['각', '1초'], ['각', '1초']],
+    ['ㄱㅏ 지연 1초였다.', ['가', '1초'], ['ㄱㅏ', '1초']],
+    ['é 지연 1초였다.', ['é', '1초'], ['é', '1초']],
+    ['😀…1초 → 2초', ['😀', '1초'], ['😀', '1초']],
+    ['ΟΣ…1초', ['ος', '1초'], ['ΟΣ', '1초']],
+    ['…ﬃ와 1초', ['f', 'fi', '1초'], ['ﬃ', '1초']],
+  ]) {
+    const segments = globalSearchHighlightSegments(text, terms)
+    assert.equal(segments.map(segment => segment.text).join(''), text)
+    assert.deepEqual(segments.filter(segment => segment.highlighted).map(segment => segment.text), highlighted, text)
+  }
+})

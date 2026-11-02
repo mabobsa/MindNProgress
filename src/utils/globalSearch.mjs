@@ -37,12 +37,39 @@ export function mergeGlobalSearchResults(current, incoming) {
   return result
 }
 
+function normalizeHighlightText(source) {
+  let normalized = ''
+  const normalizedRanges = []
+  let sourceOffset = 0
+  for (const character of source) {
+    const next = (normalized + character).normalize('NFKC')
+    let unchanged = 0
+    while (unchanged < normalized.length && normalized[unchanged] === next[unchanged]) unchanged += 1
+    // … → ... 같은 확장과 한글 자모 결합 모두 원문 범위를 유지한다.
+    const range = { start: normalizedRanges[unchanged]?.start ?? sourceOffset, end: sourceOffset + character.length }
+    normalizedRanges.splice(unchanged, normalizedRanges.length - unchanged,
+      ...Array.from({ length: next.length - unchanged }, () => range))
+    normalized = next
+    sourceOffset += character.length
+  }
+  const ranges = []
+  let normalizedOffset = 0
+  for (const character of normalized) {
+    const range = { start: normalizedRanges[normalizedOffset].start,
+      end: normalizedRanges[normalizedOffset + character.length - 1].end }
+    ranges.push(...Array.from({ length: character.toLocaleLowerCase('ko-KR').length }, () => range))
+    normalizedOffset += character.length
+  }
+  // 소문자 변환은 전체 문자열에 적용해 문맥에 따른 대소문자 규칙을 유지한다.
+  return { text: normalized.toLocaleLowerCase('ko-KR'), ranges }
+}
+
 export function globalSearchHighlightSegments(text, matchedTerms = []) {
   const source = String(text ?? '')
   const terms = [...new Set(matchedTerms.map((term) => String(term ?? '').trim()).filter(Boolean))]
     .sort((first, second) => second.length - first.length)
   if (!source || terms.length === 0) return [{ text: source, highlighted: false }]
-  const lowered = source.normalize('NFKC').toLocaleLowerCase('ko-KR')
+  const { text: lowered, ranges } = normalizeHighlightText(source)
   const matches = []
   for (const term of terms) {
     const normalizedTerm = term.normalize('NFKC').toLocaleLowerCase('ko-KR')
@@ -50,7 +77,7 @@ export function globalSearchHighlightSegments(text, matchedTerms = []) {
     while (normalizedTerm && offset < lowered.length) {
       const index = lowered.indexOf(normalizedTerm, offset)
       if (index < 0) break
-      matches.push({ start: index, end: index + normalizedTerm.length })
+      matches.push({ start: ranges[index].start, end: ranges[index + normalizedTerm.length - 1].end })
       offset = index + normalizedTerm.length
     }
   }

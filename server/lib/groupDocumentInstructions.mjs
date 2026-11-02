@@ -103,6 +103,8 @@ export function createGroupDocumentInstructionSignature({
         disabledBuiltinSkillIds: [...new Set((newConversation.disabledBuiltinSkillIds ?? []).map(String))].sort(),
         mcpIds: [...new Set((newConversation.mcpIds ?? []).map(String))].sort(),
         workspace: String(newConversation.workspace ?? '').trim() || null,
+        ...(newConversation.claudeAccountId !== undefined ? { claudeAccountId: String(newConversation.claudeAccountId).trim() } : {}),
+        ...(newConversation.claudeAccountNumber !== undefined ? { claudeAccountNumber: newConversation.claudeAccountNumber } : {}),
       }
     : null
   const normalizedReplyTarget = normalizeGroupDocumentReplyTarget(replyTarget)

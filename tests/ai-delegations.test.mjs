@@ -350,6 +350,12 @@ test('같은 위임 ID의 새 대화 실행 설정이 달라지면 다른 요청
     },
   }
   const signature = createAiDelegationRequestSignature(base)
+  const accountSignature = account => createAiDelegationRequestSignature({ ...base, newConversation: { ...base.newConversation, ...account } })
+  assert.equal(signature, accountSignature({ claudeAccountId: undefined, claudeAccountNumber: undefined }))
+  assert.equal(accountSignature({ claudeAccountId: 'default' }), accountSignature({ claudeAccountId: ' default ' }))
+  assert.notEqual(signature, accountSignature({ claudeAccountNumber: 1 }))
+  assert.notEqual(accountSignature({ claudeAccountId: 'default' }), accountSignature({ claudeAccountId: 'max' }))
+  assert.notEqual(accountSignature({ claudeAccountNumber: 1 }), accountSignature({ claudeAccountNumber: 2 }))
   assert.equal(signature, createAiDelegationRequestSignature({
     ...base,
     newConversation: {

@@ -18,7 +18,7 @@ import { createRuntimeLifecycle, installRuntimeShutdown } from './lib/runtimeLif
 import { retryDispatchStatus, throwIfRuntimeStopping } from './lib/runtimeStopping.mjs'
 import { createAiWorkspaceSettings } from './lib/aiWorkspaceSettings.mjs'
 import { DEFAULT_CLAUDE_ACCOUNT_ID, claudeAccountRequestId, claudeAccountRoleForPurpose, createAiClaudeAccountPolicy, findClaudeAccount,
-  formatAiAuthorName, normalizeClaudeAccounts, resolveClaudeAccountSelection } from './lib/aiClaudeAccounts.mjs'
+  formatAiAuthorName, normalizeClaudeAccounts, resolveClaudeAccountSelection, resolveExplicitClaudeAccount } from './lib/aiClaudeAccounts.mjs'
 import { createAiDialogPreferences } from './lib/aiDialogPreferences.mjs'
 import { createStorageResources, storageResourceError } from './lib/storageResources.mjs'
 import { verifiedDoorayApprovalLink } from './lib/doorayApprovalLinkRepair.mjs'
@@ -2635,10 +2635,15 @@ async function delegationCreateSelection(targetCard, requestedSelection, parentA
   selection.agent = { id: resolvedAgent.id, label: resolvedAgent.name }
   selection.model = { id: resolvedModel.id, label: resolvedModel.label }
   selection.providerId = resolvedModel.providerId ?? selection.providerId
-  // Claude 멀티 계정: AI가 만드는 새 대화(위임·그룹 지시)는 '그 외' 용도 정책 계정을 쓰고,
-  // 정책이 없으면 상위 대화의 계정을 물려받는다. 계정이 1개면 값이 비워진다.
+  // 위임·그룹 지시에서 이번 요청에 명시한 계정은 정책보다 우선한다. 생략하면 기존 정책·상속을 따른다.
   // 같은 카드의 대화 인계(inheritClaudeAccount)는 정책을 적용하지 않고 호출자가 정한 계정만 쓴다.
-  if (inheritClaudeAccount && resolvedAgent.backend === 'claude') {
+  const explicitClaudeAccountId = inheritClaudeAccount ? null : resolveExplicitClaudeAccount({
+    backend: resolvedAgent.backend, accounts: resolvedAgent.claudeAccounts,
+    accountId: requestedSelection?.claudeAccountId, accountNumber: requestedSelection?.claudeAccountNumber,
+  })
+  if (explicitClaudeAccountId) {
+    selection.claudeAccountId = explicitClaudeAccountId
+  } else if (inheritClaudeAccount && resolvedAgent.backend === 'claude') {
     const accountId = selection.claudeAccountId || DEFAULT_CLAUDE_ACCOUNT_ID
     if (accountId !== DEFAULT_CLAUDE_ACCOUNT_ID && !resolvedAgent.claudeAccounts?.some((account) => account.id === accountId)) {
       throw cardConversationStartError('CARD_CONVERSATION_START_CLAUDE_ACCOUNT_INVALID',
@@ -11193,6 +11198,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           '승인 근거 전문이 실행 지시에 중복되어 있습니다. approvalEvidence에는 승인 발언·출처·승인 범위만, instruction에는 실행 계획·제외 범위·완료 및 회신 조건만 작성해 다시 요청하세요.',
         )
       }
+      if (strategy === 'resume' && (body.newConversation?.claudeAccountId !== undefined || body.newConversation?.claudeAccountNumber !== undefined)) {
+        return sendGroupDocumentInstructionResponse(response, 400, 'GROUP_DOCUMENT_INSTRUCTION_CLAUDE_ACCOUNT_REQUIRES_NEW',
+          '기존 대화의 Claude 계정은 변경할 수 없습니다. 지정한 계정을 사용하려면 strategy=new로 새 대화를 요청하세요.')
+      }
       return await groupProjects.exclusive(async () => {
         const [parentMap, targetMap] = await Promise.all([readMap(parentMapId), readMap(targetMapId)])
         const parentCard = parentMap?.nodes.find((node) => node.id === source.cardId)
@@ -11512,6 +11521,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
 
       const parentHomeMachineId = conversationHomeMachineId(source.conversationId, source)
+      if (strategy === 'resume' && (body.newConversation?.claudeAccountId !== undefined || body.newConversation?.claudeAccountNumber !== undefined)) {
+        return sendAiDelegationResponse(response, 400, 'AI_DELEGATION_CLAUDE_ACCOUNT_REQUIRES_NEW',
+          '기존 대화의 Claude 계정은 변경할 수 없습니다. 지정한 계정을 사용하려면 strategy=new로 새 대화를 요청하세요.')
+      }
       const requestContext = { requestId: `request-${randomUUID()}`, delegationId: id, mapId, parentMapId,
         parentCardId: source.cardId, parentConversationId: source.conversationId,
         targetCardId, parentHomeMachineId, strategy, instruction, taskSummary, requestedConversationId: conversationId, dispatchStarted: false }

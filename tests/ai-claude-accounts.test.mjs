@@ -12,6 +12,7 @@ import {
   formatAiAuthorName,
   normalizeClaudeAccounts,
   resolveClaudeAccountSelection,
+  resolveExplicitClaudeAccount,
 } from '../server/lib/aiClaudeAccounts.mjs'
 import { mergeAiDelegationSelections } from '../server/lib/aiDelegations.mjs'
 import { normalizeAionUiSubscriptionUsage } from '../server/lib/aionUiSubscriptionUsage.mjs'
@@ -39,11 +40,29 @@ test('그룹 총괄만 총괄 계정 용도이고 나머지 용도는 같은 기
   assert.equal(claudeAccountRole('group-coordination'), 'coordinator')
 })
 
-test('사람의 선택은 정책보다 우선하고 AI가 만드는 대화는 정책을 강제한다', () => {
+test('사람의 선택은 정책보다 우선하고 AI 대화의 기본값은 정책을 우선한다', () => {
   assert.equal(resolveClaudeAccountSelection({ accounts, requested: 'default', policyAccountId: 'max' }), 'default')
   assert.equal(resolveClaudeAccountSelection({ accounts, requested: 'default', policyAccountId: 'max', enforcePolicy: true }), 'max')
   assert.equal(resolveClaudeAccountSelection({ accounts, requested: 'gone', policyAccountId: 'max' }), 'max')
   assert.equal(resolveClaudeAccountSelection({ accounts, requested: 'max' }), 'max')
+})
+
+test('명시한 계정 번호는 실행 머신의 목록에서 찾고 번호를 기본 계정으로 추측하지 않는다', () => {
+  const choose = input => resolveExplicitClaudeAccount({ backend: 'claude', accounts, ...input })
+  assert.equal(choose({}), null)
+  assert.equal(choose({ accountNumber: 1 }), 'default')
+  assert.equal(choose({ accountNumber: 2 }), 'max')
+  assert.equal(choose({ accountId: ' max ' }), 'max')
+  assert.equal(choose({ accountNumber: 1, accounts: [
+    { id: 'max', number: 1 }, { id: 'default', number: 2 },
+  ] }), 'max')
+  assert.equal(choose({ accountNumber: 1, accounts: undefined }), 'default')
+  assert.equal(choose({ accountId: 'default', accounts: undefined }), 'default')
+  for (const input of [{ accountNumber: 3 }, { accountId: 'missing' }, { accountId: '' }, { accountId: null },
+    { accountId: 'x'.repeat(121) }, { accountId: 1 }, { accountNumber: '1' }, { accountNumber: 0 },
+    { accountNumber: 1.5 }, { accountNumber: null }, { accountNumber: 2, accounts: undefined },
+    { accountId: 'max', accounts: undefined }, { accountNumber: 1, backend: 'codex' },
+    { accountId: 'default', accountNumber: 1 }]) assert.throws(() => choose(input), /Claude 계정/)
 })
 
 test('정책 계정이 없거나 목록에 없으면 상위 대화의 계정을 물려받는다', () => {

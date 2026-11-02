@@ -355,6 +355,8 @@ export function createAiDelegationRequestSignature({
         disabledBuiltinSkillIds: normalizedRequestList(newConversation.disabledBuiltinSkillIds),
         mcpIds: normalizedRequestList(newConversation.mcpIds),
         workspace: String(newConversation.workspace ?? '').trim() || null,
+        ...(newConversation.claudeAccountId !== undefined ? { claudeAccountId: String(newConversation.claudeAccountId).trim() } : {}),
+        ...(newConversation.claudeAccountNumber !== undefined ? { claudeAccountNumber: newConversation.claudeAccountNumber } : {}),
       }
     : null
   return createHash('sha256').update(JSON.stringify({

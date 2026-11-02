@@ -1838,7 +1838,7 @@ async function main() {
       mcpIds: z.array(z.string().min(1).max(512)).max(128).optional(),
       workspace: z.string().min(1).max(4096).optional(),
       claudeAccountId: z.string().min(1).max(120).optional().describe('Claude 새 대화의 계정 ID(list_ai_conversations의 claudeAccount.id). 생략하면 이 도구를 호출한 현재 대화와 같은 계정이며 위임용 계정 정책은 적용하지 않음'),
-    }).optional().describe('최초 호출 필수. 그룹 문서 지시의 실행 환경 형식에 claudeAccountId를 더함. 생략한 선택 항목은 이전 대화 설정을 상속'),
+    }).optional().describe('최초 호출 필수. 생략한 선택 항목은 이전 대화 설정을 상속하며, Claude 계정은 claudeAccountId로 지정 가능'),
   }, async ({ mapId, cardId, ...body }) => {
     const origin = delegationOriginForMap(mapId)
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/cards/${encodeURIComponent(cardId)}/ai-conversation-starts`, {
@@ -1930,7 +1930,9 @@ async function main() {
       disabledBuiltinSkillIds: z.array(z.string().min(1).max(512)).max(128).optional(),
       mcpIds: z.array(z.string().min(1).max(512)).max(128).optional(),
       workspace: z.string().min(1).max(4096).optional(),
-    }).optional().describe('new일 때 사용할 문서 담당 AI 실행 환경. 생략하면 대상 루트의 최근 대화 또는 현재 총괄 대화 설정을 상속'),
+      claudeAccountId: z.string().trim().min(1).max(120).optional().describe('사용자가 이번 새 대화에 지정한 Claude 계정 ID. 계정 번호와 둘 중 하나만 지정. 정책보다 우선하며 전역 기본값은 바꾸지 않음'),
+      claudeAccountNumber: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional().describe('사용자가 이번 새 대화에 지정한 Claude 계정 번호(예: 1). 실행 머신의 최신 계정 목록에서 ID로 변환. 번호를 default 계정으로 추측하지 않음. resume에서는 계정을 변경할 수 없으므로 new를 사용'),
+    }).optional().describe('new일 때 사용할 문서 담당 AI 실행 환경. 생략하면 대상 루트의 최근 대화 또는 현재 총괄 대화 설정을 상속. Claude 계정은 명시하면 이번 대화에 적용하며, 생략하면 기존 용도별 계정 정책을 따름'),
   }, async ({ mapId, ...instruction }) => {
     const origin = delegationOriginForMap(mapId)
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/group-document-instructions`, {
@@ -1986,7 +1988,9 @@ async function main() {
       disabledBuiltinSkillIds: z.array(z.string().min(1).max(512)).max(128).optional(),
       mcpIds: z.array(z.string().min(1).max(512)).max(128).optional(),
       workspace: z.string().min(1).max(4096).optional(),
-    }).optional().describe('new일 때 명시적으로 사용할 실행 환경. 생략하면 대상 카드의 최근 대화, 그마저 없으면 현재 상위 대화 설정을 상속'),
+      claudeAccountId: z.string().trim().min(1).max(120).optional().describe('사용자가 이번 위임에 지정한 Claude 계정 ID. 계정 번호와 둘 중 하나만 지정. 정책보다 우선하며 전역 기본값은 바꾸지 않음'),
+      claudeAccountNumber: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional().describe('사용자가 이번 위임에 지정한 Claude 계정 번호(예: 1). 실행 머신의 최신 계정 목록에서 ID로 변환. 번호를 default 계정으로 추측하지 않음. resume에서는 계정을 변경할 수 없으므로 new를 사용'),
+    }).optional().describe('new일 때 명시적으로 사용할 실행 환경. 생략하면 대상 카드의 최근 대화, 그마저 없으면 현재 상위 대화 설정을 상속. Claude 계정은 명시하면 이번 위임에 적용하며, 생략하면 기존 용도별 계정 정책을 따름'),
   }, async ({ mapId, ...delegation }) => {
     const origin = delegationOriginForMap(mapId)
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/ai-delegations`, {

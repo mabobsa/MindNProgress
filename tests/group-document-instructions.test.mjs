@@ -34,6 +34,13 @@ const request = {
 }
 
 test('그룹 문서 지시 키와 요청 서명은 안정적이며 다른 지시를 구분한다', () => {
+  const signature = createGroupDocumentInstructionSignature(request)
+  const accountSignature = account => createGroupDocumentInstructionSignature({ ...request, newConversation: { ...request.newConversation, ...account } })
+  assert.equal(signature, accountSignature({ claudeAccountId: undefined, claudeAccountNumber: undefined }))
+  assert.equal(accountSignature({ claudeAccountId: 'default' }), accountSignature({ claudeAccountId: ' default ' }))
+  assert.notEqual(signature, accountSignature({ claudeAccountNumber: 1 }))
+  assert.notEqual(accountSignature({ claudeAccountId: 'default' }), accountSignature({ claudeAccountId: 'max' }))
+  assert.notEqual(accountSignature({ claudeAccountNumber: 1 }), accountSignature({ claudeAccountNumber: 2 }))
   assert.equal(isValidGroupDocumentInstructionId('group:3-map-lobby-v7'), true)
   assert.equal(isValidGroupDocumentInstructionId('bad key'), false)
   assert.equal(groupDocumentInstructionOperationId('group:3-map-lobby-v7'), 'gdi:group:3-map-lobby-v7')

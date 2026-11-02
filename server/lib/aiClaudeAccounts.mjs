@@ -5,7 +5,7 @@ import { replaceFileWithRetry } from './replaceFileWithRetry.mjs'
 
 // Claude 멀티 계정(AionUi fork). 계정 목록과 번호는 AionCore가 정하고, 이 모듈은
 // 그 번호를 그대로 쓰면서 대화 용도별 기본 계정(역할 정책)만 MnP에 저장한다.
-// 계정이 1개면 AionCore가 목록을 주지 않으므로 모든 함수가 계정을 지정하지 않는다.
+// 계정이 1개면 AionCore가 목록을 주지 않으며, 기본 계정은 실제 생성 요청에서 생략한다.
 
 export const DEFAULT_CLAUDE_ACCOUNT_ID = 'default'
 const ROLES = new Set(['coordinator', 'others'])
@@ -36,7 +36,8 @@ export function claudeAccountRoleForPurpose(purpose) {
 
 /**
  * 새 대화에 사용할 계정. 사람의 선택(`requested`)은 정책 기본값보다 우선하고,
- * AI가 만드는 대화(`enforcePolicy`)는 설정된 정책을 따른다. 목록에 없는 값은
+ * AI 대화의 기본값(`enforcePolicy`)은 설정된 정책을 따른다. 이번 요청의 명시적
+ * 계정은 resolveExplicitClaudeAccount로 먼저 검증·적용한다. 기본값 목록에 없는 값은
  * 버리며, 결과가 없으면 기본 계정(키 없음)으로 만든다.
  */
 export function resolveClaudeAccountSelection({ accounts, requested, policyAccountId, enforcePolicy = false }) {
@@ -48,6 +49,25 @@ export function resolveClaudeAccountSelection({ accounts, requested, policyAccou
   if (valid(requestedId)) return requestedId
   if (valid(policyId)) return policyId
   return null
+}
+
+/** 이번 새 대화에 명시한 계정만 검증한다. 잘못된 선택은 정책 계정으로 대체하지 않는다. */
+export function resolveExplicitClaudeAccount({ backend, accounts, accountId, accountNumber }) {
+  if (accountId === undefined && accountNumber === undefined) return null
+  if (backend !== 'claude') throw new Error('Claude 계정은 Claude Code 새 대화에만 지정할 수 있습니다.')
+  if (accountId !== undefined && accountNumber !== undefined) throw new Error('Claude 계정 ID와 번호 중 하나만 지정하세요.')
+  if (accountId !== undefined && (typeof accountId !== 'string' || !accountId.trim() || accountId.trim().length > MAX_ID_LENGTH)) {
+    throw new Error('Claude 계정 ID는 1~120자의 문자열이어야 합니다.')
+  }
+  if (accountNumber !== undefined && (!Number.isSafeInteger(accountNumber) || accountNumber < 1)) {
+    throw new Error('Claude 계정 번호는 1 이상의 정수여야 합니다.')
+  }
+  const id = accountId?.trim()
+  const available = Array.isArray(accounts) && accounts.length >= 2 ? accounts
+    : [{ id: DEFAULT_CLAUDE_ACCOUNT_ID, number: 1 }]
+  const account = available.find(item => accountNumber !== undefined ? item.number === accountNumber : item.id === id)
+  if (!account) throw new Error('실행 머신에서 지정한 Claude 계정을 확인할 수 없습니다. 다른 계정으로 변경하지 않았습니다. 계정 목록을 확인하세요.')
+  return account.id
 }
 
 /** AionCore 대화 생성 요청에 넣을 값. 기본 계정이면 넣지 않아 단일 계정 요청과 같다. */

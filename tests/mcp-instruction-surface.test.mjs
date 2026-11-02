@@ -58,10 +58,14 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     // 2026-10-29: list_ai_delegations 응답 예산의 회수 경로로 delegationId를 추가했다.
     // 2026-11-01: 사용자 승인으로 자기 카드 후속 대화 도구 하나를 추가한다. 기존 60개 계약은 유지한다.
     // 2026-11-01: 같은 도구의 newConversation에 Claude 계정 선택(claudeAccountId)을 추가한다. 기존 60개 계약은 유지한다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'c1583afb2823b6f4b61515f72e7916609410038d5e2b59ef53911fb19f1e59dd')
+    // 2026-11-02(130de8d): delegate_ai_work·send_group_document_instruction의 newConversation에 Claude 계정 번호·ID
+    //   (claudeAccountNumber·claudeAccountId)를 추가하고 start_card_conversation의 계정 안내를 정리했다. 도구 개수는 유지한다.
+    // 2026-11-02(b1b2de6): recover_ai_delegation 설명에 통합 후보의 Git 상태 조회 실패 복구를 추가했다.
+    // 2026-11-03(6b032e2): checkpoint_ai_workspace의 commit-changes paths 설명에 폴더 범위와 삭제 포함을 추가했다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'e104565567f8231877174581df5a64ec1176f4e439bf885a4c24174736e58225')
     const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
-    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'fb4e0692df19eadcc8bd9ae28773ee87da0b3dc6e3d0f96800b5278809a86512')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 225)
+    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '993c671b3640b055ac9fb5b486b252f34caf8507b5c19f1fbcabb737ca6f18f6')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 229)
     const handoff = tools.find((tool) => tool.name === 'mindnprogress_start_card_conversation')
     assert.deepEqual(handoff.inputSchema.required, ['mapId', 'cardId', 'requestId'])
     assert.equal(handoff.inputSchema.properties.resultOnly.type, 'boolean')
@@ -124,7 +128,7 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     assert.equal(Object.hasOwn(getDocumentSchema.properties.view, 'default'), false, 'view 기본값은 서버에서 full로 처리한다')
     assert.match(descriptions.get('mindnprogress_restore_history'), /복원 직전 view를 생략한 get_document\(full\)로 현재 문서를 백업/)
     assert.match(descriptions.get('mindnprogress_recover_ai_delegation'), /복구.*mindnprogress_list_ai_delegations.*상태.*확인/s)
-    assert.match(descriptions.get('mindnprogress_recover_ai_delegation'), /index.lock 또는 main HEAD 변경.*하위 AI 작업은 다시 실행하지 않습니다.*잠금은 자동 삭제하지.*최신 main 기준으로 통합/s)
+    assert.match(descriptions.get('mindnprogress_recover_ai_delegation'), /index.lock, main HEAD 변경 또는 통합 후보의 Git 상태 조회 실패.*하위 AI 작업은 다시 실행하지 않습니다.*잠금은 자동 삭제하지.*최신 main 기준으로 통합/s)
     assert.match(descriptions.get('mindnprogress_search_content'), /ranked.*catalog.*page.hasMore.*coverage/s)
     const groupInstruction = descriptions.get('mindnprogress_send_group_document_instruction')
     assert.ok(groupInstruction.startsWith(baselineDescriptions.get('mindnprogress_send_group_document_instruction').slice(1, -1).split('완료 보고는 기본적으로')[0]), '정정 전 설명의 앞부분은 기준선과 같다.')

@@ -553,7 +553,7 @@
                   },
                   "minItems": 1,
                   "maxItems": 2000,
-                  "description": "검증 전에 고정할 의도된 변경의 projectRoot 상대 경로. git status를 확인해 실제 수정·추가한 파일만 전달"
+                  "description": "검증 전에 고정할 의도된 추가·수정·삭제의 projectRoot 상대 파일 또는 폴더 경로. 폴더는 하위의 모든 실제 변경 파일을 포함하므로 git status로 범위를 확인하세요. 입력 범위는 최대 2,000개이며 폴더에서 확장된 파일 수는 이 제한에 포함하지 않습니다. 와일드카드는 해석하지 않습니다."
                 },
                 "commitMessage": {
                   "type": "object",
@@ -994,6 +994,18 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 4096
+            },
+            "claudeAccountId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "description": "사용자가 이번 위임에 지정한 Claude 계정 ID. 계정 번호와 둘 중 하나만 지정. 정책보다 우선하며 전역 기본값은 바꾸지 않음"
+            },
+            "claudeAccountNumber": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991,
+              "description": "사용자가 이번 위임에 지정한 Claude 계정 번호(예: 1). 실행 머신의 최신 계정 목록에서 ID로 변환. 번호를 default 계정으로 추측하지 않음. resume에서는 계정을 변경할 수 없으므로 new를 사용"
             }
           },
           "required": [
@@ -1001,7 +1013,7 @@
             "modelId"
           ],
           "additionalProperties": false,
-          "description": "new일 때 명시적으로 사용할 실행 환경. 생략하면 대상 카드의 최근 대화, 그마저 없으면 현재 상위 대화 설정을 상속"
+          "description": "new일 때 명시적으로 사용할 실행 환경. 생략하면 대상 카드의 최근 대화, 그마저 없으면 현재 상위 대화 설정을 상속. Claude 계정은 명시하면 이번 위임에 적용하며, 생략하면 기존 용도별 계정 정책을 따름"
         }
       },
       "required": [
@@ -2624,7 +2636,7 @@
   },
   {
     "name": "mindnprogress_recover_ai_delegation",
-    "description": "원래 맡긴 범위에서 현재 상태와 미완료 부분을 확인하세요. 그룹 총괄 AI가 범위를 변경하려면 사용자 승인을 먼저 확인합니다. AionCore 재시작, 연결 끊김 또는 필수 체크포인트·통합 실패로 recovery-required 또는 integration-recovery-required가 된 AI 위임을 기존 대화와 기존 작업공간에서 명시적으로 재개합니다. recovery.recommendedAction=resume-existing인 failed 또는 parent-wake-failed는 list_ai_delegations가 recoveryAvailable=true를 반환하고 사용자가 한도·모델 용량 부족 해소를 확인했거나 연결 중단(upstream-interrupted)·실행 전 DB 접수 오류(dispatch-database-transient)의 복구를 승인한 경우 같은 방식으로 재개합니다. 원 실행이 만료됐으면 원 지시·계정·카드·lease를 서버가 대사하며 불확실한 증거로 격리를 해제하지 않습니다. waiting-usage-limit, waiting-rate-limit, waiting-model-capacity도 같은 조건으로 재개하며 worker가 없는 문서 조정 위임도 지원합니다. waiting-child-resume은 사용자가 중지 후 재개를 요청한 경우에만 처리합니다. 로컬 변경으로 cherry-pick이 실패하거나 통합 작업공간의 index.lock 또는 main HEAD 변경으로 반영이 중단된 완료 위임은 recovery.recommendedAction=retry-integration일 때 지원합니다. 차단 원인 해소 후 기존 체크포인트·소유권·통합 후보를 검증하여 통합 대기로 복구하며 하위 AI 작업은 다시 실행하지 않습니다. Git 잠금은 자동 삭제하지 않고, main이 진행됐다면 이전 후보를 보존한 별도 브랜치에서 최신 main 기준으로 통합합니다. 접수 여부가 불명확하면 새 실행을 만들지 말고 mindnprogress_refresh_ai_delegation으로 확인하세요. 원래 지시를 자동 재생하지 않으며, 현재 카드·Git·작업공간 상태를 확인한 뒤 미완료 부분만 수행하도록 새 복구 지시를 전달합니다. 통합 재시도는 요청 ID와 queued 접수 기록을 먼저 반환하고 긴 Git 검증을 비동기로 수행합니다. 접수는 통합 성공이 아닙니다. 응답 유실 시 재호출하지 말고 상태를 조회하며 같은 요청은 같은 recoveryRequestId로 확인합니다. failed receipt의 차단 원인을 해소한 뒤 사용자가 다시 승인한 재시도에는 새 recoveryRequestId를 사용하세요. 실행 턴 없이 정확한 DB 트랜잭션 중첩 오류로 failed-clean 반환된 요청은 원 dispatch·대화·lease·무변경을 검증한 경우만 수동 재개하며 만료를 추정하지 않습니다. 복구 호출 후 mindnprogress_list_ai_delegations로 실제 상태를 확인하세요.",
+    "description": "원래 맡긴 범위에서 현재 상태와 미완료 부분을 확인하세요. 그룹 총괄 AI가 범위를 변경하려면 사용자 승인을 먼저 확인합니다. AionCore 재시작, 연결 끊김 또는 필수 체크포인트·통합 실패로 recovery-required 또는 integration-recovery-required가 된 AI 위임을 기존 대화와 기존 작업공간에서 명시적으로 재개합니다. recovery.recommendedAction=resume-existing인 failed 또는 parent-wake-failed는 list_ai_delegations가 recoveryAvailable=true를 반환하고 사용자가 한도·모델 용량 부족 해소를 확인했거나 연결 중단(upstream-interrupted)·실행 전 DB 접수 오류(dispatch-database-transient)의 복구를 승인한 경우 같은 방식으로 재개합니다. 원 실행이 만료됐으면 원 지시·계정·카드·lease를 서버가 대사하며 불확실한 증거로 격리를 해제하지 않습니다. waiting-usage-limit, waiting-rate-limit, waiting-model-capacity도 같은 조건으로 재개하며 worker가 없는 문서 조정 위임도 지원합니다. waiting-child-resume은 사용자가 중지 후 재개를 요청한 경우에만 처리합니다. 로컬 변경으로 cherry-pick이 실패하거나 통합 작업공간의 index.lock, main HEAD 변경 또는 통합 후보의 Git 상태 조회 실패로 반영이 중단된 완료 위임은 recovery.recommendedAction=retry-integration일 때 지원합니다. 차단 원인 해소 후 기존 체크포인트·소유권·통합 후보를 검증하여 통합 대기로 복구하며 하위 AI 작업은 다시 실행하지 않습니다. Git 잠금은 자동 삭제하지 않고, main이 진행됐다면 이전 후보를 보존한 별도 브랜치에서 최신 main 기준으로 통합합니다. 접수 여부가 불명확하면 새 실행을 만들지 말고 mindnprogress_refresh_ai_delegation으로 확인하세요. 원래 지시를 자동 재생하지 않으며, 현재 카드·Git·작업공간 상태를 확인한 뒤 미완료 부분만 수행하도록 새 복구 지시를 전달합니다. 통합 재시도는 요청 ID와 queued 접수 기록을 먼저 반환하고 긴 Git 검증을 비동기로 수행합니다. 접수는 통합 성공이 아닙니다. 응답 유실 시 재호출하지 말고 상태를 조회하며 같은 요청은 같은 recoveryRequestId로 확인합니다. failed receipt의 차단 원인을 해소한 뒤 사용자가 다시 승인한 재시도에는 새 recoveryRequestId를 사용하세요. 실행 턴 없이 정확한 DB 트랜잭션 중첩 오류로 failed-clean 반환된 요청은 원 dispatch·대화·lease·무변경을 검증한 경우만 수동 재개하며 만료를 추정하지 않습니다. 복구 호출 후 mindnprogress_list_ai_delegations로 실제 상태를 확인하세요.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3268,6 +3280,18 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 4096
+            },
+            "claudeAccountId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "description": "사용자가 이번 새 대화에 지정한 Claude 계정 ID. 계정 번호와 둘 중 하나만 지정. 정책보다 우선하며 전역 기본값은 바꾸지 않음"
+            },
+            "claudeAccountNumber": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991,
+              "description": "사용자가 이번 새 대화에 지정한 Claude 계정 번호(예: 1). 실행 머신의 최신 계정 목록에서 ID로 변환. 번호를 default 계정으로 추측하지 않음. resume에서는 계정을 변경할 수 없으므로 new를 사용"
             }
           },
           "required": [
@@ -3275,7 +3299,7 @@
             "modelId"
           ],
           "additionalProperties": false,
-          "description": "new일 때 사용할 문서 담당 AI 실행 환경. 생략하면 대상 루트의 최근 대화 또는 현재 총괄 대화 설정을 상속"
+          "description": "new일 때 사용할 문서 담당 AI 실행 환경. 생략하면 대상 루트의 최근 대화 또는 현재 총괄 대화 설정을 상속. Claude 계정은 명시하면 이번 대화에 적용하며, 생략하면 기존 용도별 계정 정책을 따름"
         }
       },
       "required": [
@@ -3488,7 +3512,7 @@
             "modelId"
           ],
           "additionalProperties": false,
-          "description": "최초 호출 필수. 그룹 문서 지시의 실행 환경 형식에 claudeAccountId를 더함. 생략한 선택 항목은 이전 대화 설정을 상속"
+          "description": "최초 호출 필수. 생략한 선택 항목은 이전 대화 설정을 상속하며, Claude 계정은 claudeAccountId로 지정 가능"
         }
       },
       "required": [

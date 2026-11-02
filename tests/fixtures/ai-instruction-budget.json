@@ -1,15 +1,15 @@
 {
   "schemaVersion": 4,
   "toolCount": 61,
-  "schemaDescriptionCount": 225,
+  "schemaDescriptionCount": 229,
   "sourceConstantChars": 616,
   "sourceConstantSha256": "cd24be035e93b5923ec24f3148330ba5aac2c4f3a71c9851861b4e66e8c57cdd",
   "serverInstructionsChars": 922,
   "serverInstructionsSha256": "8b9f506f7079ef160331fdfecdc0cd3ab77d9a4814c087c97389c43a6da74844",
   "toolNameChars": 2059,
-  "toolDescriptionChars": 20316,
-  "inputSchemaJsonChars": 57393,
-  "rawRegisteredSurfaceChars": 80690,
+  "toolDescriptionChars": 20336,
+  "inputSchemaJsonChars": 58362,
+  "rawRegisteredSurfaceChars": 81679,
   "rawRegisteredSurfaceMeaning": "initialize instructions와 도구 이름·설명·inputSchema JSON 문자열 길이의 합계입니다. 전송 JSON이나 호스트 총주입량이 아닙니다.",
   "hostMetadata": {
     "measured": false,
@@ -20,7 +20,7 @@
     "perToolWrapperChars": 35,
     "note": "과거 캡처·상수이며 이번 전체 주입량 실측값이 아닙니다."
   },
-  "dynamicTotalChars": 41985,
+  "dynamicTotalChars": 42293,
   "maxDynamicChars": 4804,
   "repetitionCounts": {
     "contextBootstrap": 12,
@@ -99,8 +99,8 @@
     },
     {
       "name": "worker-new-lease",
-      "chars": 3457,
-      "sha256": "3f119c1b1e742c254b8d6ecd2afcc6bbd54cee48f3450724e38a35047cccf451"
+      "chars": 3611,
+      "sha256": "714a812263e41c083421269e4f5b85fca9b8e2f7548d4366a07a6fc5511ae862"
     },
     {
       "name": "worker-resume",
@@ -124,8 +124,8 @@
     },
     {
       "name": "user-stop-recovery",
-      "chars": 4247,
-      "sha256": "06a6aa6ee7510ff97978aaab693cb3d1e13af2efcc5a44e626c12b2af88521cb"
+      "chars": 4401,
+      "sha256": "65ac171c286a2a0b691ba90448f69cccc46f5f582906a3c330d5162d094b2c74"
     },
     {
       "name": "reconstruction",

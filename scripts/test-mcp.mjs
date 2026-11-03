@@ -1239,6 +1239,30 @@ async function main() {
     assert.equal(linkedConversations[0].agent.label, 'Claude Code')
     assert.equal(linkedConversations[0].model.label, 'Claude Test Model')
     assert.equal(linkedConversations[0].startedBy.label, 'MCP 테스트 편집자')
+    // 자기 카드 대화 인계: 성공 경로는 tests/card-conversation-starts-api.test.mjs가 실제 MCP로 검증한다.
+    // 여기서는 서버가 저장 전에 거부하는 경로만 호출해 MCP 등록·인자 형식·API 연결·자기 카드 판정을 확인한다.
+    // conversation-test의 연결 기록이 task-a를 가리키는 이 시점에 둔다. 이후 단계는 대화를 다른 문서에 다시 연결한다.
+    const handoffDispatchCount = mockAionUi.dispatchRequests.length
+    const handoffRequest = {
+      mapId,
+      cardId: 'task-a',
+      requestId: 'mcp-test-handoff-1',
+      predecessorConversationId: 'conversation-test',
+      newConversation: { agentId: 'agent-claude-test', modelId: 'claude-test-model' },
+      initialMessage: 'MCP 검증용 인계 원문',
+      decisionReason: 'MCP 도구 연결 검증',
+      approvalEvidence: '검증 시나리오이며 실제 인계를 만들지 않는다.',
+    }
+    await invokeExpectError('mindnprogress_start_card_conversation', { ...handoffRequest, cardId: 'branch-a' },
+      /자기 원본 카드/, 'CARD_CONVERSATION_START_OWN_CARD_REQUIRED')
+    await invokeExpectError('mindnprogress_start_card_conversation', { mapId, cardId: 'task-a', requestId: 'mcp-test-handoff-unknown', resultOnly: true },
+      /인계 요청을 찾을 수 없습니다/, 'CARD_CONVERSATION_START_NOT_FOUND')
+    await invokeExpectError('mindnprogress_start_card_conversation', { ...handoffRequest, predecessorConversationId: 'conversation-other' },
+      /이전 대화 ID가 도구를 호출한 대화와 다릅니다/, 'CARD_CONVERSATION_START_PREDECESSOR_MISMATCH')
+    assert.equal(mockAionUi.dispatchRequests.length, handoffDispatchCount, '거부된 인계가 새 대화를 만들면 안 됩니다.')
+    const handoffDocument = await invoke('mindnprogress_get_document', { mapId })
+    assert.equal(handoffDocument.map.nodes.find((node) => node.id === 'task-a')?.data.aiConversationId, 'conversation-test', '거부된 인계가 대표 대화를 바꾸면 안 됩니다.')
+
     const conversationListResponse = await fetch(`${apiBaseUrl}/api/maps/${encodeURIComponent(mapId)}/cards/task-a/ai-conversations`, {
       headers: { Cookie: editorSessionCookie },
     })

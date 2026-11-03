@@ -2979,7 +2979,7 @@
   },
   {
     "name": "mindnprogress_search_content",
-    "description": "현재 호출 주체가 열람할 수 있는 모든 활성 문서의 사용자 콘텐츠를 검색합니다. ranked는 관련도 순 후보와 일치 근거를 반환하고, catalog는 정확성·전수성이 필요한 조사에서 모든 카드의 간결한 카탈로그를 커서로 순회합니다. 검색 결과는 후보이므로 담당 범위와 현재 상태를 확정하기 전에 mindnprogress_get_card로 최신 원문을 확인하세요. 상위 N건에서 조기 종료하지 말고 page.hasMore와 coverage를 확인하며, 의미가 다른 표현은 문자열 검색으로 보장되지 않으므로 필요하면 검색어·필터를 확장하거나 catalog로 전환하세요.",
+    "description": "현재 호출 주체가 열람할 수 있는 모든 활성 문서의 사용자 콘텐츠를 검색합니다. ranked는 관련도 순 후보와 일치 근거를 반환하고, catalog는 정확성·전수성이 필요한 조사에서 모든 카드의 간결한 카탈로그를 커서로 순회합니다. 검색 결과는 후보이므로 담당 범위와 현재 상태를 확정하기 전에 mindnprogress_get_card로 최신 원문을 확인하세요. 상위 N건에서 조기 종료하지 말고 page.hasMore와 coverage를 확인하며, 의미가 다른 표현은 문자열 검색으로 보장되지 않으므로 필요하면 검색어·필터를 확장하거나 catalog로 전환하세요. 응답이 약 4만 자를 넘으면 요청한 limit보다 적은 앞쪽 결과만 반환하고 page.limit·nextCursor를 반환한 결과 기준으로 맞추며 응답 앞쪽 responseBudget에 표기합니다. 건너뛴 결과는 없으니 page.hasMore가 true이면 nextCursor로 이어서 조회하세요.",
     "inputSchema": {
       "type": "object",
       "properties": {

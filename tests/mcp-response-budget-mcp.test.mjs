@@ -364,3 +364,46 @@ test('실제 MCP의 list_documents·list_group_document_instructions는 예산�
   assert.equal(single.responseBudget, undefined, '한 건 조회는 줄이지 않는다')
   assert.equal(single.instructions[0].response, e2eInstructionResponse(Number(omittedId.slice(-2))))
 })
+
+test('실제 MCP의 search_content는 예산을 넘으면 limit을 줄이고 nextCursor로 빠짐없이 이어 읽게 한다', { timeout: 120000 }, async (t) => {
+  // 문서 6개 × 카드 20장의 설명이 모두 "시험 본문"을 포함하므로 ranked limit 100 응답이 예산을 넘는다.
+  const api = await storageApi(t, { documents: 6 })
+  const client = new Client({ name: 'search-budget-test', version: '1' })
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['mcp/server.mjs'],
+    cwd: process.env.MNP_STORAGE_TEST_SOURCE_ROOT || path.resolve(import.meta.dirname, '..'), env: api.env, stderr: 'pipe' })
+  t.after(async () => { await client.close() })
+  await client.connect(transport)
+  const invoke = async (name, args) => {
+    const result = await client.callTool({ name: `mindnprogress_${name}`, arguments: args })
+    assert.notEqual(result.isError, true, JSON.stringify(result))
+    const text = result.content.find((part) => part.type === 'text').text
+    return { value: JSON.parse(text), chars: text.length }
+  }
+  const search = { query: '시험 본문', mode: 'ranked', fields: ['description'] }
+  const { value: small } = await invoke('search_content', { ...search, limit: 25 })
+  assert.equal(small.responseBudget, undefined, '예산 안의 응답은 그대로 둔다')
+  const { value: first, chars } = await invoke('search_content', { ...search, limit: 100 })
+  assert.ok(first.responseBudget, `limit 100 응답이 예산을 넘어야 합니다(${chars}자).`)
+  assert.equal(Object.keys(first)[0], 'responseBudget')
+  assert.equal(first.responseBudget.returnedChars, chars)
+  assert.ok(chars <= 40000, `search_content ${chars}자`)
+  assert.equal(first.responseBudget.requestedLimit, 100)
+  assert.equal(first.page.limit, first.results.length)
+  assert.equal(first.responseBudget.deferredResults, 100 - first.results.length)
+  assert.equal(first.page.hasMore, true)
+  assert.ok(first.guide?.completeness, 'MCP 안내는 그대로 남는다')
+  const key = (item) => `${item.mapId}|${item.cardId}|${item.field}`
+  const keys = first.results.map(key)
+  let cursor = first.page.nextCursor
+  for (let pages = 0; cursor && pages < 10; pages++) {
+    const { value: page, chars: pageChars } = await invoke('search_content', { ...search, limit: 100, cursor })
+    assert.ok(pageChars <= 40000, `다음 페이지 ${pageChars}자`)
+    keys.push(...page.results.map(key))
+    cursor = page.page.hasMore ? page.page.nextCursor : null
+  }
+  assert.equal(cursor, null)
+  assert.equal(keys.length, first.page.total)
+  assert.equal(new Set(keys).size, keys.length, '건너뛰거나 겹친 결과가 없다')
+  assert.deepEqual([...keys].sort(), Array.from({ length: 6 }, (_, documentIndex) => Array.from({ length: 20 }, (_, cardIndex) =>
+    `map-bench-${documentIndex}|card-${cardIndex}|description`)).flat().sort())
+})

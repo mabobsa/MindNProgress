@@ -26,4 +26,10 @@ GET /api/search?q=전체+검색&mode=ranked&field=description&limit=25
 GET /api/search?mode=catalog&groupId=group-id&limit=100&cursor=...
 ```
 
+## MCP 응답 크기
+
+`mindnprogress_search_content` 응답이 약 4만 자를 넘으면 MCP가 결과 내용은 줄이지 않고 한 번에 돌려주는 결과 수만 줄입니다(`mcp/searchBudget.mjs`). 서버 커서는 결과 집합의 지문과 다음 위치를 담으므로, MCP가 결과를 잘라 원래 커서를 넘기면 잘라낸 결과를 건너뜁니다. 그래서 앞쪽 결과 중 예산에 드는 개수를 정한 뒤 같은 조건·커서로 `limit`만 줄여 서버에 다시 요청하고, 서버가 만든 `page.nextCursor`를 그대로 돌려줍니다. 응답 맨 앞의 `responseBudget`에는 요청한 개수(`requestedLimit`), 돌려준 개수(`returnedLimit`), 다음 페이지로 미룬 개수(`deferredResults`)와 최종 글자 수(`returnedChars`)를 적습니다. 재요청 사이에 데이터가 바뀌어 결과가 커지면 다시 개수를 정하고, 커서가 맞지 않으면 서버가 기존처럼 거부합니다. 화면의 전체 검색에는 적용하지 않습니다.
+
+검색 사용을 권하는 안내는 `read_me_first`·`get_context` 등에 넣지 않습니다. 필요하지 않은 호출이 늘어나는 것을 막기 위한 결정이며, 안내는 도구 설명과 검색 응답의 `guide`에만 둡니다.
+
 서버와 MCP를 업데이트한 뒤에는 서버 재시작과 MCP 재연결이 필요합니다. 기존 문서와 카드는 자동으로 수정하지 않습니다.

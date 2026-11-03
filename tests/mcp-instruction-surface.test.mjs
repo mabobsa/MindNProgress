@@ -130,6 +130,8 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     assert.match(descriptions.get('mindnprogress_recover_ai_delegation'), /복구.*mindnprogress_list_ai_delegations.*상태.*확인/s)
     assert.match(descriptions.get('mindnprogress_recover_ai_delegation'), /index.lock, main HEAD 변경 또는 통합 후보의 Git 상태 조회 실패.*하위 AI 작업은 다시 실행하지 않습니다.*잠금은 자동 삭제하지.*최신 main 기준으로 통합/s)
     assert.match(descriptions.get('mindnprogress_search_content'), /ranked.*catalog.*page.hasMore.*coverage/s)
+    // 2026-11-03: 응답 예산은 동작 설명만 덧붙인다. 사용을 권하는 안내는 넣지 않는다(read_me_first·get_context에도 추가하지 않음).
+    assert.match(descriptions.get('mindnprogress_search_content'), / 응답이 약 4만 자를 넘으면 요청한 limit보다 적은 앞쪽 결과만 반환하고 page\.limit·nextCursor를 반환한 결과 기준으로 맞추며 응답 앞쪽 responseBudget에 표기합니다\. 건너뛴 결과는 없으니 page\.hasMore가 true이면 nextCursor로 이어서 조회하세요\.$/)
     const groupInstruction = descriptions.get('mindnprogress_send_group_document_instruction')
     assert.ok(groupInstruction.startsWith(baselineDescriptions.get('mindnprogress_send_group_document_instruction').slice(1, -1).split('완료 보고는 기본적으로')[0]), '정정 전 설명의 앞부분은 기준선과 같다.')
     assert.match(groupInstruction, /첫 응답 턴만 replied 상태와 response로 기록.*자동 재개하거나 이후 턴의 보고를 전달하지 않습니다.*session-message로 회신 대상 대화에 직접.*기본 대상은 현재 총괄 대화.*replyTarget을 explicit/s)

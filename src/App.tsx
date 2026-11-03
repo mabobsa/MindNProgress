@@ -625,6 +625,8 @@ type AionUiSubscriptionUsage = {
     state: 'loading' | 'ready' | 'unavailable'
     updatedAt: string | null
     stale: boolean
+    /** 5시간 창. 요금제에 따라 없을 수 있고(null), 이 필드가 생기기 전 서버 응답에는 키가 없다. */
+    session?: (SubscriptionUsageWindow & { windowDurationMins: number | null }) | null
     weekly: (SubscriptionUsageWindow & { windowDurationMins: number | null }) | null
     limitReached: boolean
   } | null
@@ -1419,9 +1421,12 @@ function AionUiSubscriptionUsageIndicator({ onOpen }: { onOpen?: () => void }) {
   const pillClaudeEntry = mostUsedClaudeUsageEntry(visibleClaudeEntries)
   const pillClaudeEntries = pillClaudeEntry ? [pillClaudeEntry] : []
   const showClaude = visibleClaudeEntries.length > 0
-  const showCodex = codexLoading || Boolean(codex?.state === 'ready' && !codex.stale && codex.weekly)
+  // Codex 5시간 창은 요금제에 따라 없다. 없으면 주간만 쓰는 기존 표시와 같다.
+  const codexSession = codex?.session ?? null
+  const showCodex = codexLoading || Boolean(codex?.state === 'ready' && !codex.stale && (codexSession || codex.weekly))
   const visibleUsageValues = [
     ...visibleClaudeEntries.flatMap(({ value }) => [value?.session?.usedPercent, value?.weekly?.usedPercent]),
+    showCodex ? codexSession?.usedPercent : null,
     showCodex ? codex?.weekly?.usedPercent : null,
     showCodex && codex?.limitReached ? 100 : null,
   ].filter((value): value is number => Number.isFinite(value))
@@ -1442,9 +1447,14 @@ function AionUiSubscriptionUsageIndicator({ onOpen }: { onOpen?: () => void }) {
         ? claudeTitle(entry.name, entry.value)
         : `${entry.name} 사용량 정보 없음`).join('\n\n')
     : claudeTitle(name, value)
-  const codexTitle = codex?.state === 'ready' && codex.weekly
-    ? `Codex 사용량\n주간 ${Math.round(codex.weekly.usedPercent)}% · ${usageResetLabel(codex.weekly.resetsAt)}`
+  const codexTitle = codex?.state === 'ready' && (codexSession || codex.weekly)
+    ? [
+        'Codex 사용량',
+        codexSession ? `5시간 ${Math.round(codexSession.usedPercent)}% · ${usageResetLabel(codexSession.resetsAt)}` : null,
+        codex.weekly ? `주간 ${Math.round(codex.weekly.usedPercent)}% · ${usageResetLabel(codex.weekly.resetsAt)}` : null,
+      ].filter(Boolean).join('\n')
     : 'Codex 사용량을 조회하고 있습니다.'
+  const codexTone = usageTone(codexSession?.usedPercent, codex?.weekly?.usedPercent, codex?.limitReached ? 100 : null)
 
   return (
     <div className="subscription-usage-summary" aria-label="AI 구독 사용량" ref={containerRef}>
@@ -1462,11 +1472,16 @@ function AionUiSubscriptionUsageIndicator({ onOpen }: { onOpen?: () => void }) {
             ].filter(Boolean).join(' · ')}</span>}
       </div>)}
       {showCodex && <div
-        className={`subscription-usage-pill codex ${usageTone(codex?.weekly?.usedPercent, codex?.limitReached ? 100 : null)}`}
+        className={`subscription-usage-pill codex ${codexTone}`}
         title={codexTitle}
       >
         <strong>Codex</strong>
-        {codexLoading ? <LoadingUsageDots /> : <span>{Math.round(codex?.weekly?.usedPercent ?? 0)}%</span>}
+        {codexLoading
+          ? <LoadingUsageDots />
+          : <span>{[
+              codexSession ? `${Math.round(codexSession.usedPercent)}%` : null,
+              codex?.weekly ? `${Math.round(codex.weekly.usedPercent)}%` : null,
+            ].filter(Boolean).join(' · ')}</span>}
       </div>}
       <button
         className={`subscription-usage-mobile-trigger ${summaryTone}`}
@@ -1508,11 +1523,14 @@ function AionUiSubscriptionUsageIndicator({ onOpen }: { onOpen?: () => void }) {
                   {value?.weekly && <span><b>주간 {Math.round(value.weekly.usedPercent)}%</b><small>{usageResetLabel(value.weekly.resetsAt)}</small></span>}
                 </div>}
           </section>)}
-          {showCodex && <section className={usageTone(codex?.weekly?.usedPercent, codex?.limitReached ? 100 : null)}>
+          {showCodex && <section className={codexTone}>
             <strong>Codex</strong>
             {codexLoading
               ? <LoadingUsageDots />
-              : codex?.weekly && <div><span><b>주간 {Math.round(codex.weekly.usedPercent)}%</b><small>{usageResetLabel(codex.weekly.resetsAt)}</small></span></div>}
+              : (codexSession || codex?.weekly) && <div>
+                  {codexSession && <span><b>5시간 {Math.round(codexSession.usedPercent)}%</b><small>{usageResetLabel(codexSession.resetsAt)}</small></span>}
+                  {codex?.weekly && <span><b>주간 {Math.round(codex.weekly.usedPercent)}%</b><small>{usageResetLabel(codex.weekly.resetsAt)}</small></span>}
+                </div>}
           </section>}
         </div>
       </div>}

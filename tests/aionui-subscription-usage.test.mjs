@@ -105,3 +105,31 @@ test('정의되지 않은 상태와 잘못된 값을 외부 응답에 그대로 
   assert.equal(usage.claude.session.usedPercent, 100)
   assert.equal(usage.codex.weekly.resetsAt, null)
 })
+
+test('Codex 5시간 창은 weekly와 같은 규칙으로 정규화하고 없거나 null이면 null로 둔다', () => {
+  const withSession = readySnapshot()
+  withSession.codex.session = { usedPercent: 49, resetsAt: '2026-07-31T05:12:00Z', windowDurationMins: 300 }
+  const usage = normalizeAionUiSubscriptionUsage(withSession, { now: NOW })
+  assert.deepEqual(usage.codex.session, { usedPercent: 49, resetsAt: '2026-07-31T05:12:00.000Z', windowDurationMins: 300 })
+  assert.equal(usage.codex.weekly.usedPercent, 31)
+
+  // 이 필드가 생기기 전 스냅숏(키 없음)과 요금제상 5시간 창이 없는 스냅숏(null)은 같은 결과다.
+  const missing = normalizeAionUiSubscriptionUsage(readySnapshot(), { now: NOW })
+  const nullSession = readySnapshot()
+  nullSession.codex.session = null
+  assert.equal(missing.codex.session, null)
+  assert.deepEqual(normalizeAionUiSubscriptionUsage(nullSession, { now: NOW }), missing)
+  // 5시간 창이 없으면 다른 Codex 값은 그대로다.
+  const { session: _session, ...withoutSession } = missing.codex
+  assert.deepEqual(withoutSession, { state: 'ready', updatedAt: '2026-07-31T02:59:45.000Z', stale: false,
+    weekly: { usedPercent: 31, resetsAt: '2026-08-05T04:09:16.000Z', windowDurationMins: 10080 }, limitReached: false })
+
+  const invalid = readySnapshot()
+  invalid.codex.session = { usedPercent: 140, resetsAt: 'not-a-date', windowDurationMins: 0 }
+  assert.deepEqual(normalizeAionUiSubscriptionUsage(invalid, { now: NOW }).codex.session, { usedPercent: 100, resetsAt: null, windowDurationMins: null })
+  for (const value of [null, undefined, '', '49']) {
+    const unknown = readySnapshot()
+    unknown.codex.session = { usedPercent: value, resetsAt: null, windowDurationMins: 300 }
+    assert.equal(normalizeAionUiSubscriptionUsage(unknown, { now: NOW }).codex.session, null, `usedPercent ${value}`)
+  }
+})

@@ -53,6 +53,8 @@ function normalizeCodex(value, now, staleAfterMs) {
     state,
     updatedAt,
     stale: providerIsStale(state, updatedAt, now, staleAfterMs),
+    // 5시간 창은 요금제에 따라 없다. 키가 없거나(이전 스냅숏) null이면 null이다. 한도 도달은 AionUi가 두 창을 함께 판정한 값을 쓴다.
+    session: normalizeWindow(value?.session, { includeDuration: true }),
     weekly: normalizeWindow(value?.weekly, { includeDuration: true }),
     limitReached: value?.limitReached === true,
   }

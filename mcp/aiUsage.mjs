@@ -25,14 +25,15 @@ function providerUsage(value, name, now) {
   const ageSeconds = Number.isFinite(timestamp) ? Math.max(0, Math.floor((now - timestamp) / 1000)) : null
   const stale = state === 'ready' && (value?.stale !== false || ageSeconds === null)
   const weekly = usageWindow(value?.weekly)
-  const session = name === 'claude' ? usageWindow(value?.session) : null
+  // Codex 5시간 창은 요금제에 따라 없으며 그때는 null이다. 한도 도달 여부는 AionUi가 두 창을 함께 판정한 limitReached를 쓴다.
+  const session = usageWindow(value?.session)
   return {
     state,
     usable: state === 'ready' && !stale && Boolean(session || weekly),
     stale,
     updatedAt,
     ageSeconds,
-    ...(name === 'claude' ? { session } : {}),
+    session,
     weekly,
     ...(name === 'codex' ? { limitReached: state === 'ready' && typeof value?.limitReached === 'boolean' ? value.limitReached : null } : {}),
   }

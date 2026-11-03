@@ -422,7 +422,7 @@ node runner/index.mjs
 | `mindnprogress_list_shared_knowledge_candidates` | 정리가 필요한 공유 지식 후보의 우선순위·길이·SHA-256·검토 상태를 원문 없이 페이지 단위로 조회합니다. |
 | `mindnprogress_get_shared_knowledge_review_context` | 후보 한 카드의 공유 지식 원문과 관계·최근 댓글·검토 기준을 조회합니다. |
 | `mindnprogress_get_ai_work_states` | 지정한 카드 또는 문서 전체에서 연결된 AI 대화의 현재 작업·승인 대기·유휴·확인 불가 상태를 조회합니다. 문서 버전은 변경하지 않습니다. |
-| `mindnprogress_get_ai_usage` | MnP 서버가 읽은 AionUi 구독 사용량을 조회합니다. `provider`는 `all`(기본값), `claude`, `codex`이며 사용률·참고 잔여율·UTC 초기화 시각과 제공자별 최신성을 반환합니다. `guide.aiUsage`에서 해석 기준을 확인합니다. |
+| `mindnprogress_get_ai_usage` | MnP 서버가 읽은 AionUi 구독 사용량을 조회합니다. `provider`는 `all`(기본값), `claude`, `codex`이며 사용률·참고 잔여율·UTC 초기화 시각과 제공자별 최신성을 반환합니다. Claude와 Codex 모두 5시간 창(`session`)과 주간 창(`weekly`)을 주며, Codex 5시간 창은 요금제에 따라 없어 `null`일 수 있습니다. Codex 한도 도달(`limitReached`)은 AionUi가 두 창을 함께 판정한 값입니다. `guide.aiUsage`에서 해석 기준을 확인합니다. |
 | `mindnprogress_get_ai_workspace_pool` | MindNProgress가 관리하는 AI 작업공간의 역할·경로·Unity 인스턴스 해시와 현재 상태를 조회합니다. 다른 대화의 lease·job 식별자는 노출하지 않습니다. |
 | `mindnprogress_checkpoint_ai_workspace` | `operation.action=commit-changes`이면 worker의 실제 변경 경로와 구조화 커밋 메시지를 체크포인트로 고정하고, `confirm-no-changes`이면 git status와 diff로 의도한 파일 변경이 없음을 확인합니다. 두 action의 입력은 서로 섞을 수 없습니다. |
 | `mindnprogress_list_ai_conversations` | 카드에 연결된 모든 AI 대화 후보의 실행 환경, 최근 활동, 실시간 상태와 `contextHealth`를 조회해 기존 대화 이어가기와 새 대화 시작 판단에 사용합니다. |

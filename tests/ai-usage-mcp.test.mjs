@@ -127,3 +127,37 @@ test('실제 MCP 호출은 기존 API를 GET 한 번으로 조회하고 가이�
   assert.equal(denied.isError, true)
   assert.match(denied.content[0].text, /사용량 조회 권한/)
 })
+
+test('Codex 5시간 창은 Claude session과 같은 형식으로 주고 없거나 null이면 null이다', () => {
+  const raw = snapshot()
+  raw.codex.session = { usedPercent: 49, resetsAt: '2026-10-21T13:00:00.000Z', windowDurationMins: 300 }
+  raw.codex.limitReached = false
+  const result = buildAiUsageResult(normalizeAionUiSubscriptionUsage(raw, { now }), { now })
+  assert.deepEqual(result.providers.codex.session, { usedPercent: 49, remainingPercent: 51, resetsAt: '2026-10-21T13:00:00.000Z', windowDurationMins: 300 })
+  assert.equal(result.providers.codex.weekly.usedPercent, 93)
+  assert.equal(result.providers.codex.usable, true)
+  assert.deepEqual(Object.keys(result.providers.codex), Object.keys(result.providers.claude).concat('limitReached'))
+
+  // 한도 도달은 AionUi가 두 창을 함께 판정한 값을 그대로 쓴다.
+  raw.codex.session.usedPercent = 100
+  raw.codex.limitReached = true
+  assert.equal(buildAiUsageResult(normalizeAionUiSubscriptionUsage(raw, { now }), { now }).providers.codex.limitReached, true)
+
+  // 키가 없는 이전 스냅숏과 5시간 창이 없는 스냅숏은 같은 결과이며, session 외의 Codex 값은 그대로다.
+  const missing = buildAiUsageResult(normalizeAionUiSubscriptionUsage(snapshot(), { now }), { now })
+  const nullRaw = snapshot()
+  nullRaw.codex.session = null
+  assert.deepEqual(buildAiUsageResult(normalizeAionUiSubscriptionUsage(nullRaw, { now }), { now }), missing)
+  assert.equal(missing.providers.codex.session, null)
+  const { session: _session, ...codexWithoutSession } = missing.providers.codex
+  assert.deepEqual(codexWithoutSession, { state: 'ready', usable: true, stale: false, updatedAt: new Date(now - 30_000).toISOString(), ageSeconds: 30,
+    weekly: { usedPercent: 93, remainingPercent: 7, resetsAt: '2026-10-27T06:38:23.000Z', windowDurationMins: 10080 }, limitReached: false })
+
+  // Claude와 같이 두 창 중 하나라도 확인되면 사용할 수 있다.
+  const sessionOnly = snapshot()
+  sessionOnly.codex.weekly = null
+  sessionOnly.codex.session = { usedPercent: 12, resetsAt: null, windowDurationMins: 300 }
+  assert.equal(buildAiUsageResult(normalizeAionUiSubscriptionUsage(sessionOnly, { now }), { now }).providers.codex.usable, true)
+  sessionOnly.codex.session = null
+  assert.equal(buildAiUsageResult(normalizeAionUiSubscriptionUsage(sessionOnly, { now }), { now }).providers.codex.usable, false)
+})

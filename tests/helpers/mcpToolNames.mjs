@@ -53,6 +53,7 @@ export const expectedMcpToolNames = Object.freeze([
   'mindnprogress_send_group_document_instruction',
   'mindnprogress_set_document_archive',
   'mindnprogress_set_document_trash_state',
+  'mindnprogress_start_card_conversation',
   'mindnprogress_submit_card_layout_proposal',
   'mindnprogress_submit_reconstruction_proposal',
   'mindnprogress_supersede_ai_delegation',

@@ -15,6 +15,7 @@ import { createAiDelegationRequestFailures, safeDelegationFailureMessage, withDe
 import { aiRecordReferencesMaps, createAiDocumentRecordMap, removeAiDocumentRecords, aiDocumentDeletionBusy } from './lib/aiDocumentCleanup.mjs'
 import { buildCardConversationStartPrompt, cardConversationStartError, createCardConversationStarts, isCardConversationWorkerWorkspace } from './lib/cardConversationStarts.mjs'
 import { createRuntimeLifecycle, installRuntimeShutdown } from './lib/runtimeLifecycle.mjs'
+import { createStartupTiming } from './lib/startupTiming.mjs'
 import { retryDispatchStatus, throwIfRuntimeStopping } from './lib/runtimeStopping.mjs'
 import { createAiWorkspaceSettings } from './lib/aiWorkspaceSettings.mjs'
 import { DEFAULT_CLAUDE_ACCOUNT_ID, claudeAccountRequestId, claudeAccountRoleForPurpose, createAiClaudeAccountPolicy, findClaudeAccount,
@@ -260,6 +261,8 @@ import {
 } from './lib/workspacePool.mjs'
 import { RemoteWorkspacePool, remoteWorkspaceFacade } from './lib/remoteWorkspacePool.mjs'
 
+// 모든 import 평가가 끝난 시점부터 listen까지 단계별 시간을 기록한다.
+const startupTiming = createStartupTiming()
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url))
 const projectDirectory = path.resolve(serverDirectory, '..')
 const runtimeLifecycle = createRuntimeLifecycle()
@@ -460,6 +463,7 @@ const aiConversationRuntimeFailureGraceMs = Math.max(
   Number(process.env.MNP_AI_RUNTIME_FAILURE_GRACE_MS) || 10_000,
 )
 const aiDelegationPollIntervalMs = Math.max(100, Number(process.env.MNP_AI_DELEGATION_POLL_INTERVAL_MS) || 3_000)
+const aiDelegationSlowPollLogMs = Math.max(0, Number(process.env.MNP_AI_DELEGATION_SLOW_POLL_LOG_MS ?? 10_000))
 const allowLegacyGroupDelegationCreation = legacyGroupDelegationCreationAllowed(
   process.env.MNP_ALLOW_LEGACY_GROUP_DELEGATION_CREATION,
 )
@@ -4995,6 +4999,8 @@ async function drainWaitingWorkspaceDelegations() {
   }
   let integrationDirtyThisTick = null
   for (const queued of waiting) {
+    // 종료가 시작되면 다음 대기 위임을 시작하지 않는다. 남은 대기는 다음 기동의 poll이 이어서 처리한다.
+    if (runtimeLifecycle.signal.aborted) return
     if (!aiDelegationWaitPollDue(aiDelegationWaitPolls.get(queued.id), queued)) continue
     if (integrationDirtyThisTick) {
       const blocked = await updateAiDelegation(queued.id, {
@@ -5321,8 +5327,35 @@ const processAiParentWake = createAiParentWakeProcessor({
 async function pollAiDelegations() {
   if (aiDelegationPollRunning) return
   aiDelegationPollRunning = true
+  // 한 주기가 길어지면 어느 위임에서 시간이 걸렸는지 남긴다. 종료 대기 진단의 근거로 쓴다.
+  // 주기 요약은 poll이 끝나야 남으므로, 강제 종료되어도 원인이 남도록 오래 걸리는 항목은 진행 중에도 경고한다.
+  const pollStartedAt = performance.now()
+  let drainMs = 0
+  let currentItem = null
+  let slowItemTimer = null
+  const slowItems = []
+  const startItem = (id, state) => {
+    const item = { id, state, startedAt: performance.now() }
+    currentItem = item
+    slowItemTimer = setTimeout(() => {
+      if (currentItem !== item) return
+      console.warn('[AI delegation poll slow item]', JSON.stringify({ id, state,
+        elapsedMs: Math.round(performance.now() - item.startedAt), stopping: runtimeLifecycle.signal.aborted }))
+    }, aiDelegationSlowPollLogMs)
+    slowItemTimer.unref()
+  }
+  const finishItem = () => {
+    clearTimeout(slowItemTimer)
+    if (!currentItem) return
+    const elapsedMs = Math.round(performance.now() - currentItem.startedAt)
+    if (elapsedMs >= 1_000) slowItems.push({ id: currentItem.id, state: currentItem.state, elapsedMs })
+    currentItem = null
+  }
   try {
+    startItem('drain-waiting-workspace', null)
     await drainWaitingWorkspaceDelegations()
+    finishItem()
+    drainMs = Math.round(performance.now() - pollStartedAt)
     const active = [...aiDelegations.values()].filter((delegation) =>
       [
         'waiting-integration-clean', 'waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity',
@@ -5334,7 +5367,12 @@ async function pollAiDelegations() {
       ].includes(delegation.state) || delegation.pendingRecovery || aiDelegationStoredReportDeliveryPatch(delegation)
         || aiDelegationReportArchivePending(delegation) || recoverableLegacyParentWake(delegation))
     for (let delegation of active) {
+      finishItem()
+      // 종료가 시작되면 진행 중인 위임만 마치고 다음 위임으로 넘어가지 않는다.
+      // 남은 위임은 상태가 저장되어 있으므로 다음 기동의 poll이 이어서 처리한다.
+      if (runtimeLifecycle.signal.aborted) break
       if (aiDelegationActions.has(delegation.id)) continue
+      startItem(delegation.id, delegation.state)
       const remoteLease = remoteWorkspacePool.state?.leases[delegation.workspaceLease?.leaseId]
       if (remoteLease && ['preparing', 'quarantined'].includes(remoteLease.status)
         && ['recovery-required', 'integration-recovery-required'].includes(delegation.state)) continue
@@ -5582,7 +5620,15 @@ async function pollAiDelegations() {
       await processAiParentWake(delegation)
     }
   } finally {
+    finishItem()
     aiDelegationPollRunning = false
+    const totalMs = Math.round(performance.now() - pollStartedAt)
+    if (totalMs >= aiDelegationSlowPollLogMs) {
+      console.warn('[AI delegation poll timing]', JSON.stringify({
+        totalMs, drainMs, stopping: runtimeLifecycle.signal.aborted,
+        slowItems: slowItems.sort((first, second) => second.elapsedMs - first.elapsedMs).slice(0, 5),
+      }))
+    }
   }
 }
 
@@ -8193,22 +8239,29 @@ storageChanges.registerEffect('sse', {
     return !userId || client.user.id === userId
   }),
 })
+startupTiming.mark('moduleSetup')
 // 정본 복구는 모든 migration, 메모리 로드, scheduler, listen보다 먼저 수행한다.
 await storageJournal.recover()
+startupTiming.mark('storageJournalRecover')
 integrationToken = await loadIntegrationToken()
 const adminBootstrapped = await loadUsers()
 await loadSessions()
+startupTiming.mark('loadUsersSessions')
 await loadAiAttributions()
 await loadAiConversationAttributions()
+startupTiming.mark('loadAiAttributions')
 await loadMachineRegistry()
 await loadAiConversationOrigins()
+startupTiming.mark('loadMachinesOrigins')
 await loadAiDelegations()
+startupTiming.mark('loadAiDelegations')
 aiDelegationRequestFailures = await createAiDelegationRequestFailures({
   withMutation: (action) => withResources(['state:_ai-delegation-request-failures.json'], action), onRollback: storageChanges.onRollback,
   filePath: path.join(dataDirectory, '_ai-delegation-request-failures.json'), readJson: readStoredArray, writeJson: writeStoredArray,
   deletedMapIds: deletedAiDocumentIds,
 })
 await loadGroupDocumentInstructions()
+startupTiming.mark('loadGroupInstructions')
 for (const record of await readStoredArray(cardConversationStartsFile)) {
   if (/^ccs:[a-f0-9]{64}$/.test(record?.id ?? '') && isValidMapId(record.mapId)
     && typeof record.cardId === 'string' && typeof record.input?.initialMessage === 'string') {
@@ -8217,6 +8270,7 @@ for (const record of await readStoredArray(cardConversationStartsFile)) {
 }
 await loadAiWorkspaceHistories()
 await loadDistributedWorkSettings()
+startupTiming.mark('loadWorkspaceHistoriesSettings')
 documentReconstruction = await createDocumentReconstruction({
   withMutation: (action) => { storageResources.assert('catalog'); return action() },
   onRollback: storageChanges.onRollback,
@@ -8270,8 +8324,10 @@ documentReconstruction = await createDocumentReconstruction({
     })))
   },
 })
+startupTiming.mark('documentReconstruction')
 const reconstructionRequests = await createReconstructionRequests({ dataDirectory, writeJson: writeStoredArray, lifecycle: documentReconstruction, readMap,
   withMutation: (action) => withResources(['state:_document-reconstruction-requests.json'], action), onRollback: storageChanges.onRollback })
+startupTiming.mark('reconstructionRequests')
 const cardLayoutRequests = await createCardLayoutRequests({
   withMutation: (action) => withResources(['state:_card-layout-requests.json'], action), onRollback: storageChanges.onRollback,
   dataDirectory, writeJson: writeStoredArray, assertWritable: (id) => documentReconstruction.assertWritable(id),
@@ -8300,12 +8356,14 @@ const cardLayoutRequests = await createCardLayoutRequests({
     })
   },
 })
+startupTiming.mark('cardLayoutRequests')
 let workspacePoolStartupRecoveryReady = false
 try {
   const unconfirmedLeaseIds = [...aiDelegations.values()].filter((delegation) => delegation.state === 'recovery-required'
     && !delegation.targetConversationId && delegation.childOperationId && delegation.workspaceLease?.leaseId)
     .map((delegation) => delegation.workspaceLease.leaseId)
   if (await workspacePoolManager.initialize({ unconfirmedLeaseIds })) {
+    startupTiming.mark('workspacePoolInitialize')
     console.log(`[Mind & Progress] AI 작업공간 pool registry를 불러왔습니다: ${workspacePoolRegistryFile}`)
     await reconcileAiDelegationWorkspaceLeases()
     workspacePoolStartupRecoveryReady = true
@@ -8313,23 +8371,29 @@ try {
 } catch (error) {
   console.warn('[AI workspace pool startup]', error)
 }
+startupTiming.mark('workspacePoolReconcile')
 await recoverAiConversationOrigins()
+startupTiming.mark('recoverAiConversationOrigins')
 const metadataMigration = await migrateStoredMapCreationMetadata()
 if (metadataMigration.migratedDocuments > 0) {
   console.log(`[Mind & Progress] 문서 ${metadataMigration.migratedDocuments}개에 생성자와 생성 시각을 복원했습니다.`)
 }
+startupTiming.mark('migrateMapCreationMetadata')
 const edgeMigration = await migrateStoredMapEdges()
 if (edgeMigration.migratedDocuments > 0) {
   console.log(`[Mind & Progress] 베지어 화살표로 문서 ${edgeMigration.migratedDocuments}개, 연결선 ${edgeMigration.migratedEdges}개를 변환했습니다.`)
 }
+startupTiming.mark('migrateMapEdges')
 const dailyBackupMigrationCount = await backfillDailyBackupsFromHistory()
 if (dailyBackupMigrationCount > 0) {
   console.log(`[Mind & Progress] 기존 변경 이력에서 일일 백업 ${dailyBackupMigrationCount}개를 복원했습니다.`)
 }
+startupTiming.mark('backfillDailyBackups')
 const initialDailyBackupCount = await ensureDailyBackups()
 if (initialDailyBackupCount > 0) {
   console.log(`[Mind & Progress] 오늘의 일일 백업 ${initialDailyBackupCount}개를 생성했습니다.`)
 }
+startupTiming.mark('ensureDailyBackups')
 if (adminBootstrapped) {
   console.log(`[Mind & Progress] 초기 관리자 이메일: ${bootstrapAdminEmail}`)
   if (generatedAdminPassword) {
@@ -8407,10 +8471,14 @@ const doorayResponses = createDoorayResponseIntegration({
     && delegation.targetCardId === cardId && !aiDelegationIsTerminal(delegation)),
 })
 
+startupTiming.mark('preferencesAndIntegrations')
 await removeLegacyAiCompletionNotifications().catch((error) => console.warn('[AI completion notification cleanup]', error))
+startupTiming.mark('removeLegacyAiNotifications')
 await cleanupCompletedAiHistory().catch((error) => console.warn('[AI history cleanup deferred]', error))
+startupTiming.mark('cleanupCompletedAiHistory')
 for (const record of [...storageJournal.records.values()]) await storageChanges.resumeEffects(record)
 await storageJournal.cleanup()
+startupTiming.mark('storageJournalEffects')
 
 function freshMapId() { return `map-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}` }
 
@@ -14521,10 +14589,13 @@ runtimeLifecycle.interval(() => {
   if (expired > 0) console.warn(`[Machine operation sweep] ${expired}개 요청을 제한 시간 초과로 실패 처리했습니다.`)
 }, 5_000, 'Machine operation sweep')
 
+startupTiming.mark('moduleTail')
 server.listen(port, host, () => {
   resolveRuntimeReady()
+  startupTiming.mark('listen')
   console.log(`[Mind & Progress API] http://${host}:${port}`)
   console.log(`[Mind & Progress Public] ${publicBaseUrl}`)
+  console.log(`[Startup timing] ${JSON.stringify(startupTiming.summary())}`)
   if (workspacePoolStartupRecoveryReady) {
     void trackStorageBackground(() => reconcileAiDelegationWorkspaceLeasesAfterListen()).catch((error) => {
       console.warn('[AI workspace pool post-listen recovery]', error)

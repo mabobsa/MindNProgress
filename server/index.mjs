@@ -73,6 +73,7 @@ import { AI_CONVERSATION_CONTEXT_REUSE_GUARD_ENABLED, applyAiConversationDelegat
 import { blockedAiModelLabels, filterAutomatedAiAgents } from './lib/aiModelPolicy.mjs'
 import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
+import { reconcileLostIntegrationWaits } from './lib/aiIntegrationWaitRecovery.mjs'
 import { workspaceCheckpointInstruction, rejectedOversizedCheckpointRecoveryPatch } from './lib/aiWorkspaceCheckpointInstruction.mjs'
 import { aiDelegationReportArchived, aiDelegationReportArchivePending, createAiDelegationReportArchiver } from './lib/aiDelegationReportArchive.mjs'
 import { AI_DELEGATION_RESULT_HASH_BASIS, aiDelegationFullResult, buildAiDelegationResultCapture } from './lib/aiDelegationResultCapture.mjs'
@@ -3700,6 +3701,8 @@ async function dispatchPreparedAiDelegation({
 }
 
 async function reconcileAiDelegationWorkspaceLeases() {
+  await reconcileLostIntegrationWaits({ values: () => aiDelegations.values(), get: id => aiDelegations.get(id),
+    workspacePool: workspacePoolManager, update: updateAiDelegation })
   // 풀 반환은 저장됐지만 위임 저장 전에 중단된 경우의 내구 receipt 대사.
   // 후속 위임/새 lease는 건드리지 않고 명시적으로 반환된 과거 기록만 종료한다.
   for (const delegation of aiDelegations.values()) {

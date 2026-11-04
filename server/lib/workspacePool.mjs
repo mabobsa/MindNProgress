@@ -2360,6 +2360,50 @@ export class WorkspacePoolManager {
     })
   }
 
+  // 위임 기록만 실패로 종료되고 풀에는 통합 대기가 남은 경우의 읽기 전용 대사.
+  // 통합/새 배정은 하지 않으며 실제 파일과 체크포인트가 일치할 때만 기존 결과를 반환한다.
+  async verifiedWaitingIntegrationResult(leaseId, { mapId, cardId, conversationId, expectedLease } = {}) {
+    return this.runExclusive(async () => {
+      const lease = this.state?.leases?.[leaseId]
+      const result = lease?.result
+      const current = this.state?.workspaces?.[lease?.workspaceId]
+      const workspace = this.registry?.workers.find(item => item.id === lease?.workspaceId && item.enabled !== false)
+      if (!workspace || !lease || lease.ownership || lease.resultCorrection || lease.executionUnconfirmed
+        || lease.status !== 'waiting-integration' || current?.status !== 'waiting-integration'
+        || current.leaseId !== leaseId || current.jobId !== lease.jobId
+        || !aiDelegationWorkspaceLeaseMatches(lease, expectedLease)
+        || lease.mapId !== mapId || lease.cardId !== cardId || lease.conversationId !== conversationId
+        || result?.status !== 'waiting-integration' || result.childStatus !== 'completed' || result.childError
+        || result.integratedCommit || lease.integrationBranch || result.integrationBranch || result.integrationHeadCommit
+        || result.unmergedFiles?.length || result.leaseId !== leaseId || result.jobId !== lease.jobId
+        || result.workspaceId !== lease.workspaceId || result.mapId !== mapId || result.cardId !== cardId
+        || result.conversationId !== conversationId || result.branch !== lease.branch || result.baseCommit !== lease.baseCommit
+        || normalizedPath(lease.projectRoot) !== normalizedPath(workspace.root)) return null
+      const head = lease.checkpoints?.at(-1)?.commit
+      if (!head || head === lease.baseCommit || head !== result.headCommit || head !== lease.headCommit) return null
+      const metadata = await readJson(path.join(workspace.root, '.ai-workspace.json'), null)
+      const session = await readJson(path.join(workspace.root, '.ai-session.json'), null)
+      if (metadata?.workspaceId !== workspace.id || normalizedPath(metadata?.projectRoot) !== normalizedPath(workspace.root)
+        || !aiDelegationWorkspaceLeaseMatches(lease, session) || session.conversationId !== conversationId
+        || session.branch !== lease.branch || session.baseCommit !== lease.baseCommit) return null
+      const [dirty, branch, actualHead, changes] = await Promise.all([
+        this.git(workspace.root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']),
+        this.git(workspace.root, ['branch', '--show-current']),
+        this.git(workspace.root, ['rev-parse', 'HEAD']),
+        this.git(workspace.root, ['rev-list', '--reverse', `${lease.baseCommit}..${head}`]),
+      ])
+      if (dirty || branch !== lease.branch || actualHead !== head) return null
+      const operations = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-apply', 'rebase-merge', 'sequencer', 'index.lock']
+      if ((await Promise.all(operations.map(entry => this.gitPathExists(workspace.root, entry)))).some(Boolean)) return null
+      const commits = changes.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+      const checkpoints = lease.checkpoints.filter(item => item.commit).map(item => item.commit)
+      if (!commits.length || commits.at(-1) !== head || JSON.stringify(commits) !== JSON.stringify(lease.commits)
+        || commits.some(commit => !checkpoints.includes(commit))) return null
+      await this.git(workspace.root, ['merge-base', '--is-ancestor', lease.baseCommit, head])
+      return structuredClone(result)
+    })
+  }
+
   async recoverCheckpointedFinalizationFailure(leaseId) {
     return this.runExclusive(async () => {
       const lease = this.state?.leases?.[String(leaseId ?? '').trim()]
@@ -2653,7 +2697,19 @@ export class WorkspacePoolManager {
       }
       if (lease.status === 'waiting-integration'
         && lease.result?.reasonCode === integrationWorktreeDirtyReasonCode) {
-        const integrationChanges = await this.integrationTrackedChanges(integration)
+        let integrationChanges
+        try {
+          integrationChanges = await this.integrationTrackedChanges(integration)
+        } catch (error) {
+          if (!(error instanceof WorkspacePoolUnavailableError) || error.reasonCode !== integrationStatusRetryReasonCode) throw error
+          return this.waitForIntegration(lease, workspace, {
+            childStatus, childError, headCommit: lease.result.headCommit,
+            reasonCode: error.reasonCode, waitingReason: error.message,
+            trackedChanges: lease.result.trackedChanges ?? [],
+            keepIntegrationLock: this.state.integrationLeaseId === leaseId,
+            recoveredFromQuarantine: lease.result.recoveredFromQuarantine === true,
+          })
+        }
         if (integrationChanges.dirty) {
           if (JSON.stringify(integrationChanges.paths) === JSON.stringify(lease.result.trackedChanges ?? [])) {
             return lease.result

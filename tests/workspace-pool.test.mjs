@@ -1651,8 +1651,10 @@ test('main의 일시적 추적 변경은 worker를 격리하지 않고 정리될
     let integrationHead = 'base123'
     let workerDirty = false
     let integrationDirty = false
+    let integrationProbeFailure = null
     const gitRunner = async (cwd, args) => {
       const worker = cwd === workerRoot
+      if (!worker && args[0] === integrationProbeFailure) throw Object.assign(new Error('Git 조회 시간 초과'), { code: 'GIT_COMMAND_TIMEOUT' })
       if (args[0] === 'status') return worker ? (workerDirty ? ' M worker.txt' : '') : (integrationDirty ? ' M main.txt' : '')
       if (args[0] === 'diff') return !worker && integrationDirty ? 'main.txt' : ''
       if (args[0] === 'remote') return ''
@@ -1716,6 +1718,21 @@ test('main의 일시적 추적 변경은 worker를 격리하지 않고 정리될
 
     const unchanged = await manager.finalize(lease.leaseId, { childStatus: 'completed' })
     assert.equal(unchanged.updatedAt, waiting.updatedAt)
+
+    for (const command of ['status', 'diff']) {
+      integrationProbeFailure = command
+      const retry = await manager.finalize(lease.leaseId, { childStatus: 'completed' })
+      assert.equal(retry.status, 'waiting-integration')
+      assert.equal(retry.reasonCode, 'INTEGRATION_STATUS_RETRY')
+      assert.equal(retry.headCommit, 'checkpoint456')
+      assert.equal(manager.state.leases[lease.leaseId].status, 'waiting-integration')
+      assert.equal(manager.state.workspaces.fork1.status, 'waiting-integration')
+      assert.equal(workerBranch, lease.branch)
+      assert.equal(workerHead, 'checkpoint456')
+      assert.equal(manager.state.leases[lease.leaseId].checkpoints.length, 1)
+      integrationProbeFailure = null
+      assert.equal((await manager.finalize(lease.leaseId, { childStatus: 'completed' })).reasonCode, 'integration-worktree-dirty')
+    }
 
     integrationDirty = false
     integrationHead = 'main456'

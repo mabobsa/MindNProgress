@@ -47,6 +47,7 @@ import { AiConversationActivityIndicator } from './components/AiConversationRunt
 import { DailyBackupPreviewDialog, type DailyBackupPreview } from './components/DailyBackupPreviewDialog'
 import { DoorayMentionsPanel } from './components/DoorayMentionsPanel'
 import { doorayResponseIdFromSearch } from './utils/doorayResponseLink.mjs'
+import { libraryDropDestination, libraryDropTargetFromElement, type LibraryDropTarget } from './utils/libraryTouchDrop.mjs'
 import { ImagePreviewDialog } from './components/ImagePreviewDialog'
 import { SharedKnowledgeReviewDialog, type SharedKnowledgeReviewApplied } from './components/SharedKnowledgeReviewDialog'
 import { GlobalSearchDialog } from './components/GlobalSearchDialog'
@@ -6190,9 +6191,41 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     setNodeContextMenu(null); setAiConversationContextMenu(null)
     setDocumentContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 140)), mapId: '', groupId })
   }
+  // 휴대폰은 끌면 목록이 스크롤되므로 꾹 눌러 메뉴가 열린 뒤 이어서 끌어야 문서·그룹을 옮긴다. 놓기는 PC 드래그와 같은 moveLibraryItem을 쓴다.
+  const touchDraggedLibraryItem = useRef<DocumentLayoutItem | null>(null)
+  const touchLibraryDropTarget = (x: number, y: number) => {
+    const dragged = touchDraggedLibraryItem.current
+    return dragged ? libraryDropTargetFromElement(window.document.elementFromPoint(x, y), dragged.type) : null
+  }
+  const endTouchLibraryDrag = () => {
+    touchDraggedLibraryItem.current = null
+    stopDocumentListAutoScroll()
+    setDraggingLibraryItem(null)
+    setDocumentDropTargetId(null)
+  }
   const libraryTouchMenu = useLibraryTouchMenu(accountMode === 'editor' && !trashOpen, ({ kind, id, x, y }) => {
     setNodeContextMenu(null); setAiConversationContextMenu(null); setCanvasPasteMenu(null)
     setDocumentContextMenu({ x: Math.max(8, Math.min(x, window.innerWidth - 230)), y: Math.max(8, Math.min(y, window.innerHeight - (kind === 'map' ? 510 : 140))), mapId: kind === 'map' ? id : '', ...(kind === 'group' ? { groupId: id } : {}) })
+  }, {
+    enabled: mode === 'editor' && !normalizedDocumentSearch,
+    onStart: ({ kind, id }) => {
+      setDocumentContextMenu(null)
+      const item: DocumentLayoutItem = { type: kind, id }
+      touchDraggedLibraryItem.current = item
+      setDraggingLibraryItem(item)
+    },
+    onMove: (x, y) => {
+      updateDocumentListAutoScroll(y)
+      setDocumentDropTargetId(touchLibraryDropTarget(x, y)?.key ?? null)
+    },
+    onEnd: (x, y) => {
+      const dragged = touchDraggedLibraryItem.current
+      const target: LibraryDropTarget | null = touchLibraryDropTarget(x, y)
+      const destination = libraryDropDestination(target, dragged, effectiveDocumentLayout.items[0])
+      endTouchLibraryDrag()
+      if (dragged && destination) moveLibraryItem(dragged, destination)
+    },
+    onCancel: endTouchLibraryDrag,
   })
   const openDocumentCleanup = (scope: { type: 'map' | 'group'; id: string }) => {
     setDocumentContextMenu(null)
@@ -7148,6 +7181,11 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         key={document.id}
         data-library-menu-kind="map"
         data-library-menu-id={document.id}
+        data-library-drop-key={dropKey}
+        data-library-drop-accepts="map"
+        {...(location.type === 'top'
+          ? { 'data-library-drop-action': 'top-before', 'data-library-drop-target-type': 'map', 'data-library-drop-target-id': document.id }
+          : { 'data-library-drop-action': 'group-insert', 'data-library-drop-group-id': location.groupId, 'data-library-drop-map-id': document.id })}
         draggable={mode === 'editor' && !normalizedDocumentSearch}
         className={`map-item ${location.type === 'group' ? 'group-document' : ''} ${!selectedGroup && document.id === activeMapId ? 'active' : ''} ${rootStatus === 'planned' ? 'root-planned' : ''} ${draggingLibraryItem?.type === 'map' && draggingLibraryItem.id === document.id ? 'dragging' : ''} ${documentDropTargetId === dropKey ? 'document-drop-target' : ''}`}
         onClick={() => { setSelectedGroupId(null); setRenamingMap(false); setActiveMapId(document.id); setMobileSidebarOpen(false) }}
@@ -7511,6 +7549,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                   <div
                     className={`library-top-insertion-target ${documentDropTargetId === 'top-start' ? 'active' : ''}`}
                     title="목록 처음으로 이동"
+                    data-library-drop-key="top-start"
+                    data-library-drop-accepts="any"
+                    data-library-drop-action="top-start"
                     onDragOver={(event) => {
                       event.preventDefault()
                       event.stopPropagation()
@@ -7535,6 +7576,11 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                           <div
                             className={`library-drop-line ${documentDropTargetId === `top-before:map:${layoutItem.id}` ? 'active' : ''}`}
                             title={layoutIndex === 0 ? '목록 처음으로 이동' : '이 위치로 이동'}
+                            data-library-drop-key={`top-before:map:${layoutItem.id}`}
+                            data-library-drop-accepts="any"
+                            data-library-drop-action="top-before"
+                            data-library-drop-target-type="map"
+                            data-library-drop-target-id={layoutItem.id}
                             onDragOver={(event) => {
                               if (!draggingLibraryItem) return
                               event.preventDefault()
@@ -7569,6 +7615,11 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                     <section
                       className={`document-group ${collapsed ? 'collapsed' : ''}`}
                       key={`group-${group.id}`}
+                      data-library-drop-key={groupDropKey}
+                      data-library-drop-accepts="group"
+                      data-library-drop-action="top-before"
+                      data-library-drop-target-type="group"
+                      data-library-drop-target-id={group.id}
                       onDragOver={(event) => {
                         if (draggingLibraryItem?.type !== 'group' || normalizedDocumentSearch) return
                         event.preventDefault()
@@ -7585,6 +7636,11 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                         <div
                           className={`library-drop-line ${documentDropTargetId === `top-before:group:${group.id}` ? 'active' : ''}`}
                           title={layoutIndex === 0 ? '목록 처음으로 이동' : '이 위치로 이동'}
+                          data-library-drop-key={`top-before:group:${group.id}`}
+                          data-library-drop-accepts="any"
+                          data-library-drop-action="top-before"
+                          data-library-drop-target-type="group"
+                          data-library-drop-target-id={group.id}
                           onDragOver={(event) => {
                             if (!draggingLibraryItem) return
                             event.preventDefault()
@@ -7602,6 +7658,10 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                         className={`document-group-header ${selectedGroup?.id === group.id ? 'group-selected' : ''} ${draggingLibraryItem?.type === 'group' && draggingLibraryItem.id === group.id ? 'dragging' : ''} ${documentDropTargetId === groupDropKey ? 'document-drop-target' : ''}`}
                         data-library-menu-kind="group"
                         data-library-menu-id={group.id}
+                        data-library-drop-key={groupDropKey}
+                        data-library-drop-accepts="map"
+                        data-library-drop-action="group-append"
+                        data-library-drop-group-id={group.id}
                         onContextMenu={(event) => openGroupContextMenu(event, group.id)}
                         draggable={mode === 'editor' && !normalizedDocumentSearch}
                         onDragStart={(event) => {
@@ -7670,6 +7730,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                 {mode === 'editor' && !normalizedDocumentSearch && effectiveDocumentLayout.items.length > 0 && (
                   <div
                     className={`library-drop-boundary library-drop-end ${documentDropTargetId === 'top-end' ? 'active' : ''}`}
+                    data-library-drop-key="top-end"
+                    data-library-drop-accepts="any"
+                    data-library-drop-action="top-end"
                     onDragOver={(event) => {
                       if (!draggingLibraryItem) return
                       event.preventDefault()

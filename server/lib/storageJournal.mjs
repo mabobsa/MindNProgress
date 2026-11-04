@@ -25,7 +25,7 @@ export function validateStorageRequestId(id, now = Date.now(), known = false) {
 
 // journal이 결과의 원본이다. 메모리 인덱스는 시작 시 journal에서 다시 만든다.
 export function createStorageJournal({ root, resources, keyForFile, invalidate = () => {}, io = fs, now = Date.now,
-  phase = async (name, detail) => storagePhase.publish({ name, ...detail }) }) {
+  phase = async (name, detail) => storagePhase.publish({ name, ...detail }), recoverConcurrency = 16 }) {
   const base = path.resolve(root)
   const directory = path.join(base, '_storage-transactions')
   const records = new Map()
@@ -210,22 +210,49 @@ export function createStorageJournal({ root, resources, keyForFile, invalidate =
     await atomic(location(record.transactionId, 'terminal.json'), record)
     return register(record)
   }
+  // 기록 파일 읽기 결과와 오류를 함께 보관해, 순차 처리 단계가 원래 읽던 시점에 같은 오류를 던지게 한다.
+  const settle = (operation) => Promise.resolve().then(operation).then((value) => ({ value }), (error) => ({ error }))
+  const settled = (result) => { if (result.error) throw result.error; return result.value }
+  // 읽기 전용 단계다. 기존 순차 복구가 읽던 파일만 읽고, 삭제·redo·등록은 하지 않는다.
+  async function prefetchRecoveryEntry(id) {
+    const terminal = await settle(() => readJson(location(id, 'terminal.json')))
+    if (terminal.error || terminal.value) return { terminal }
+    const marker = await settle(() => readJson(location(id, 'commit.json')))
+    if (marker.error || !marker.value) return { terminal, marker }
+    // 한 기록 안에서는 순서대로 읽어 동시 읽기 수가 recoverConcurrency를 넘지 않게 한다.
+    const record = await settle(() => readJson(location(id, 'intent.json')))
+    const applied = await settle(() => readJson(location(id, 'applied.json')))
+    const effects = await settle(() => readJson(location(id, 'effects.json')))
+    return { terminal, marker, record, applied, effects }
+  }
   async function recover() {
     await io.mkdir(directory, { recursive: true })
-    for (const entry of await io.readdir(directory, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue
-      const id = entry.name
-      const terminal = await readJson(location(id, 'terminal.json'))
+    const ids = (await io.readdir(directory, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+    // 하루치 기록 수천 건을 하나씩 읽으면 기동이 수십 초 걸린다. 파일 읽기만 제한된 동시성으로 미리 한다.
+    // 다른 기록의 redo는 journal 밖의 정본 파일만 바꾸므로 미리 읽은 기록 파일 내용은 순차 처리 시점과 같다.
+    const prefetched = new Array(ids.length)
+    let nextIndex = 0
+    await Promise.all(Array.from({ length: Math.min(Math.max(1, recoverConcurrency), ids.length) }, async () => {
+      while (nextIndex < ids.length) {
+        const index = nextIndex++
+        prefetched[index] = await prefetchRecoveryEntry(ids[index])
+      }
+    }))
+    // 삭제·redo·등록·오류 판정은 기존과 같은 readdir 순서로 하나씩 처리한다.
+    for (let index = 0; index < ids.length; index++) {
+      const id = ids[index]
+      const entry = prefetched[index]
+      const terminal = settled(entry.terminal)
       if (terminal) { register(terminal); continue }
-      const marker = await readJson(location(id, 'commit.json'))
+      const marker = settled(entry.marker)
       if (!marker) { await io.rm(location(id, ''), { recursive: true, force: true }); continue }
-      const record = await readJson(location(id, 'intent.json'))
+      const record = settled(entry.record)
       if (!record || record.transactionId !== id || marker.intentSha256 !== storageDigest(record)) throw new Error('JOURNAL_CORRUPT')
       register(record)
-      const applied = await readJson(location(id, 'applied.json'))
+      const applied = settled(entry.applied)
       if (applied) Object.assign(record, applied)
       else { beginApply(record); try { await apply(record) } catch { quarantine(record) } }
-      record.effectsDone = (await readJson(location(id, 'effects.json')))?.done ?? []
+      record.effectsDone = settled(entry.effects)?.done ?? []
     }
     return [...records.values()]
   }

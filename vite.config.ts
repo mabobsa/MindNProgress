@@ -26,12 +26,17 @@ export default defineConfig({
     port: 4175,
     strictPort: true,
     watch: {
-      // 실행 데이터와 이력 파일은 프런트엔드 변경 감시에서 제외한다.
-      ignored: ['**/server/data/**'],
+      // 실행 데이터·이력 파일과 .tmp의 작업 사본·빌드 사본은 프런트엔드 변경 감시에서 제외한다.
+      // .tmp에 MnP 사본이 쌓이면 감시 핸들이 수만 개로 늘어 웹 기동·종료가 느려진다.
+      ignored: ['**/server/data/**', '**/.tmp/**'],
     },
     proxy: {
       // xfwd로 실제 접속 주소를 전달해야 서버가 같은 PC 요청인지 판별할 수 있다.
       '/api': { target: 'http://127.0.0.1:4176', xfwd: true },
     },
+  },
+  optimizeDeps: {
+    // 기본값은 루트 아래 모든 HTML을 의존성 스캔 진입점으로 써서 .tmp 작업 사본의 index.html까지 스캔한다.
+    entries: ['index.html'],
   },
 })

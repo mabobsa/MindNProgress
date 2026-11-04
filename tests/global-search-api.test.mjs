@@ -143,8 +143,18 @@ test('전체 검색 API가 활성 문서·댓글·Ref 최신값과 커서 카탈
 
     const staleSearch = await fetch(`${baseUrl}/api/search?q=${encodeURIComponent('낡은 복사본')}`, { headers })
     assert.equal((await staleSearch.json()).page.total, 0)
-    const internalSearch = await fetch(`${baseUrl}/api/search?q=internal-secret-conversation`, { headers })
-    assert.equal((await internalSearch.json()).page.total, 0)
+    const partialIdentifierSearch = await fetch(`${baseUrl}/api/search?q=internal-secret`, { headers })
+    assert.equal((await partialIdentifierSearch.json()).page.total, 0)
+    const conversationSearch = await (await fetch(`${baseUrl}/api/search?q=internal-secret-conversation`, { headers })).json()
+    assert.deepEqual(conversationSearch.results.map((item) => [item.mapId, item.cardId, item.field, item.fieldLabel]), [
+      [sourceMap.id, 'source-card', 'identifier', 'AI 대화 ID'],
+      [placementMap.id, 'ref-card', 'identifier', 'AI 대화 ID'],
+    ])
+    const cardIdSearch = await (await fetch(`${baseUrl}/api/search?q=source-card`, { headers })).json()
+    assert.deepEqual(cardIdSearch.results.map((item) => [item.mapId, item.cardId, item.fieldLabel]), [
+      [sourceMap.id, 'source-card', '카드 ID'],
+      [placementMap.id, 'ref-card', '원본 카드 ID'],
+    ])
 
     const firstCatalogResponse = await fetch(`${baseUrl}/api/search?mode=catalog&limit=1`, { headers })
     assert.equal(firstCatalogResponse.status, 200)

@@ -54,7 +54,7 @@ test('한글·공백을 정규화하고 카드의 사용자 콘텐츠별 일치 
   assert.equal(result.page.hasMore, false)
 })
 
-test('필터를 조합하고 내부 AI 식별자는 검색하지 않는다', () => {
+test('필터를 조합하고 AI 대화 ID는 부분 일치로 검색하지 않는다', () => {
   const document = map('map-filter', '필터 문서', [
     node('work', '진행 업무', {
       isWork: true,
@@ -80,8 +80,64 @@ test('필터를 조합하고 내부 AI 식별자는 검색하지 않는다', () 
   assert.equal(filtered.results.length, 1)
   assert.equal(filtered.results[0].fieldLabel, '담당자')
 
-  const internal = searchGlobalContent({ maps: [document], request: { query: 'secret-conversation' } })
-  assert.equal(internal.page.total, 0)
+  const partial = searchGlobalContent({ maps: [document], request: { query: 'secret' } })
+  assert.equal(partial.page.total, 0)
+  const exact = searchGlobalContent({ maps: [document], request: { query: 'secret-conversation' } })
+  assert.deepEqual(exact.results.map((item) => [item.cardId, item.field]), [['work', 'identifier']])
+  const filteredOut = searchGlobalContent({ maps: [document], request: { query: 'secret-conversation', statuses: ['done'] } })
+  assert.equal(filteredOut.page.total, 0)
+})
+
+test('카드 ID·AI 대화 ID와 정확히 일치하면 해당 카드를 콘텐츠 일치보다 위에 둔다', () => {
+  const source = map('map-source', '원본 문서', [
+    node('mention', '언급 카드', {
+      description: 'node-1793782174732 카드와 0b7d9f78 대화를 참고합니다.',
+    }),
+    node('node-1793782174732', '대상 카드', {
+      description: '실제 담당 업무',
+      aiConversationId: '0b7d9f78',
+      aiConversations: [
+        { conversationId: '1a2b3c4d', agent: { id: 'codex', label: 'Codex CLI' } },
+        { conversationId: '0b7d9f78', agent: { id: 'claude', label: 'Claude Code' }, model: { id: 'claude-opus-5-5', label: 'Opus 5.5' } },
+      ],
+    }),
+  ])
+  const placement = map('map-placement', '배치 문서', [
+    node('ref-card', '낡은 복사본', { reference: { mapId: 'map-source', nodeId: 'node-1793782174732' } }),
+  ])
+  const search = (query, extra = {}) => searchGlobalContent({
+    maps: [placement, source],
+    sourceMaps: [placement, source],
+    request: { query, ...extra },
+  })
+
+  const byCardId = search('NODE-1793782174732')
+  assert.equal(byCardId.results[0].cardId, 'node-1793782174732')
+  assert.equal(byCardId.results[0].mapId, 'map-source')
+  assert.equal(byCardId.results[0].field, 'identifier')
+  assert.equal(byCardId.results[0].fieldLabel, '카드 ID')
+  assert.equal(byCardId.results[0].snippet, 'node-1793782174732')
+  assert.equal(byCardId.results[1].cardId, 'ref-card')
+  assert.equal(byCardId.results[1].fieldLabel, '원본 카드 ID')
+  assert.ok(byCardId.results.slice(2).some((item) => item.cardId === 'mention' && item.field === 'description'))
+
+  const byConversationId = search(' 0b7d9f78 ')
+  assert.equal(byConversationId.results[0].cardId, 'node-1793782174732')
+  assert.equal(byConversationId.results[0].fieldLabel, 'AI 대화 ID')
+  assert.equal(byConversationId.results[0].snippet, '0b7d9f78 · Claude Code · Opus 5.5')
+  assert.deepEqual(byConversationId.results[0].matchedTerms, ['0b7d9f78'])
+  assert.equal(byConversationId.results[1].cardId, 'ref-card')
+  assert.equal(byConversationId.results[1].fieldLabel, 'AI 대화 ID')
+  assert.equal(byConversationId.results.filter((item) => item.field === 'identifier').length, 2)
+
+  const earlierConversation = search('1a2b3c4d')
+  assert.equal(earlierConversation.results[0].cardId, 'node-1793782174732')
+  assert.equal(earlierConversation.results[0].snippet, '1a2b3c4d · Codex CLI')
+
+  assert.equal(search('node-17937821747').results.some((item) => item.field === 'identifier'), false)
+  assert.equal(search('0b7d9f7').results.some((item) => item.field === 'identifier'), false)
+  assert.equal(search('0b7d9f78', { fields: ['description'] }).results.some((item) => item.field === 'identifier'), false)
+  assert.equal(search('0b7d9f78', { mapIds: ['map-source'] }).results.some((item) => item.cardId === 'ref-card'), false)
 })
 
 test('Ref 배치 결과는 저장된 복사본 대신 최신 원본과 원본 댓글을 검색한다', () => {

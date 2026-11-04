@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { aiConversationLinksFromData } from '../../src/utils/aiConversations.mjs'
 
 export const GLOBAL_SEARCH_MODES = Object.freeze(['ranked', 'catalog'])
 export const GLOBAL_SEARCH_FIELDS = Object.freeze([
@@ -29,6 +30,10 @@ const fieldWeights = Object.freeze({
   waiting: 60,
   comments: 55,
 })
+// 카드 ID·AI 대화 ID가 검색어 전체와 같으면 해당 카드를 콘텐츠 일치(최대 240점)보다 위에 둔다.
+// 같은 ID가 Ref 원본을 거쳐 일치한 배치 카드는 원본 카드 바로 아래에 둔다.
+const IDENTIFIER_SCORE = 1_000
+const REFERENCE_IDENTIFIER_SCORE = 900
 
 export class GlobalSearchInputError extends Error {
   constructor(message, code = 'GLOBAL_SEARCH_INPUT_INVALID') {
@@ -339,6 +344,29 @@ function searchableCardValues(data, comments, usersById) {
   return values
 }
 
+// 식별자는 검색어 전체가 같을 때만 일치로 본다. 부분 일치를 허용하면 짧은 숫자·16진수 검색어가
+// 관련 없는 카드 ID·대화 ID와 겹쳐 콘텐츠 결과보다 위에 올라온다.
+function identifierMatches(node, resolved, normalizedQuery) {
+  const isIdentifier = (value) => typeof value === 'string' && value !== '' && normalizeSearchText(value) === normalizedQuery
+  const viaReference = Boolean(resolved.reference)
+  const matches = []
+  if (isIdentifier(node.id)) {
+    matches.push({ fieldLabel: '카드 ID', value: node.id, score: IDENTIFIER_SCORE })
+  } else if (viaReference && !resolved.reference.unresolved && isIdentifier(resolved.reference.sourceCardId)) {
+    matches.push({ fieldLabel: '원본 카드 ID', value: resolved.reference.sourceCardId, score: REFERENCE_IDENTIFIER_SCORE })
+  }
+  // Ref 배치 카드의 data는 원본 카드 data이므로 원본에 연결된 대화가 배치 카드에서도 일치한다.
+  for (const link of aiConversationLinksFromData(resolved.data)) {
+    if (!isIdentifier(link.conversationId)) continue
+    matches.push({
+      fieldLabel: 'AI 대화 ID',
+      value: [link.conversationId, link.agent?.label, link.model?.label].filter(Boolean).join(' · '),
+      score: viaReference ? REFERENCE_IDENTIFIER_SCORE : IDENTIFIER_SCORE,
+    })
+  }
+  return matches
+}
+
 function rankedResults({ scopedMaps, mapsById, commentsByMap, groupsByMap, usersById, publicBaseUrl, request }) {
   const results = []
   let order = 0
@@ -364,6 +392,20 @@ function rankedResults({ scopedMaps, mapsById, commentsByMap, groupsByMap, users
       const commentsNodeId = resolved.reference?.sourceCardId ?? node.id
       const comments = commentList(commentsByMap, commentsMapId).filter((comment) => comment?.nodeId === commentsNodeId)
       const base = cardBase({ map, node, data, reference: resolved.reference, group, usersById, mapsById, publicBaseUrl })
+      // 필드를 지정한 검색은 해당 콘텐츠만 찾으므로 식별자 일치는 모든 필드 검색에서만 확인한다.
+      if (request.filters.fields.length === 0) {
+        for (const entry of identifierMatches(node, resolved, request.normalizedQuery)) {
+          results.push({
+            ...base,
+            field: 'identifier',
+            fieldLabel: entry.fieldLabel,
+            snippet: entry.value,
+            matchedTerms: [request.normalizedQuery],
+            score: entry.score,
+            order: order++,
+          })
+        }
+      }
       for (const entry of searchableCardValues(data, comments, usersById)) {
         if (!fieldEnabled(request.filters, entry.field)) continue
         const match = matchText(entry.value, request.normalizedQuery)

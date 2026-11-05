@@ -1,0 +1,52 @@
+{
+  "manifest_version": "0.4",
+  "name": "dooray-mention-inbox",
+  "display_name": "Dooray 멘션 확인함",
+  "version": "0.2.0",
+  "description": "내가 멘션되거나 담당·참조로 지정된 Dooray 업무와 댓글을 화면에서 확인하고, 확인한 항목을 체크해 숨깁니다.",
+  "long_description": "Claude 채팅에서 \"Dooray 멘션 확인함 열어 줘\"라고 요청하면 대화창 안에 확인함 화면이 열립니다. 확인한 항목은 체크해서 숨기고, 숨긴 항목에서 되돌릴 수 있습니다. 항목마다 Dooray 원문 열기, Claude 새 대화로 이어가기, 이 대화에서 이어가기를 할 수 있습니다. 같은 화면을 브라우저에서도 열 수 있으며(Claude 앱이 켜져 있는 동안, 이 PC에서만), 북마크해 두고 쓸 수 있습니다. 확인 표시는 이 컴퓨터에만 저장됩니다. Dooray MCP 확장 없이도 단독으로 동작합니다.",
+  "author": {
+    "name": "MindNProgress"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/main.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/main.mjs"],
+      "env": {
+        "DOORAY_API_TOKEN": "${user_config.dooray_api_token}",
+        "DOORAY_MENTION_PROJECT_CODES": "${user_config.project_codes}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "open_dooray_mention_inbox", "description": "Dooray 멘션 확인함 화면을 대화창 안이나 브라우저로 엽니다." },
+    { "name": "list_dooray_mentions", "description": "아직 확인하지 않은 항목을 채팅 번호 목록으로 보여 줍니다." },
+    { "name": "check_dooray_mentions", "description": "확인한 항목을 숨기거나 숨김을 되돌립니다." },
+    { "name": "get_dooray_task_detail", "description": "Dooray 업무 본문과 댓글을 읽어 대화를 이어갑니다." }
+  ],
+  "user_config": {
+    "dooray_api_token": {
+      "type": "string",
+      "title": "Dooray API 토큰",
+      "description": "https://nhnent.dooray.com/setting/api/token 에서 발급한 토큰을 붙여 넣으세요.",
+      "sensitive": true,
+      "required": true
+    },
+    "project_codes": {
+      "type": "string",
+      "title": "확인할 프로젝트 코드 (선택)",
+      "description": "비워 두면 참여 중인 모든 프로젝트를 확인합니다. 일부 프로젝트만 확인하려면 프로젝트 코드를 쉼표로 구분해 입력하세요.",
+      "required": false,
+      "default": ""
+    }
+  },
+  "compatibility": {
+    "platforms": ["win32"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "keywords": ["dooray", "mention"]
+}

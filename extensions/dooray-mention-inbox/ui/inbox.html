@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dooray-mention-inbox-mode" content="app">
+<title>Dooray 멘션 확인함</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --line: #d8dee4; --card: #f6f8fa;
+    --accent: #2f6feb; --accent-fg: #ffffff; --danger: #cf222e; --badge: #eaeef2; --focus: #b6d0ff;
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    --bg: #1e1f22; --fg: #e6e6e6; --muted: #9da3ab; --line: #3a3d43; --card: #26282c;
+    --accent: #5b8def; --accent-fg: #ffffff; --danger: #ff6b6b; --badge: #33363c; --focus: #34508a;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1e1f22; --fg: #e6e6e6; --muted: #9da3ab; --line: #3a3d43; --card: #26282c;
+      --accent: #5b8def; --accent-fg: #ffffff; --danger: #ff6b6b; --badge: #33363c; --focus: #34508a;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 14px 16px 18px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  h1 { font-size: 17px; margin: 0; flex: 1 1 auto; }
+  .sub { color: var(--muted); font-size: 12.5px; width: 100%; margin-top: -4px; }
+  .controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  button, select { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .55; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .status { margin: 10px 0 4px; font-size: 13px; color: var(--muted); min-height: 20px; }
+  .status.error { color: var(--danger); }
+  progress { width: 100%; height: 6px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-top: 8px; }
+  .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 6px 10px; }
+  .tabs button[aria-selected="true"] { border-bottom-color: var(--accent); font-weight: 600; }
+  .list { list-style: none; margin: 0; padding: 0; }
+  body.app .list { max-height: 560px; overflow: auto; }
+  .item { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; padding: 10px 4px; border-bottom: 1px solid var(--line); }
+  .item.leaving { opacity: .35; }
+  .check { display: flex; align-items: flex-start; padding-top: 2px; }
+  .check input { width: 18px; height: 18px; cursor: pointer; }
+  .title { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; min-width: 0; }
+  .badge { font-size: 11.5px; padding: 0 6px; border-radius: 10px; background: var(--badge); color: var(--muted); white-space: nowrap; }
+  .subject { font-weight: 600; color: var(--fg); text-decoration: none; word-break: break-all; }
+  a.subject:hover { text-decoration: underline; }
+  .meta { color: var(--muted); font-size: 12.5px; grid-column: 2; }
+  .excerpt { grid-column: 2; font-size: 13px; color: var(--fg); opacity: .9; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
+  .actions { grid-column: 2; display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+  .actions button { font-size: 12px; padding: 2px 8px; }
+  .empty { padding: 28px 8px; text-align: center; color: var(--muted); }
+  footer { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .toast { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 6px 12px; border-radius: 6px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.show { opacity: .92; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Dooray 멘션 확인함</h1>
+    <div class="controls">
+      <select id="days" aria-label="조회 기간">
+        <option value="7">최근 7일</option>
+        <option value="14" selected>최근 14일</option>
+        <option value="30">최근 30일</option>
+      </select>
+      <button id="refresh" class="primary" type="button">새로고침</button>
+      <button id="browser" type="button" hidden>브라우저에서 열기</button>
+    </div>
+    <div class="sub" id="sub"></div>
+  </header>
+  <div class="status" id="status" role="status" aria-live="polite"></div>
+  <progress id="progress" hidden></progress>
+  <div class="tabs" role="tablist">
+    <button id="tab-open" role="tab" aria-selected="true" type="button">확인할 항목</button>
+    <button id="tab-checked" role="tab" aria-selected="false" type="button">숨긴 항목</button>
+  </div>
+  <ul class="list" id="list"></ul>
+  <footer>체크하면 확인한 것으로 보고 목록에서 숨깁니다. 확인 표시는 이 컴퓨터에만 저장됩니다.</footer>
+</div>
+<div class="toast" id="toast"></div>
+<!--APP_SCRIPT-->
+</body>
+</html>

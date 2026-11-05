@@ -1,0 +1,15 @@
+{
+  "name": "dooray-mention-inbox",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Claude 데스크톱 확장 프로그램 Dooray 멘션 확인함. 빌드 결과는 의존성을 모두 묶은 단일 파일이므로 설치 PC에는 node_modules가 필요 없다.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "3.25.76"
+  }
+}

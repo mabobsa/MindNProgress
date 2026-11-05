@@ -13,6 +13,7 @@ const maxAutomaticRestartRecoveries = 3
 const maxAnalysisPromptChars = 100_000
 const maxAnalysisPromptBytes = 250_000
 const unlinkedConversationError = 'AI가 선택한 대화가 담당 카드에 연결되어 있지 않습니다.'
+const expiredDispatchCodes = new Set(['NOT_FOUND', 'EXTERNAL_DISPATCH_NOT_FOUND'])
 const unreadCompletedResultError = '이번 요청의 AI 결과를 확인하지 못했습니다. 대화에서 답변을 확인한 후 상태를 다시 확인해 주세요.'
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const responseSnapshot = ({ pushNotification: _notification, ...job }) => JSON.stringify(job)
@@ -601,7 +602,8 @@ export function createDoorayResponseService(deps) {
       try { dispatch = await deps.getDispatch(operation) }
       catch (failure) {
         // 만료된 영수증도 새 실행으로 대체하지 않는다. 원 지시와 수동 완료의 엄격한 대사만 허용한다.
-        if (failure.status !== 404 || failure.code !== 'NOT_FOUND' || job.conversationPolicy !== 'dedicated') throw failure
+        // AionCore는 완료 영수증을 메모리에 1시간만 두고, 없으면 EXTERNAL_DISPATCH_NOT_FOUND로 응답한다.
+        if (failure.status !== 404 || !expiredDispatchCodes.has(failure.code) || job.conversationPolicy !== 'dedicated') throw failure
         dispatch = { state: 'expired', conversationId: operation.conversationId, operationId: operation.id }
       }
       if (dispatch.conversationId !== operation.conversationId || (dispatch.operationId && dispatch.operationId !== operation.id)

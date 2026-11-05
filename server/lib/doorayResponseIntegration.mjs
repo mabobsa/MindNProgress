@@ -52,6 +52,11 @@ export function doorayManualResultRecoveryEvidence({ user, operation, job, messa
   const requestedAt = Date.parse(job.createdAt)
   const original = textValue(operation.prompt) && messages?.find(input => input.position === 'right' && input.type === 'text'
     && input.conversation_id === operation.conversationId && input.content === operation.prompt)
+  // Claude(ACP) 대화 메시지에는 backend_turn_id가 없다. 원 지시 뒤에 사용자 입력이 없으면 답변은 원래 실행의 턴에서 나온 것이므로
+  // 턴 ID 없이도 인정한다. 원 지시 뒤에 사용자가 이어 쓴 대화는 지금처럼 backend_turn_id를 요구한다.
+  const singleRequest = Boolean(original) && !messages.some(input => input !== original && input.position === 'right'
+    && (!Number.isFinite(Number(input.created_at)) || Number(input.created_at) >= Number(original.created_at)))
+  const turnEvidence = textValue(message?.backend_turn_id) ? 'backend-turn' : singleRequest ? 'single-request' : null
   if (job.conversationPolicy !== 'dedicated' || job.userId !== user.id || !workspace || conversation?.id !== operation.conversationId
     || !operation.id.startsWith(`${job.id}-`) || extra.mnpDoorayResponseId !== job.id || extra.mnpDoorayUserId !== user.id
     || !textValue(extra.mnpDoorayOperationId) || !extra.mnpDoorayOperationId.startsWith(`${job.id}-`) || extra.workspace !== workspace
@@ -59,13 +64,13 @@ export function doorayManualResultRecoveryEvidence({ user, operation, job, messa
     || runtime.is_processing || runtime.isProcessing || Number(runtime.pending_confirmations ?? runtime.pendingConfirmations ?? 0) > 0
     || (runtime.task_status && runtime.task_status !== 'finished')
     || message?.conversation_id !== operation.conversationId || message.position !== 'left' || message.type !== 'text'
-    || message.status !== 'finish' || message.hidden === true || !textValue(message.id) || !textValue(message.backend_turn_id)
+    || message.status !== 'finish' || message.hidden === true || !textValue(message.id) || !turnEvidence
     || !original || !Number.isFinite(requestedAt) || !Number.isFinite(Number(original.created_at)) || Number(original.created_at) < requestedAt
     || !Number.isFinite(Number(message.created_at)) || Number(message.created_at) < Number(original.created_at)) {
     throw fail('수동 이어가기의 최종 답변·전용 대화·사용자·작업 위치를 확인하지 못했습니다. AI를 다시 실행하지 않았습니다.')
   }
-  return { method: 'manual-continuation', requestMessageId: original.id, resultMessageId: message.id, resultBackendTurnId: message.backend_turn_id,
-    resultCreatedAt: new Date(Number(message.created_at)).toISOString() }
+  return { method: 'manual-continuation', requestMessageId: original.id, resultMessageId: message.id, resultBackendTurnId: message.backend_turn_id ?? null,
+    resultTurnEvidence: turnEvidence, resultCreatedAt: new Date(Number(message.created_at)).toISOString() }
 }
 
 function textValue(value) { return typeof value === 'string' && value.trim() }

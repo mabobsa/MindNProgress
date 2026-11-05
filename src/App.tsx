@@ -5080,7 +5080,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       setMobileInspectorOpen(false)
       suppressMobileInspectorSelection.current = selectedIdRef.current === nodeId ? null : nodeId
     }
-    selectCardLocally(nodeId)
+    // 이미 선택된 카드를 우클릭하면 선택 묶음을 유지해 다중 복사에 사용한다.
+    if (nodes.some((node) => node.id === nodeId && node.selected)) setSelectedId(nodeId)
+    else selectCardLocally(nodeId)
     const menuHeight = nodes.find((node) => node.id === nodeId)?.data.kind === 'image' ? 310 : 440
     setNodeContextMenu({
       x: Math.max(8, Math.min(clientX, window.innerWidth - 230)),

@@ -20,6 +20,15 @@ test('Runner 구독 사용량 조회는 정확한 경로의 GET만 허용한다'
   assert.equal(isRunnerMcpApiPathAllowed('GET', `${pathname}/extra`), false)
 })
 
+test('Runner 세션 메시지 중계는 정확한 경로의 POST만 허용한다', () => {
+  const pathname = '/api/integrations/aionui/session-messages'
+  assert.equal(isRunnerMcpApiPathAllowed('POST', pathname), true)
+  for (const method of ['GET', 'PUT', 'PATCH', 'DELETE', 'HEAD']) {
+    assert.equal(isRunnerMcpApiPathAllowed(method, pathname), false)
+  }
+  assert.equal(isRunnerMcpApiPathAllowed('POST', `${pathname}/extra`), false)
+})
+
 test('Runner 카드 탐색은 조회 GET과 선택 POST 경로만 허용한다', () => {
   const pathname = `/api/integrations/aionui/conversations/${conversationId}/mindnprogress`
   assert.equal(isRunnerMcpApiPathAllowed('GET', pathname), true)

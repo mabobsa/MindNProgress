@@ -232,6 +232,7 @@ import {
 import { MachineOperationError, MachineOperationQueue } from './lib/machineOperations.mjs'
 import { MOBILE_PUSH_PATH, mobilePushTargets, resolveMobilePushTarget, sendMobilePush } from './lib/mobilePush.mjs'
 import { authorizeRunnerMcpRequest } from './lib/runnerMcpAccess.mjs'
+import { SESSION_MESSAGE_RELAY_PATH, normalizeSessionMessageRelayRequest, relaySessionMessage } from './lib/aiSessionMessageRelay.mjs'
 import {
   MachinePairingError,
   MachinePairingStore,
@@ -2397,6 +2398,20 @@ async function fetchAionUi(pathname, { timeoutMs = 8_000, method = 'GET', body, 
     }
   }
   throw lastResponseError ?? lastError ?? new Error('AIONUI_REQUEST_FAILED')
+}
+
+// 세션 메시지 중계 대상. 서브 머신은 Runner 토큰이 있어야 오퍼레이션을 받을 수 있다.
+function sessionMessageRelayMachines() {
+  const now = Date.now()
+  return machineRegistry.machines.map((machine) => {
+    const main = machine.machineId === machineRegistry.mainMachineId
+    return {
+      machineId: machine.machineId,
+      label: machine.label,
+      enabled: main || (machine.enabled !== false && Boolean(machine.tokenHash)),
+      online: main || Boolean(machine.lastSeenAt && now - Date.parse(machine.lastSeenAt) <= runnerOnlineWithinMs),
+    }
+  })
 }
 
 // 메인 머신과 서브 머신의 유일한 분기점이다.
@@ -9186,6 +9201,23 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         })
       }
       return sendJson(response, 200, await resolveAiConversationDisplay(scope.conversationId))
+    }
+
+    if (request.method === 'POST' && url.pathname === SESSION_MESSAGE_RELAY_PATH) {
+      if (!hasValidIntegrationBearer(request)) {
+        return sendJson(response, 401, { error: '올바른 MindNProgress 연동 토큰이 필요합니다.' })
+      }
+      const normalized = normalizeSessionMessageRelayRequest(await readJsonBody(request))
+      if (!normalized.ok) return sendJson(response, normalized.status, normalized.body)
+      // 서브 머신 AionCore는 Runner 중계로 들어오므로 검증된 Runner 머신이 보낸 머신이다.
+      const result = await relaySessionMessage({
+        request: normalized.value,
+        sourceMachineId: runnerMcpAccess.kind === 'authorized' ? runnerMcpAccess.machineId : machineRegistry.mainMachineId,
+        listMachines: sessionMessageRelayMachines,
+        homeMachineIdOf: (conversationId) => aiConversationOrigins.get(conversationId)?.homeMachineId ?? null,
+        callMachine: fetchAionUiOn,
+      })
+      return sendJson(response, result.status, result.body)
     }
 
     const aionUiMindNProgressConversationRoute = url.pathname.match(/^\/api\/integrations\/aionui\/conversations\/([^/]+)\/mindnprogress(\/select)?$/)

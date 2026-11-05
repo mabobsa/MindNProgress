@@ -12,6 +12,7 @@ readonly UN_FONTS_URL='https://deb.debian.org/debian/pool/main/f/fonts-unfonts-c
 readonly UN_FONTS_SHA256='14abb309f9d979cc20212fabfbd7f50b55c42183985ae507390c7461ce0b307c'
 
 install_root="$DEFAULT_ROOT"
+install_root_given=false
 mindnprogress_branch='main'
 aionui_branch='main'
 aioncore_branch='main'
@@ -321,7 +322,7 @@ configure_tool_paths() {
 
 while (($#)); do
   case "$1" in
-    --install-root) install_root="${2:?missing value for --install-root}"; shift 2 ;;
+    --install-root) install_root="${2:?missing value for --install-root}"; install_root_given=true; shift 2 ;;
     --mindnprogress-branch) mindnprogress_branch="${2:?missing value for --mindnprogress-branch}"; shift 2 ;;
     --aionui-branch) aionui_branch="${2:?missing value for --aionui-branch}"; shift 2 ;;
     --aioncore-branch) aioncore_branch="${2:?missing value for --aioncore-branch}"; shift 2 ;;
@@ -345,7 +346,9 @@ while (($#)); do
 done
 
 [[ "$(uname -s)" == Darwin ]] || die 'This installer supports macOS only.'
-if "$non_interactive" && [[ "$install_root" == "$DEFAULT_ROOT" ]]; then
+# Decide by whether the option was passed, not by its value: naming the default
+# root explicitly (as the README example does) must be accepted.
+if "$non_interactive" && ! "$install_root_given"; then
   die '--non-interactive requires an explicit --install-root.'
 fi
 install_root="$(normalize_path "$install_root")"

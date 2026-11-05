@@ -52,11 +52,15 @@ export function doorayManualResultRecoveryEvidence({ user, operation, job, messa
   const requestedAt = Date.parse(job.createdAt)
   const original = textValue(operation.prompt) && messages?.find(input => input.position === 'right' && input.type === 'text'
     && input.conversation_id === operation.conversationId && input.content === operation.prompt)
-  // Claude(ACP) 대화 메시지에는 backend_turn_id가 없다. 원 지시 뒤에 사용자 입력이 없으면 답변은 원래 실행의 턴에서 나온 것이므로
-  // 턴 ID 없이도 인정한다. 원 지시 뒤에 사용자가 이어 쓴 대화는 지금처럼 backend_turn_id를 요구한다.
-  const singleRequest = Boolean(original) && !messages.some(input => input !== original && input.position === 'right'
+  // Claude(ACP) 대화 메시지에는 backend_turn_id가 없다(AionCore에서는 Codex만 fork 기준점으로 만든다).
+  // 턴 ID가 없으면 답변이 원래 실행 턴(원 지시 뒤 사용자 입력 없음)이나 마지막 사용자 입력에 대한 턴에서 나온 경우만 인정한다.
+  // 답변 뒤에 사용자가 다시 입력했다면 그 답변이 마지막 의도와 다를 수 있어 회수하지 않는다. 대화 유휴·완료 검사는 아래에서 함께 한다.
+  const userMessages = original ? messages.filter(input => input.position === 'right') : []
+  const singleRequest = Boolean(original) && !userMessages.some(input => input !== original
     && (!Number.isFinite(Number(input.created_at)) || Number(input.created_at) >= Number(original.created_at)))
-  const turnEvidence = textValue(message?.backend_turn_id) ? 'backend-turn' : singleRequest ? 'single-request' : null
+  const latestTurn = Boolean(original) && Number.isFinite(Number(message?.created_at))
+    && userMessages.every(input => Number.isFinite(Number(input.created_at)) && Number(input.created_at) < Number(message.created_at))
+  const turnEvidence = textValue(message?.backend_turn_id) ? 'backend-turn' : singleRequest ? 'single-request' : latestTurn ? 'latest-turn' : null
   if (job.conversationPolicy !== 'dedicated' || job.userId !== user.id || !workspace || conversation?.id !== operation.conversationId
     || !operation.id.startsWith(`${job.id}-`) || extra.mnpDoorayResponseId !== job.id || extra.mnpDoorayUserId !== user.id
     || !textValue(extra.mnpDoorayOperationId) || !extra.mnpDoorayOperationId.startsWith(`${job.id}-`) || extra.workspace !== workspace

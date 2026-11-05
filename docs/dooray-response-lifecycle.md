@@ -50,7 +50,7 @@
 
 - 모델 용량·서버 오류 등으로 `failed`가 된 접수(`router`)·담당 검토(`review`)도 `완료 답변 복구`로 확인할 수 있다. 후보 표시가 완료 답변 존재를 보장하는 것은 아니다. 답변이 없으면 원래 오류·상태를 유지하고 새 대화나 AI 실행을 만들지 않는다.
 - 이전 외부 실행의 영수증은 실패 상태로 남아 있어도 같은 전용 대화의 최종 답변을 검증해 회수할 수 있다. 요청·편집자·대화·작업 위치의 서버 귀속, 저장된 원 지시와 사용자 메시지의 정확한 일치, 현재 요청 ID의 구조화 답변, 메시지의 `finish` 상태·backend turn·시각과 대화 유휴 상태를 확인한다. 다른 대화·회차·미완성 답변·사용자 인용은 채택하지 않는다.
-- Claude(ACP) 대화 메시지에는 backend turn이 없다. 원 지시 뒤에 사용자 메시지가 하나도 없으면 최종 답변은 원래 실행의 턴에서 나온 것이므로 backend turn 없이 인정한다(`resultTurnEvidence=single-request`). 원 지시 뒤에 사용자가 이어 쓴 대화는 backend turn이 있어야 회수한다(`resultTurnEvidence=backend-turn`).
+- Claude(ACP) 대화 메시지에는 backend turn이 없다. 원 지시 뒤에 사용자 메시지가 하나도 없으면 최종 답변은 원래 실행의 턴에서 나온 것이므로 backend turn 없이 인정한다(`resultTurnEvidence=single-request`). 원 지시 뒤에 사용자가 이어 쓴 대화는 최종 답변이 마지막 사용자 메시지보다 뒤에 있을 때(마지막 입력에 대한 턴의 답변) 인정한다(`resultTurnEvidence=latest-turn`). 답변 뒤에 사용자가 다시 입력했거나 입력 시각을 확인할 수 없으면 회수하지 않는다. backend turn이 있는 대화(Codex)는 이전처럼 그것으로 판단한다(`resultTurnEvidence=backend-turn`).
 - AionCore는 완료 영수증을 메모리에 약 1시간만 보관하고, 없으면 404 `EXTERNAL_DISPATCH_NOT_FOUND`로 응답한다. 실행 영수증이 명시적인 404 `NOT_FOUND`·`EXTERNAL_DISPATCH_NOT_FOUND`로 만료됐어도 위 원 지시·최종 답변 근거가 모두 있는 전용 대화만 같은 무실행 경로로 회수한다. 단순 라우트 오류·조회 장애를 만료로 간주하지 않으며, 만료 영수증을 재전송하거나 완료 영수증으로 위조하지 않는다.
 - 현재 담당 카드·계층·그룹을 다시 검증하고 기존 회차와 `expectedUpdatedAt`이 유지될 때만 제안 원문을 저장한다. 접수 답변은 `proposalSource=router`로 표시하며 담당 AI의 별도 재검토로 오인하지 않는다. 담당 검토 결과는 현재 담당 경로와 `proposalSource=review`를 유지한다.
 - 구조화된 `decision`에 따라 제안 도착·추가 정보 필요·승인 대기로 전환한다. 회수는 제안의 실행 승인이나 사용자의 대응 완료가 아니며 승인 기록·카드·Dooray 업무·댓글을 변경하지 않는다.

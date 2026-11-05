@@ -169,7 +169,7 @@ test('만료된 실행 영수증은 원 지시·전용 대화·현재 요청의 
   }
 })
 
-test('턴 ID 없는 답변은 원 지시 뒤에 사용자 입력이 없을 때만 원래 실행의 답변으로 회수한다', async t => {
+test('턴 ID 없는 답변은 원래 실행 턴이나 마지막 사용자 입력에 대한 턴의 답변일 때만 회수한다', async t => {
   const { service, job, file, counts } = await fixture(t, context => { delete context.message.backend_turn_id })
   const result = await service.recoverResult(job.userId, job.id, job.updatedAt)
   assert.equal(result.proposal, proposal)
@@ -177,18 +177,45 @@ test('턴 ID 없는 답변은 원 지시 뒤에 사용자 입력이 없을 때�
   assert.equal(stored.resultTurnEvidence, 'single-request')
   assert.equal(stored.resultBackendTurnId, null)
   assert.equal(counts.dispatch, 0)
-  const continued = await fixture(t, context => {
+  const withUserInputs = (times, extra = () => {}) => context => {
     delete context.message.backend_turn_id
+    extra(context)
     const readMessages = context.deps.messages
     context.deps.messages = async () => {
       const items = await readMessages()
-      return [items[0], { id: 'manual-input', conversation_id: 'proposal-chat', position: 'right', type: 'text', content: '이어서 작성해 주세요.',
-        created_at: Date.parse('2026-10-01T00:02:00Z') }, ...items.slice(1)]
+      return [...items, ...times.map((at, index) => ({ id: `manual-input-${index}`, conversation_id: 'proposal-chat', position: 'right', type: 'text',
+        content: '이어서 작성해 주세요.', created_at: typeof at === 'string' ? Date.parse(at) : at }))]
     }
+  }
+  // 수동으로 이어 쓴 뒤 마지막 입력에 대한 답변(Claude 대화)은 회수한다.
+  const continued = await fixture(t, withUserInputs(['2026-10-01T00:02:00Z', '2026-10-01T00:02:30Z']))
+  const recovered = await continued.service.recoverResult(continued.job.userId, continued.job.id, continued.job.updatedAt)
+  assert.equal(recovered.proposal, proposal)
+  const continuedRecovery = JSON.parse(await readFile(continued.file, 'utf8')).jobs[0].resultRecovery
+  assert.equal(continuedRecovery.resultTurnEvidence, 'latest-turn')
+  assert.equal(continuedRecovery.method, 'manual-continuation')
+  assert.equal(continued.counts.dispatch, 0)
+  // 답변 뒤에 사용자가 다시 입력했거나 입력 시각을 확인할 수 없으면 회수하지 않는다.
+  for (const configure of [
+    withUserInputs(['2026-10-01T00:02:00Z', '2026-10-01T00:04:00Z']),
+    withUserInputs(['2026-10-01T00:03:00Z']),
+    withUserInputs(['2026-10-01T00:02:00Z', 'invalid']),
+    withUserInputs(['2026-10-01T00:02:00Z'], context => { context.conversation.runtime.state = 'running' }),
+  ]) {
+    const rejected = await fixture(t, configure)
+    const before = await readFile(rejected.file, 'utf8')
+    await assert.rejects(rejected.service.recoverResult(rejected.job.userId, rejected.job.id, rejected.job.updatedAt))
+    assert.equal(await readFile(rejected.file, 'utf8'), before)
+    assert.equal(rejected.counts.dispatch, 0)
+  }
+  // 턴 ID가 있는 대화(Codex)는 이어 쓴 입력 순서와 관계없이 기존처럼 턴 ID로 판단한다.
+  const codex = await fixture(t, context => {
+    const readMessages = context.deps.messages
+    context.deps.messages = async () => [...await readMessages(), { id: 'later-input', conversation_id: 'proposal-chat', position: 'right', type: 'text',
+      content: '추가 요청', created_at: Date.parse('2026-10-01T00:04:00Z') }]
   })
-  const before = await readFile(continued.file, 'utf8')
-  await assert.rejects(continued.service.recoverResult(continued.job.userId, continued.job.id, continued.job.updatedAt))
-  assert.equal(await readFile(continued.file, 'utf8'), before)
+  await codex.service.recoverResult(codex.job.userId, codex.job.id, codex.job.updatedAt)
+  assert.equal(JSON.parse(await readFile(codex.file, 'utf8')).jobs[0].resultRecovery.resultTurnEvidence, 'backend-turn')
 })
 
 test('영수증 만료 뒤에도 턴 ID 없는 대화의 완료 답변을 자동 회수한다(본문 코드 블록 포함)', async t => {
@@ -225,7 +252,7 @@ test('회수는 요청·대화·사용자·작업 위치·최종 메시지·현�
     c => { c.message.content = JSON.stringify({ requestId: 'previous-request', ...route, proposal, decision }) },
     c => { c.message.position = 'right' }, c => { c.message.status = 'loading' }, c => { c.message.hidden = true },
     c => {
-      // 원 지시 뒤에 사용자가 이어 쓴 대화에서 턴 ID 없는 답변
+      // 턴 ID 없는 답변 뒤에 사용자가 다시 입력한 대화
       delete c.message.backend_turn_id
       const readMessages = c.deps.messages
       c.deps.messages = async () => [...await readMessages(), { id: 'later-input', conversation_id: 'proposal-chat', position: 'right', type: 'text',
@@ -287,7 +314,7 @@ test('완료된 실행의 답변을 해석하지 못한 실패는 턴 ID 없는 
     assert.equal(stored.resultRecovery.dispatchTurnId, 'completed-turn')
     assert.deepEqual({ create: context.counts.create, dispatch: context.counts.dispatch, link: context.counts.link }, { create: 0, dispatch: 0, link: 0 })
   }
-  // 실행이 완료되지 않았거나 다른 실패 사유면 수동 이어가기 검증을 적용해, 사용자가 이어 쓴 대화의 턴 ID 없는 답변을 회수하지 않는다.
+  // 실행이 완료되지 않았거나 다른 실패 사유면 수동 이어가기 검증을 적용해, 답변 뒤에 사용자가 다시 입력한 대화의 턴 ID 없는 답변을 회수하지 않는다.
   const continued = c => {
     const readMessages = c.deps.messages
     c.deps.messages = async () => [...await readMessages(), { id: 'later-input', conversation_id: 'proposal-chat', position: 'right', type: 'text',

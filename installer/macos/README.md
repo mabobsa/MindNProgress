@@ -98,7 +98,7 @@ API 키를 명령행 인수로 넘기지 마세요. 설치기는 환경값을 �
 
 AionUi에 Claude 계정을 2개 이상 등록해 쓰는 경우 설치기는 위 Claude 폴더 한 곳에만 설치합니다. 두 번째 계정 폴더의 지침 가져오기와 스킬 복사는 [Claude 멀티 계정](../../docs/ai-claude-accounts.md#mnp-suite-설치기와-두-번째-계정)을 따릅니다.
 
-`pptx`는 이 폴더의 `skills/pptx`(macOS 렌더러 `libreoffice+pymupdf` 플랫폼 파생본)를, 나머지는 `../windows/skills`의 사본을 설치합니다. 이 사본들은 활성본(`~/.claude/skills`)에서 동기화한 파생본이며, 원본·파생 관계는 ai-guidance-library README의 「원본과 파생본」을 따릅니다.
+`pptx`는 이 폴더의 `skills/pptx`(macOS 렌더러 `powerpoint-applescript+pymupdf` 플랫폼 파생본)를, 나머지는 `../windows/skills`의 사본을 설치합니다. 이 사본들은 활성본(`~/.claude/skills`)에서 동기화한 파생본이며, 원본·파생 관계는 ai-guidance-library README의 「원본과 파생본」을 따릅니다.
 
 ## 주요 옵션
 

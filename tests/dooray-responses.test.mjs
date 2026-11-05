@@ -1029,6 +1029,39 @@ test('담당 전달은 계정·대화·실행 상태를 검사하고 응답 유�
   await assert.rejects(service.handoff('user1', job.id, 'old-chat'), /제안 도착/)
 })
 
+test('담당 전달은 전달이 끝났어도 다른 대화·같은 대화·새 대화로 다시 할 수 있고 기록을 덮어쓴다', async (t) => {
+  const { service, deps, counts, operations } = await fixture(t)
+  const conversation = (conversationId) => ({ conversationId, machineId: 'main', homeMachineRole: 'main', available: true, idle: true })
+  deps.handoffTarget = async () => ({ route, conversations: [conversation('old-chat'), conversation('other-chat')] })
+  await service.start({ id: 'user1' }, item)
+  const [job] = await until(service, 'user1', 'proposal')
+  const before = counts.dispatch
+  const handoffIds = () => [...operations.keys()].filter((id) => id.includes('-handoff-'))
+  assert.ok((await service.handoff('user1', job.id, 'old-chat', { requestKey: 'first-request-key' })).sentAt)
+  await service.handoff('user1', job.id, 'old-chat', { requestKey: 'first-request-key' })
+  assert.equal(counts.dispatch, before + 1, '같은 요청 키의 재시도는 다시 전송하지 않는다')
+  // 이미 전달했어도 다른 대화로 다시 전달하고 기록을 새 대상으로 덮어쓴다.
+  assert.equal((await service.handoff('user1', job.id, 'other-chat', { requestKey: 'second-request-key' })).conversationId, 'other-chat')
+  assert.equal(counts.dispatch, before + 2)
+  assert.equal((await service.list('user1'))[0].conversationId, 'other-chat')
+  assert.equal((await service.handoffOptions('user1', job.id)).handoffConversationId, 'other-chat')
+  // 같은 대화라도 새 요청(옵션을 바꿔 다시 시작)은 다시 전달한다. 실행 ID는 매번 새로 만든다.
+  await service.handoff('user1', job.id, 'other-chat', { requestKey: 'third-request-key' })
+  assert.equal(counts.dispatch, before + 3)
+  assert.equal(new Set(handoffIds()).size, 3)
+  // 담당 카드에 새 AI 대화로 다시 시작하면 AI를 실행하지 않고 이전 전달 기록만 덮어쓴다.
+  const launched = await service.handoff('user1', job.id, null, { newConversation: true, requestKey: 'fourth-request-key' })
+  assert.equal(launched.newConversation, true)
+  assert.equal(counts.dispatch, before + 3)
+  const reset = await service.handoffOptions('user1', job.id)
+  assert.deepEqual({ conversationId: reset.handoffConversationId, handedOffAt: reset.handedOffAt }, { conversationId: null, handedOffAt: null })
+  assert.equal((await service.list('user1'))[0].conversationId, job.conversationId, '대화 보기는 이전 전달 대상 대신 제안 대화를 연다')
+  await service.handoff('user1', job.id, 'old-chat', { requestKey: 'fifth-request-key' })
+  assert.equal((await service.list('user1'))[0].conversationId, 'old-chat')
+  for (const requestKey of ['short', 'bad key!', 7]) await assert.rejects(service.handoff('user1', job.id, 'old-chat', { requestKey }), /요청 키/)
+  assert.equal(counts.dispatch, before + 4)
+})
+
 const approvalDecision = { kind: 'approval', reason: '그룹과 총괄 문서의 구성은 정해졌고 사용자 동의만 필요합니다.', questions: [],
   approval: { title: '연동 그룹과 총괄 구성', scope: ['연동 그룹과 총괄 문서를 생성하고 관련 문서를 연결한다.'], exclusions: ['기능 구현, Dooray 댓글 작성 및 하위 AI 위임은 제외한다.'] } }
 

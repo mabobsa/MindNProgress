@@ -833,7 +833,11 @@ export function createDoorayResponseService(deps) {
       const handoff = job.handoff?.attempt === job.attempt ? job.handoff : null
       return { ...target, prompt, handedOffAt: handoff?.sentAt ?? null, handoffConversationId: handoff?.conversationId ?? null }
     },
-    async handoff(userId, id, conversationId) {
+    // 전달 대상·대화 옵션을 잘못 골랐으면 전달이 끝났어도 다시 고를 수 있다. 새 전달은 이번 회차의 전달 기록을 덮어쓴다.
+    // 같은 requestKey(같은 버튼의 재시도)로 같은 대화에 다시 요청하면 기존 실행을 조회해 중복 전송하지 않는다.
+    async handoff(userId, id, conversationId, options = {}) {
+      const requestKey = options.requestKey ?? null
+      if (requestKey !== null && (typeof requestKey !== 'string' || !/^[A-Za-z0-9_-]{8,80}$/.test(requestKey))) throw error('전달 요청 키가 올바르지 않습니다.', 400)
       if (running.has(id)) throw error('상태 확인 중입니다. 잠시 후 다시 전달해 주세요.', 409)
       running.add(id)
       try {
@@ -842,13 +846,23 @@ export function createDoorayResponseService(deps) {
         const prompt = buildDoorayHandoffPrompt(job)
         const user = await deps.user(userId)
         const target = await deps.handoffTarget(user, job)
+        const nextId = () => `${job.id}-handoff-${job.attempt ?? 0}-${randomBytes(6).toString('hex')}`
+        if (options.newConversation === true) {
+          // 담당 카드에 새 AI 대화로 다시 시작한다. 이전 전달 기록을 덮어써 대화 보기가 이전 대상을 가리키지 않게 한다.
+          const current = job.handoff?.attempt === job.attempt ? job.handoff : null
+          if (!(current?.mode === 'new-conversation' && requestKey && current.requestKey === requestKey)) {
+            await patch(userId, id, { handoff: { id: nextId(), kind: 'handoff', mode: 'new-conversation', attempt: job.attempt, requestKey,
+              requestedAt: new Date().toISOString() } })
+          }
+          return { newConversation: true, route: target.route }
+        }
         const selected = target.conversations.find((entry) => entry.conversationId === conversationId)
         if (!selected?.available) throw error('전달할 담당 카드의 대화를 확인할 수 없습니다.', 409)
-        if (job.handoff?.attempt === job.attempt && job.handoff.conversationId !== conversationId) throw error('이번 제안을 이미 다른 담당 대화로 전달했습니다. 해당 대화에서 확인해 주세요.', 409)
-        let handoff = job.handoff?.attempt === job.attempt ? job.handoff : null
+        const current = job.handoff?.attempt === job.attempt ? job.handoff : null
+        let handoff = current?.conversationId === conversationId && (current.requestKey ?? null) === requestKey ? current : null
         if (!handoff) {
           if (!selected.idle) throw error('담당 대화가 실행 중입니다. 끝난 뒤 전달해 주세요.', 409)
-          handoff = { id: `${job.id}-handoff-${job.attempt ?? 0}`, kind: 'handoff', attempt: job.attempt,
+          handoff = { id: nextId(), kind: 'handoff', attempt: job.attempt, requestKey, requestedAt: new Date().toISOString(),
             conversationId, machineId: selected.machineId, homeMachineRole: selected.homeMachineRole, modelId: selected.modelId, prompt }
           job = await patch(userId, id, { handoff })
         }

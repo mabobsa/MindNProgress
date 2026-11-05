@@ -11,6 +11,9 @@ type Handoff = {
   handoffConversationId: string | null
 }
 
+// 보안 컨텍스트가 아닌 사내 HTTP 주소에서도 쓸 수 있도록 getRandomValues로 만든다.
+const newRequestKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (value) => value.toString(16).padStart(2, '0')).join('')
+
 export function DoorayResponseHandoff({ job, response, onLaunchCard, onOpenConversation, onClose }: {
   job: DoorayResponseJob
   response: ReturnType<typeof useDoorayResponses>
@@ -22,7 +25,8 @@ export function DoorayResponseHandoff({ job, response, onLaunchCard, onOpenConve
   const [selected, setSelected] = useState('')
   const [error, setError] = useState('')
   const [sending, setSending] = useState(false)
-  const [attempted, setAttempted] = useState(false)
+  // 같은 대상의 재시도(응답 유실 확인)는 같은 키를 쓰고, 대상을 바꾸거나 다시 전달하면 새 키로 이전 기록을 덮어쓴다.
+  const [requestKey, setRequestKey] = useState<string | null>(null)
   const [sent, setSent] = useState<{ conversationId: string; homeMachineRole: 'main' | 'sub' } | null>(null)
   const { requestJson, load } = response
   const endpoint = `/api/integrations/dooray/mentions/responses/${encodeURIComponent(job.id)}/handoff`
@@ -31,18 +35,35 @@ export function DoorayResponseHandoff({ job, response, onLaunchCard, onOpenConve
     void requestJson<Handoff>(endpoint).then((result) => {
       if (!mounted) return
       setData(result)
-      setSelected(result.handoffConversationId ?? result.conversations.find((entry) => entry.idle)?.conversationId ?? result.conversations[0]?.conversationId ?? '')
+      const previous = result.conversations.find((entry) => entry.conversationId === result.handoffConversationId)
+      setSelected(previous?.conversationId ?? result.conversations.find((entry) => entry.idle)?.conversationId ?? result.conversations[0]?.conversationId ?? '')
     }).catch((failure: unknown) => { if (mounted) setError(failure instanceof Error ? failure.message : '전달 정보를 불러오지 못했습니다.') })
     return () => { mounted = false }
   }, [endpoint, requestJson])
   const send = async () => {
-    setSending(true); setAttempted(true); setError('')
+    const key = requestKey ?? newRequestKey()
+    setRequestKey(key); setSending(true); setError('')
     try {
-      setSent(await requestJson(endpoint, { method: 'POST', body: JSON.stringify({ conversationId: selected }) }))
+      setSent(await requestJson(endpoint, { method: 'POST', body: JSON.stringify({ conversationId: selected, requestKey: key }) }))
       await load()
     } catch (failure) { setError(failure instanceof Error ? failure.message : '전달에 실패했습니다. 같은 버튼으로 전송 상태를 확인해 주세요.') }
     finally { setSending(false) }
   }
+  const launchNew = async () => {
+    if (!data) return
+    setSending(true); setError('')
+    try {
+      await requestJson(endpoint, { method: 'POST', body: JSON.stringify({ newConversation: true, requestKey: newRequestKey() }) })
+      setRequestKey(null); setSent(null)
+      await load()
+      onLaunchCard({ purpose: 'card', mapId: data.route.mapId, cardId: data.route.cardId,
+        documentTitle: data.route.documentTitle, cardTitle: data.route.cardTitle, initialRequest: data.prompt, fullInitialRequest: true })
+    } catch (failure) { setError(failure instanceof Error ? failure.message : '새 AI 대화를 준비하지 못했습니다.') }
+    finally { setSending(false) }
+  }
+  const previousName = data?.handoffConversationId
+    ? data.conversations.find((entry) => entry.conversationId === data.handoffConversationId)?.name ?? `대화 ${data.handoffConversationId}`
+    : ''
   return <section className="dooray-response-handoff" aria-label="담당 카드로 전달">
     <div className="dooray-response-heading"><strong>담당 카드로 전달하기</strong><button type="button" disabled={sending} onClick={onClose}>닫기</button></div>
     <p>Dooray 본문·코멘트 URL과 제안 전문을 전달합니다. 담당 AI는 최신 상황을 확인해 다시 제안하며, 작업 실행은 승인하지 않습니다.</p>
@@ -50,16 +71,19 @@ export function DoorayResponseHandoff({ job, response, onLaunchCard, onOpenConve
     {!data && !error && <p role="status">담당 카드의 대화를 확인하는 중…</p>}
     {data && <>
       <details><summary>전달할 전문 확인</summary><pre className="dooray-response-proposal">{data.prompt}</pre></details>
-      {data.conversations.length > 0 ? <label>전달할 담당 대화<select value={selected} disabled={attempted || Boolean(data.handoffConversationId)} onChange={(event) => setSelected(event.target.value)}>
+      {!sent && data.handoffConversationId && <p role="status">{data.handedOffAt
+        ? `이번 제안을 ${previousName}에 전달했습니다(${new Date(data.handedOffAt).toLocaleString('ko-KR')}).`
+        : `이번 제안을 ${previousName}에 전달하려 했으나 전송 완료를 확인하지 못했습니다.`} 다른 대화를 고르거나 새 AI 대화로 다시 시작하면 전달 기록을 새 대상으로 덮어씁니다.</p>}
+      {data.conversations.length > 0 ? <label>전달할 담당 대화<select value={selected} disabled={sending || Boolean(sent)} onChange={(event) => { setSelected(event.target.value); setRequestKey(null) }}>
         {data.conversations.map((entry) => <option key={entry.conversationId} value={entry.conversationId} disabled={!entry.available}>{entry.name}{!entry.available ? ' · 모델 제한/미확인' : entry.idle ? '' : ' · 실행 중'}</option>)}
       </select></label> : <p>연결된 업무 대화가 없습니다. 담당 카드에 새 AI 대화를 열어 전달할 수 있습니다.</p>}
       {data.conversations.find((entry) => entry.conversationId === selected)?.unavailableReason && <p role="status">{data.conversations.find((entry) => entry.conversationId === selected)?.unavailableReason}</p>}
       <div className="dooray-response-actions">
-        {sent ? <><span role="status">전달했습니다. 새 제안은 담당 대화에서 확인해 주세요.</span><button type="button" onClick={() => onOpenConversation({ ...job, ...sent })}>전달한 대화 열기</button></>
+        {sent ? <><span role="status">전달했습니다. 새 제안은 담당 대화에서 확인해 주세요.</span><button type="button" onClick={() => onOpenConversation({ ...job, ...sent })}>전달한 대화 열기</button>
+          <button type="button" onClick={() => { setSent(null); setRequestKey(null) }}>다시 전달하기</button></>
           : <>
             {selected && <button type="button" disabled={sending || !data.conversations.find((entry) => entry.conversationId === selected)?.available} onClick={() => void send()}>{sending ? '전달 상태 확인 중…' : '선택한 대화로 전달'}</button>}
-            <button type="button" disabled={attempted || Boolean(data.handoffConversationId)} onClick={() => onLaunchCard({ purpose: 'card', mapId: data.route.mapId, cardId: data.route.cardId,
-              documentTitle: data.route.documentTitle, cardTitle: data.route.cardTitle, initialRequest: data.prompt, fullInitialRequest: true })}>담당 카드에 새 AI 대화</button>
+            <button type="button" disabled={sending} onClick={() => void launchNew()}>담당 카드에 새 AI 대화</button>
           </>}
       </div>
     </>}

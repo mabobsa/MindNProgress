@@ -326,6 +326,20 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   }
   assert.equal(operations.size, 7, '명시적 전달만 업무 대화를 실행하며 중복 클릭은 한 실행으로 유지한다')
   assert.equal((await (await fetch(endpoint, { headers })).json()).jobs[0].conversationId, 'existing-chat', '제안 대화 보기는 실제 전달한 담당 카드 대화를 반환한다')
+  // 전달이 끝났어도 새 요청 키로 다시 전달할 수 있고, 같은 키의 반복은 한 실행으로 유지한다.
+  for (let index = 0; index < 2; index++) {
+    const resent = await fetch(handoffEndpoint, { method: 'POST', headers, body: JSON.stringify({ conversationId: 'existing-chat', requestKey: 'api-resend-key-1' }) })
+    assert.equal(resent.status, 202, JSON.stringify(await resent.json()))
+  }
+  assert.equal(operations.size, 8, '다시 전달은 새 실행 ID로 한 번만 전송한다')
+  assert.equal((await fetch(handoffEndpoint, { method: 'POST', headers, body: JSON.stringify({ conversationId: 'existing-chat', requestKey: 'bad key' }) })).status, 400)
+  const relaunch = await fetch(handoffEndpoint, { method: 'POST', headers, body: JSON.stringify({ newConversation: true, requestKey: 'api-relaunch-key-1' }) })
+  assert.equal(relaunch.status, 202, JSON.stringify(await relaunch.json()))
+  assert.equal(operations.size, 8, '새 AI 대화 시작 기록은 AI를 실행하지 않는다')
+  assert.equal((await (await fetch(handoffEndpoint, { headers })).json()).handoffConversationId, null)
+  const resend = await fetch(handoffEndpoint, { method: 'POST', headers, body: JSON.stringify({ conversationId: 'existing-chat', requestKey: 'api-resend-key-2' }) })
+  assert.equal(resend.status, 202, JSON.stringify(await resend.json()))
+  assert.equal(operations.size, 9)
   if (process.env.MNP_RESPONSE_BROWSER_CHECK === '1') {
     await checkDoorayResponseBrowser({ directory, baseUrl, password, complete: true, deleteConversation: () => { deleted.add('created-3'); deleted.add('created-4') } })
   } else {

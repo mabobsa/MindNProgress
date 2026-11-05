@@ -9682,7 +9682,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           if (request.method === 'GET') return sendJson(response, 200, await doorayResponses.handoffOptions(user.id, doorayResponseRoute[1]))
           if (request.method === 'POST') {
             const body = await readJsonBody(request)
-            return sendJson(response, 202, await doorayResponses.handoff(user.id, doorayResponseRoute[1], body.conversationId))
+            return sendJson(response, 202, await doorayResponses.handoff(user.id, doorayResponseRoute[1], body.conversationId,
+              { requestKey: body.requestKey, newConversation: body.newConversation === true }))
           }
           return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
         }

@@ -201,6 +201,46 @@ test('회수는 요청·대화·사용자·작업 위치·최종 메시지·현�
   }
 })
 
+test('완료된 실행의 답변을 해석하지 못한 실패는 턴 ID 없는 대화에서도 재실행 없이 회수한다', async t => {
+  const unread = '이번 요청의 AI 결과를 확인하지 못했습니다. 대화에서 답변을 확인한 후 상태를 다시 확인해 주세요.'
+  const nested = '## 대응안\n\n```bash\nnode app.mjs\n```\n\n끝.'
+  const inputDecision = { kind: 'input', reason: '확인할 사실이 있습니다.', questions: ['어떤 기준인가요?'], approval: null }
+  const configure = c => {
+    c.job.operation.kind = 'review'
+    c.job.operation.id = 'response-test-review-0'
+    c.job.route = structuredClone(route)
+    c.job.review = { conversationId: 'proposal-chat', machineId: 'main' }
+    c.job.error = unread
+    Object.assign(c.dispatch, { operationId: c.job.operation.id, state: 'completed', turnId: 'completed-turn', errorMessage: undefined })
+    delete c.message.backend_turn_id
+    c.message.content = `\`\`\`json\n${JSON.stringify({ requestId: c.job.operation.id, proposal: nested, decision: inputDecision }, null, 2)}\n\`\`\``
+  }
+  for (const run of [
+    ({ service, job }) => service.recoverResult(job.userId, job.id, job.updatedAt),
+    ({ service, job }) => service.retry(job.userId, job.id),
+    ({ service }) => service.poll(),
+  ]) {
+    const context = await fixture(t, configure)
+    await run(context)
+    const stored = JSON.parse(await readFile(context.file, 'utf8')).jobs[0]
+    assert.equal(stored.status, 'needs-input')
+    assert.equal(stored.proposal, nested)
+    assert.equal(stored.error, '')
+    assert.equal(stored.resultRecovery.method, 'completed-dispatch')
+    assert.equal(stored.resultRecovery.previousError, unread)
+    assert.equal(stored.resultRecovery.dispatchTurnId, 'completed-turn')
+    assert.deepEqual({ create: context.counts.create, dispatch: context.counts.dispatch, link: context.counts.link }, { create: 0, dispatch: 0, link: 0 })
+  }
+  // 실행이 완료되지 않았거나 다른 실패 사유면 턴 ID 없는 답변을 회수하지 않는다.
+  for (const change of [c => { c.dispatch.state = 'failed' }, c => { c.job.error = '모델 실행 용량 초과' }]) {
+    const { service, job, file, counts } = await fixture(t, c => { configure(c); change(c) })
+    const before = await readFile(file, 'utf8')
+    await assert.rejects(service.recoverResult(job.userId, job.id, job.updatedAt))
+    assert.equal(await readFile(file, 'utf8'), before)
+    assert.equal(counts.dispatch, 0)
+  }
+})
+
 test('회수 조회 중 후속 회차가 생기면 완료 제안을 이전 회차에 저장하지 않는다', async t => {
   const { service, deps, job, file, counts } = await fixture(t)
   const messages = deps.messages

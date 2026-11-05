@@ -13,6 +13,7 @@ const maxAutomaticRestartRecoveries = 3
 const maxAnalysisPromptChars = 100_000
 const maxAnalysisPromptBytes = 250_000
 const unlinkedConversationError = 'AI가 선택한 대화가 담당 카드에 연결되어 있지 않습니다.'
+const unreadCompletedResultError = '이번 요청의 AI 결과를 확인하지 못했습니다. 대화에서 답변을 확인한 후 상태를 다시 확인해 주세요.'
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const responseSnapshot = ({ pushNotification: _notification, ...job }) => JSON.stringify(job)
 const text = (value) => typeof value === 'string' ? value : ''
@@ -152,13 +153,43 @@ export function buildDoorayRoutingDispatchPrompt(job, operationId, maps) {
   }
 }
 
+const maxJsonObjectStarts = 500
+
+// 제안 본문(proposal)에 코드 블록(```)이 들어 있으면 코드 블록 단위 추출이 본문 안에서 끊긴다.
+// 문자열 안의 괄호를 건너뛰며 짝이 맞는 JSON 객체를 앞에서부터 꺼낸다.
+function* jsonObjectCandidates(value) {
+  let starts = 0
+  for (let start = value.indexOf('{'); start !== -1 && starts < maxJsonObjectStarts; start = value.indexOf('{', start + 1)) {
+    if (!/^\{\s*"/.test(value.slice(start, start + 32))) continue
+    starts += 1
+    let depth = 0
+    let inString = false
+    let escaped = false
+    for (let index = start; index < value.length; index += 1) {
+      const char = value[index]
+      if (inString) {
+        if (escaped) escaped = false
+        else if (char === '\\') escaped = true
+        else if (char === '"') inString = false
+      } else if (char === '"') inString = true
+      else if (char === '{') depth += 1
+      else if (char === '}' && --depth === 0) { yield value.slice(start, index + 1); break }
+    }
+  }
+}
+
+function* doorayAiResultCandidates(content, operationId) {
+  yield* [...content.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map((match) => match[1])
+  yield content.trim()
+  // 괄호 짝 맞춤은 현재 실행 ID가 들어 있는 메시지에만 수행해 이전 턴의 긴 답변을 반복해 훑지 않는다.
+  if (content.includes(operationId)) yield* jsonObjectCandidates(content)
+}
+
 function findDoorayAiResultMessage(messages, operationId) {
   for (const message of [...messages].reverse()) {
     if (message.position !== 'left' || !['text', 'tips'].includes(message.type)) continue
     const content = typeof message.content === 'string' ? message.content : message.content?.content ?? message.content?.text ?? ''
-    const chunks = [...text(content).matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map((match) => match[1])
-    chunks.push(text(content).trim())
-    for (const chunk of chunks) {
+    for (const chunk of doorayAiResultCandidates(text(content), operationId)) {
       try {
         const result = JSON.parse(chunk)
         if (result?.requestId === operationId) return { result, message }
@@ -520,7 +551,7 @@ export function createDoorayResponseService(deps) {
     if (['starting', 'waiting_resource', 'running'].includes(dispatch.state)) return
     if (dispatch.state !== 'completed' && !result) throw error('AI 실행 상태를 확인할 수 없습니다.', 409)
     result ??= parseDoorayAiResult(await deps.messages(operation), operation.id)
-    if (!result) throw error('이번 요청의 AI 결과를 확인하지 못했습니다. 대화에서 답변을 확인한 후 상태를 다시 확인해 주세요.', 409)
+    if (!result) throw error(unreadCompletedResultError, 409)
     if (operation.kind === 'review') {
       if (!text(result.proposal).trim()) throw error('AI가 대응 제안을 반환하지 않았습니다.', 409)
       await patch(user.id, job.id, { ...readDoorayDecision(result.decision, 'proposal'), proposal: result.proposal, proposalSource: 'review', error: '', ...finishRestartRecovery(job) })
@@ -581,7 +612,9 @@ export function createDoorayResponseService(deps) {
       const match = findDoorayAiResultMessage(messages, operation.id)
       const result = match?.result
       if (!result || !text(result.proposal).trim()) throw error('이번 요청의 완료 제안을 찾지 못했습니다. AI를 다시 실행하지 않았습니다.', 409)
-      const evidence = dispatch.state === 'completed' && job.error === unlinkedConversationError ? { method: 'completed-dispatch' }
+      // 완료된 이번 실행의 답변을 해석하지 못한 실패는 정상 완료 경로와 같은 기준(이번 실행 완료 + 이번 요청 ID 결과)으로 회수한다.
+      // Claude(ACP) 대화 메시지에는 backend_turn_id가 없어 수동 이어가기 검증으로는 회수할 수 없다.
+      const evidence = dispatch.state === 'completed' && [unlinkedConversationError, unreadCompletedResultError].includes(job.error) ? { method: 'completed-dispatch' }
         : await deps.manualResultEvidence?.(user, operation, job, match.message, messages)
       if (!evidence) throw error('수동 이어가기의 최종 답변과 전용 대화 귀속을 확인하지 못했습니다. AI를 다시 실행하지 않았습니다.', 409)
       const maps = await deps.loadMaps()
@@ -843,7 +876,8 @@ export function createDoorayResponseService(deps) {
     },
     async retry(userId, id) {
       const existing = (await read(userId)).jobs.find((job) => job.id === id)
-      if (existing?.error === unlinkedConversationError && publicDoorayResponse(existing).canRecoverResult) return recoverResult(userId, id, existing.updatedAt)
+      // 이미 완료된 실행의 결과 확인 실패는 실행 기록이 만료돼도 AI를 다시 실행하지 않도록 회수 경로로 보낸다.
+      if ([unlinkedConversationError, unreadCompletedResultError].includes(existing?.error) && publicDoorayResponse(existing).canRecoverResult) return recoverResult(userId, id, existing.updatedAt)
       await refreshDeleted(userId, (job) => job.id === id, true)
       await update(userId, (state) => {
         const job = state.jobs.find((entry) => entry.id === id)

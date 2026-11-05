@@ -104,6 +104,22 @@ test('현재 실행 ID의 AI 결과만 읽고 사용자 텍스트나 이전 턴 
   assert.equal(parseDoorayAiResult([{ position: 'left', type: 'text', content: '손상된 JSON' }], 'new'), null)
 })
 
+test('제안 본문에 코드 블록이 있어도 현재 실행 ID의 결과를 읽는다', () => {
+  const proposal = '## 대응안\n\n```json\n{ "key": "value { } \\" ```" }\n```\n\n```bash\nnode app.mjs\n```\n'
+  const decision = { kind: 'input', reason: '확인할 사실이 있습니다.', questions: ['어떤 기준인가요?'], approval: null }
+  const pretty = `\`\`\`json\n${JSON.stringify({ requestId: 'new', proposal, decision }, null, 2)}\n\`\`\``
+  // 앞뒤 설명 문장과 뒤따르는 다른 코드 블록이 있어도 결과 객체만 꺼낸다.
+  for (const content of [pretty, `결과입니다.\n\n${pretty}\n\n참고:\n\`\`\`js\nconst a = { b: 1 }\n\`\`\``, JSON.stringify({ requestId: 'new', proposal, decision })]) {
+    const result = parseDoorayAiResult([{ position: 'left', type: 'text', content }], 'new')
+    assert.equal(result?.proposal, proposal)
+    assert.deepEqual(result.decision, decision)
+  }
+  assert.equal(parseDoorayAiResult([assistant({ requestId: 'old', proposal })], 'new'), null)
+  assert.equal(parseDoorayAiResult([{ position: 'right', type: 'text', content: pretty }], 'new'), null)
+  // 본문에만 실행 ID가 들어 있는 다른 객체는 결과로 쓰지 않는다.
+  assert.equal(parseDoorayAiResult([assistant({ requestId: 'old', proposal: '{"requestId": "new" 형식으로 답하세요' })], 'new'), null)
+})
+
 test('선택 댓글을 페이지에서 찾아 원문을 확보하고 삭제된 댓글은 발췌로 대체하지 않는다', async () => {
   let pages = 0
   const options = { acquire: async () => {}, fetchImpl: async (url) => {

@@ -108,12 +108,20 @@ resolve_java21() {
   return 1
 }
 
-resolve_libreoffice() {
+# pptx-mcp exports slide PNGs on macOS only through Microsoft PowerPoint for Mac
+# (AppleScript PDF export, then PyMuPDF) and looks for it in these two places.
+resolve_powerpoint_mac() {
   local candidate
-  for candidate in /Applications/LibreOffice.app/Contents/MacOS/soffice "$(command_path libreoffice)" "$(command_path soffice)"; do
-    [[ -n "$candidate" && -x "$candidate" ]] && printf '%s\n' "$candidate" && return 0
+  for candidate in '/Applications/Microsoft PowerPoint.app' "$HOME/Applications/Microsoft PowerPoint.app"; do
+    [[ -d "$candidate" ]] && printf '%s\n' "$candidate" && return 0
   done
   return 1
+}
+
+warn_powerpoint_missing() {
+  printf 'Warning: Microsoft PowerPoint for Mac was not found in /Applications or ~/Applications.\n' >&2
+  printf '         PowerPoint MCP needs it to export slide images (PNG); the other PowerPoint MCP tools still work.\n' >&2
+  printf '         Installation continues without the Korean font rendering check.\n' >&2
 }
 
 resolve_fontconfig_file() {
@@ -368,7 +376,6 @@ command -v cargo >/dev/null 2>&1 || missing_tools+=(cargo)
 python_supported || missing_tools+=(python3)
 xcode-select -p >/dev/null 2>&1 || missing_tools+=(xcode-command-line-tools)
 "$include_dooray" && ! resolve_java21 >/dev/null && missing_tools+=(openjdk@21)
-"$include_pptx" && ! resolve_libreoffice >/dev/null && missing_tools+=(libreoffice)
 "$include_pptx" && ! command -v fc-list >/dev/null 2>&1 && missing_tools+=(fontconfig)
 "$include_pptx" && command -v fc-list >/dev/null 2>&1 && ! resolve_fontconfig_file >/dev/null && missing_tools+=(fontconfig-config)
 "$include_pptx" && ! korean_pptx_fonts_ready && missing_tools+=(korean-pptx-fonts)
@@ -381,6 +388,15 @@ info "Required repositories: MindNProgress@$mindnprogress_branch, AionUi@$aionui
 "$include_unity_skill" && info 'Optional skill: unity-work'
 "$include_pptx_skill" && info 'Optional skill: pptx'
 if ((${#missing_tools[@]})); then info "Missing prerequisites: ${missing_tools[*]}"; else info 'Prerequisites: ready'; fi
+powerpoint_app=''
+if "$include_pptx"; then
+  if powerpoint_app="$(resolve_powerpoint_mac)"; then
+    info "Microsoft PowerPoint for slide images: $powerpoint_app"
+  else
+    powerpoint_app=''
+    warn_powerpoint_missing
+  fi
+fi
 "$plan_only" && exit 0
 
 if ((${#missing_tools[@]})); then
@@ -396,7 +412,6 @@ if ((${#missing_tools[@]})); then
     die 'Complete the Command Line Tools dialog, then rerun the installer.'
   fi
   "$include_dooray" && ! resolve_java21 >/dev/null && brew_install_formula openjdk@21
-  "$include_pptx" && ! resolve_libreoffice >/dev/null && brew_install_cask libreoffice
   "$include_pptx" && ! command -v fc-list >/dev/null 2>&1 && brew_install_formula fontconfig
   configure_tool_paths
 fi
@@ -409,7 +424,6 @@ command -v cargo >/dev/null 2>&1 || die 'Cargo was not found.'
 rustup show active-toolchain >/dev/null 2>&1 || rustup default stable
 python_supported || die 'Python 3.11 or newer is required.'
 if "$include_dooray"; then java_bin="$(resolve_java21)" || die 'Java 21 was not found.'; else java_bin=''; fi
-if "$include_pptx"; then libreoffice_bin="$(resolve_libreoffice)" || die 'LibreOffice was not found.'; else libreoffice_bin=''; fi
 node_bin="$(command -v node)"
 npm_bin="$(command -v npm)"
 bun_bin="$(command -v bun)"
@@ -494,6 +508,12 @@ aion_migration="$install_root/AionUi/packages/desktop/src/process/utils/runBacke
 [[ -f "$aion_bootstrap" && -f "$aion_migration" ]] || die 'AionUi MnP Suite MCP bootstrap source is missing.'
 grep -q 'MINDNPROGRESS_MCP_ENTRY' "$aion_bootstrap" || die 'AionUi required MCP bootstrap is unavailable.'
 grep -q 'buildMnPSuiteOptionalMcpBootstrap' "$aion_migration" || die 'AionUi optional MCP bootstrap is unavailable.'
+# A reused pptx-mcp checkout older than its PowerPoint for Mac export path would
+# still render slides through LibreOffice, which this installer no longer sets up.
+if "$include_pptx" && ! grep -q 'def _convert_pptx_to_pdf_via_powerpoint_mac' \
+  "$install_root/Office-PowerPoint-MCP-Server/tools/export_tools.py" 2>/dev/null; then
+  die 'Office-PowerPoint-MCP-Server predates the PowerPoint for Mac slide export. Rerun with --update-existing-repositories or fast-forward it to origin/main.'
+fi
 
 if ! "$skip_dependencies"; then
   note 'Installing MindNProgress dependencies'
@@ -557,18 +577,20 @@ if "$include_pptx"; then
     "$pptx_python" -m pip install -r "$pptx_root/requirements.txt"
   fi
   (cd "$pptx_root" && "$pptx_python" -c 'import pymupdf, mcp, PIL, pptx, ppt_mcp_server')
-  "$libreoffice_bin" --version >/dev/null
-  font_smoke_png="$install_root/install-logs/pptx-korean-font-smoke.png"
-  note 'Rendering the Korean font smoke-test slide through PowerPoint MCP code'
-  (cd "$pptx_root" && "$pptx_python" "$SCRIPT_DIR/verify_pptx_fonts.py" \
-    --pptx-root "$pptx_root" --output "$font_smoke_png")
+  if [[ -n "$powerpoint_app" ]]; then
+    font_smoke_png="$install_root/install-logs/pptx-korean-font-smoke.png"
+    note 'Rendering the Korean font smoke-test slide through Microsoft PowerPoint for Mac'
+    info 'PowerPoint may ask for file access to ~/Library/Caches/ppt-mcp-server/powerpoint-export; grant it once.'
+    info 'macOS may ask whether this Terminal may control Microsoft PowerPoint; allow it.'
+    (cd "$pptx_root" && "$pptx_python" "$SCRIPT_DIR/verify_pptx_fonts.py" \
+      --pptx-root "$pptx_root" --output "$font_smoke_png")
+  else
+    warn_powerpoint_missing
+  fi
   pptx_launcher="$install_root/mcp/start-pptx-mcp.sh"
   cat > "$pptx_launcher" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-export PATH="/Applications/LibreOffice.app/Contents/MacOS:\$PATH"
-export FONTCONFIG_FILE="$fontconfig_file"
-export FONTCONFIG_PATH="$fontconfig_path"
 exec "$pptx_python" "$pptx_root/ppt_mcp_server.py"
 EOF
   chmod +x "$pptx_launcher"
@@ -819,7 +841,7 @@ EOF
 ## PowerPoint work on macOS
 
 - Read and follow the `pptx` skill before reviewing PowerPoint files.
-- Verify text and tables together with PNG output rendered by LibreOffice and PyMuPDF.
+- Verify text and tables together with PNG output rendered by Microsoft PowerPoint for Mac (AppleScript PDF export) and PyMuPDF.
 EOF
 
 for agent_home in "${CODEX_HOME:-$HOME/.codex}" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; do
@@ -832,7 +854,7 @@ merge_guidance "${CODEX_HOME:-$HOME/.codex}/AGENTS.md" "$guidance_file"
 merge_guidance "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md" "$guidance_file"
 rm -f "$guidance_file"
 
-MNP_INSTALL_ROOT="$install_root" MNP_NODE_BIN="$node_bin" MNP_BUN_BIN="$bun_bin" MNP_CARGO_BIN="$cargo_bin" MNP_JAVA_BIN="$java_bin" MNP_LIBREOFFICE_BIN="$libreoffice_bin" MNP_INCLUDE_DOORAY="$include_dooray" MNP_INCLUDE_PPTX="$include_pptx" MNP_FONT_MANIFEST="$font_manifest" MNP_FONT_SMOKE_PNG="$font_smoke_png" "$python_bin" - <<'PY'
+MNP_INSTALL_ROOT="$install_root" MNP_NODE_BIN="$node_bin" MNP_BUN_BIN="$bun_bin" MNP_CARGO_BIN="$cargo_bin" MNP_JAVA_BIN="$java_bin" MNP_POWERPOINT_APP="$powerpoint_app" MNP_INCLUDE_DOORAY="$include_dooray" MNP_INCLUDE_PPTX="$include_pptx" MNP_FONT_MANIFEST="$font_manifest" MNP_FONT_SMOKE_PNG="$font_smoke_png" "$python_bin" - <<'PY'
 import json
 import os
 import subprocess
@@ -855,18 +877,23 @@ manifest = {
     'installRoot': str(root),
     'repositories': repositories,
     'optionalMcp': {'dooray-mcp': os.environ['MNP_INCLUDE_DOORAY'] == 'true', 'pptx-mcp': os.environ['MNP_INCLUDE_PPTX'] == 'true'},
-    'tools': {key: os.environ[value] for key, value in [('node', 'MNP_NODE_BIN'), ('bun', 'MNP_BUN_BIN'), ('cargo', 'MNP_CARGO_BIN'), ('java', 'MNP_JAVA_BIN'), ('libreoffice', 'MNP_LIBREOFFICE_BIN')] if os.environ[value]},
+    'tools': {key: os.environ[value] for key, value in [('node', 'MNP_NODE_BIN'), ('bun', 'MNP_BUN_BIN'), ('cargo', 'MNP_CARGO_BIN'), ('java', 'MNP_JAVA_BIN'), ('powerpoint', 'MNP_POWERPOINT_APP')] if os.environ[value]},
     'launchers': ['dev/start-all-dev.command', 'dev/start-mindnprogress-dev.sh', 'dev/start-aionui-dev.sh', 'dev/stop-mindnprogress-dev.sh', 'dev/rebuild-aioncore-release.sh'],
 }
 if os.environ['MNP_FONT_MANIFEST']:
     manifest['fonts'] = json.loads(Path(os.environ['MNP_FONT_MANIFEST']).read_text(encoding='utf-8'))
-    manifest['fonts']['smokeTestPng'] = os.environ['MNP_FONT_SMOKE_PNG']
+    if os.environ['MNP_FONT_SMOKE_PNG']:
+        manifest['fonts']['smokeTestPng'] = os.environ['MNP_FONT_SMOKE_PNG']
+        manifest['fonts']['smokeTestRenderer'] = 'powerpoint-applescript+pymupdf'
+    else:
+        manifest['fonts']['smokeTestSkipped'] = 'Microsoft PowerPoint for Mac was not found'
 (root / 'installation-manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 PY
 
 required_files=("$install_root/MindNProgress/package.json" "$install_root/AionUi/package.json" "$install_root/AionCore/Cargo.toml" "$aioncore_bin" "$install_root/mcp/mnp-suite-mcp-bootstrap.json" "$workspace_root/workspaces.json" "$start_mnp" "$start_aion" "$start_all" "$install_root/installation-manifest.json")
 "$include_dooray" && required_files+=("$dooray_launcher" "$dooray_jar")
-"$include_pptx" && required_files+=("$pptx_launcher" "$pptx_python" "$font_manifest" "$font_smoke_png")
+"$include_pptx" && required_files+=("$pptx_launcher" "$pptx_python" "$font_manifest")
+[[ -n "$font_smoke_png" ]] && required_files+=("$font_smoke_png")
 for required_file in "${required_files[@]}"; do [[ -f "$required_file" ]] || die "Verification file is missing: $required_file"; done
 "$python_bin" -m json.tool "$install_root/mcp/mnp-suite-mcp-bootstrap.json" >/dev/null
 "$python_bin" -m json.tool "$workspace_root/workspaces.json" >/dev/null

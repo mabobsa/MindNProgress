@@ -196,7 +196,7 @@ PC마다 이렇게 설치한 MindNProgress의 `server/data`는 서로 독립되�
 
 ### macOS Git 개발 환경 일괄 설치
 
-macOS에서는 [`installer/macos/Install-MnPSuite.sh`](installer/macos/Install-MnPSuite.sh)를 사용합니다. 이 설치기는 MindNProgress, AionUi, AionCore를 한 루트에 복제하고, 선택한 Dooray MCP와 PowerPoint MCP의 macOS 런타임을 준비합니다. Windows DPAPI 대신 Dooray 키를 macOS Keychain에 보관하고, PowerPoint COM 대신 LibreOffice 렌더링을 사용합니다. PowerPoint MCP 선택 시 Noto CJK·나눔·은글꼴을 사용자 폰트로 설치하고 한글 PPTX의 실제 PNG 렌더링까지 확인합니다.
+macOS에서는 [`installer/macos/Install-MnPSuite.sh`](installer/macos/Install-MnPSuite.sh)를 사용합니다. 이 설치기는 MindNProgress, AionUi, AionCore를 한 루트에 복제하고, 선택한 Dooray MCP와 PowerPoint MCP의 macOS 런타임을 준비합니다. Windows DPAPI 대신 Dooray 키를 macOS Keychain에 보관하고, PowerPoint COM 대신 PowerPoint for Mac(AppleScript) 렌더링을 사용합니다. PowerPoint MCP 선택 시 Noto CJK·나눔·은글꼴을 사용자 폰트로 설치하고, PowerPoint for Mac이 있으면 한글 PPTX의 실제 PNG 렌더링까지 확인합니다.
 
 ```bash
 cd installer/macos

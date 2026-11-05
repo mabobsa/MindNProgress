@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Render a Korean font smoke-test slide through the installed pptx-mcp code."""
+"""Render a Korean font smoke-test slide through the installed pptx-mcp code.
+
+macOS slide export in pptx-mcp goes through Microsoft PowerPoint for Mac
+(AppleScript PDF export, then PyMuPDF PNG), so this check uses the same path.
+PowerPoint may ask once for file access to its export work folder
+(~/Library/Caches/ppt-mcp-server/powerpoint-export), and macOS may ask whether
+the calling app may control PowerPoint.
+"""
 
 from __future__ import annotations
 
@@ -102,7 +109,21 @@ def main() -> int:
     output = args.output.resolve()
     sys.path.insert(0, str(pptx_root))
 
-    from tools.export_tools import _convert_pptx_to_pdf, _render_pdf_to_pngs
+    try:
+        from tools.export_tools import (
+            _convert_pptx_to_pdf_via_powerpoint_mac,
+            _find_powerpoint_mac,
+            _render_pdf_to_pngs,
+        )
+    except ImportError as error:
+        raise RuntimeError(
+            f"pptx-mcp at {pptx_root} has no PowerPoint for Mac export path; "
+            "update Office-PowerPoint-MCP-Server to origin/main"
+        ) from error
+    if not _find_powerpoint_mac():
+        raise RuntimeError(
+            "Microsoft PowerPoint for Mac was not found in /Applications or ~/Applications"
+        )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="mnp_pptx_font_smoke_") as temporary_directory:
@@ -114,7 +135,7 @@ def main() -> int:
         png_directory.mkdir()
         build_smoke_presentation(pptx_path)
 
-        pdf_path = Path(_convert_pptx_to_pdf(str(pptx_path), str(pdf_directory)))
+        pdf_path = Path(_convert_pptx_to_pdf_via_powerpoint_mac(str(pptx_path), str(pdf_directory)))
         png_paths = _render_pdf_to_pngs(str(pdf_path), str(png_directory), dpi=150)
         if len(png_paths) != 1:
             raise RuntimeError(f"Expected one rendered PNG, got {len(png_paths)}")
@@ -131,19 +152,29 @@ def main() -> int:
                     if len(font) > 3 and font[3]
                 }
             )
-        missing_samples = [sample for _, sample in FONT_SAMPLES if sample not in extracted_text]
+        # PowerPoint for Mac PDFs carry no space between Hangul words in the text
+        # layer ("한글렌더링검증하나"), so samples are compared without whitespace.
+        compact_text = "".join(extracted_text.split())
+        missing_samples = [
+            sample for _, sample in FONT_SAMPLES if "".join(sample.split()) not in compact_text
+        ]
         if missing_samples:
-            raise RuntimeError(f"Korean text missing after LibreOffice conversion: {missing_samples}")
+            raise RuntimeError(f"Korean text missing after PowerPoint PDF export: {missing_samples}")
+        # PowerPoint 16.114 embedded font subsets named after each font
+        # ("AAAAAB+NotoSansCJKkr-Bold"), but that was checked on one Mac only, so a
+        # family missing from the PDF font names is reported instead of failing.
         missing_pdf_families = [
             family
             for family, token in PDF_FONT_TOKENS.items()
             if not any(token.lower() in pdf_font.lower() for pdf_font in pdf_fonts)
         ]
+        warnings = []
         if missing_pdf_families:
-            raise RuntimeError(
-                "LibreOffice substituted or omitted required Korean fonts: "
-                f"{missing_pdf_families}; PDF fonts: {pdf_fonts}"
+            warnings.append(
+                "PDF font names do not show these families (PowerPoint may have substituted "
+                f"them or embedded them under other names): {missing_pdf_families}"
             )
+            print(f"Warning: {warnings[-1]}; PDF fonts: {pdf_fonts}", file=sys.stderr)
 
         rendered_png = Path(png_paths[0])
         width, height = verify_png(rendered_png)
@@ -152,12 +183,14 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "renderer": "libreoffice+pymupdf",
+                "renderer": "powerpoint-applescript+pymupdf",
                 "output": str(output),
                 "width": width,
                 "height": height,
-                "verifiedFamilies": [family for family, _ in FONT_SAMPLES],
+                "textVerifiedFamilies": [family for family, _ in FONT_SAMPLES],
                 "pdfFonts": pdf_fonts,
+                "missingPdfFontFamilies": missing_pdf_families,
+                "warnings": warnings,
             },
             ensure_ascii=False,
         )

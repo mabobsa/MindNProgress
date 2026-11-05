@@ -5,7 +5,7 @@
 1. 필수 도구와 설치 위치를 검사합니다.
 2. MindNProgress, AionUi, AionCore와 선택한 Dooray/PPTX MCP 저장소를 clone 또는 재사용합니다.
 3. npm·Bun·Python·Gradle 의존성을 준비하고 AionCore release 및 Dooray MCP를 빌드합니다.
-4. PPTX MCP 선택 시 macOS 사용자용 한글 글꼴을 설치하고 실제 PNG 렌더링을 검증합니다.
+4. PPTX MCP 선택 시 macOS 사용자용 한글 글꼴을 설치하고, Microsoft PowerPoint for Mac이 있으면 실제 PNG 렌더링을 검증합니다.
 5. Claude Code와 Codex용 MnP Suite 스킬 및 관리 지침을 설치합니다.
 6. Dev launcher와 비밀값이 없는 MCP descriptor를 생성합니다.
 7. 요청하면 MindNProgress와 AionUi를 실행합니다. AionUi의 첫 bootstrap이 MCP를 DB에 등록하고 활성화합니다.
@@ -34,7 +34,7 @@
   │   ├─ mnp-suite-korean-fonts.json    PPTX MCP 선택 시
   │   └─ licenses/                      직접 설치 글꼴 라이선스
   ├─ install-logs/
-  │   └─ pptx-korean-font-smoke.png     PPTX MCP 선택 시
+  │   └─ pptx-korean-font-smoke.png     PPTX MCP 선택 및 PowerPoint 설치 시
   └─ installation-manifest.json
 ```
 
@@ -49,11 +49,12 @@ AionUi와 AionCore에는 mabobsa fork가 `origin`, iOfficeAI 저장소가 `upstr
 - Rustup과 Cargo
 - Python 3.11 이상
 - Dooray MCP 선택 시 Java 21
-- PPTX MCP 선택 시 LibreOffice, fontconfig 및 한글 글꼴 8종
+- PPTX MCP 선택 시 fontconfig 및 한글 글꼴 8종
+- PPTX MCP의 슬라이드 이미지(PNG) 내보내기에는 Microsoft PowerPoint for Mac(Microsoft 365 / Office for Mac)이 필요합니다. 설치기는 PowerPoint를 설치하지 않으며, `/Applications`나 `~/Applications`에 없으면 경고만 표시하고 설치를 계속합니다.
 
 `--install-missing-prerequisites`를 지정하면 이미 설치된 Homebrew를 이용해 누락 항목을 준비합니다. Homebrew 자체가 없으면 [Homebrew](https://brew.sh)를 먼저 설치해야 합니다. Apple Silicon과 Intel Homebrew 경로를 모두 지원하며 keg-only인 `node@22`, `rustup`, `openjdk@21`도 launcher에 절대 경로로 기록합니다.
 
-PPTX MCP를 선택하면 Noto Sans CJK KR, Noto Serif CJK KR, 나눔고딕, 나눔명조, 나눔스퀘어, 나눔바른고딕, 은바탕, 은돋움을 `~/Library/Fonts`에 준비합니다. Homebrew가 제공하는 글꼴은 cask로 설치하고, 나눔바른고딕과 은글꼴은 공식 배포 archive를 고정 SHA-256으로 검증한 뒤 설치합니다. 기존에 같은 font family가 있으면 유지하며, 다른 내용의 동명 사용자 폰트 파일은 자동으로 덮어쓰지 않습니다. Apple Silicon의 `/opt/homebrew`와 Intel Mac의 `/usr/local`을 모두 지원하도록 PPTX MCP launcher에 `FONTCONFIG_FILE`과 `FONTCONFIG_PATH`도 기록합니다.
+PPTX MCP를 선택하면 Noto Sans CJK KR, Noto Serif CJK KR, 나눔고딕, 나눔명조, 나눔스퀘어, 나눔바른고딕, 은바탕, 은돋움을 `~/Library/Fonts`에 준비합니다. Homebrew가 제공하는 글꼴은 cask로 설치하고, 나눔바른고딕과 은글꼴은 공식 배포 archive를 고정 SHA-256으로 검증한 뒤 설치합니다. 기존에 같은 font family가 있으면 유지하며, 다른 내용의 동명 사용자 폰트 파일은 자동으로 덮어쓰지 않습니다. PowerPoint도 이렇게 설치된 글꼴로 슬라이드를 그립니다. fontconfig는 설치기가 `fc-list`로 글꼴 설치 여부를 확인할 때만 쓰며, PPTX MCP launcher에는 fontconfig 설정을 기록하지 않습니다.
 
 ## ZIP 배포본에서 실행
 
@@ -137,9 +138,13 @@ pptx-mcp      <설치 루트>/mcp/start-pptx-mcp.sh         선택 시
 
 MnP Suite가 등록한 서버에는 소유 표식을 남깁니다. 재설치 후 절대 경로가 달라지거나 서버가 비활성화되면 다음 AionUi 시작 때 수정하고, 선택 해제된 optional MCP는 MnP Suite 소유 항목만 삭제합니다. 같은 이름의 사용자 소유 서버는 덮어쓰지 않습니다.
 
-macOS에는 PowerPoint COM이 없으므로 PPTX slide rendering은 `PPTX → LibreOffice PDF → PyMuPDF PNG` 순서로 처리합니다.
+macOS에는 PowerPoint COM이 없으므로 PPTX slide rendering은 `PPTX → PowerPoint for Mac(AppleScript) PDF → PyMuPDF PNG` 순서로 처리합니다(renderer `powerpoint-applescript+pymupdf`). macOS에서는 LibreOffice를 쓰지 않으며, PowerPoint가 없으면 PNG 내보내기가 `Slide export on macOS requires Microsoft PowerPoint for Mac` 오류를 냅니다. 설치기는 LibreOffice를 설치하지 않고, 이미 설치된 LibreOffice를 지우지도 않습니다.
 
-설치기는 위 8개 font family를 `fc-list`로 확인한 다음 한글 smoke-test PPTX를 PowerPoint MCP의 LibreOffice·PyMuPDF 코드로 렌더링합니다. 변환된 PDF에서 한글 문구가 유지되고 PNG가 비어 있지 않아야 설치가 성공하며, 최종 이미지는 `<설치 루트>/install-logs/pptx-korean-font-smoke.png`에 남깁니다. 설치 글꼴 출처와 checksum은 `<설치 루트>/fonts/mnp-suite-korean-fonts.json`과 전체 `installation-manifest.json`에 기록합니다.
+설치기는 위 8개 font family를 `fc-list`로 확인한 다음, PowerPoint가 있으면 한글 smoke-test PPTX를 PowerPoint MCP와 같은 PowerPoint·PyMuPDF 코드로 렌더링합니다. 변환된 PDF에서 한글 문구가 유지되고(PowerPoint PDF는 한글 단어 사이 공백을 텍스트에 남기지 않으므로 공백을 빼고 비교) PNG가 비어 있지 않아야 설치가 성공하며, 최종 이미지는 `<설치 루트>/install-logs/pptx-korean-font-smoke.png`에 남깁니다. PDF에 포함된 글꼴 이름에 8개 family가 보이지 않으면 경고만 표시합니다. PowerPoint가 없으면 이 확인을 건너뛰고 경고하며, `installation-manifest.json`의 `fonts.smokeTestSkipped`에 그 사실을 기록합니다. 설치 글꼴 출처와 checksum은 `<설치 루트>/fonts/mnp-suite-korean-fonts.json`과 전체 `installation-manifest.json`에 기록합니다.
+
+이 확인을 처음 실행할 때 PowerPoint가 작업 폴더 `~/Library/Caches/ppt-mcp-server/powerpoint-export`에 대한 「파일 액세스 부여」 창을 띄울 수 있습니다. 「선택…」으로 그 폴더를 허용하면 이후 Claude 등에서 PowerPoint MCP를 쓸 때는 다시 뜨지 않습니다. 설치기를 실행한 Terminal이 PowerPoint를 제어해도 되는지 묻는 창이 뜨면 허용합니다.
+
+기존 설치 루트의 `Office-PowerPoint-MCP-Server`를 재사용할 때 PowerPoint for Mac 내보내기 경로(`_convert_pptx_to_pdf_via_powerpoint_mac`)가 없는 이전 코드이면 설치기는 의존성 설치 전에 중단합니다. `--update-existing-repositories`로 다시 실행하거나 해당 저장소를 `origin/main`으로 fast-forward한 뒤 다시 실행합니다.
 
 ## 재실행과 확인
 

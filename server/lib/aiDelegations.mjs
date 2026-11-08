@@ -746,11 +746,36 @@ export function aiDelegationIsTerminal(delegation) {
   return AI_DELEGATION_TERMINAL_STATES.has(String(delegation?.state ?? ''))
 }
 
+// 통합을 시작하기 전에 격리된 실패 위임(마무리 정리 실패·하위 실행 실패 등)은 지원되는 복구가 없으면
+// 원 작업 브랜치를 참조로 보존하고 작업공간만 반환할 수 있다. 통합·업무 완료·AI 재실행은 하지 않는다.
+export function quarantinedWorkspaceReleaseCandidate(delegation) {
+  const result = delegation?.workspaceResult
+  return delegation?.state === 'failed' && !delegation.groupId && !delegation.pendingRecovery
+    && !integrationRecoveryPending(delegation) && !delegation.resultCorrection && !delegation.workspaceLease?.ownership
+    && Boolean(delegation.workspaceLease?.leaseId) && result?.status === 'quarantined'
+    && result.leaseId === delegation.workspaceLease.leaseId
+    && !result.integrationBranch && !result.integratedCommit && !result.conflictRound && !(result.unmergedFiles?.length)
+    && !localChangesIntegrationCommits(result)
+    && aiDelegationRecoveryAvailability(delegation)?.recoveryAvailable !== true
+}
+
+// 같은 상위·대상 카드에서 나중에 시작해 성공한 위임. 이전 실패의 체크포인트를 다시 통합하면 중복 반영이 되므로 자동 통합 복구를 막는 근거로 쓴다.
+export function laterCompletedDelegationForCard(delegation, delegations) {
+  return [...delegations].find(candidate => candidate?.id !== delegation?.id && candidate.state === 'completed'
+    && aiDelegationSucceeded(candidate) && candidate.mapId === delegation.mapId
+    && (candidate.parentMapId ?? candidate.mapId) === (delegation.parentMapId ?? delegation.mapId)
+    && candidate.parentCardId === delegation.parentCardId && candidate.targetCardId === delegation.targetCardId
+    && String(candidate.createdAt ?? '') > String(delegation.createdAt ?? '')) ?? null
+}
+
 export function aiDelegationClosureAvailability(delegation) {
   if (delegation?.state === 'failed' && !delegation.groupId && !delegation.pendingRecovery
     && !integrationRecoveryPending(delegation) && !delegation.resultCorrection && !delegation.workspaceLease?.ownership
     && delegation.workspaceLease?.leaseId && localChangesIntegrationCommits(delegation.workspaceResult)) {
     return { closeAvailable: true, reason: 'preserve-integration-result', workspaceReleaseRequired: true }
+  }
+  if (quarantinedWorkspaceReleaseCandidate(delegation)) {
+    return { closeAvailable: true, reason: 'preserve-quarantined-result', workspaceReleaseRequired: true, quarantinedRelease: true }
   }
   if (!delegation || aiDelegationIsTerminal(delegation) || delegation.pendingRecovery || integrationRecoveryPending(delegation)) return null
   if (delegation.groupId) return { closeAvailable: false, reason: 'group-managed' }
@@ -780,7 +805,9 @@ export function preservedIntegrationReleaseClosure(delegation, lease) {
     || lease.cardId !== delegation.targetCardId || result.cardId !== delegation.targetCardId
     || lease.conversationId !== delegation.targetConversationId || result.conversationId !== delegation.targetConversationId
     || result.previousResult?.headCommit !== delegation.workspaceResult?.headCommit
-    || receipt.sourceHead !== delegation.workspaceResult?.headCommit) return null
+    // 통합 전 격리 반환은 이전 결과에 HEAD가 없을 수 있어 반환 당시 기록한 이전 HEAD로 대사한다.
+    || (receipt.kind === 'quarantined-release' ? receipt.previousHeadCommit ?? null : receipt.sourceHead)
+      !== (delegation.workspaceResult?.headCommit ?? null)) return null
   return { state: 'closed', workspaceResult: result, workspaceReleasedAt: receipt.releasedAt,
     closedAt: receipt.releasedAt, closedByUserId: receipt.approvedByUserId ?? null,
     closedByOperator: receipt.approvedByOperator ?? null, closureSourceState: delegation.state,

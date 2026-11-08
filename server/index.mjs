@@ -96,6 +96,7 @@ import {
   aiDelegationWaitPollDue,
   aiDelegationBlocksResume,
   aiDelegationClosureAvailability,
+  laterCompletedDelegationForCard,
   preservedIntegrationReleaseClosure,
   aiDelegationRecoveryAvailability,
   aiDelegationBusyDispatchRejected,
@@ -3781,6 +3782,8 @@ async function reconcileAiDelegationWorkspaceLeases() {
       || delegation.pendingRecovery
       || integrationRecoveryPending(delegation)
       || !delegation.workspaceLease?.leaseId) continue
+    // 같은 카드의 후속 위임이 이미 성공했으면(예: 재적용 위임) 이전 체크포인트를 다시 통합하지 않는다. 사용자가 결과 보존 반환으로 정리한다.
+    if (laterCompletedDelegationForCard(delegation, aiDelegations.values())) continue
     if (activeAiDelegationsForConversation(aiDelegations.values(), {
       mapId: delegation.mapId, targetCardId: delegation.targetCardId,
       targetConversationId: delegation.targetConversationId, excludeId: delegation.id,
@@ -4366,6 +4369,23 @@ async function restoreConfirmedAiDelegationDispatch(delegation, map, parentMap, 
   broadcastEvent({ type: 'ai-conversation-linked', mapId: map.id, nodeId: delegation.targetCardId,
     conversationId, conversation: link, sourceClientId: null, updatedAt: updatedMap.updatedAt, updatedBy: publicUser(user) })
   return { delegation: updated, map: updatedMap }
+}
+
+async function ensureAiDelegationTargetConversationIdle(delegation) {
+  const conversationId = delegation.targetConversationId
+  if (!conversationId) return
+  let conversation
+  try {
+    conversation = await fetchAionUiOn(delegationTargetMachineId(delegation), `/api/conversations/${encodeURIComponent(conversationId)}`)
+  } catch (error) {
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    // 삭제된 대화는 작업공간에서 실행될 수 없다. 그 밖의 조회 실패는 실행 여부를 알 수 없으므로 반환하지 않는다.
+    if (error?.status === 404) return
+    throw Object.assign(new Error('대상 AI 대화의 실행 상태를 확인할 수 없어 작업공간을 반환하지 않았습니다. 연결을 확인한 뒤 다시 시도하세요.'), { status: 409, groupProjectError: true })
+  }
+  if (conversation?.id === conversationId && normalizeAiConversationRuntime(conversationId, conversation).state !== 'idle') {
+    throw Object.assign(new Error('대상 AI 대화가 아직 실행 중이라 작업공간을 반환할 수 없습니다. 대화가 끝난 뒤 다시 시도하세요.'), { status: 409, groupProjectError: true })
+  }
 }
 
 async function ensureAiDelegationTerminalResolutionIdle(delegation, { completedIntegration = false } = {}) {
@@ -9034,21 +9054,27 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
               : '실행 또는 복구 가능성이 남은 위임은 사용자 종료할 수 없습니다. 상태를 다시 확인하세요.' })
           }
           const releasePreserved = closure.workspaceReleaseRequired === true
-          if (!releasePreserved && body.trackedEolRecovery !== undefined) return sendJson(response, 400, {
-            error: '줄바꿈 복구는 명시적인 결과 보존 반환에만 지정할 수 있습니다.' })
+          const quarantinedRelease = releasePreserved && closure.quarantinedRelease === true
+          if ((!releasePreserved || quarantinedRelease) && body.trackedEolRecovery !== undefined) return sendJson(response, 400, {
+            error: '줄바꿈 복구는 통합 중단 결과의 명시적인 보존 반환에만 지정할 수 있습니다.' })
           if (releasePreserved && body.confirmPreserveWorkspaceResult !== true) return sendJson(response, 400, {
             error: '미통합 결과와 부분 후보를 보존하고 작업공간만 반환할지 명시적으로 확인해야 합니다.' })
           if (releasePreserved && [...aiDelegations.values()].some(other => other.id !== id
             && other.workspaceLease?.leaseId === delegation.workspaceLease.leaseId && !aiDelegationIsTerminal(other))) {
             return sendJson(response, 409, { error: '같은 lease를 사용 중인 다른 위임이 있어 반환할 수 없습니다.' })
           }
-          await ensureAiDelegationTerminalResolutionIdle(delegation, { completedIntegration: releasePreserved })
+          await ensureAiDelegationTerminalResolutionIdle(delegation, {
+            completedIntegration: quarantinedRelease ? delegation.childStatus === 'completed' : releasePreserved })
+          // 실패 뒤 사용자가 같은 대화에서 직접 이어 간 실행은 실행 영수증에 없다. 대화가 실행 중이면 작업공간을 반환하지 않는다.
+          if (quarantinedRelease) await ensureAiDelegationTargetConversationIdle(delegation)
           let workspaceResult = delegation.workspaceResult
           if (releasePreserved) {
             try {
-              workspaceResult = await workspacePoolManager.releasePreservedIntegrationFailure(delegation.workspaceLease.leaseId,
-                { mapId: delegation.mapId, cardId: delegation.targetCardId, conversationId: delegation.targetConversationId, userId: user.id },
-                { reason: note, trackedEolRecovery: body.trackedEolRecovery })
+              const scope = { mapId: delegation.mapId, cardId: delegation.targetCardId, conversationId: delegation.targetConversationId, userId: user.id }
+              workspaceResult = quarantinedRelease
+                ? await workspacePoolManager.releasePreservedQuarantinedResult(delegation.workspaceLease.leaseId, scope, { reason: note })
+                : await workspacePoolManager.releasePreservedIntegrationFailure(delegation.workspaceLease.leaseId, scope,
+                  { reason: note, trackedEolRecovery: body.trackedEolRecovery })
             } catch (error) {
               const reasonCode = typeof error.reasonCode === 'string' ? error.reasonCode
                 : typeof error.code === 'string' ? error.code : 'INTEGRATION_RECOVERY_UNSAFE'

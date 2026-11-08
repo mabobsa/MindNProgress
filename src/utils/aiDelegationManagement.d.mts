@@ -57,7 +57,7 @@ export type AiDelegationSummary = {
     blockedByDelegationId?: string
     message?: string
   } | null
-  closure?: { closeAvailable: boolean; reason?: string; workspaceReleaseRequired?: boolean } | null
+  closure?: { closeAvailable: boolean; reason?: string; workspaceReleaseRequired?: boolean; quarantinedRelease?: boolean } | null
   closedAt?: string
   closedByUserId?: string
   closureReason?: string

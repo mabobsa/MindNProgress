@@ -67,6 +67,18 @@ lease 상태는 위 작업공간 상태와 대부분 같은 이름을 쓰고, �
 
 검증이 통과하면 기존 후보와 실패 기록을 보존하고 통합 대기로 전환한다. 통합 기준이 진행됐으면 최신 기준에서 별도 후보를 만들고, 이미 반영된 후보는 중복 적용하지 않는다. 하위 AI를 다시 실행하거나 카드 업무를 완료로 변경하지 않으며, 담당 AI가 보고한 잔여 검증은 별도로 처리해야 한다.
 
+## 통합 전 격리 작업공간의 결과 보존 반환
+
+통합 브랜치를 만들기 전에 격리된 실패 위임에는 지원되는 복구가 없을 수 있다. 예를 들어 체크포인트 뒤 마무리 정리 중 잠긴 파일 때문에 실패(EBUSY)했거나, 하위 실행이 인증 오류처럼 재개 대상이 아닌 원인으로 실패한 경우다. 이때 위임 복구 화면은 `결과 보존 후 반환`을 제공한다(`closure.reason=preserve-quarantined-result`, `quarantinedRelease=true`). 단, 그룹 위임, 원격 소유 작업공간, 결과 정정 중인 위임과 `recoveryAvailable=true`인 재개 가능 실패는 제외한다.
+
+- 반환 전에 다음을 확인한다. 하나라도 맞지 않으면 격리를 유지한다.
+  - 대상 대화가 실행 중이 아니어야 한다. 실패 뒤 사용자가 같은 대화에서 직접 이어 간 실행도 확인한다.
+  - lease·세션·메타데이터 소유권이 기록과 같아야 한다.
+  - 작업공간에 미커밋 변경과 진행 중인 Git 작업이 없어야 한다.
+  - 작업 브랜치의 커밋이 모두 명시적 체크포인트여야 한다.
+- 원 체크포인트 HEAD는 `refs/mnp/preserved-results/<jobId>/source`로 보존한다. 결과 파일은 `released-preserved`(`preservedRelease.kind=quarantined-release`)로 남기고 작업공간은 idle로 돌린다. main 통합·AI 재실행·업무 완료 처리는 하지 않는다.
+- 같은 카드에서 나중에 시작한 위임이 성공했으면(예: 재적용 위임), 서버 기동 시의 체크포인트 격리 자동 통합 복구(`recoverCheckpointedFinalizationFailure`)를 건너뛴다. 이미 반영된 결과를 다시 통합하지 않기 위해서다. 이 경우 위 반환으로 정리한다.
+
 ## 원격 풀
 
 서브 머신 원격 풀은 위 상태에 더해 `release-pending`(통합 성공 후 Runner 반환 확인 대기)과 `cleanup-pending`(완료 산출물 정리 재시도 중, 새 배정 차단)을 쓴다. 세부 계약은 [서브 머신 Unity Fork 풀](./remote-fork-workspaces.md)을 따른다. Runner는 배정 기록이 없는 작업공간을 미커밋 변경이 있으면 `dirty`, 이 Runner가 만들지 않은 `.ai-session.json`이 있으면 `foreign-session`, 다른 코디네이터나 로컬 풀이 소유하면 `foreign-owner`로 보고하며, 이 상태들은 새 배정 후보가 아니다.

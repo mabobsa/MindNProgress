@@ -815,6 +815,21 @@ export function preservedIntegrationReleaseClosure(delegation, lease) {
     closureSource: 'workspace-pool-preserved-release', reportApprovalRequired: false, reportCancelledAt: receipt.releasedAt }
 }
 
+// 결과 보존 반환은 작업공간 풀 상태 파일에 먼저 저장되고, 위임 종료는 요청 트랜잭션에서 저장된다.
+// 요청이 끊기거나 저장 기한이 지나 위임 종료가 반영되지 않았으면 반환 receipt로 종료를 대사한다.
+// 기동 시와 주기 점검에서 같은 규칙을 쓴다. 처리 중(busy)인 위임은 요청이 끝난 뒤 다음 주기에 대사한다.
+export async function reconcilePreservedReleaseClosures({ delegations, leaseFor, busy = () => false, update }) {
+  const closed = []
+  for (const delegation of [...delegations]) {
+    if (delegation?.state !== 'failed' || busy(delegation.id)) continue
+    const closure = preservedIntegrationReleaseClosure(delegation, leaseFor(delegation.workspaceLease?.leaseId))
+    if (!closure) continue
+    await update(delegation.id, closure)
+    closed.push(delegation.id)
+  }
+  return closed
+}
+
 export function aiDelegationCanBeSupersededBy(delegation, replacement) {
   const failedCleanLimit = ['waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity'].includes(delegation?.state)
   const failedCleanDatabaseDispatch = ['failed', 'parent-wake-failed'].includes(delegation?.state) && aiDelegationDatabaseRecoveryCandidate(delegation)

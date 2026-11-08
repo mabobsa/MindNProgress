@@ -78,6 +78,8 @@ lease 상태는 위 작업공간 상태와 대부분 같은 이름을 쓰고, �
   - 작업 브랜치의 커밋이 모두 명시적 체크포인트여야 한다.
 - 원 체크포인트 HEAD는 `refs/mnp/preserved-results/<jobId>/source`로 보존한다. 결과 파일은 `released-preserved`(`preservedRelease.kind=quarantined-release`)로 남기고 작업공간은 idle로 돌린다. main 통합·AI 재실행·업무 완료 처리는 하지 않는다.
 - 같은 카드에서 나중에 시작한 위임이 성공했으면(예: 재적용 위임), 서버 기동 시의 체크포인트 격리 자동 통합 복구(`recoverCheckpointedFinalizationFailure`)를 건너뛴다. 이미 반영된 결과를 다시 통합하지 않기 위해서다. 이 경우 위 반환으로 정리한다.
+- 반환(작업공간 풀 상태 파일)은 위임 종료(요청 트랜잭션)보다 먼저 저장된다. Git 검증이 길어져 요청이 끊기거나 저장 기한을 넘기면 위임 종료만 빠질 수 있다. 그래서 위임 점검 주기마다 반환 receipt가 있는 `failed` 위임을 종료로 대사한다(`reconcilePreservedReleaseClosures`). 처리 중인 위임은 그 요청이 끝난 뒤 다음 주기에 대사한다.
+  - 위임 종료 요청의 저장 기한은 다중 자원 요청과 같은 60초다. 화면은 이 요청에 대해 120초까지 기다린다.
 
 ## 원격 풀
 

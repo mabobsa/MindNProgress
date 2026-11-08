@@ -97,7 +97,7 @@ import {
   aiDelegationBlocksResume,
   aiDelegationClosureAvailability,
   laterCompletedDelegationForCard,
-  preservedIntegrationReleaseClosure,
+  reconcilePreservedReleaseClosures,
   aiDelegationRecoveryAvailability,
   aiDelegationBusyDispatchRejected,
   assertAiDelegationDatabaseRejection,
@@ -3720,15 +3720,21 @@ async function dispatchPreparedAiDelegation({
   return { delegation, updatedMap }
 }
 
+function reconcilePreservedReleaseDelegationClosures() {
+  return reconcilePreservedReleaseClosures({
+    delegations: aiDelegations.values(),
+    leaseFor: (leaseId) => workspacePoolManager.state?.leases?.[leaseId],
+    busy: (id) => aiDelegationActions.has(id),
+    update: updateAiDelegation,
+  })
+}
+
 async function reconcileAiDelegationWorkspaceLeases() {
   await reconcileLostIntegrationWaits({ values: () => aiDelegations.values(), get: id => aiDelegations.get(id),
     workspacePool: workspacePoolManager, update: updateAiDelegation })
   // 풀 반환은 저장됐지만 위임 저장 전에 중단된 경우의 내구 receipt 대사.
   // 후속 위임/새 lease는 건드리지 않고 명시적으로 반환된 과거 기록만 종료한다.
-  for (const delegation of aiDelegations.values()) {
-    const closure = preservedIntegrationReleaseClosure(delegation, workspacePoolManager.state?.leases?.[delegation.workspaceLease?.leaseId])
-    if (closure) await updateAiDelegation(delegation.id, closure)
-  }
+  await reconcilePreservedReleaseDelegationClosures()
   const legacyIntegrationDirtyFailures = [...aiDelegations.values()].filter((delegation) =>
     delegation.state === 'failed'
     && delegation.childStatus === 'rejected'
@@ -8657,7 +8663,8 @@ const storageRequestDeadlines = new Map()
 const launchCallbackReservations = new Map()
 async function withStorageRequest(request, response, operation) {
   const pathname = new URL(request.url ?? '/', 'http://localhost').pathname
-  const multi = /\/document-reconstructions(?:\/|$)|\/cards\/[^/]+\/move$/.test(pathname)
+  // 위임 종료의 결과 보존 반환은 작업공간 Git 검증 때문에 오래 걸릴 수 있어 다중 자원 요청과 같은 저장 기한을 준다.
+  const multi = /\/document-reconstructions(?:\/|$)|\/cards\/[^/]+\/move$|\/ai-delegations\/[^/]+\/close$/.test(pathname)
   const lifecycle = multi || /\/archive$|\/trash$|\/restore$|^\/api\/groups(?:\/|$)/.test(pathname)
   const id = String(request.headers['idempotency-key'] ?? '')
   const resultOnly = request.headers['x-mnp-result-only'] === '1'
@@ -9080,6 +9087,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
                 : typeof error.code === 'string' ? error.code : 'INTEGRATION_RECOVERY_UNSAFE'
               return sendJson(response, 409, { error: error.message, message: error.message, reasonCode })
             }
+            // 반환은 이미 풀 상태 파일에 저장됐다. 작업공간 Git 검증에 쓴 시간 때문에 뒤따르는 위임 종료 저장이
+            // 기한 초과로 취소되지 않도록 남은 저장 기한을 새로 준다. 요청이 끊겨도 주기 대사가 종료를 마무리한다.
+            const budget = currentStorageBudget()
+            if (budget) budget.deadlineAt = Math.max(budget.deadlineAt, Date.now() + 30_000)
           }
           const closedAt = new Date().toISOString()
           const updated = await updateAiDelegation(id, {
@@ -14634,6 +14645,10 @@ runtimeLifecycle.interval(() => cleanupCompletedAiHistory(), 15 * 60_000, 'Compl
 runtimeLifecycle.interval(() => {
   for (const delegation of aiDelegations.values()) if (integrationRecoveryPending(delegation)) startIntegrationRecovery(delegation.id)
 }, aiDelegationPollIntervalMs, 'AI integration recovery queue')
+
+// 결과 보존 반환 요청이 끊기거나 저장 기한을 넘겨 위임 종료만 빠진 경우, 재시작을 기다리지 않고 반환 receipt로 종료를 대사한다.
+runtimeLifecycle.interval(() => trackStorageBackground(() => reconcilePreservedReleaseDelegationClosures()),
+  aiDelegationPollIntervalMs, 'AI delegation preserved release closure')
 
 runtimeLifecycle.interval(() => pollGroupDocumentInstructions(), aiDelegationPollIntervalMs, 'Group document instruction poll')
 runtimeLifecycle.interval(() => cardConversationStarts.poll(), 3_000, 'Card conversation start poll')

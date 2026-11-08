@@ -8,6 +8,7 @@ import {
   aiDelegationWorkPending,
   laterCompletedDelegationForCard,
   preservedIntegrationReleaseClosure,
+  reconcilePreservedReleaseClosures,
 } from '../server/lib/aiDelegations.mjs'
 
 const completedAttempt = {
@@ -130,6 +131,27 @@ test('격리 반환 receipt는 이전 결과에 HEAD가 없어도 반환 당시�
   assert.equal(patch.closedByUserId, 'user-editor')
   assert.equal(preservedIntegrationReleaseClosure(quarantinedBeforeIntegration,
     { ...lease, result: { ...lease.result, preservedRelease: { ...receipt, previousHeadCommit: 'different' } } }), null)
+})
+
+test('반환은 저장됐지만 위임 종료가 빠진 기록만 주기 대사로 종료하고 처리 중인 위임은 다음 주기로 미룬다', async () => {
+  const scope = { leaseId: 'lease-a', jobId: 'job-a', mapId: completedAttempt.mapId, cardId: completedAttempt.targetCardId, conversationId: completedAttempt.targetConversationId }
+  const released = { ...scope, status: 'cancelled', result: { ...scope, status: 'released-preserved', integratedCommit: null,
+    previousResult: quarantinedBeforeIntegration.workspaceResult, preservedRelease: { kind: 'quarantined-release', phase: 'released',
+      sourceHead: 'checkpoint', previousHeadCommit: null, reason: '요청이 끊겨 종료가 빠진 반환', releasedAt: '2026-11-08', approvedByUserId: 'user-editor' } } }
+  const pending = { ...quarantinedBeforeIntegration, id: 'pending-release' }
+  const stillQuarantined = { ...quarantinedBeforeIntegration, id: 'still-quarantined', workspaceLease: { leaseId: 'lease-b' },
+    workspaceResult: { ...quarantinedBeforeIntegration.workspaceResult, leaseId: 'lease-b' } }
+  const alreadyClosed = { ...pending, id: 'already-closed', state: 'closed' }
+  const leases = { 'lease-a': released, 'lease-b': { ...released, leaseId: 'lease-b', status: 'quarantined', result: stillQuarantined.workspaceResult } }
+  const updates = []
+  const run = (busy) => reconcilePreservedReleaseClosures({ delegations: [pending, stillQuarantined, alreadyClosed],
+    leaseFor: (leaseId) => leases[leaseId], busy, update: async (id, patch) => { updates.push({ id, patch }) } })
+  assert.deepEqual(await run((id) => id === 'pending-release'), [], '처리 중인 요청의 위임은 건드리지 않는다')
+  assert.deepEqual(await run(), ['pending-release'])
+  assert.equal(updates.length, 1)
+  assert.equal(updates[0].patch.state, 'closed')
+  assert.equal(updates[0].patch.closedByUserId, 'user-editor')
+  assert.equal(updates[0].patch.closureNote, '요청이 끊겨 종료가 빠진 반환')
 })
 
 test('같은 카드에서 나중에 성공한 위임만 이전 실패의 후속 완료로 찾는다', () => {

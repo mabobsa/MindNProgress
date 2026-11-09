@@ -1300,6 +1300,7 @@ async function main() {
     assert.deepEqual(emptyDelegations.delegations, [])
     await invokeExpectError('mindnprogress_delegate_ai_work', {
       mapId,
+      workType: 'other',
       targetCardId: 'branch-a',
       strategy: 'new',
       instruction: '하위 카드 작업을 실제로 수행하세요.',
@@ -1432,6 +1433,10 @@ async function main() {
       decisionReason: '기존 대화가 없어 상위 대화와 같은 실행 환경으로 새 대화를 시작합니다.',
       sourceRevision: delegationSourceDocument.map.version,
       idempotencyKey: `mcp-regression:${delegatedChild.id}:${delegationSourceDocument.map.version}`,
+      // 시험 AionUi에는 위임 규칙 모델이 없으므로 상위 대화와 같은 시험 모델을 예외로 지정한다. 규칙 적용은 ai-delegation-policy-api 시험이 확인한다.
+      workType: 'other',
+      aiPolicyOverride: { evidence: 'MCP 회귀 시험: 상위 대화와 같은 시험 모델로 위임' },
+      newConversation: { agentId: 'agent-claude-test', modelId: 'claude-test-model' },
     }
     const [inspectedChildContext, inspectedUnrelatedContext] = await Promise.all([
       invoke('mindnprogress_get_context', {
@@ -2921,6 +2926,7 @@ async function main() {
     assert.deepEqual(emptyInstructionList.instructions, [])
     await invokeExpectError('mindnprogress_send_group_document_instruction', {
       mapId: managedGroup.coordinator.id,
+      workType: 'other',
       targetMapId: groupDocument.map.id,
       targetRevision: groupDocument.map.version,
       groupProjectVersion: sourceContext.project.version,

@@ -73,6 +73,19 @@ import { readAionUiSubscriptionUsage } from './lib/aionUiSubscriptionUsage.mjs'
 import { prependAiConversationSource, resolveConversationDisplay, resolveConversationSource } from './lib/aiConversationDisplay.mjs'
 import { AI_CONVERSATION_CONTEXT_REUSE_GUARD_ENABLED, applyAiConversationDelegationModelPolicy, assessAiConversationContextHealth, isAiDelegationModelBlocked, normalizeAiConversationContextOverride, resolveAiConversationContextOverride } from './lib/aiConversationContextHealth.mjs'
 import { blockedAiModelLabels, filterAutomatedAiAgents } from './lib/aiModelPolicy.mjs'
+import {
+  aiDelegationCardLevel,
+  aiDelegationPolicyAdjustments,
+  aiDelegationPolicySignature,
+  aiDelegationPolicyView,
+  aiDelegationResumeModelMatches,
+  applyAiDelegationPolicyRule,
+  createAiDelegationPolicyStore,
+  aiDelegationPolicy as defaultAiDelegationPolicy,
+  aiDelegationPolicyPublicView,
+  parseAiDelegationPolicyRequest,
+  resolveAiDelegationPolicyRule,
+} from './lib/aiDelegationPolicy.mjs'
 import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
 import { reconcileLostIntegrationWaits } from './lib/aiIntegrationWaitRecovery.mjs'
@@ -2618,7 +2631,7 @@ function isHierarchyDescendant(map, parentCardId, targetCardId) {
   return false
 }
 
-async function delegationCreateSelection(targetCard, requestedSelection, parentAttribution, machineId, { inheritClaudeAccount = false } = {}) {
+async function delegationCreateSelection(targetCard, requestedSelection, parentAttribution, machineId, { inheritClaudeAccount = false, policyRule = null, policy } = {}) {
   const linkedConversations = aiConversationLinksFromData(targetCard.data)
   const latestLink = [...linkedConversations].reverse()
     .find((link) => conversationHomeMachineId(link.conversationId, link) === machineId)
@@ -2632,25 +2645,37 @@ async function delegationCreateSelection(targetCard, requestedSelection, parentA
   const parentFallback = inheritParentWorkspace || !parentAttribution
     ? parentAttribution
     : { ...parentAttribution, selection: parentSelection, workspace: null }
+  const loadCatalog = async () => {
+    const [agents, providers, rawMcpServers] = await Promise.all([
+      fetchAionUiOn(machineId, '/api/agents/management'),
+      fetchAionUiOn(machineId, '/api/providers'),
+      fetchAionUiOn(machineId, '/api/mcp/servers'),
+    ])
+    const normalizedAgents = (Array.isArray(agents) ? agents : [])
+      .filter((agent) => agent?.enabled !== false && agent?.installed === true)
+      .map((agent) => normalizeAionUiAgent(agent, Array.isArray(providers) ? providers.filter((item) => item?.enabled !== false) : []))
+    return { normalizedAgents, rawMcpServers }
+  }
+  // 위임 규칙이 있으면 CLI·모델·사고 강도는 규칙 한 행으로 정하고, 모드는 같은 CLI의 값만 물려받는다.
+  // 기술·MCP·작업 디렉토리·Claude 계정은 기존 상속을 그대로 쓴다.
+  let catalog = policyRule ? await loadCatalog() : null
+  const policySelection = policyRule ? applyAiDelegationPolicyRule({
+    rule: policyRule, agents: catalog.normalizedAgents, requested: requestedSelection, inherited: [latestLink, parentSelection], policy,
+  }) : null
   const selection = mergeAiDelegationSelections(
-    requestedSelection,
+    policySelection ? { ...(requestedSelection ?? {}), ...policySelection } : requestedSelection,
     latestLink,
     parentSelection,
     parentFallback,
   )
   if (!selection) throw new AionUiExternalLaunchPayloadError('새 AI 대화에 사용할 AI 종류와 모델을 확인할 수 없습니다.')
+  if (policySelection) Object.assign(selection, { mode: policySelection.mode, thoughtLevel: policySelection.thoughtLevel })
   // AI 종류·모델의 재사용과 작업 디렉토리의 상속은 별개다. 과거 하위 카드의
   // 폴더가 사용자가 새 상위 대화에서 선택한 프로젝트를 덮어쓰지 않게 한다.
   selection.workspace = aiDelegationNewWorkspace(requestedSelection, parentFallback, latestLink)
 
-  const [agents, providers, rawMcpServers] = await Promise.all([
-    fetchAionUiOn(machineId, '/api/agents/management'),
-    fetchAionUiOn(machineId, '/api/providers'),
-    fetchAionUiOn(machineId, '/api/mcp/servers'),
-  ])
-  const normalizedAgents = (Array.isArray(agents) ? agents : [])
-    .filter((agent) => agent?.enabled !== false && agent?.installed === true)
-    .map((agent) => normalizeAionUiAgent(agent, Array.isArray(providers) ? providers.filter((item) => item?.enabled !== false) : []))
+  catalog ??= await loadCatalog()
+  const { normalizedAgents, rawMcpServers } = catalog
   const resolvedAgent = normalizedAgents.find((agent) => agent.id === selection.agent.id)
   const resolvedModel = resolvedAgent?.models.find((model) => model.id === selection.model.id)
   if (!resolvedAgent || !resolvedModel) {
@@ -2658,7 +2683,7 @@ async function delegationCreateSelection(targetCard, requestedSelection, parentA
   }
   selection.agent = { id: resolvedAgent.id, label: resolvedAgent.name }
   selection.model = { id: resolvedModel.id, label: resolvedModel.label }
-  selection.providerId = resolvedModel.providerId ?? selection.providerId
+  selection.providerId = resolvedModel.providerId ?? (policySelection ? null : selection.providerId)
   // 위임·그룹 지시에서 이번 요청에 명시한 계정은 정책보다 우선한다. 생략하면 기존 정책·상속을 따른다.
   // 같은 카드의 대화 인계(inheritClaudeAccount)는 정책을 적용하지 않고 호출자가 정한 계정만 쓴다.
   const explicitClaudeAccountId = inheritClaudeAccount ? null : resolveExplicitClaudeAccount({
@@ -2688,6 +2713,22 @@ async function delegationCreateSelection(targetCard, requestedSelection, parentA
   const requiredMcpIds = mcpServers.filter((server) => server.required).map((server) => server.id)
   selection.mcpIds = [...new Set([...selection.mcpIds, ...requiredMcpIds])]
   return selection
+}
+
+// 위임 규칙의 모델과 다른 대화를 이어가려 하면 새 대화로 실행한다(사용자 결정 2026-11-09).
+// 현재 모델을 확인하지 못하면 바꾸지 않고 기존 이어가기 검사에 맡긴다.
+async function aiDelegationPolicyResumeConversion(policyRule, conversationId, linked) {
+  let conversation = null
+  try {
+    conversation = await fetchAiConversationRuntime(conversationId)
+  } catch (error) {
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    return null
+  }
+  const currentModelId = String(conversation?.extra?.current_model_id ?? '').trim()
+    || aiConversationLinkFromAionUiConversation(conversation)?.model?.id || linked?.model?.id || ''
+  if (aiDelegationResumeModelMatches(policyRule, currentModelId) !== false) return null
+  return { conversationId, currentModelId, expectedModelId: policyRule.modelId }
 }
 
 function issueDelegatedAttribution({ mapId, cardId, conversationId, selection, startedBy, homeMachineId }) {
@@ -3286,6 +3327,8 @@ async function loadGroupDocumentInstructions() {
 
 async function sendAiDelegationResponse(response, statusCode, reasonCode, message, payload = {}) {
   const context = aiDelegationRequestContexts.get(response)
+  // 접수한 위임에는 서버가 적용한 위임 규칙을 함께 알린다. AI 대화에 규칙을 따로 전달하지 않기 위해서다.
+  if (statusCode < 400 && context?.aiPolicy && !Object.hasOwn(payload, 'aiPolicy')) payload = { ...payload, aiPolicy: context.aiPolicy }
   if (statusCode >= 400) message = safeDelegationFailureMessage(message, context?.instruction)
   if (statusCode >= 400 && context) {
     console.warn('[AI delegation request failure]', JSON.stringify({ requestId: context.requestId,
@@ -8521,6 +8564,8 @@ const aiWorkspaceSettings = await createAiWorkspaceSettings({
 
 const doorayResponsePreferences = await createDoorayResponsePreferences({ dataDirectory, replaceFile: replaceFileWithRetry })
 const aiClaudeAccountPolicy = await createAiClaudeAccountPolicy({ dataDirectory, replaceFile: replaceFileWithRetry })
+// 계정 메뉴 「AI 위임 규칙」에서 바꾸는 위임 AI 설정. 위임할 때마다 그 시점의 규칙을 한 번 읽어 끝까지 같은 규칙을 쓴다.
+const aiDelegationPolicies = await createAiDelegationPolicyStore({ dataDirectory, replaceFile: replaceFileWithRetry })
 // 지정 계정에는 메인 PC 푸시만 허용한다. 머신 관리·Runner 토큰 권한은 바꾸지 않는다.
 const mobilePushAccess = { mainUserId: String(process.env.MNP_MOBILE_PUSH_MAIN_USER_ID ?? '').trim() }
 const sendUserMobilePush = (user, body) => sendMobilePush({ user, body, registry: machineRegistry, originUrl: publicBaseUrl, ...mobilePushAccess,
@@ -11324,8 +11369,9 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const body = await readJsonBody(request)
       const id = String(body.idempotencyKey ?? '').trim()
       const targetMapId = String(body.targetMapId ?? '').trim()
-      const strategy = String(body.strategy ?? '').trim()
-      const requestedConversationId = String(body.conversationId ?? '').trim()
+      // 위임 규칙과 모델이 다른 문서 루트 대화의 이어가기는 아래에서 새 대화로 바뀐다.
+      let strategy = String(body.strategy ?? '').trim()
+      let requestedConversationId = String(body.conversationId ?? '').trim()
       const conversationAssessmentId = String(body.conversationAssessmentId ?? '').trim()
       const contextOverride = requestedAiConversationContextOverride(body)
       const instructionType = String(body.instructionType ?? '').trim()
@@ -11368,6 +11414,17 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         return sendGroupDocumentInstructionResponse(response, 400, 'GROUP_DOCUMENT_INSTRUCTION_CLAUDE_ACCOUNT_REQUIRES_NEW',
           '기존 대화의 Claude 계정은 변경할 수 없습니다. 지정한 계정을 사용하려면 strategy=new로 새 대화를 요청하세요.')
       }
+      let aiPolicyRequest = null
+      try {
+        aiPolicyRequest = parseAiDelegationPolicyRequest(body)
+      } catch (error) {
+        return sendGroupDocumentInstructionResponse(response, error.status, 'GROUP_DOCUMENT_INSTRUCTION_POLICY_REQUEST_INVALID', error.message)
+      }
+      if (aiPolicyRequest?.override && strategy === 'new'
+        && !(String(body.newConversation?.agentId ?? '').trim() && String(body.newConversation?.modelId ?? '').trim())) {
+        return sendGroupDocumentInstructionResponse(response, 400, 'GROUP_DOCUMENT_INSTRUCTION_POLICY_REQUEST_INVALID',
+          'aiPolicyOverride로 위임 규칙과 다른 설정을 쓰려면 사용자가 지정한 agentId·modelId를 newConversation에 함께 전달하세요.')
+      }
       return await groupProjects.exclusive(async () => {
         const [parentMap, targetMap] = await Promise.all([readMap(parentMapId), readMap(targetMapId)])
         const parentCard = parentMap?.nodes.find((node) => node.id === source.cardId)
@@ -11400,6 +11457,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           replyTarget: requestedReplyTarget,
           newConversation: body.newConversation,
           contextOverride,
+          aiPolicy: aiDelegationPolicySignature(aiPolicyRequest),
         })
         const existing = groupDocumentInstructions.get(id)
         if (existing) {
@@ -11455,6 +11513,21 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
 
         let selection
         let appliedContextOverride = null
+        // 그룹 문서 지시의 대상은 문서 원본 루트이므로 상위 카드 규칙을 쓴다.
+        const aiPolicySnapshot = aiDelegationPolicies.get().policy
+        const aiPolicyCardLevel = aiPolicyRequest ? aiDelegationCardLevel(targetCard.id, documentRoot(targetMap)?.id) : null
+        const aiPolicyRule = aiPolicyRequest && !aiPolicyRequest.override
+          ? resolveAiDelegationPolicyRule(aiPolicyRequest, aiPolicyCardLevel, aiPolicySnapshot) : null
+        let aiPolicyResumeConversion = null
+        if (strategy === 'resume' && aiPolicyRule && isAiConversationLinked(targetCard.data, requestedConversationId)) {
+          aiPolicyResumeConversion = await aiDelegationPolicyResumeConversion(aiPolicyRule, requestedConversationId,
+            aiConversationLinksFromData(targetCard.data).find((candidate) => candidate.conversationId === requestedConversationId))
+          if (aiPolicyResumeConversion) {
+            strategy = 'new'
+            requestedConversationId = ''
+            console.info('[Group document instruction policy resume conversion]', JSON.stringify({ instructionId: id, targetMapId, ...aiPolicyResumeConversion }))
+          }
+        }
         if (strategy === 'resume') {
           const linked = aiConversationLinksFromData(targetCard.data)
             .find((candidate) => candidate.conversationId === requestedConversationId)
@@ -11503,8 +11576,13 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           }
         } else {
           try {
-            selection = await delegationCreateSelection(targetCard, body.newConversation, parentAttribution, targetHomeMachineId)
+            selection = await delegationCreateSelection(targetCard, body.newConversation, parentAttribution, targetHomeMachineId,
+              { policyRule: aiPolicyRule, policy: aiPolicySnapshot })
           } catch (error) {
+            if (String(error.reasonCode ?? '').startsWith('AI_DELEGATION_POLICY_')) {
+              return sendGroupDocumentInstructionResponse(response, error.status,
+                `GROUP_DOCUMENT_INSTRUCTION_${error.reasonCode.slice('AI_DELEGATION_'.length)}`, error.message)
+            }
             return sendGroupDocumentInstructionResponse(
               response, 400, 'GROUP_DOCUMENT_INSTRUCTION_SELECTION_INVALID', error.message,
             )
@@ -11514,6 +11592,11 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           response, 409, 'GROUP_DOCUMENT_INSTRUCTION_SELECTION_UNRESOLVED',
           '대상 문서 루트 AI의 종류와 모델 정보를 확인하지 못했습니다.',
         )
+        const aiPolicyView = aiPolicyRequest ? aiDelegationPolicyView({
+          request: aiPolicyRequest, cardLevel: aiPolicyCardLevel, rule: aiPolicyRule, selection, policy: aiPolicySnapshot,
+          adjustments: strategy === 'new' && aiPolicyRule ? aiDelegationPolicyAdjustments(body.newConversation, selection) : [],
+          resumeConversion: aiPolicyResumeConversion,
+        }) : null
         if (strategy === 'new' && isAiDelegationModelBlocked(selection.model.id)) return sendGroupDocumentInstructionResponse(
           response, 409, 'GROUP_DOCUMENT_INSTRUCTION_MODEL_BLOCKED',
           `${blockedAiModelLabels()} 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.`,
@@ -11578,7 +11661,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           response, delivered.state === 'failed' || delivered.state === 'expired' ? 409 : 202,
           reason.reasonCode,
           reason.message,
-          { instruction: groupDocumentInstructionPublicView(delivered, { includeContent: true }), repeated: false },
+          { instruction: groupDocumentInstructionPublicView(delivered, { includeContent: true }), repeated: false,
+            ...(aiPolicyView ? { aiPolicy: aiPolicyView } : {}) },
         )
       })
     }
@@ -11664,7 +11748,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const runDelegation = async () => {
       const id = String(body.idempotencyKey ?? '').trim()
       const targetCardId = String(body.targetCardId ?? '').trim()
-      const strategy = String(body.strategy ?? '').trim()
+      // 위임 규칙과 모델이 다른 대화의 이어가기는 아래에서 새 대화로 바뀐다.
+      let strategy = String(body.strategy ?? '').trim()
       const conversationId = String(body.conversationId ?? '').trim()
       const conversationAssessmentId = String(body.conversationAssessmentId ?? '').trim()
       const contextOverride = requestedAiConversationContextOverride(body)
@@ -11684,6 +11769,17 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         return sendAiDelegationResponse(
           response, 400, 'AI_DELEGATION_REQUEST_INVALID', 'AI 작업 위임 값이 올바르지 않습니다.',
         )
+      }
+      let aiPolicyRequest = null
+      try {
+        aiPolicyRequest = parseAiDelegationPolicyRequest(body)
+      } catch (error) {
+        return sendAiDelegationResponse(response, error.status, error.reasonCode, error.message)
+      }
+      if (aiPolicyRequest?.override && strategy === 'new'
+        && !(String(body.newConversation?.agentId ?? '').trim() && String(body.newConversation?.modelId ?? '').trim())) {
+        return sendAiDelegationResponse(response, 400, 'AI_DELEGATION_POLICY_REQUEST_INVALID',
+          'aiPolicyOverride로 위임 규칙과 다른 설정을 쓰려면 사용자가 지정한 agentId·modelId를 newConversation에 함께 전달하세요.')
       }
 
       const parentHomeMachineId = conversationHomeMachineId(source.conversationId, source)
@@ -11742,6 +11838,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         sourceRevision,
         newConversation: body.newConversation,
         contextOverride,
+        aiPolicy: aiDelegationPolicySignature(aiPolicyRequest),
       })
       const existingDelegation = aiDelegations.get(id)
       const completedReceipt = aiRequestReceipts.get(id)
@@ -11904,6 +12001,26 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       let selection = null
       let targetConversationId = conversationId
       let appliedContextOverride = null
+      // 문서 루트만 상위 카드 규칙을 쓰고, 하위에 다시 위임하는 중간 카드는 하위 카드 규칙을 쓴다.
+      const aiPolicySnapshot = aiDelegationPolicies.get().policy
+      const aiPolicyCardLevel = aiPolicyRequest ? aiDelegationCardLevel(targetCard.id, documentRoot(map)?.id) : null
+      const aiPolicyRule = aiPolicyRequest && !aiPolicyRequest.override
+        ? resolveAiDelegationPolicyRule(aiPolicyRequest, aiPolicyCardLevel, aiPolicySnapshot) : null
+      let aiPolicyResumeConversion = null
+      // 중단된 같은 위임의 재개는 원래 대화에서 마저 끝내야 하므로 바꾸지 않는다.
+      if (strategy === 'resume' && aiPolicyRule
+        && /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(targetConversationId) && isAiConversationLinked(targetCard.data, targetConversationId)
+        && !activeAiDelegationsForConversation(aiDelegations.values(), { mapId, targetCardId: targetCard.id, targetConversationId, excludeId: id })
+          .some((delegation) => delegation.state === 'waiting-child-resume')) {
+        aiPolicyResumeConversion = await aiDelegationPolicyResumeConversion(aiPolicyRule, targetConversationId,
+          aiConversationLinksFromData(targetCard.data).find((candidate) => candidate.conversationId === targetConversationId))
+        if (aiPolicyResumeConversion) {
+          strategy = 'new'
+          targetConversationId = ''
+          Object.assign(requestContext, { strategy, requestedConversationId: '' })
+          console.info('[AI delegation policy resume conversion]', JSON.stringify({ delegationId: id, mapId, targetCardId: targetCard.id, ...aiPolicyResumeConversion }))
+        }
+      }
       if (strategy === 'resume') {
         if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(targetConversationId)
           || !isAiConversationLinked(targetCard.data, targetConversationId)) {
@@ -11965,13 +12082,22 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         }
       } else {
         try {
-          selection = await delegationCreateSelection(targetCard, body.newConversation, parentAttribution, targetHomeMachineId)
+          selection = await delegationCreateSelection(targetCard, body.newConversation, parentAttribution, targetHomeMachineId,
+            { policyRule: aiPolicyRule, policy: aiPolicySnapshot })
         } catch (error) {
+          if (String(error.reasonCode ?? '').startsWith('AI_DELEGATION_POLICY_')) {
+            return sendAiDelegationResponse(response, error.status, error.reasonCode, error.message)
+          }
           return sendAiDelegationResponse(response, 400, 'AI_DELEGATION_SELECTION_INVALID', error.message)
         }
       }
       if (!selection) return sendAiDelegationResponse(response, 409, 'AI_DELEGATION_SELECTION_UNRESOLVED',
         '위임 대화의 AI 종류와 모델 정보를 확인하지 못했습니다.')
+      if (aiPolicyRequest) requestContext.aiPolicy = aiDelegationPolicyView({
+        request: aiPolicyRequest, cardLevel: aiPolicyCardLevel, rule: aiPolicyRule, selection, policy: aiPolicySnapshot,
+        adjustments: strategy === 'new' && aiPolicyRule ? aiDelegationPolicyAdjustments(body.newConversation, selection) : [],
+        resumeConversion: aiPolicyResumeConversion,
+      })
       if (strategy === 'new' && isAiDelegationModelBlocked(selection.model.id)) return sendAiDelegationResponse(
         response, 409, 'AI_DELEGATION_MODEL_BLOCKED',
         `${blockedAiModelLabels()} 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.`,
@@ -12767,6 +12893,32 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         console.error('[AionUi conversation attribution refresh]', error)
         return sendJson(response, 503, { error: 'AionUi에서 AI 종류와 모델을 확인하지 못했습니다.' })
       }
+    }
+
+    // AI 위임 규칙은 모든 위임에 적용되는 서버 설정이다. 편집자가 계정 메뉴에서 바꾸며, 저장 시각·저장자를 남긴다.
+    if (url.pathname === '/api/account/ai-delegation-policy') {
+      const user = requireSignedInUser(request, response)
+      if (!user) return
+      if (!canEdit(user)) return sendJson(response, 403, { error: '편집자만 AI 위임 규칙을 확인하고 바꿀 수 있습니다.' })
+      const policyResponse = (state) => ({
+        policy: aiDelegationPolicyPublicView(state.policy), revision: state.revision, source: state.source,
+        updatedAt: state.updatedAt, updatedBy: state.updatedBy, defaults: aiDelegationPolicyPublicView(defaultAiDelegationPolicy),
+      })
+      if (request.method === 'GET') return sendJson(response, 200, policyResponse(aiDelegationPolicies.get()))
+      if (request.method === 'PUT') {
+        const body = await readJsonBody(request)
+        try {
+          const saved = await aiDelegationPolicies.set({ rules: body?.rules, defaultModes: body?.defaultModes },
+            { baseRevision: String(body?.baseRevision ?? ''), actor: publicUser(user) })
+          console.info('[AI delegation policy saved]', JSON.stringify({ revision: saved.revision, updatedBy: user.id }))
+          return sendJson(response, 200, policyResponse(saved))
+        } catch (error) {
+          if (!error.reasonCode) throw error
+          return sendJson(response, error.status, { error: error.message, reasonCode: error.reasonCode,
+            ...(error.current ? { current: policyResponse(error.current) } : {}) })
+        }
+      }
+      return sendJson(response, 405, { error: '지원하지 않는 요청입니다.' })
     }
 
     // 분산 작업은 사용자가 계정 설정에서 켤 때만 동작한다. 끈 상태에서는 메인 머신만 대상으로 남는다.

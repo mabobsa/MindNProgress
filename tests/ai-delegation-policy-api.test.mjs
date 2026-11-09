@@ -1,0 +1,242 @@
+import assert from 'node:assert/strict'
+import { scryptSync } from 'node:crypto'
+import { createServer } from 'node:http'
+import { mkdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+import test from 'node:test'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { fixture, storageApi } from './helpers/storage-api-harness.mjs'
+
+const editorPassword = 'PolicyEditor!2026'
+const options = (...ids) => ids.map((value) => ({ value, name: value }))
+const agentRows = [
+  { id: 'claude', name: 'Claude Code', backend: 'claude', installed: true, enabled: true,
+    available_models: { available_models: options('opus', 'sonnet') },
+    available_modes: { available_modes: options('default', 'acceptEdits', 'bypassPermissions') },
+    config_options: [{ category: 'thought_level', options: options('high', 'xhigh', 'max') }] },
+  { id: 'codex', name: 'Codex CLI', backend: 'codex', installed: true, enabled: true,
+    available_models: { available_models: options('gpt-6.1-sol', 'gpt-6-astra') },
+    available_modes: { available_modes: options('read-only', 'full-access') },
+    config_options: [{ category: 'thought_level', options: options('high', 'xhigh', 'max') }] },
+]
+// 이어가기 대상의 현재 모델. 목록에 없는 대화(새로 만든 위임 대화 등)는 Codex Sol이다.
+const conversationModels = { parent: ['claude', 'opus'], 'old-claude': ['claude', 'opus'], 'old-sol': ['codex', 'gpt-6.1-sol'], 'root-astra': ['codex', 'gpt-6-astra'] }
+const link = (conversationId) => ({ conversationId, homeMachineId: 'isolated-storage',
+  agent: { id: conversationModels[conversationId][0], label: conversationModels[conversationId][0] },
+  model: { id: conversationModels[conversationId][1], label: conversationModels[conversationId][1] },
+  skills: [], mcpServers: [], startedBy: { id: 'user-editor', label: '김용민' } })
+
+test('위임 규칙은 업무 유형·카드 구분으로 새 대화 설정을 정하고, 규칙 모델과 다른 이어가기는 새 대화로 실행한다', { timeout: 90_000 }, async (t) => {
+  const creates = []
+  const dispatches = new Map()
+  const remote = createServer(async (request, response) => {
+    const url = new URL(request.url, 'http://localhost').pathname
+    const send = (data, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ success: status < 400, data })) }
+    if (url === '/api/agents/management') return send(agentRows)
+    if (url === '/api/internal/external-conversation-dispatches/capabilities') return send({ schemaVersion: 3, explicitCompletionAfterInterruption: true, historyOnlyReports: true })
+    if (url === '/api/internal/external-conversation-dispatches' && request.method === 'POST') {
+      const chunks = []; for await (const chunk of request) chunks.push(chunk)
+      const body = JSON.parse(Buffer.concat(chunks).toString())
+      creates.push(body)
+      const dispatch = { operationId: body.operationId, conversationId: body.targetConversationId ?? `child-${creates.length}`, state: 'running', turnId: `turn-${creates.length}` }
+      dispatches.set(body.operationId, dispatch)
+      return send(dispatch, 202)
+    }
+    if (url.startsWith('/api/internal/external-conversation-dispatches/')) {
+      const dispatch = dispatches.get(decodeURIComponent(url.split('/').at(-1)))
+      return send(dispatch ?? {}, dispatch ? 200 : 404)
+    }
+    if (url.startsWith('/api/conversations/')) {
+      const id = url.split('/')[3]
+      const [agentId, modelId] = conversationModels[id] ?? ['codex', 'gpt-6.1-sol']
+      return send({ id, type: 'acp', extra: { agent_id: agentId, current_model_id: modelId, backend: agentId },
+        runtime: { state: 'idle', is_processing: false, pending_confirmations: 0 } })
+    }
+    return send([])
+  })
+  await new Promise((resolve) => remote.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise((resolve) => remote.close(resolve)))
+  const api = await storageApi(t, { documents: 2,
+    env: { MNP_AIONUI_URL: `http://127.0.0.1:${remote.address().port}`, MNP_AI_DELEGATION_POLL_INTERVAL_MS: '600000' },
+    seed: async ({ data, ids }) => {
+      // 위임 규칙 설정은 로그인한 사람만 바꿀 수 있어 시험 편집자 비밀번호를 정한다(AI 연동 토큰은 거절).
+      await writeFile(path.join(data, '_users.json'), JSON.stringify([{ id: 'user-editor', name: '김용민', email: 'editor@mind.local', role: 'editor', active: true,
+        salt: 'fixture', passwordHash: scryptSync(editorPassword, 'fixture', 64).toString('hex') }]))
+      const map = fixture(ids[0])
+      Object.assign(map.nodes[0].data, { aiConversationId: 'parent', aiConversations: [{ ...link('parent'), mode: { id: 'acceptEdits', label: 'acceptEdits' } }] })
+      // card-1은 하위에 다시 위임하는 중간 카드다(card-19가 그 하위).
+      map.edges = map.edges.map((edge) => edge.target === 'card-19' ? { ...edge, source: 'card-1' } : edge)
+      Object.assign(map.nodes[5].data, { aiConversationId: 'old-claude', aiConversations: [link('old-claude')] })
+      Object.assign(map.nodes[6].data, { aiConversationId: 'old-sol', aiConversations: [link('old-sol')] })
+      await writeFile(path.join(data, `${ids[0]}.json`), JSON.stringify(map))
+      const target = fixture(ids[1])
+      Object.assign(target.nodes[0].data, { aiConversationId: 'root-astra', aiConversations: [link('root-astra')] })
+      await writeFile(path.join(data, `${ids[1]}.json`), JSON.stringify(target))
+      await writeFile(path.join(data, '_ai-conversation-origins.json'), JSON.stringify([
+        { mapId: ids[0], cardId: 'card-0', conversationId: 'parent', homeMachineId: 'isolated-storage', startedBy: 'user-editor' },
+      ]))
+      await writeFile(path.join(data, '_map-order.json'), JSON.stringify({ version: 1,
+        items: [{ type: 'group', id: 'group-policy' }], groups: [{ id: 'group-policy', name: '위임 규칙 검증 그룹', mapIds: ids }] }))
+      await mkdir(path.join(data, '_group-projects'), { recursive: true })
+      await writeFile(path.join(data, '_group-projects/group-policy.json'), JSON.stringify({ version: 1,
+        coordinatorMapId: ids[0], sources: [], objective: '위임 규칙 검증', instructions: '' }))
+    },
+  })
+  const [mapId, targetMapId] = api.ids
+  const currentMap = async (id) => (await api.call(`/api/maps/${id}`)).body.map
+  const endpoint = `/api/maps/${mapId}/ai-delegations`
+  const origin = { 'X-MNP-AI-Conversation-Id': 'parent', 'X-MNP-AI-Map-Id': mapId, 'X-MNP-AI-Card-Id': 'card-0' }
+  const request = async (card, extra = {}) => ({ targetCardId: `card-${card}`, strategy: 'new',
+    instruction: '위임 규칙 검증용 조사만 수행하세요.', decisionReason: '위임 규칙 검증',
+    sourceRevision: (await currentMap(mapId)).version, idempotencyKey: `policy:card-${card}`, ...extra })
+  const created = () => creates.at(-1).create
+  const client = new Client({ name: 'delegation-policy-test', version: '1' })
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['mcp/server.mjs'],
+    cwd: path.resolve(import.meta.dirname, '..'), env: { ...api.env, AIONUI_CONVERSATION_ID: 'parent' }, stderr: 'pipe' })
+  try {
+    await client.connect(transport)
+    const invoke = async (name, args) => {
+      const result = await client.callTool({ name: `mindnprogress_${name}`, arguments: args })
+      assert.notEqual(result.isError, true, JSON.stringify(result))
+      return JSON.parse(result.content.find((part) => part.type === 'text').text)
+    }
+    await invoke('get_context', { mapId, cardId: 'card-0', editorId: 'user-editor' })
+    const tools = await client.listTools()
+    for (const name of ['delegate_ai_work', 'send_group_document_instruction']) {
+      const schema = tools.tools.find((tool) => tool.name === `mindnprogress_${name}`).inputSchema
+      assert.ok(schema.required.includes('workType'), `${name}은 업무 유형을 반드시 받는다`)
+      assert.deepEqual(schema.properties.workType.enum, ['review', 'other'])
+      assert.ok(!schema.properties.newConversation.required?.includes('agentId'), `${name}은 AI 종류를 적지 않아도 된다`)
+    }
+
+    // 검수 외 하위 업무: Claude 상위 대화의 모드를 Codex에 넘기지 않는다.
+    const sub = await invoke('delegate_ai_work', { mapId, ...await request(2, { workType: 'other' }) })
+    assert.equal(sub.reasonCode, 'AI_DELEGATION_ACCEPTED', JSON.stringify(sub))
+    assert.deepEqual([created().agentId, created().modelId, created().thoughtLevel, created().mode], ['codex', 'gpt-6.1-sol', 'xhigh', 'full-access'])
+    assert.equal(sub.aiPolicy.rule, 'other/sub-card/standard')
+    assert.deepEqual(sub.aiPolicy.applied, { agent: 'Codex CLI', model: 'gpt-6.1-sol', thoughtLevel: 'xhigh', mode: 'full-access' })
+    const subLink = (await currentMap(mapId)).nodes[2].data.aiConversations.at(-1)
+    assert.deepEqual([subLink.agent.id, subLink.model.id, subLink.thoughtLevel.id, subLink.mode.id], ['codex', 'gpt-6.1-sol', 'xhigh', 'full-access'])
+
+    // 하위에 다시 위임하는 중간 카드도 하위 카드 규칙, 복잡한 분석은 max.
+    const middle = await invoke('delegate_ai_work', { mapId, ...await request(1, { workType: 'other', analysisDepth: 'deep' }) })
+    assert.equal(middle.aiPolicy.cardLevel, 'sub-card')
+    assert.deepEqual([created().agentId, created().modelId, created().thoughtLevel], ['codex', 'gpt-6.1-sol', 'max'])
+
+    // 검수는 하위 카드도 Claude Code·Opus. 같은 CLI의 상위 대화 모드는 물려받는다.
+    const review = await invoke('delegate_ai_work', { mapId, ...await request(3, { workType: 'review' }) })
+    assert.equal(review.aiPolicy.rule, 'review/any/standard')
+    assert.deepEqual([created().agentId, created().modelId, created().thoughtLevel, created().mode], ['claude', 'opus', 'xhigh', 'acceptEdits'])
+
+    // 기억한 옛 규칙 값은 규칙 값으로 바뀌고 응답에서 알린다.
+    const stale = await invoke('delegate_ai_work', { mapId, ...await request(4, { workType: 'other',
+      newConversation: { agentId: 'codex', modelId: 'gpt-6-astra', thoughtLevelId: 'high', modeId: 'read-only' } }) })
+    assert.deepEqual([created().agentId, created().modelId, created().thoughtLevel, created().mode], ['codex', 'gpt-6.1-sol', 'xhigh', 'read-only'])
+    assert.deepEqual(stale.aiPolicy.adjustments.map((item) => item.field), ['modelId', 'thoughtLevelId'])
+    assert.match(stale.aiPolicy.message, /규칙 값을 적용/)
+
+    // 규칙 모델과 다른 대화의 이어가기는 새 대화로 실행한다(평가 ID 없이도 이어가기 검사 전에 전환).
+    const converted = await invoke('delegate_ai_work', { mapId, ...await request(5, { workType: 'other', strategy: 'resume', conversationId: 'old-claude' }) })
+    assert.equal(converted.reasonCode, 'AI_DELEGATION_ACCEPTED', JSON.stringify(converted))
+    assert.equal(creates.at(-1).strategy, 'new')
+    assert.deepEqual([created().agentId, created().modelId], ['codex', 'gpt-6.1-sol'])
+    assert.deepEqual(converted.aiPolicy.resumeConversion, { conversationId: 'old-claude', currentModelId: 'opus', expectedModelId: 'gpt-6.1-sol' })
+    assert.equal(converted.delegation.strategy, 'new')
+    assert.deepEqual((await currentMap(mapId)).nodes[5].data.aiConversations.map((item) => item.conversationId), ['old-claude', `child-${creates.length}`])
+    const convertedRepeat = await invoke('delegate_ai_work', { mapId, ...await request(5, { workType: 'other', strategy: 'resume', conversationId: 'old-claude' }),
+      sourceRevision: converted.delegation.sourceRevision })
+    assert.equal(convertedRepeat.reasonCode, 'AI_DELEGATION_REPEATED', '같은 요청을 다시 보내도 새 대화를 또 만들지 않는다')
+
+    // 규칙 모델과 같은 대화는 기존 이어가기 검사를 그대로 탄다.
+    const countBeforeSame = creates.length
+    const sameModel = await api.call(endpoint, 'POST', { ...await request(6, { workType: 'other', strategy: 'resume', conversationId: 'old-sol' }) }, origin)
+    assert.equal(sameModel.body.reasonCode, 'AI_DELEGATION_CONVERSATION_ASSESSMENT_REQUIRED', JSON.stringify(sameModel.body))
+    assert.equal(creates.length, countBeforeSame)
+
+    // 사용자가 직접 지정한 설정은 근거와 함께일 때만 규칙 대신 쓴다.
+    const override = await invoke('delegate_ai_work', { mapId, ...await request(7, { workType: 'other',
+      aiPolicyOverride: { evidence: '사용자: 이번 하위 업무는 Sonnet으로 맡겨줘' }, newConversation: { agentId: 'claude', modelId: 'sonnet', thoughtLevelId: 'high' } }) })
+    assert.equal(override.aiPolicy.override, true)
+    assert.equal(override.aiPolicy.rule, null)
+    assert.deepEqual([created().agentId, created().modelId, created().thoughtLevel], ['claude', 'sonnet', 'high'])
+    const countBeforeInvalid = creates.length
+    for (const [extra, reasonCode] of [
+      [{ workType: 'other', aiPolicyOverride: { evidence: '사용자 지정' } }, 'AI_DELEGATION_POLICY_REQUEST_INVALID'],
+      [{ workType: 'implementation' }, 'AI_DELEGATION_POLICY_REQUEST_INVALID'],
+      [{ analysisDepth: 'deep' }, 'AI_DELEGATION_POLICY_REQUEST_INVALID'],
+    ]) {
+      const invalid = await api.call(endpoint, 'POST', await request(8, extra), origin)
+      assert.equal(invalid.status, 400, JSON.stringify(invalid.body))
+      assert.equal(invalid.body.reasonCode, reasonCode)
+    }
+    // 규칙 모델이 실행 머신에 없으면 다른 모델로 바꾸지 않는다.
+    agentRows[1].available_models.available_models = options('gpt-6-astra')
+    const unavailable = await api.call(endpoint, 'POST', await request(8, { workType: 'other' }), origin)
+    assert.equal(unavailable.status, 409, JSON.stringify(unavailable.body))
+    assert.equal(unavailable.body.reasonCode, 'AI_DELEGATION_POLICY_UNAVAILABLE')
+    assert.equal(creates.length, countBeforeInvalid)
+    agentRows[1].available_models.available_models = options('gpt-6.1-sol', 'gpt-6-astra')
+
+    // 규칙 값이 없는 이전 도구 정의의 요청은 기존처럼 상위 대화 설정을 상속한다.
+    const legacy = await api.call(endpoint, 'POST', await request(9), origin)
+    assert.equal(legacy.body.reasonCode, 'AI_DELEGATION_ACCEPTED', JSON.stringify(legacy.body))
+    assert.equal(legacy.body.aiPolicy, undefined)
+    assert.deepEqual([created().agentId, created().modelId], ['claude', 'opus'])
+
+    // 그룹 문서 지시는 문서 루트이므로 상위 카드 규칙. 규칙 모델과 다른 루트 대화의 이어가기는 새 대화로 전달한다.
+    const groupRequest = { mapId, targetMapId, targetRevision: (await currentMap(targetMapId)).version,
+      groupProjectVersion: 1, sourceRevision: (await currentMap(mapId)).version, strategy: 'resume', conversationId: 'root-astra',
+      instructionType: 'planning', approvalScope: 'analysis-only', approvalEvidence: '사용자가 위임 규칙 검증용 분석을 요청했습니다.',
+      instruction: '분석 결과를 정리하세요. 구현은 하지 마세요.', decisionReason: '문서 담당 대화 이어가기',
+      idempotencyKey: 'policy:group', workType: 'other', analysisDepth: 'deep' }
+    const group = await invoke('send_group_document_instruction', groupRequest)
+    // 시험용 AionUi는 실행 상태 스냅샷을 주지 않아 대상 루트가 확인 불가로 보이므로 대기열에 들어간다. 전환과 선택은 같다.
+    assert.ok(['GROUP_DOCUMENT_INSTRUCTION_DELIVERED', 'GROUP_DOCUMENT_INSTRUCTION_QUEUED'].includes(group.reasonCode), JSON.stringify(group))
+    assert.equal(group.aiPolicy.cardLevel, 'document-root')
+    assert.equal(group.aiPolicy.rule, 'other/document-root/any')
+    assert.deepEqual(group.aiPolicy.applied, { agent: 'Claude Code', model: 'opus', thoughtLevel: 'xhigh', mode: 'acceptEdits' }, '문서 루트는 복잡한 분석이어도 xhigh')
+    assert.deepEqual(group.aiPolicy.resumeConversion, { conversationId: 'root-astra', currentModelId: 'gpt-6-astra', expectedModelId: 'opus' })
+    assert.equal(group.instruction.strategy, 'new')
+    assert.equal(group.instruction.requestedConversationId, null)
+
+    // 계정 메뉴의 위임 규칙 설정: 저장하면 AI 대화에 알리지 않고 다음 위임부터 적용된다.
+    const settingsPath = '/api/account/ai-delegation-policy'
+    const byToken = await api.call(settingsPath)
+    assert.equal(byToken.status, 401, 'AI 연동 토큰으로는 위임 규칙을 읽거나 바꿀 수 없다')
+    const login = await fetch(api.base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'editor@mind.local', password: editorPassword }) })
+    assert.equal(login.status, 200)
+    const cookie = login.headers.get('set-cookie').split(';')[0]
+    const settings = async (method = 'GET', body) => {
+      const response = await fetch(api.base + settingsPath, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+      return { status: response.status, body: await response.json() }
+    }
+    const initial = await settings()
+    assert.equal(initial.status, 200, JSON.stringify(initial.body))
+    assert.equal(initial.body.source, 'default')
+    assert.deepEqual(initial.body.policy, initial.body.defaults)
+    assert.equal(initial.body.revision, sub.aiPolicy.revision, '위임 응답의 규칙 버전과 설정 화면의 버전이 같다')
+    const edited = structuredClone(initial.body.policy)
+    const subRule = edited.rules.find((rule) => rule.workType === 'other' && rule.cardLevel === 'sub-card' && rule.analysisDepth === 'standard')
+    Object.assign(subRule, { modelId: 'gpt-6-astra', thoughtLevelId: 'high' })
+    const saved = await settings('PUT', { ...edited, baseRevision: initial.body.revision })
+    assert.equal(saved.status, 200, JSON.stringify(saved.body))
+    assert.equal(saved.body.source, 'saved')
+    assert.equal(saved.body.updatedBy.name, '김용민')
+    assert.deepEqual((await api.read('_ai-delegation-policy.json')).rules.find((rule) => rule.modelId === 'gpt-6-astra').thoughtLevelId, 'high')
+    const afterSave = await invoke('delegate_ai_work', { mapId, ...await request(10, { workType: 'other' }) })
+    assert.deepEqual([created().agentId, created().modelId, created().thoughtLevel], ['codex', 'gpt-6-astra', 'high'])
+    assert.equal(afterSave.aiPolicy.revision, saved.body.revision)
+    const staleSave = await settings('PUT', { ...initial.body.policy, baseRevision: initial.body.revision })
+    assert.equal(staleSave.status, 409, JSON.stringify(staleSave.body))
+    assert.equal(staleSave.body.reasonCode, 'AI_DELEGATION_POLICY_CONFLICT')
+    assert.equal(staleSave.body.current.revision, saved.body.revision)
+    const uncovered = await settings('PUT', { ...edited, rules: edited.rules.filter((rule) => rule !== subRule), baseRevision: saved.body.revision })
+    assert.equal(uncovered.status, 400)
+    assert.equal(uncovered.body.reasonCode, 'AI_DELEGATION_POLICY_INVALID')
+    assert.match(uncovered.body.error, /검수 외·하위 카드·기본\(맞는 행 없음\)/)
+    assert.equal((await settings()).body.revision, saved.body.revision, '거절한 저장은 규칙을 바꾸지 않는다')
+  } finally { await client.close() }
+})

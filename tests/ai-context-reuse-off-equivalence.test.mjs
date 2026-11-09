@@ -106,9 +106,16 @@ test('OFF 이어가기 허용 여부와 거절 메시지는 개선 전 판정 �
   }
 })
 
+// 2026-11-09 위임 AI 설정을 서버 위임 규칙이 정하게 되면서(docs/ai-delegation-policy.md) 금지 모델 대체 문장 하나만 바꿨다.
+// 문맥 기준 재사용과 무관한 변경이므로 이 문장만 맞춘 뒤 나머지는 개선 전 원문과 같아야 한다.
+const delegationPolicySentence = (rules) => JSON.stringify(rules).replace(
+  '대화를 대신할 때는 newConversation에 사용 가능한 다른 모델을 명시하세요. 생략하면 이전 모델을 상속할 수 있습니다.',
+  '대화를 대신할 때는 새 대화를 요청하세요. 새 대화의 모델은 서버 위임 규칙이 정합니다.')
+
 test('OFF 선택 안내와 선택 규칙은 개선 전 원문과 같다', () => {
   assert.equal(currentSelection.AI_CONVERSATION_SELECTION_INSTRUCTION, legacySelection.AI_CONVERSATION_SELECTION_INSTRUCTION)
   assert.equal(currentSelection.aiConversationSelectionInstruction(off), legacySelection.aiConversationSelectionInstruction(off))
-  assert.equal(JSON.stringify(currentSelection.aiConversationSelectionRules()), JSON.stringify(legacySelection.aiConversationSelectionRules()))
-  assert.equal(JSON.stringify(currentSelection.aiConversationSelectionRules(off)), JSON.stringify(legacySelection.aiConversationSelectionRules(off)))
+  assert.equal(JSON.stringify(currentSelection.aiConversationSelectionRules()), delegationPolicySentence(legacySelection.aiConversationSelectionRules()))
+  assert.equal(JSON.stringify(currentSelection.aiConversationSelectionRules(off)), delegationPolicySentence(legacySelection.aiConversationSelectionRules(off)))
+  assert.notEqual(delegationPolicySentence(legacySelection.aiConversationSelectionRules(off)), JSON.stringify(legacySelection.aiConversationSelectionRules(off)), '바꾼 문장이 개선 전 원문에 그대로 있다')
 })

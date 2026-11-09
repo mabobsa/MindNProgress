@@ -61,7 +61,7 @@ test('문맥·모델 차단과 주의 상태의 좁은 예외를 유지한다', 
   assert.ok(rules.exclude.includes(blockedAiModelLabels()))
   assert.ok(rules.chooseNew.includes(blockedAiModelLabels()))
   assert.match(rules.chooseNew, /saturated·unknown.*resumeAllowed=false/)
-  assert.match(rules.chooseNew, /newConversation에 사용 가능한 다른 모델을 명시/)
+  assert.match(rules.chooseNew, /대화를 대신할 때는 새 대화를 요청하세요\. 새 대화의 모델은 서버 위임 규칙이 정합니다/)
   assert.match(rules.chooseNew, /caution은 정확히 이어지는 작은 후속 작업일 때만 평가를 확인하고 예외적으로 이어갈/)
   assert.match(rules.preferResume, /unverified.*포화 여부를 판정할 수 없는 상태/)
 })

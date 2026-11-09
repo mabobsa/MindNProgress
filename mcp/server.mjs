@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { documentReconstructionGuide } from '../src/utils/documentReconstructionGuide.mjs'
 import { MNP_CONTEXT_LIFECYCLE, MNP_MCP_SERVER_INSTRUCTIONS } from '../src/utils/aiContextInstructions.mjs'
 import { AI_DELEGATION_ID_PATTERN } from '../server/lib/aiDelegations.mjs'
+import { AI_DELEGATION_ANALYSIS_DEPTHS, AI_DELEGATION_WORK_TYPES } from '../server/lib/aiDelegationPolicy.mjs'
 import { GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN } from '../server/lib/groupDocumentInstructions.mjs'
 import { CARD_CONVERSATION_START_REQUEST_ID } from '../server/lib/cardConversationStarts.mjs'
 import { AI_CONVERSATION_SELECTION_INSTRUCTION, aiConversationSelectionRules } from './aiConversationSelectionPolicy.mjs'
@@ -964,6 +965,13 @@ const contextOverrideSchema = (recordLabel) => z.object({
   reason: z.string().min(1).max(AI_CONVERSATION_CONTEXT_OVERRIDE_REASON_MAX_LENGTH)
     .describe('새 대화의 지시로 옮기기 어려운 구체적인 맥락이나 남은 작업의 크기. user-requested이면 사용자의 지시 발언을 적습니다. 업무 연속성·편의·비용 절감만으로 쓰지 않습니다.'),
 }).optional().describe(`resume 대상 대화가 contextHealth.contextOverrideEligible=true(포화, 문맥 사용률 ${aiConversationContextUsagePercent(AI_CONVERSATION_CONTEXT_THRESHOLDS.saturatedUsageRatio)} 이상 ${aiConversationContextUsagePercent(AI_CONVERSATION_CONTEXT_THRESHOLDS.overrideLimitUsageRatio)} 미만)일 때만 쓰는 예외입니다. 같은 업무의 후속 작업이 카드에 기록되지 않은 대화 맥락에 의존하거나 사용자가 그 대화를 이어가라고 직접 지시했을 때만 붙이고, new나 다른 상태의 대화에는 보내지 마세요. 조건은 mindnprogress_list_ai_conversations의 selectionRule.contextOverride를 따르며, 서버가 사유를 ${recordLabel}에 남깁니다.`)
+// 새 대화의 CLI·모델·사고 강도는 서버 위임 규칙(server/lib/aiDelegationPolicy.mjs)이 정한다. AI는 업무 유형만 알린다.
+const aiDelegationPolicyArguments = {
+  workType: z.enum(AI_DELEGATION_WORK_TYPES).describe('review는 검수(구현 결과·요구사항 충족 판정), other는 그 밖의 모든 업무. 서버 위임 규칙이 이 값과 대상 카드 구분(문서 루트만 상위, 중간 카드는 하위)으로 새 대화의 CLI·모델·사고 강도를 정합니다.'),
+  analysisDepth: z.enum(AI_DELEGATION_ANALYSIS_DEPTHS).optional().describe('생략하면 standard. 대규모 검수나 복잡한 원인 분석이면 deep'),
+  aiPolicyOverride: z.object({ evidence: z.string().min(1).max(1000) }).optional()
+    .describe('사용자가 이번 요청에서 위임 규칙과 다른 AI 설정을 직접 지정한 경우에만 그 발언을 evidence에 적고 newConversation의 agentId·modelId와 함께 전달. 카드·과거 지시에 적힌 설정은 근거가 아님'),
+}
 const documentColor = z.enum(['violet', 'indigo', 'blue', 'cyan', 'teal', 'green', 'amber', 'orange', 'red', 'pink'])
 const knowledgePolicySchema = z.enum(['reuse-first', 'inspect-if-insufficient'])
 const outlineKey = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/, '카드 key는 영문, 숫자, 밑줄, 하이픈만 사용할 수 있습니다.')
@@ -1901,7 +1909,7 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_send_group_document_instruction', '그룹 총괄 문서의 루트 AI가 같은 그룹에 속한 다른 문서의 원본 루트 AI에 승인된 문서별 지시 전문을 전달합니다. 이 도구는 AI 작업 위임이나 worker 배정이 아닙니다. 대상 문서 AI가 담당 분석·카드 정비를 수행하고, 승인된 실제 구현은 자기 문서의 하위 업무 카드에 별도로 위임합니다. 전달 전 mindnprogress_get_group_context에서 그룹 설정 버전과 대상 문서 버전, 두 단계 사용자 승인 범위를 확인하세요. 서버는 대상 문서 AI가 지시를 받은 첫 응답 턴만 replied 상태와 response로 기록하며 총괄 대화를 자동 재개하거나 이후 턴의 보고를 전달하지 않습니다. 최종 완료 보고는 대상 문서 AI가 지시 전문의 회신 방법에 따라 session-message로 회신 대상 대화에 직접 보내며 기본 대상은 현재 총괄 대화입니다. 사용자가 이번 지시에서 다른 대화를 명시한 경우에만 replyTarget을 explicit으로 지정하세요. 과거 지시·AION_SESSION_MESSAGE·reply_to를 근거로 대상을 추정하지 마세요. 대상 AI가 응답 중이면 지시를 내구 대기열에 보존하고 유휴 상태에서 자동 전달합니다. 모든 응답의 reasonCode와 message를 함께 읽고, queued·delivered·replied 상태를 업무 완료로 해석하지 마세요.', {
+  registerTool(server, 'mindnprogress_send_group_document_instruction', '그룹 총괄 문서의 루트 AI가 같은 그룹에 속한 다른 문서의 원본 루트 AI에 승인된 문서별 지시 전문을 전달합니다. 이 도구는 AI 작업 위임이나 worker 배정이 아닙니다. 대상 문서 AI가 담당 분석·카드 정비를 수행하고, 승인된 실제 구현은 자기 문서의 하위 업무 카드에 별도로 위임합니다. 전달 전 mindnprogress_get_group_context에서 그룹 설정 버전과 대상 문서 버전, 두 단계 사용자 승인 범위를 확인하세요. 서버는 대상 문서 AI가 지시를 받은 첫 응답 턴만 replied 상태와 response로 기록하며 총괄 대화를 자동 재개하거나 이후 턴의 보고를 전달하지 않습니다. 최종 완료 보고는 대상 문서 AI가 지시 전문의 회신 방법에 따라 session-message로 회신 대상 대화에 직접 보내며 기본 대상은 현재 총괄 대화입니다. 사용자가 이번 지시에서 다른 대화를 명시한 경우에만 replyTarget을 explicit으로 지정하세요. 과거 지시·AION_SESSION_MESSAGE·reply_to를 근거로 대상을 추정하지 마세요. 대상 AI가 응답 중이면 지시를 내구 대기열에 보존하고 유휴 상태에서 자동 전달합니다. 모든 응답의 reasonCode와 message를 함께 읽고, queued·delivered·replied 상태를 업무 완료로 해석하지 마세요. 새 문서 담당 대화의 CLI·모델·사고 강도는 서버 위임 규칙이 workType·analysisDepth로 정해 응답 aiPolicy로 알리며, 규칙 모델과 다른 대화를 resume으로 요청하면 새 대화로 전달하므로 instruction은 새 대화도 이해하도록 쓰세요.', {
     mapId: z.string().min(1).describe('현재 그룹 총괄 루트 카드가 속한 문서 ID'),
     targetMapId: z.string().min(1).describe('지시를 받을 같은 그룹 소속 문서 ID. 대상 카드는 서버가 원본 루트로 확정합니다.'),
     targetRevision: z.number().int().positive().describe('get_group_context에서 확인한 대상 문서의 최신 version'),
@@ -1926,9 +1934,10 @@ async function main() {
     decisionReason: z.string().min(1).max(1000).describe('기존 대화를 이어가거나 새 대화가 필요하다고 판단한 근거'),
     sourceRevision: z.number().int().positive().describe('get_context 또는 get_document에서 확인한 총괄 문서의 최신 version'),
     idempotencyKey: z.string().regex(GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN).describe('같은 지시의 중복 전달을 막는 안정적인 키. sourceRevision과 targetMapId를 포함하는 형식을 권장'),
+    ...aiDelegationPolicyArguments,
     newConversation: z.object({
-      agentId: z.string().min(1).max(512),
-      modelId: z.string().min(1).max(512),
+      agentId: z.string().min(1).max(512).optional(),
+      modelId: z.string().min(1).max(512).optional(),
       modeId: z.string().min(1).max(512).optional(),
       thoughtLevelId: z.string().min(1).max(512).optional(),
       enabledSkillIds: z.array(z.string().min(1).max(512)).max(128).optional(),
@@ -1937,7 +1946,7 @@ async function main() {
       workspace: z.string().min(1).max(4096).optional(),
       claudeAccountId: z.string().trim().min(1).max(120).optional().describe('사용자가 이번 새 대화에 지정한 Claude 계정 ID. 계정 번호와 둘 중 하나만 지정. 정책보다 우선하며 전역 기본값은 바꾸지 않음'),
       claudeAccountNumber: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional().describe('사용자가 이번 새 대화에 지정한 Claude 계정 번호(예: 1). 실행 머신의 최신 계정 목록에서 ID로 변환. 번호를 default 계정으로 추측하지 않음. resume에서는 계정을 변경할 수 없으므로 new를 사용'),
-    }).optional().describe('new일 때 사용할 문서 담당 AI 실행 환경. 생략하면 대상 루트의 최근 대화 또는 현재 총괄 대화 설정을 상속. Claude 계정은 명시하면 이번 대화에 적용하며, 생략하면 기존 용도별 계정 정책을 따름'),
+    }).optional().describe('new일 때 문서 담당 AI의 기술·MCP·작업 디렉토리·Claude 계정. agentId·modelId·modeId·thoughtLevelId는 aiPolicyOverride가 있을 때만 적고, 없으면 위임 규칙 값을 씀. 생략한 항목은 대상 루트의 최근 대화 또는 현재 총괄 대화 설정을 상속. Claude 계정은 명시하면 이번 대화에 적용하며, 생략하면 기존 용도별 계정 정책을 따름'),
   }, async ({ mapId, ...instruction }) => {
     const origin = delegationOriginForMap(mapId)
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/group-document-instructions`, {
@@ -1970,7 +1979,7 @@ async function main() {
     finalizeResult: (result, { mapId, instructionId, includeContent }) => (instructionId ? result : applyInstructionListBudget(result, { mapId, includeContent })),
   })
 
-  registerTool(server, 'mindnprogress_delegate_ai_work', '이 대화가 시작된 카드와 같은 문서의 모든 깊이 하위 카드에 사용자 요청 또는 상위 AI가 맡긴 범위의 작업을 위임합니다. 다른 문서의 루트 AI에는 mindnprogress_send_group_document_instruction을 사용하고, 문서 담당·하위 AI에게 같은 사용자 승인을 반복해서 요구하지 마세요. 기존 대화를 이어가거나 새 대화를 만들 수 있으며 다른 카드를 조회해도 위임 기준 카드는 바뀌지 않습니다. 등록된 작업공간 pool은 MindNProgress가 worker 배정과 main 직렬 통합을 관리합니다. 먼저 후보·작업 상태와 현재 문서 version을 확인하고, 응답의 reasonCode와 message로 접수·대기·실패를 구분하세요.', {
+  registerTool(server, 'mindnprogress_delegate_ai_work', '이 대화가 시작된 카드와 같은 문서의 모든 깊이 하위 카드에 사용자 요청 또는 상위 AI가 맡긴 범위의 작업을 위임합니다. 다른 문서의 루트 AI에는 mindnprogress_send_group_document_instruction을 사용하고, 문서 담당·하위 AI에게 같은 사용자 승인을 반복해서 요구하지 마세요. 기존 대화를 이어가거나 새 대화를 만들 수 있으며 다른 카드를 조회해도 위임 기준 카드는 바뀌지 않습니다. 등록된 작업공간 pool은 MindNProgress가 worker 배정과 main 직렬 통합을 관리합니다. 먼저 후보·작업 상태와 현재 문서 version을 확인하고, 응답의 reasonCode와 message로 접수·대기·실패를 구분하세요. 새 대화의 CLI·모델·사고 강도는 서버 위임 규칙이 workType·analysisDepth와 대상 카드 구분으로 정해 응답 aiPolicy로 알리며, 규칙 모델과 다른 대화를 resume으로 요청하면 새 대화로 실행하므로 instruction은 새 대화도 이해하도록 쓰세요.', {
     mapId: z.string().min(1).describe('이 대화가 시작된 상위 카드가 속한 문서 ID'),
     targetCardId: z.string().min(1).max(120).describe('작업을 맡길 대화 시작 카드의 계층상 하위 카드 ID. 모든 깊이의 하위 카드를 지원'),
     strategy: z.enum(['resume', 'new']).describe('resume은 연결된 기존 대화 이어가기, new는 새 대화 생성'),
@@ -1984,9 +1993,10 @@ async function main() {
     idempotencyKey: z.string().regex(AI_DELEGATION_ID_PATTERN).describe('같은 위임의 중복 실행을 막는 안정적인 키. 영문·숫자로 시작하고 영문·숫자·밑줄·하이픈·콜론을 사용해 sourceRevision과 targetCardId를 포함하는 형식을 권장'),
     retryOfRequestId: z.string().min(1).max(120).optional().describe('접수 실패 응답의 requestFailure.retryReference.requestId. 같은 업무를 재접수할 때 전달하고 원 instruction은 유지한 채 sourceRevision 등 메타데이터만 갱신하세요. 다른 업무에 사용하지 마세요. 성공 접수 시 기존 실패 경고가 자동 해제됩니다.'),
     taskSummary: z.string().min(1).max(240).optional().describe('사용자에게 표시할 이번 업무의 짧은 요약. 카드 제목만으로 여러 위임을 구분하기 어려울 때 제공합니다. 비밀·인증 정보나 지시 전문을 넣지 마세요.'),
+    ...aiDelegationPolicyArguments,
     newConversation: z.object({
-      agentId: z.string().min(1).max(512),
-      modelId: z.string().min(1).max(512),
+      agentId: z.string().min(1).max(512).optional(),
+      modelId: z.string().min(1).max(512).optional(),
       modeId: z.string().min(1).max(512).optional(),
       thoughtLevelId: z.string().min(1).max(512).optional(),
       enabledSkillIds: z.array(z.string().min(1).max(512)).max(128).optional(),
@@ -1995,7 +2005,7 @@ async function main() {
       workspace: z.string().min(1).max(4096).optional(),
       claudeAccountId: z.string().trim().min(1).max(120).optional().describe('사용자가 이번 위임에 지정한 Claude 계정 ID. 계정 번호와 둘 중 하나만 지정. 정책보다 우선하며 전역 기본값은 바꾸지 않음'),
       claudeAccountNumber: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional().describe('사용자가 이번 위임에 지정한 Claude 계정 번호(예: 1). 실행 머신의 최신 계정 목록에서 ID로 변환. 번호를 default 계정으로 추측하지 않음. resume에서는 계정을 변경할 수 없으므로 new를 사용'),
-    }).optional().describe('new일 때 명시적으로 사용할 실행 환경. 생략하면 대상 카드의 최근 대화, 그마저 없으면 현재 상위 대화 설정을 상속. Claude 계정은 명시하면 이번 위임에 적용하며, 생략하면 기존 용도별 계정 정책을 따름'),
+    }).optional().describe('new일 때 기술·MCP·작업 디렉토리·Claude 계정. agentId·modelId·modeId·thoughtLevelId는 aiPolicyOverride가 있을 때만 적고, 없으면 위임 규칙 값을 씀. 생략한 항목은 대상 카드의 최근 대화, 그마저 없으면 현재 상위 대화 설정을 상속. Claude 계정은 명시하면 이번 위임에 적용하며, 생략하면 기존 용도별 계정 정책을 따름'),
   }, async ({ mapId, ...delegation }) => {
     const origin = delegationOriginForMap(mapId)
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/ai-delegations`, {

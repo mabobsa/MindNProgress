@@ -86,23 +86,23 @@ test('실제 위임 도구는 명시 계정을 정책보다 우선하고 생략�
       assert.ok(schema.properties.claudeAccountId)
     }
     const first = await request(1, { claudeAccountNumber: 1 })
-    const delegated = await invoke('delegate_ai_work', { mapId, ...first })
+    const delegated = await invoke('delegate_ai_work', { mapId, workType: 'review', ...first })
     assert.equal(delegated.reasonCode, 'AI_DELEGATION_ACCEPTED', JSON.stringify(delegated))
     assert.equal(creates[0].create.claudeAccountId, undefined, '1번 기본 계정은 개인 계정 정책을 따르지 않는다.')
     assert.equal((await currentMap(mapId)).nodes[1].data.aiConversations.at(-1).claudeAccountId, 'default')
-    const repeated = await invoke('delegate_ai_work', { mapId, ...first })
+    const repeated = await invoke('delegate_ai_work', { mapId, workType: 'review', ...first })
     assert.equal(repeated.repeated, true)
     assert.equal(creates.length, 1)
     const changed = await api.call(endpoint, 'POST', { ...first, newConversation: { ...first.newConversation, claudeAccountNumber: 2 } }, origin)
     assert.equal(changed.status, 409)
     assert.equal(changed.body.reasonCode, 'AI_DELEGATION_IDEMPOTENCY_CONFLICT')
     for (const [card, account, expected] of [[2, { claudeAccountId: 'personal' }, 'personal'], [3, {}, 'personal']]) {
-      await invoke('delegate_ai_work', { mapId, ...await request(card, account) })
+      await invoke('delegate_ai_work', { mapId, workType: 'review', ...await request(card, account) })
       assert.equal(creates.at(-1).create.claudeAccountId, expected)
       assert.equal((await currentMap(mapId)).nodes[card].data.aiConversations.at(-1).claudeAccountId, expected)
     }
     accounts = [{ id: 'personal', number: 1, label: '개인 Max' }, { id: 'default', number: 2, label: '회사 Team' }]
-    await invoke('delegate_ai_work', { mapId, ...await request(4, { claudeAccountNumber: 1 }) })
+    await invoke('delegate_ai_work', { mapId, workType: 'review', ...await request(4, { claudeAccountNumber: 1 }) })
     assert.equal(creates.at(-1).create.claudeAccountId, 'personal', '순서 변경 후에는 실행 머신의 새 번호를 사용한다.')
     const countBeforeInvalid = creates.length
     for (const account of [{ claudeAccountId: 'missing' }, { claudeAccountNumber: 3 }, { claudeAccountNumber: 0 },
@@ -117,7 +117,7 @@ test('실제 위임 도구는 명시 계정을 정책보다 우선하고 생략�
     assert.equal(resumed.body.reasonCode, 'AI_DELEGATION_CLAUDE_ACCOUNT_REQUIRES_NEW')
     assert.equal(creates.length, countBeforeInvalid)
     accounts = undefined
-    await invoke('delegate_ai_work', { mapId, ...await request(5, { claudeAccountNumber: 1 }) })
+    await invoke('delegate_ai_work', { mapId, workType: 'review', ...await request(5, { claudeAccountNumber: 1 }) })
     assert.equal(creates.at(-1).create.claudeAccountId, undefined)
     const invalidSingle = await api.call(endpoint, 'POST', await request(6, { claudeAccountNumber: 2 }), origin)
     assert.equal(invalidSingle.status, 400)
@@ -127,7 +127,7 @@ test('실제 위임 도구는 명시 계정을 정책보다 우선하고 생략�
       instructionType: 'planning', approvalScope: 'analysis-only', approvalEvidence: '사용자가 회사 계정으로 조사를 요청했습니다.',
       instruction: '분석 결과를 정리하세요. 구현은 하지 마세요.', decisionReason: '문서 담당 대화 생성',
       idempotencyKey: 'account:group', newConversation: { agentId: 'claude', modelId: 'opus', claudeAccountNumber: 2 } }
-    const groupResult = await invoke('send_group_document_instruction', groupRequest)
+    const groupResult = await invoke('send_group_document_instruction', { ...groupRequest, workType: 'other' })
     assert.equal(groupResult.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_DELIVERED', JSON.stringify(groupResult))
     assert.equal(creates.at(-1).operationId, 'gdi:account:group')
     assert.equal(creates.at(-1).create.claudeAccountId, undefined)

@@ -38,6 +38,7 @@ import { LinkifiedText } from './components/LinkifiedText'
 import { DoorayTaskLinkLabel } from './components/DoorayTaskLinkLabel'
 import { MentionText } from './components/MentionText'
 import { AdminEditorPanel } from './components/AdminEditorPanel'
+import { AiDelegationPolicyDialog } from './components/AiDelegationPolicyDialog'
 import { AiConversationDialog } from './components/AiConversationDialog'
 import { WorkspaceSettingsDialog } from './components/WorkspaceSettingsDialog'
 import { AiDelegationRecovery, type AiDelegationPreview } from './components/AiDelegationRecovery'
@@ -2429,6 +2430,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   }, [])
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [distributedWorkOpen, setDistributedWorkOpen] = useState(false)
+  const [aiDelegationPolicyOpen, setAiDelegationPolicyOpen] = useState(false)
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false)
   const [aiDialogOpen, setAiDialogOpen] = useState(false)
   const [aiConversationLaunch, setAiConversationLaunch] = useState<AiConversationExplicitTarget & { initialRequest: string } | null>(null)
@@ -7407,6 +7409,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                 <div className="account-summary"><strong>{user.name}</strong><span>{user.email}</span></div>
                 <button type="button" aria-pressed={aiIndicatorMotion === 'always'} title="이 브라우저에서만 AI 작업 표시의 점 3개를 항상 움직일 수 있습니다. 다른 애니메이션과 시스템 설정은 변경하지 않습니다." onClick={onToggleAiIndicatorMotion}><Icon name="sparkles" size={14} /><span>AI 작업 표시 움직임</span><span className="account-setting-state">{aiIndicatorMotion === 'always' ? '항상' : '시스템'}</span></button>
                 {!user.publicAccess && mode === 'editor' && <button onClick={() => { setAccountMenuOpen(false); setDistributedWorkOpen(true) }}><Icon name="sparkles" size={14} /><span>분산 작업 설정</span></button>}
+                {!user.publicAccess && mode === 'editor' && <button onClick={() => { setAccountMenuOpen(false); setAiDelegationPolicyOpen(true) }}><Icon name="users" size={14} /><span>AI 위임 규칙</span></button>}
                 {!user.publicAccess && <button onClick={() => { setAccountMenuOpen(false); setPasswordDialogOpen(true) }}><Icon name="lock" size={14} /><span>비밀번호 변경</span></button>}
                 <button className="account-logout" onClick={onLogout}><Icon name="logout" size={14} /><span>{user.publicAccess ? '로그인 화면으로 이동' : '로그아웃'}</span></button>
               </div>
@@ -7418,6 +7421,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       {adminOpen && user.role === 'admin' && <AdminEditorPanel onClose={closeAdminPanel} />}
       {passwordDialogOpen && !user.publicAccess && <PasswordChangeDialog onClose={() => setPasswordDialogOpen(false)} />}
       {distributedWorkOpen && !user.publicAccess && mode === 'editor' && <DistributedWorkDialog onClose={() => setDistributedWorkOpen(false)} />}
+      {aiDelegationPolicyOpen && !user.publicAccess && mode === 'editor' && <AiDelegationPolicyDialog onClose={() => setAiDelegationPolicyOpen(false)} />}
 
       {externalChange && (
         <div className="external-change-banner" role="status">

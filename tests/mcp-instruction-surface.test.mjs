@@ -29,6 +29,9 @@ const responseBudgetAppendices = new Map([
   ['mindnprogress_list_documents', /^ 응답이 약 4만 자를 넘으면 문서 항목은 모두 두고 maps\[\]와 같은 값인 documentGroups, 작성자 이메일·권한, groupProject의 중복 항목, 빈 필드 순으로 줄이며, 그래도 넘으면 문서별 식별·상태·그룹 필드만 남기고 응답 앞쪽 responseBudget과 omitted에 표기합니다\. 그룹 정보는 documentGroups 대신 각 문서의 maps\[\]\.group·groupMembership·groupProject를 읽으세요\.$/],
   ['mindnprogress_list_group_document_instructions', /^ 응답이 약 4만 자를 넘으면 queued·delivered 지시는 그대로 두고 대상 문서별 최신 지시는 마지막까지 남기며, 정리된 이력만 오래된 지시부터 원문 생략, 요약\(summary=true\), 개수화 순으로 줄여 응답 앞쪽 responseBudget과 omitted에 표기합니다\. 생략된 지시는 instructionId와 includeContent=true로 한 건씩 조회하세요\.$/],
   ['mindnprogress_update_card', /^ affected의 card는 이번에 보낸 필드와 저장 중 바뀐 필드를 원문으로 주고, 그 밖의 1,000자 초과 필드는 card\.omittedFields와 textIntegrity로만 표시합니다\. affectedCards에는 요청 카드를 빼고 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다\.$/],
+  // 2026-11-09: 위임 AI 설정은 서버 위임 규칙이 정한다. 규칙 표 자체는 설명에 옮겨 적지 않는다(규칙 변경 때 AI에 다시 전달하지 않기 위해서).
+  ['mindnprogress_delegate_ai_work', /^ 새 대화의 CLI·모델·사고 강도는 서버 위임 규칙이 workType·analysisDepth와 대상 카드 구분으로 정해 응답 aiPolicy로 알리며, 규칙 모델과 다른 대화를 resume으로 요청하면 새 대화로 실행하므로 instruction은 새 대화도 이해하도록 쓰세요\.$/],
+  ['mindnprogress_send_group_document_instruction', /^ 새 문서 담당 대화의 CLI·모델·사고 강도는 서버 위임 규칙이 workType·analysisDepth로 정해 응답 aiPolicy로 알리며, 규칙 모델과 다른 대화를 resume으로 요청하면 새 대화로 전달하므로 instruction은 새 대화도 이해하도록 쓰세요\.$/],
 ])
 // send_group_document_instruction(실제 서버 동작에 맞춘 정정)과 get_document(2026-10-21 승인 view 인자)는 재생성 기준선과
 // 설명이 같아졌으므로 다른 도구와 같이 기준선 전문 비교 대상이다. 아래 의미 검사는 재생성 이후를 대비한 보조 안전망이다.
@@ -62,10 +65,12 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     //   (claudeAccountNumber·claudeAccountId)를 추가하고 start_card_conversation의 계정 안내를 정리했다. 도구 개수는 유지한다.
     // 2026-11-02(b1b2de6): recover_ai_delegation 설명에 통합 후보의 Git 상태 조회 실패 복구를 추가했다.
     // 2026-11-03(6b032e2): checkpoint_ai_workspace의 commit-changes paths 설명에 폴더 범위와 삭제 포함을 추가했다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'e104565567f8231877174581df5a64ec1176f4e439bf885a4c24174736e58225')
+    // 2026-11-09: delegate_ai_work·send_group_document_instruction에 위임 규칙 입력(workType·analysisDepth·aiPolicyOverride)을
+    //   추가하고 newConversation의 agentId·modelId를 선택 항목으로 바꿨다. 도구 개수는 유지한다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '89a19063811d831cb976969c6f964b66e5e1ec960b6a6e573d9fd0770698c5a4')
     const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
-    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '993c671b3640b055ac9fb5b486b252f34caf8507b5c19f1fbcabb737ca6f18f6')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 229)
+    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '137d9f530db1c165bdf24719cee9e227ae18e1a3ad9aaba8ba7feaceb591cf61')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 235)
     const handoff = tools.find((tool) => tool.name === 'mindnprogress_start_card_conversation')
     assert.deepEqual(handoff.inputSchema.required, ['mapId', 'cardId', 'requestId'])
     assert.equal(handoff.inputSchema.properties.resultOnly.type, 'boolean')
@@ -122,7 +127,16 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     assert.match(getDocumentSchema.properties.knownVersion.description, /본문은 생략하지 않음.*full 응답에는 freshness가 없으므로/s)
     // outline 응답 예산(2026-10-29)은 기준선 설명 전문 뒤에 안내만 덧붙였다.
     assert.match(getDocument.slice(baselineDescriptions.get('mindnprogress_get_document').length - 2), responseBudgetAppendices.get('mindnprogress_get_document'), 'get_document 기준선 설명 뒤에 outline 예산 안내만 덧붙인다')
-    assert.equal(descriptions.get('mindnprogress_send_group_document_instruction'), baselineDescriptions.get('mindnprogress_send_group_document_instruction').slice(1, -1), 'send_group_document_instruction 기준선 설명 전문')
+    const groupInstructionBaseline = baselineDescriptions.get('mindnprogress_send_group_document_instruction').slice(1, -1)
+    assert.ok(descriptions.get('mindnprogress_send_group_document_instruction').startsWith(groupInstructionBaseline), 'send_group_document_instruction 기준선 설명 전문 뒤에 위임 규칙 안내만 덧붙인다')
+    for (const name of ['mindnprogress_delegate_ai_work', 'mindnprogress_send_group_document_instruction']) {
+      const schema = tools.find((tool) => tool.name === name).inputSchema
+      assert.ok(schema.required.includes('workType'), `${name}은 업무 유형을 반드시 받는다`)
+      assert.deepEqual(schema.properties.workType.enum, ['review', 'other'])
+      assert.deepEqual(schema.properties.analysisDepth.enum, ['standard', 'deep'])
+      assert.deepEqual(schema.properties.newConversation.required ?? [], [], `${name}의 newConversation은 AI 종류·모델을 요구하지 않는다`)
+      assert.doesNotMatch(JSON.stringify(schema), /gpt-6\.1-sol|opus|xhigh/, '규칙 값은 도구 정의에 옮겨 적지 않는다')
+    }
     assert.deepEqual(getDocumentSchema.required, ['mapId'])
     assert.deepEqual(getDocumentSchema.properties.view.enum, ['full', 'compact', 'outline', 'version'])
     assert.equal(Object.hasOwn(getDocumentSchema.properties.view, 'default'), false, 'view 기본값은 서버에서 full로 처리한다')

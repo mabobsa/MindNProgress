@@ -8,6 +8,55 @@
   background: #f8f7fb;
 }
 
+.react-flow__node.card-cut-pending {
+  opacity: 0.5;
+  outline: 2px dashed var(--theme-accent, #6758d8);
+  outline-offset: 4px;
+}
+
+.card-cut-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 8px 20px;
+  font-size: 12px;
+  background: var(--theme-accent-soft, #eeebff);
+  color: var(--theme-text, #373247);
+}
+
+.card-cut-notice button { margin-left: auto; }
+
+.card-move-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  background: #0006;
+}
+
+.card-move-dialog {
+  width: min(460px, calc(100vw - 32px));
+  padding: 24px;
+  border: 1px solid var(--theme-border, #dedbe8);
+  border-radius: 12px;
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text, #373247);
+  box-shadow: 0 12px 40px #0004;
+}
+
+.card-move-dialog h2 { margin-top: 0; font-size: 18px; }
+.card-move-dialog p { line-height: 1.6; }
+.card-move-dialog button, .card-cut-notice button {
+  padding: 6px 12px;
+  border: 1px solid var(--theme-border, #c9c3de);
+  border-radius: 6px;
+  background: var(--theme-surface-raised, #fff);
+  color: inherit;
+  cursor: pointer;
+}
+
 .icon {
   display: block;
   fill: none;

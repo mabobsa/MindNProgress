@@ -60,6 +60,7 @@ import { resolveAiConversationTarget, type AiConversationExplicitTarget } from '
 import { claudeAccountMark, mostUsedClaudeUsageEntry } from './utils/claudeAccounts.mjs'
 import { applyBoxSelection, boxSelectionNodeIds, boxSelectionRect, isBoxSelectionDrag } from './utils/boxSelection.mjs'
 import { copyTextToClipboard } from './utils/clipboardText.mjs'
+import { cardMoveRequestId, cutCardSelection, resolveCardMove, type CardCut, type CardMoveRequest } from './utils/cardMove.mjs'
 import { parseGroupDeepLink } from './utils/groupDeepLink.mjs'
 import { collectDragDescendantOwners, dragRootIds, hierarchyReparentPairs } from './utils/hierarchyDrag.mjs'
 import { blockingNodes, createsDependencyCycle, dependentNodes, prerequisiteNodes } from './utils/dependencies'
@@ -1216,6 +1217,7 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
     chart: <><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></>,
     copy: <><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></>,
     paste: <><path d="M9 5h6M9 3h6v4H9z"/><path d="M9 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/><path d="M15 11v8M11 15h8"/></>,
+    cut: <><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="m8 8 13 13M8 16 21 3"/></>,
     undo: <><path d="M9 7 4 12l5 5"/><path d="M5 12h8a6 6 0 0 1 6 6"/></>,
     redo: <><path d="m15 7 5 5-5 5"/><path d="M19 12h-8a6 6 0 0 0-6 6"/></>,
     sparkles: <><path d="m12 3 1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4Z"/><path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7Z"/></>,
@@ -2550,6 +2552,29 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const paneRightPressRef = useRef({ x: 0, y: 0 })
   const [copiedNodes, setCopiedNodes] = useState<CopiedNodes | null>(null)
   const [copiedImages, setCopiedImages] = useState<CopiedImages | null>(null)
+  const [cutCards, setCutCards] = useState<CardCut | null>(null)
+  const moveStorageKey = `mnp-pending-card-move:${user.id}`
+  const [pendingCardMove, setPendingCardMove] = useState<CardMoveRequest | null>(() => {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(moveStorageKey) ?? 'null') as CardMoveRequest | null
+      return saved?.requestId && saved.sourceMapId && saved.body?.cardIds?.length ? saved : null
+    } catch { return null }
+  })
+  const [cardMoveBusy, setCardMoveBusy] = useState(false)
+  const [cardMoveMessage, setCardMoveMessage] = useState('이동 결과를 확인해 주세요.')
+  const cardMoveBusyRef = useRef(false)
+  const contentSavesInFlight = useRef(new Map<string, number>())
+  const cardMoveBlocked = cardMoveBusy || Boolean(pendingCardMove)
+  useEffect(() => {
+    if (!cardMoveBlocked) return
+    const blockShortcuts = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' && event.target instanceof Element && event.target.closest('.card-move-dialog')) return
+      event.stopImmediatePropagation()
+      if (event.key !== 'Tab') event.preventDefault()
+    }
+    window.addEventListener('keydown', blockShortcuts, true)
+    return () => window.removeEventListener('keydown', blockShortcuts, true)
+  }, [cardMoveBlocked])
   const [draggingLibraryItem, setDraggingLibraryItem] = useState<DocumentLayoutItem | null>(null)
   const [documentDropTargetId, setDocumentDropTargetId] = useState<string | null>(null)
   const documentListRef = useRef<HTMLElement | null>(null)
@@ -3445,6 +3470,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       },
       className: [
         node.className,
+        cutCards?.sourceMapId === activeMapId && cutCards.movedCardIds.includes(node.id) ? 'card-cut-pending' : '',
         node.id === dropTargetId ? 'drop-target' : '',
         node.id === knowledgeConnection?.sourceId ? `knowledge-link-source ${knowledgeConnection.policy === 'reuse-first' ? 'primary' : 'secondary'}` : '',
         node.id === knowledgeConnectionTargetId ? `knowledge-link-target ${hoveredKnowledgeConnectionIssue ? 'invalid' : 'valid'}` : '',
@@ -3457,7 +3483,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         overlapWarningIds.has(node.id) ? 'overlap-warning' : '',
       ].filter(Boolean).join(' '),
     }
-  }), [activeMapId, aiConversationRuntimes, aiDelegationPreview, aiDelegationPreviewNodeIds, aiDelegationStatuses, beginHistoryTransaction, collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, descendantCounts, dropTargetId, endHistoryTransaction, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, hoveredKnowledgeConnectionIssue, knowledgeConnection, knowledgeConnectionTargetId, mode, nodes, normalizedNodeSearch, openAiDelegationRecovery, openDependencies, openWaitingItems, overlapStackByRepresentativeId, overlapWarningIds, progressRollups, referenceCommentStats, searchContextNodeIds, searchMatchedNodeIds, setNodes, teamMembers, unresolvedReferenceNodeIds])
+  }), [activeMapId, aiConversationRuntimes, aiDelegationPreview, aiDelegationPreviewNodeIds, aiDelegationStatuses, beginHistoryTransaction, collapsedHiddenNodeIds, collapsedNodeIds, collapsibleNodeIds, commentStats, cutCards, descendantCounts, dropTargetId, endHistoryTransaction, filterActive, filterMatchedNodeIds, filterVisibleNodeIds, hoveredKnowledgeConnectionIssue, knowledgeConnection, knowledgeConnectionTargetId, mode, nodes, normalizedNodeSearch, openAiDelegationRecovery, openDependencies, openWaitingItems, overlapStackByRepresentativeId, overlapWarningIds, progressRollups, referenceCommentStats, searchContextNodeIds, searchMatchedNodeIds, setNodes, teamMembers, unresolvedReferenceNodeIds])
   const visibleFlowNodeIds = useMemo(() => new Set(flowNodes.filter((node) => !node.hidden).map((node) => node.id)), [flowNodes])
   visibleFlowNodeIdsRef.current = visibleFlowNodeIds
   const visibleFlowNodeIdsKey = useMemo(() => [...visibleFlowNodeIds].sort().join('\u0000'), [visibleFlowNodeIds])
@@ -4342,6 +4368,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
 
   useEffect(() => {
     if (!activeMapId || loadedMapId !== activeMapId) return
+    if (pendingCardMove) return
     const localContent = createPersistedMapContent(nodes, edges)
     const localBackupSaved = saveMapCache(activeMapId, localContent)
     if (mode === 'viewer') {
@@ -4362,6 +4389,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       setSavedAt('서버에 저장 중…')
       setSaveError('')
       const savingMapId = activeMapId
+      contentSavesInFlight.current.set(savingMapId, (contentSavesInFlight.current.get(savingMapId) ?? 0) + 1)
       const suppressedNotificationNodeIds = [...(pastedNodeNotificationSuppressions.current.get(savingMapId) ?? [])]
         .filter((nodeId) => localContent.nodes.some((node) => node.id === nodeId))
       const clearPastedNodeNotificationSuppressions = () => {
@@ -4439,9 +4467,12 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           updateLocalBackupNotice({ type: 'server-failed', mapId: savingMapId })
           setSavedAt('저장 실패')
         })
+        .finally(() => {
+          contentSavesInFlight.current.set(savingMapId, Math.max(0, (contentSavesInFlight.current.get(savingMapId) ?? 1) - 1))
+        })
     }, 600)
     return () => window.clearTimeout(timer)
-  }, [acceptSavedMap, activeMapId, edges, loadedMapId, mode, nodes, reconcileRemoteMap, saveMapCache, serverBaselineRevision])
+  }, [acceptSavedMap, activeMapId, edges, loadedMapId, mode, nodes, pendingCardMove, reconcileRemoteMap, saveMapCache, serverBaselineRevision])
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -5085,13 +5116,13 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     // 이미 선택된 카드를 우클릭하면 선택 묶음을 유지해 다중 복사에 사용한다.
     if (nodes.some((node) => node.id === nodeId && node.selected)) setSelectedId(nodeId)
     else selectCardLocally(nodeId)
-    const menuHeight = nodes.find((node) => node.id === nodeId)?.data.kind === 'image' ? 310 : 440
+    const menuHeight = (nodes.find((node) => node.id === nodeId)?.data.kind === 'image' ? 310 : 440) + (cutCards ? 120 : 50)
     setNodeContextMenu({
       x: Math.max(8, Math.min(clientX, window.innerWidth - 230)),
       y: Math.max(8, Math.min(clientY, window.innerHeight - menuHeight)),
       nodeId,
     })
-  }, [mode, nodes, selectCardLocally, setMobileInspectorOpen])
+  }, [cutCards, mode, nodes, selectCardLocally, setMobileInspectorOpen])
 
   const openNodeContextMenu = useCallback((event: ReactMouseEvent, nodeId: string) => {
     const touchSuppression = suppressTouchContextMenu.current
@@ -5447,6 +5478,122 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     return () => window.removeEventListener('blur', cancelTouchPan)
   }, [])
 
+  const waitForCardMoveSave = useCallback(async (mapId: string) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (activeMapIdRef.current !== mapId) throw new Error('문서가 바뀌었습니다. 다시 시도해 주세요.')
+      const baseline = serverBaseline.current
+      if (baseline?.id === mapId && loadedMapIdRef.current === mapId
+        && !contentSavesInFlight.current.get(mapId)
+        && mapContentsEqual(createPersistedMapContent(nodesRef.current, edgesRef.current), baseline)) return baseline
+      await new Promise((resolve) => window.setTimeout(resolve, 100))
+    }
+    throw new Error('현재 문서의 서버 저장이 끝나지 않았습니다. 저장 상태를 확인한 뒤 다시 시도해 주세요.')
+  }, [])
+
+  const cutNode = useCallback(async (nodeId: string) => {
+    if (mode !== 'editor' || !activeMapId || cardMoveBusyRef.current || pendingCardMove) return
+    cardMoveBusyRef.current = true
+    setCardMoveBusy(true)
+    setCardMoveMessage('문서 저장을 확인하고 있습니다…')
+    setNodeContextMenu(null)
+    try {
+      const initialSelection = cutCardSelection(nodesRef.current, edgesRef.current, nodeId)
+      const baseline = await waitForCardMoveSave(activeMapId)
+      if (initialSelection.cardIds.some((id) => !baseline.nodes.some((node) => node.id === id))) throw new Error('선택한 카드가 변경되었습니다. 다시 선택해 주세요.')
+      const selection = cutCardSelection(baseline.nodes.map((node) => ({ ...node, selected: initialSelection.cardIds.includes(node.id) })),
+        baseline.edges, initialSelection.cardIds[0])
+      setCutCards({ ...selection, sourceMapId: activeMapId, sourceVersion: baseline.version, sourceTitle: baseline.title,
+        labels: Object.fromEntries(baseline.nodes.map((node) => [node.id, node.data.label])) })
+      setCopiedNodes(null)
+      setCopiedImages(null)
+      setSaveError('')
+    } catch (error) { setSaveError(error instanceof Error ? error.message : '카드를 잘라내지 못했습니다.') }
+    finally { cardMoveBusyRef.current = false; setCardMoveBusy(false) }
+  }, [activeMapId, mode, pendingCardMove, waitForCardMoveSave])
+
+  const finishCardMove = useCallback(async (request: CardMoveRequest, resultOnly = false) => {
+    const result = await resolveCardMove(request, { resultOnly,
+      fetchImpl: (url, init) => fetch(url, { ...init, headers: { ...init?.headers, 'X-MNP-Client': CLIENT_ID } }) })
+    if (result.state === 'pending') { setCardMoveMessage(String(result.body.error)); return }
+    if (result.state === 'rejected') {
+      const details = result.body.details as { cardIds?: string[]; knowledgeEdges?: { source: string; target: string }[]; blockedBy?: { cardId: string; blockedByCardId: string }[] } | undefined
+      const ids = [...new Set([...(details?.cardIds ?? []), ...(details?.knowledgeEdges ?? []).flatMap((edge) => [edge.source, edge.target]),
+        ...(details?.blockedBy ?? []).flatMap((edge) => [edge.cardId, edge.blockedByCardId])])]
+      setSaveError(`${String(result.body.error ?? '카드를 이동하지 못했습니다.')}${ids.length ? ` 관련 카드: ${ids.map((id) => cutCards?.labels[id] ?? id).join(', ')}` : ''}`)
+    } else {
+      // 저장 응답 이후의 변경도 반영한다. 화면 조회 실패 시에는 기존 요청의 결과만 다시 확인한다.
+      const mapId = activeMapIdRef.current
+      if (mapId) {
+        const { map } = await apiRequest<MapDocumentResponse>(`/api/maps/${encodeURIComponent(mapId)}`)
+        const roots = request.body.cardIds
+        const nextNodes = map.nodes.map((node) => ({ ...node, selected: mapId === request.body.targetMapId && roots.includes(node.id) }))
+        serverBaseline.current = structuredClone(map)
+        nodesRef.current = nextNodes
+        edgesRef.current = map.edges
+        setNodes(nextNodes)
+        setEdges(map.edges)
+        setActiveDocumentRecord(map)
+        setSelectedId(mapId === request.body.targetMapId ? roots[0] : null)
+        resetHistory(nextNodes, map.edges)
+        setServerBaselineRevision((value) => value + 1)
+        saveMapCache(mapId, createPersistedMapContent(nextNodes, map.edges))
+      }
+      const summaries = [result.body.sourceDocument, result.body.targetDocument] as MapSummary[]
+      setDocuments((current) => current.map((document) => summaries.find((summary) => summary.id === document.id) ?? document))
+      const source = result.body.sourceMap as MapDocument
+      if (source && source.id !== mapId) {
+        try { tryWriteMapCache(localStorage, source.id, createPersistedMapContent(source.nodes, source.edges), { serverMap: source }) }
+        catch { /* 이동은 서버에서 완료되었고, 다음 문서 조회 시 서버 값으로 갱신한다. */ }
+      }
+      setCutCards(null)
+      setSaveError('')
+      setMergeNotice(`카드 ${(result.body.movedCardIds as string[]).length}개를 AI 대화·댓글과 함께 이동했습니다.`)
+      setMapReloadToken((value) => value + 1)
+    }
+    sessionStorage.removeItem(moveStorageKey)
+    setPendingCardMove(null)
+  }, [cutCards, moveStorageKey, resetHistory, saveMapCache, setEdges, setNodes])
+
+  const pasteCutCards = useCallback(async (parentId: string) => {
+    if (mode !== 'editor' || !activeMapId || !cutCards || cardMoveBusyRef.current || pendingCardMove) return
+    cardMoveBusyRef.current = true
+    setCardMoveBusy(true)
+    setCardMoveMessage('문서 저장을 확인하고 카드를 이동하고 있습니다…')
+    setNodeContextMenu(null)
+    try {
+      if (cutCards.sourceMapId === activeMapId && cutCards.movedCardIds.includes(parentId)) throw new Error('자기 자신이나 하위 카드 아래로 이동할 수 없습니다.')
+      const health = await apiRequest<{ cardMoveProtocolVersion?: number }>('/api/health', { signal: AbortSignal.timeout(5000), cache: 'no-store' })
+      if ((health.cardMoveProtocolVersion ?? 0) < 2) throw new Error('서버에 카드 잘라내기·붙여넣기 기능이 아직 반영되지 않았습니다. MnP 서버를 업데이트·재시작한 뒤 시도해 주세요.')
+      const target = await waitForCardMoveSave(activeMapId)
+      const parent = target.nodes.find((node) => node.id === parentId)
+      if (!parent) throw new Error('붙여넣을 상위 카드를 찾을 수 없습니다.')
+      const remainingNodes = target.nodes.filter((node) => cutCards.sourceMapId !== activeMapId || !cutCards.movedCardIds.includes(node.id))
+      const targetBottom = Math.max(parent.position.y, ...remainingNodes.map((node) => node.position.y + nodeDimensions(node).height))
+      const request: CardMoveRequest = { requestId: cardMoveRequestId(), sourceMapId: cutCards.sourceMapId,
+        body: { cardIds: cutCards.cardIds, sourceVersion: cutCards.sourceVersion, targetVersion: target.version,
+          targetMapId: activeMapId, targetParentCardId: parentId, responseMode: 'full',
+          targetPosition: snapMindMapPosition({ x: childMindMapHorizontalPosition(parent.position, nodeDimensions(parent).width), y: targetBottom + 80 }) } }
+      // 재시작 후에도 동일한 키로 결과를 확인할 수 있어야 서버에 전송한다.
+      sessionStorage.setItem(moveStorageKey, JSON.stringify(request))
+      setPendingCardMove(request)
+      await finishCardMove(request)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '카드 이동을 확인하지 못했습니다.'
+      setCardMoveMessage(`이동 결과 확인이 필요합니다. ${message}`)
+      setSaveError(message)
+    } finally { cardMoveBusyRef.current = false; setCardMoveBusy(false) }
+  }, [activeMapId, cutCards, finishCardMove, mode, moveStorageKey, pendingCardMove, waitForCardMoveSave])
+
+  const recheckCardMove = useCallback(async () => {
+    if (!pendingCardMove || cardMoveBusyRef.current) return
+    cardMoveBusyRef.current = true
+    setCardMoveBusy(true)
+    setCardMoveMessage('이동 결과를 확인하고 있습니다…')
+    try { await finishCardMove(pendingCardMove, true) }
+    catch (error) { setCardMoveMessage(error instanceof Error ? error.message : '이동 결과를 확인하지 못했습니다.') }
+    finally { cardMoveBusyRef.current = false; setCardMoveBusy(false) }
+  }, [finishCardMove, pendingCardMove])
+
   const copyNode = useCallback((nodeId: string) => {
     const node = nodes.find((candidate) => candidate.id === nodeId)
     if (!node || node.data.kind === 'image' || !activeMapId) return
@@ -5454,6 +5601,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     const nodesToCopy = (selectedNodes.some((candidate) => candidate.id === nodeId) ? selectedNodes : [node])
       .filter((candidate) => candidate.data.kind !== 'image')
     const copiedNodeIds = new Set(nodesToCopy.map((candidate) => candidate.id))
+    setCutCards(null)
     setCopiedNodes({
       sourceMapId: activeMapId,
       nodes: nodesToCopy.map((candidate) => {
@@ -5478,6 +5626,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     if (mode !== 'editor' || !activeMapId) return
     const node = nodes.find((candidate) => candidate.id === nodeId)
     if (!node || node.data.kind !== 'image' || !node.data.image) return
+    setCutCards(null)
     const imagesToCopy = node.selected
       ? nodes.filter((candidate) => candidate.selected && candidate.data.kind === 'image' && candidate.data.image)
       : [node]
@@ -5639,6 +5788,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     }
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        setCutCards(null)
         if (dailyBackupPreview) {
           setDailyBackupPreview(null)
           return
@@ -7240,7 +7390,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   }
 
   return (
-    <div className={`app-shell ${resizingSidebar ? 'resizing-sidebar' : ''} ${resizingInspector ? 'resizing-inspector' : ''}`}>
+    <>
+    <div inert={cardMoveBlocked} className={`app-shell ${resizingSidebar ? 'resizing-sidebar' : ''} ${resizingInspector ? 'resizing-inspector' : ''}`}>
       <header className="topbar">
         <button
           type="button"
@@ -7428,6 +7579,13 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           <span><Icon name="history" size={15} /><strong>{externalChange.updatedBy.name}</strong>님이 이 문서를 변경했습니다.</span>
           <button onClick={() => setMapReloadToken((current) => current + 1)}>변경 내용 불러오기</button>
           <button className="banner-close" onClick={() => setExternalChange(null)} aria-label="알림 닫기"><Icon name="close" size={13} /></button>
+        </div>
+      )}
+      {cutCards && (
+        <div className="card-cut-notice" role="status">
+          <span>“{cutCards.sourceTitle}”의 카드 {cutCards.movedCardIds.length}개 이동 대기 · 하위 카드 포함</span>
+          <span>대상 카드를 우클릭하여 붙여넣으세요.</span>
+          <button onClick={() => setCutCards(null)}>잘라내기 취소</button>
         </div>
       )}
       {mergeNotice && (
@@ -9425,6 +9583,21 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
               <div className="context-divider" />
             </>
           )}
+          <button role="menuitem" disabled={contextMenuNode?.data.kind === 'root'} onClick={() => { void cutNode(nodeContextMenu.nodeId) }}>
+            <span className="context-icon"><Icon name="cut" size={15} /></span>
+            <span><strong>잘라내기</strong><small>선택 카드와 하위 카드 이동 준비 · AI 대화 유지</small></span>
+          </button>
+          {cutCards && <>
+            <button role="menuitem" onClick={() => { void pasteCutCards(nodeContextMenu.nodeId) }}>
+              <span className="context-icon"><Icon name="paste" size={15} /></span>
+              <span><strong>붙여넣기 (이동)</strong><small>카드 {cutCards.movedCardIds.length}개를 이 카드 아래로 이동</small></span>
+            </button>
+            <button role="menuitem" onClick={() => { setCutCards(null); setNodeContextMenu(null) }}>
+              <span className="context-icon"><Icon name="close" size={15} /></span>
+              <span><strong>잘라내기 취소</strong></span>
+            </button>
+          </>}
+          <div className="context-divider" />
           {contextMenuNode?.data.kind === 'image' ? (
             <>
               <button role="menuitem" onClick={() => { void copyImageNodes(nodeContextMenu.nodeId) }}>
@@ -9451,7 +9624,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                 <span className="context-icon"><Icon name="copy" size={15} /></span>
                 <span><strong>복사{nodes.some((node) => node.id === nodeContextMenu.nodeId && node.selected) && nodes.filter((node) => node.selected).length > 1 ? ` (${nodes.filter((node) => node.selected).length}개)` : ''}</strong><small>선택 노드와 내부 연결 관계 복사</small></span>
               </button>
-              {copiedNodes && copiedNodes.sourceMapId !== activeMapId ? (
+              {!cutCards && (copiedNodes && copiedNodes.sourceMapId !== activeMapId ? (
                 <>
                   <button role="menuitem" disabled={!copiedNodes} onClick={() => pasteNodeAsChild(nodeContextMenu.nodeId, 'clone')}>
                     <span className="context-icon"><Icon name="paste" size={15} /></span>
@@ -9467,7 +9640,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                   <span className="context-icon"><Icon name="paste" size={15} /></span>
                   <span><strong>자식으로 붙여넣기</strong><small>{copiedNodes ? copiedNodes.nodes.length === 1 ? `“${copiedNodes.nodes[0].data.label}” 복사본 생성` : `${copiedNodes.nodes.length}개 노드 복사본 생성` : '먼저 노드를 복사해 주세요'}</small></span>
                 </button>
-              )}
+              ))}
               <div className="context-divider" />
               <button className="danger" role="menuitem" onClick={() => { deleteNodeById(nodeContextMenu.nodeId); setNodeContextMenu(null) }}>
                 <span className="context-icon"><Icon name="trash" size={15} /></span>
@@ -9626,6 +9799,14 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
         api={apiRequest} onNavigate={(id, cardId) => { setLifecycleOpen(false); setMobileSidebarOpen(false); selectCardAndReveal(id, cardId) }}
         onTrash={performDocumentTrash} onClose={() => setTrashReview(null)} />}
     </div>
+    {cardMoveBlocked && <div className="card-move-backdrop">
+      <section className="card-move-dialog" role="dialog" aria-modal="true" aria-label="카드 이동 상태">
+        <h2>카드 이동</h2>
+        <p role="status">{cardMoveMessage}</p>
+        {pendingCardMove && !cardMoveBusy && <button onClick={() => { void recheckCardMove() }}>상태 다시 확인</button>}
+      </section>
+    </div>}
+    </>
   )
 }
 

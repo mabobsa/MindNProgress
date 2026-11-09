@@ -7915,8 +7915,10 @@ async function prepareMovedImageAssets(sourceMapId, targetMapId, targetMap, move
 async function moveCardAcrossDocuments({
   sourceMapId,
   cardId,
+  cardIds,
   targetMapId,
   targetParentCardId,
+  targetPosition,
   sourceVersion,
   targetVersion,
   user,
@@ -7940,7 +7942,7 @@ async function moveCardAcrossDocuments({
     })
   }
 
-  const plan = planCrossDocumentCardMove({ sourceMap, targetMap, cardId, targetParentCardId })
+  const plan = planCrossDocumentCardMove({ sourceMap, targetMap, cardId, cardIds, targetParentCardId, targetPosition })
   const movedCardIds = plan.movedCardIds
   const orderedMovedCardIds = sourceMap.nodes.filter((node) => movedCardIds.has(node.id)).map((node) => node.id)
   const activeDelegations = [...aiDelegations.values()].filter((delegation) => {
@@ -7950,6 +7952,7 @@ async function moveCardAcrossDocuments({
   if (activeDelegations.length > 0) {
     throw new CrossDocumentCardMoveError('이동 대상 카드에 완료되지 않은 AI 위임이 있습니다.', 409, 'CARD_MOVE_ACTIVE_DELEGATION', {
       delegationIds: activeDelegations.map((delegation) => delegation.id),
+      cardIds: [...new Set(activeDelegations.flatMap((delegation) => [delegation.parentCardId, delegation.targetCardId]).filter((id) => movedCardIds.has(id)))],
     })
   }
   const activeInstructions = [...groupDocumentInstructions.values()].filter((instruction) => {
@@ -7968,6 +7971,38 @@ async function moveCardAcrossDocuments({
     })
   }
 
+  const pendingConversationCardIds = new Set([
+    ...[...cardConversationStartRecords.values()].filter((record) => record.mapId === sourceMapId
+      && movedCardIds.has(record.cardId) && !['ready', 'failed'].includes(record.state)).map((record) => record.cardId),
+    ...[...aiConversationLaunches.values()].filter((launch) => {
+      if (launch.mapId !== sourceMapId || !movedCardIds.has(launch.cardId) || launch.expiresAt <= Date.now()) return false
+      const conversationId = aiAttributions.get(launch.attributionKey)?.conversationId
+      const card = sourceMap.nodes.find((node) => node.id === launch.cardId)
+      return !conversationId || !isAiConversationLinked(card?.data, conversationId)
+    }).map((launch) => launch.cardId),
+  ])
+  if (pendingConversationCardIds.size) throw new CrossDocumentCardMoveError('이동 대상 카드에서 AI 대화를 생성하거나 인계하고 있습니다. 완료한 뒤 다시 시도하세요.',
+    409, 'CARD_MOVE_PENDING_AI_CONVERSATION', { cardIds: [...pendingConversationCardIds] })
+
+  if (sourceMapId === targetMapId) {
+    if (!isValidMap(plan.targetMap)) throw new CrossDocumentCardMoveError('이동 결과 문서 형식이 올바르지 않습니다.', 409, 'CARD_MOVE_INVALID_RESULT')
+    const saved = await saveMap(sourceMapId, plan.targetMap, user, sourceMap.title, sourceMap.color, 'card-move', { expectedVersion: sourceMap.version })
+    const operation = {
+      id: `card-move-${Date.now().toString(36)}-${randomBytes(5).toString('hex')}`, state: 'applied',
+      sourceMapId, targetMapId, movedRootCardId: plan.rootCardIds[0], movedRootCardIds: plan.rootCardIds,
+      movedCardIds: orderedMovedCardIds, previousParentCardId: plan.previousParentCardId,
+      previousParents: plan.previousParents, targetParentCardId,
+      sourceVersionBefore: sourceMap.version, sourceVersionAfter: saved.version,
+      targetVersionBefore: targetMap.version, targetVersionAfter: saved.version,
+      movedCommentCount: 0, updatedReferenceCount: 0, updatedReferenceMapIds: [],
+      updatedConversationCount: 0, updatedAttributionCount: 0, updatedDelegationCount: 0,
+      updatedGroupInstructionCount: 0, updatedNotificationCount: 0,
+      movedAt: new Date().toISOString(), movedBy: publicUser(user),
+    }
+    await writeStoredArray(cardMoveOperationsFile, [operation, ...await readStoredArray(cardMoveOperationsFile)].slice(0, 500))
+    return { operation, sourceMap: saved, targetMap: saved }
+  }
+
   const preparedImages = await prepareMovedImageAssets(
     sourceMapId,
     targetMapId,
@@ -7978,7 +8013,7 @@ async function moveCardAcrossDocuments({
     [sourceMapId, plan.sourceMap],
     [targetMapId, preparedImages.targetMap],
   ])
-  const summaries = await listMaps()
+  const summaries = await listMaps({ includeArchived: true, includeTrashed: true, includePending: true })
   for (const summary of summaries) {
     if (mapCandidates.has(summary.id)) continue
     const map = await readMap(summary.id)
@@ -7992,7 +8027,14 @@ async function moveCardAcrossDocuments({
     updatedReferenceCount += rewritten.updatedReferenceCount
     if (rewritten.updatedReferenceCount > 0) referenceMapIds.add(mapId)
     if (mapId === sourceMapId || mapId === targetMapId || rewritten.updatedReferenceCount > 0) {
-      documentReconstruction.assertWritable(mapId)
+      if (map.trashedAt) throw new CrossDocumentCardMoveError(`휴지통의 “${map.title}” 문서가 이동할 카드를 참조하고 있습니다. 해당 문서를 복원하거나 영구 삭제한 뒤 이동하세요.`,
+        409, 'CARD_MOVE_REFERENCE_DOCUMENT_UNAVAILABLE', { mapId })
+      try { documentReconstruction.assertWritable(mapId) }
+      catch (error) {
+        if (error.code !== 'DOCUMENT_ARCHIVED') throw error
+        throw new CrossDocumentCardMoveError(`“${map.title}” 문서의 Ref를 갱신할 수 없습니다. 보관 문서를 복원하거나 문서 전환을 완료한 뒤 이동하세요.`,
+          409, 'CARD_MOVE_REFERENCE_DOCUMENT_UNAVAILABLE', { mapId })
+      }
       if (!isValidMap(rewritten.map)) {
         throw new CrossDocumentCardMoveError('이동 결과 문서 형식이 올바르지 않습니다.', 409, 'CARD_MOVE_INVALID_RESULT', { mapId })
       }
@@ -8149,9 +8191,11 @@ async function moveCardAcrossDocuments({
       state: 'applied',
       sourceMapId,
       targetMapId,
-      movedRootCardId: cardId,
+      movedRootCardId: plan.rootCardIds[0],
+      movedRootCardIds: plan.rootCardIds,
       movedCardIds: orderedMovedCardIds,
       previousParentCardId: plan.previousParentCardId,
+      previousParents: plan.previousParents,
       targetParentCardId,
       sourceVersionBefore: sourceMap.version,
       sourceVersionAfter: sourceSaved.version,
@@ -9300,6 +9344,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     if (request.method === 'GET' && url.pathname === '/api/health') {
       return sendJson(response, 200, {
         status: 'ok',
+        cardMoveProtocolVersion: 2,
         publicBaseUrl,
         aionUiWebBaseUrl,
         aionUiWebConfigured: Boolean(configuredAionUiWebBaseUrl),
@@ -14567,7 +14612,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const targetMapId = String(body.targetMapId ?? '').trim()
       const targetParentCardId = String(body.targetParentCardId ?? body.newParentCardId ?? '').trim()
       if (!isValidMapId(sourceMapId) || !isValidMapId(targetMapId)
-        || !cardId || cardId.length > 120 || !targetParentCardId || targetParentCardId.length > 120) {
+        || !cardId || cardId.length > 120 || !targetParentCardId || targetParentCardId.length > 120
+        || (body.cardIds !== undefined && (!Array.isArray(body.cardIds) || !body.cardIds.includes(cardId)))) {
         return sendCardMoveResponse(response, 400, {
           error: '원본·대상 문서 ID와 이동할 카드·새 상위 카드 ID를 확인하세요.',
           code: 'CARD_MOVE_INVALID_REQUEST',
@@ -14576,8 +14622,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const result = await moveCardAcrossDocuments({
         sourceMapId,
         cardId,
+        cardIds: body.cardIds,
         targetMapId,
         targetParentCardId,
+        targetPosition: body.targetPosition,
         sourceVersion: Number(body.sourceVersion),
         targetVersion: Number(body.targetVersion),
         user,
@@ -14599,6 +14647,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         sourceMapId,
         targetMapId,
         movedCardId: cardId,
+        movedRootCardIds: result.operation.movedRootCardIds,
         movedCardIds: result.operation.movedCardIds,
         card: movedCard,
         accessUrl: `${publicBaseUrl}/mindmap/${encodeURIComponent(targetMapId)}/${encodeURIComponent(cardId)}`,

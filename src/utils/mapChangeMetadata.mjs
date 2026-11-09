@@ -6,6 +6,7 @@ const mapContentRefreshActions = new Set([
   'archived',
   'archive-restored',
   'reconstructed',
+  'cross-document-card-move',
 ])
 
 const revisionReasonLabels = Object.freeze({
@@ -15,6 +16,8 @@ const revisionReasonLabels = Object.freeze({
   metadata: '문서 정보 변경',
   'history-restore': '이전 버전 복원',
   'shared-knowledge-review': '공유 지식 정리',
+  'card-move': '카드 이동',
+  'cross-document-card-move': '문서 간 카드 이동',
 })
 
 export function shouldRefreshMapContentForAction(action) {

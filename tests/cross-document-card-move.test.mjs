@@ -34,6 +34,55 @@ function fixture() {
   }
 }
 
+test('다중 선택에서 부모·자식 중복을 제거하고 여러 하위 트리를 함께 옮긴다', () => {
+  const maps = fixture()
+  maps.sourceMap.nodes[2].data.aiConversationId = 'conversation-child'
+  maps.sourceMap.edges.push(edge('between-trees', 'child', 'sibling', 'knowledge'))
+  const before = structuredClone(maps)
+  const result = planCrossDocumentCardMove({ ...maps, cardIds: ['child', 'branch', 'sibling', 'branch'],
+    targetParentCardId: 'target-parent', targetPosition: { x: 400, y: 200 } })
+  assert.deepEqual(result.rootCardIds, ['branch', 'sibling'])
+  assert.deepEqual(result.sourceMap.nodes.map((n) => n.id), ['source-root'])
+  assert.equal(result.targetMap.nodes.filter((n) => n.id === 'child').length, 1)
+  assert.equal(result.targetMap.nodes.find((n) => n.id === 'child').data.aiConversationId, 'conversation-child')
+  assert.deepEqual(result.targetMap.nodes.find((n) => n.id === 'child').position, { x: 400, y: 200 })
+  assert.ok(result.targetMap.edges.some((e) => e.id === 'between-trees'))
+  assert.equal(result.targetMap.edges.filter((e) => e.source === 'target-parent').length, 2)
+  assert.deepEqual(maps, before)
+})
+
+test('같은 문서 이동은 외부 지식선·선행 관계를 유지하며 자기 하위로 붙여넣기를 거부한다', () => {
+  const { sourceMap } = fixture()
+  sourceMap.nodes[2].data.blockedBy = ['sibling']
+  sourceMap.edges.push(edge('outside-knowledge', 'sibling', 'child', 'knowledge'))
+  const result = planCrossDocumentCardMove({ sourceMap, targetMap: sourceMap, cardIds: ['branch', 'child'], targetParentCardId: 'sibling' })
+  assert.equal(result.sourceMap, result.targetMap)
+  assert.equal(result.targetMap.nodes.length, sourceMap.nodes.length)
+  assert.ok(result.targetMap.edges.some((e) => e.source === 'sibling' && e.target === 'branch'))
+  assert.ok(result.targetMap.edges.some((e) => e.id === 'outside-knowledge'))
+  assert.deepEqual(result.targetMap.nodes[2].data.blockedBy, ['sibling'])
+  assert.throws(() => planCrossDocumentCardMove({ sourceMap, targetMap: sourceMap, cardIds: ['branch'], targetParentCardId: 'child' }),
+    (error) => error.code === 'CARD_MOVE_CYCLE')
+})
+
+test('다중 이동 중 한 카드의 충돌이나 루트 포함은 전체 이동을 거부한다', () => {
+  const maps = fixture(), before = structuredClone(maps)
+  maps.targetMap.nodes.push(node('sibling'))
+  assert.throws(() => planCrossDocumentCardMove({ ...maps, cardIds: ['branch', 'sibling'], targetParentCardId: 'target-parent' }),
+    (error) => error.code === 'CARD_MOVE_CARD_ID_COLLISION')
+  assert.deepEqual(maps.sourceMap, before.sourceMap)
+  assert.throws(() => planCrossDocumentCardMove({ ...maps, cardIds: ['branch', 'source-root'], targetParentCardId: 'target-parent' }),
+    (error) => error.code === 'CARD_MOVE_ROOT_NOT_ALLOWED')
+})
+
+test('계층선 없이 배치된 자료·Ref 카드도 이동할 수 있다', () => {
+  const maps = fixture()
+  maps.sourceMap.edges = maps.sourceMap.edges.filter((e) => e.id !== 'source-sibling')
+  const result = planCrossDocumentCardMove({ ...maps, cardIds: ['sibling'], targetParentCardId: 'target-parent' })
+  assert.equal(result.previousParentCardId, null)
+  assert.ok(result.targetMap.edges.some((e) => e.target === 'sibling'))
+})
+
 test('카드와 하위 트리를 ID와 내부 관계 그대로 다른 문서로 이동한다', () => {
   const result = planCrossDocumentCardMove({
     ...fixture(),

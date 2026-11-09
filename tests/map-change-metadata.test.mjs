@@ -6,7 +6,7 @@ import {
 } from '../src/utils/mapChangeMetadata.mjs'
 
 test('공유 지식 검토를 다른 편집자에게 반영할 콘텐츠 변경으로 분류한다', () => {
-  for (const action of ['content', 'history-restored', 'daily-backup-restored', 'shared-knowledge-reviewed']) {
+  for (const action of ['content', 'history-restored', 'daily-backup-restored', 'shared-knowledge-reviewed', 'cross-document-card-move']) {
     assert.equal(shouldRefreshMapContentForAction(action), true)
   }
   for (const action of ['rename', 'color', 'metadata', 'trashed']) {

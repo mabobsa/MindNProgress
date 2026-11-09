@@ -154,6 +154,10 @@ test('사용자 완료 알림을 제거하면서 상위 보고를 유지하고, 
     await writeFile(notificationFile, JSON.stringify([
       { id: 'old-completion', userId: editorId, type: 'ai-delegation-completed', mapId, createdAt: base.createdAt },
       { id: 'keep-mention', userId: editorId, type: 'mention', mapId, createdAt: base.createdAt },
+      { id: 'old-checkpoint', userId: editorId, type: 'ai-delegation', mapId, createdAt: base.createdAt, readAt: null,
+        dedupeKey: 'ai-delegation-checkpoint:delegation-expired:1', message: '체크포인트 자동 보완 요청' },
+      { id: 'pending-report', userId: editorId, type: 'ai-delegation', mapId, createdAt: base.createdAt, readAt: base.createdAt,
+        dedupeKey: 'ai-delegation-recovery:delegation-done:hash', message: '복구 필요' },
     ]))
     const backupDirectory = path.join(directory, '_completed-ai-cleanup-backups')
     await writeFile(backupDirectory, '복원본 저장 실패를 주입하는 파일')
@@ -168,6 +172,17 @@ test('사용자 완료 알림을 제거하면서 상위 보고를 유지하고, 
     const settled = await notifications()
     assert.equal(settled.some((item) => item.type === 'ai-delegation-completed'), false)
     assert.ok(settled.some((item) => item.id === 'keep-mention'), '멘션 등 다른 사용자 알림을 유지한다')
+    const resolved = settled.find((item) => item.id === 'old-checkpoint')
+    assert.equal(resolved.delegationStatus.status, 'resolved', '완료 이력을 정리한 뒤에도 기존 알림은 완료 영수증으로 해결됨을 표시한다')
+    assert.equal(resolved.readAt, null)
+    assert.equal(resolved.message, '체크포인트 자동 보완 요청')
+    assert.equal(settled.find((item) => item.id === 'pending-report').delegationStatus.status, 'report-pending')
+    const markRead = await api('/api/notifications/old-checkpoint/read', 'PATCH')
+    assert.equal(markRead.body.notification.delegationStatus.status, 'resolved')
+    const readAll = await api('/api/notifications/read-all', 'POST')
+    assert.equal(readAll.body.notifications.find((item) => item.id === 'old-checkpoint').delegationStatus.status, 'resolved')
+    assert.equal(JSON.parse(await readFile(notificationFile, 'utf8')).find((item) => item.id === 'old-checkpoint').delegationStatus, undefined,
+      '읽음 저장에 조회용 상태가 섞이지 않는다')
     assert.equal(settled.some((item) => item.nodeId === 'busy-card'), false)
     const delegations = (await api(`/api/maps/${mapId}/ai-delegations`)).body.delegations
     assert.equal(delegations.find((item) => item.id === 'delegation-done').state, 'waiting-parent', '상위 수신 전 기록은 삭제하지 않는다')

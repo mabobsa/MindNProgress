@@ -84,7 +84,7 @@ import { mergeMapContent } from './utils/mergeMapContent.mjs'
 import { MINDMAP_GRID_SIZE, snapMindMapPosition } from './utils/mindMapGrid.mjs'
 import { nextOverlappingNodeId, nodeOverlapPresentation } from './utils/nodeOverlap.mjs'
 import { viewportForNodeVisibility } from './utils/nodeViewportVisibility.mjs'
-import { notificationTitle } from './utils/notificationTitles.mjs'
+import { notificationTitle, updateDelegationNotificationStatuses, type DelegationNotificationStatus } from './utils/notificationTitles.mjs'
 import { computeProgressRollups } from './utils/progressRollup.mjs'
 import { snapAspectResizeToGrid, snapFreeResizeToGrid } from './utils/resizeGrid.mjs'
 import type { ResizeSnapRequest } from './utils/resizeGrid.mjs'
@@ -788,6 +788,10 @@ type UserNotification = {
   nodeLabel: string
   commentId?: string
   message: string
+  dedupeKey?: string
+  delegationId?: string
+  delegationKind?: string
+  delegationStatus?: DelegationNotificationStatus
   actor: AuthUser
   createdAt: string
   readAt: string | null
@@ -838,6 +842,7 @@ type AiConversationSelectionRequestedEvent = {
   requestedAt: string
 }
 type NotificationEvent = { type: 'notification'; notification: UserNotification }
+type AiDelegationChangedEvent = { type: 'ai-delegation-changed'; delegation: { notificationStatus?: DelegationNotificationStatus } }
 type NotificationsReadEvent = { type: 'notifications-read'; userId: string; notificationId: string | null; readAt: string }
 type NotificationsRemovedEvent = { type: 'notifications-removed'; userId: string; notificationIds: string[] }
 type HeartbeatEvent = { type: 'heartbeat'; sentAt: string }
@@ -3946,9 +3951,13 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     const handleEventMessage = (message: MessageEvent<string>) => {
       lastEventAt = Date.now()
       try {
-        const event = JSON.parse(message.data) as MapChangeEvent | PresenceEvent | CursorEvent | CommentChangeEvent | AiConversationLinkedEvent | AiConversationRuntimeEvent | AiConversationRuntimeSnapshotEvent | AiConversationRuntimeSummaryEvent | AiConversationRuntimeSummarySnapshotEvent | AiConversationSelectionRequestedEvent | NotificationEvent | NotificationsReadEvent | NotificationsRemovedEvent | HeartbeatEvent | { type: 'connected' }
+        const event = JSON.parse(message.data) as MapChangeEvent | PresenceEvent | CursorEvent | CommentChangeEvent | AiConversationLinkedEvent | AiConversationRuntimeEvent | AiConversationRuntimeSnapshotEvent | AiConversationRuntimeSummaryEvent | AiConversationRuntimeSummarySnapshotEvent | AiConversationSelectionRequestedEvent | AiDelegationChangedEvent | NotificationEvent | NotificationsReadEvent | NotificationsRemovedEvent | HeartbeatEvent | { type: 'connected' }
         if (event.type.startsWith('ai-delegation') || event.type === 'map-changed') {
           window.dispatchEvent(new Event('mnp-delegations-refresh'))
+        }
+        if (event.type === 'ai-delegation-changed') {
+          setNotifications((current) => updateDelegationNotificationStatuses(current, event.delegation.notificationStatus))
+          return
         }
         if (event.type === 'heartbeat') return
         if (event.type === 'ai-conversation-selection-requested') {
@@ -7522,7 +7531,8 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                       <span>
                         <strong>{notificationTitle(notification)}</strong>
                         <small>{notification.mapTitle} · {notification.nodeLabel}</small>
-                        <em>{notification.message}</em>
+                        {notification.delegationStatus && <em title={notification.delegationStatus.message}>{notification.delegationStatus.message}</em>}
+                        <em title={notification.message}>{notification.delegationStatus ? `발생 당시: ${notification.message}` : notification.message}</em>
                         <time>{new Date(notification.createdAt).toLocaleString('ko-KR')}</time>
                       </span>
                       {!notification.readAt && <i />}

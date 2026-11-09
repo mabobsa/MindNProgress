@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { notificationTitle } from '../src/utils/notificationTitles.mjs'
 
-test('AI 위임 알림 제목은 차단과 완료를 아이콘과 문구로 구분한다', () => {
-  assert.equal(notificationTitle({ type: 'ai-delegation', actor: { name: 'Mind & Progress' } }), '⛔ AI 위임 차단 알림')
+test('AI 위임 알림은 현재 상태가 없으면 차단으로 단정하지 않는다', () => {
+  assert.equal(notificationTitle({ type: 'ai-delegation', actor: { name: 'Mind & Progress' } }), 'AI 위임 알림')
   assert.equal(notificationTitle({ type: 'ai-delegation-completed', actor: { name: 'Mind & Progress' } }), '✅ AI 위임 완료 알림')
   assert.notEqual(notificationTitle({ type: 'ai-delegation' }), notificationTitle({ type: 'ai-delegation-completed' }))
 })

@@ -1,4 +1,5 @@
 import { createServer } from 'node:http'
+import { aiDelegationNotificationStatus, withAiDelegationNotificationStatus } from './lib/aiDelegationNotifications.mjs'
 import { createAiConversationRemoval, conversationRemovalError } from './lib/aiConversationRemoval.mjs'
 import { createAiConversationConnection, conversationConnectionError } from './lib/aiConversationConnection.mjs'
 import { createDocumentReadStore } from './lib/documentReadStore.mjs'
@@ -766,7 +767,13 @@ function broadcastEvent(payload, predicate = () => true) {
 }
 
 function broadcastNotification(notification) {
-  broadcastEvent({ type: 'notification', notification }, (client) => client.user.id === notification.userId)
+  broadcastEvent({ type: 'notification', notification: notificationPublicView(notification) }, (client) => client.user.id === notification.userId)
+}
+
+function broadcastAiDelegationChange(delegation) {
+  broadcastEvent({ type: 'ai-delegation-changed', delegation: {
+    ...delegationPublicView(delegation), notificationStatus: aiDelegationNotificationStatus(delegation),
+  } })
 }
 
 function broadcastPresence(mapId) {
@@ -3447,7 +3454,7 @@ async function updateAiDelegation(id, updates) {
   storageChanges.onRollback(() => aiDelegations.set(id, current))
   aiDelegations.set(id, next)
   await persistAiDelegations()
-  broadcastEvent({ type: 'ai-delegation-changed', delegation: delegationPublicView(next) })
+  broadcastAiDelegationChange(next)
   return next
   }))
 }
@@ -3757,11 +3764,11 @@ async function dispatchPreparedAiDelegation({
       updatedAt: now,
     }
     aiDelegations.set(superseded.id, superseded)
-    broadcastEvent({ type: 'ai-delegation-changed', delegation: delegationPublicView(superseded) })
+    broadcastAiDelegationChange(superseded)
   }
   aiDelegations.set(id, delegation)
   await persistAiDelegations()
-  broadcastEvent({ type: 'ai-delegation-changed', delegation: delegationPublicView(delegation) })
+  broadcastAiDelegationChange(delegation)
   return { delegation, updatedMap }
 }
 
@@ -4196,6 +4203,8 @@ async function ensureAiDelegationNotification(delegation, { kind, message, dedup
   if (!recipient || !map || map.trashedAt || !node) return delegation
   const notification = await createNotification(recipient, {
     type,
+    delegationId: delegation.id,
+    delegationKind: kind,
     mapId: map.id,
     mapTitle: map.title,
     nodeId: node.id,
@@ -7296,6 +7305,10 @@ async function readSelectedDocument(request, response, mapId, url) {
 
 function mentionedUsers(text) {
   return users.filter((candidate) => candidate.active !== false && !isPublicViewer(candidate) && text.includes(`@${candidate.name}`))
+}
+
+function notificationPublicView(notification) {
+  return withAiDelegationNotificationStatus(notification, aiDelegations, aiRequestReceipts)
 }
 
 async function listNotifications(userId) {
@@ -12030,7 +12043,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           const recoveredDelegation = ['completed', 'failed'].includes(delegation.childStatus)
             ? await captureAiDelegationChildResult(delegation)
             : delegation
-          broadcastEvent({ type: 'ai-delegation-changed', delegation: delegationPublicView(recoveredDelegation) })
+          broadcastAiDelegationChange(recoveredDelegation)
           return sendAiDelegationResponse(response, 202, 'AI_DELEGATION_RECOVERED',
             '이미 AionCore에 전달된 위임을 복구해 기존 실행 상태를 반환했습니다. 작업을 다시 실행하지 않았습니다.', {
             delegation: delegationPublicView(recoveredDelegation),
@@ -12304,7 +12317,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         }
         aiDelegations.set(id, waitingDelegation)
         await persistAiDelegations()
-        broadcastEvent({ type: 'ai-delegation-changed', delegation: delegationPublicView(waitingDelegation) })
+        broadcastAiDelegationChange(waitingDelegation)
         void trackStorageBackground(() => pollAiDelegations()).catch((error) => console.warn('[AI delegation queue start]', error))
         return sendAiDelegationResponse(response, 202, workspaceWaitReasonCode, workspaceWaitMessage, {
           delegation: delegationPublicView(waitingDelegation),
@@ -12392,7 +12405,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
             }
             aiDelegations.set(id, waitingDelegation)
             await persistAiDelegations()
-            broadcastEvent({ type: 'ai-delegation-changed', delegation: delegationPublicView(waitingDelegation) })
+            broadcastAiDelegationChange(waitingDelegation)
             return sendAiDelegationResponse(response, 202, 'CAPACITY_EXHAUSTED', workspaceWaitMessage, {
               delegation: delegationPublicView(waitingDelegation),
               mapVersion: map.version,
@@ -12642,11 +12655,11 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           updatedAt: now,
         }
         aiDelegations.set(superseded.id, superseded)
-        broadcastEvent({ type: 'ai-delegation-changed', delegation: delegationPublicView(superseded) })
+        broadcastAiDelegationChange(superseded)
       }
       aiDelegations.set(id, delegation)
       await persistAiDelegations()
-      broadcastEvent({ type: 'ai-delegation-changed', delegation: delegationPublicView(delegation) })
+      broadcastAiDelegationChange(delegation)
       const responseReasonCode = linkError
         ? 'AI_DELEGATION_ACCEPTED_WITH_LINK_WARNING'
         : 'AI_DELEGATION_ACCEPTED'
@@ -13762,7 +13775,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!user) return
       if (isPublicViewer(user)) return sendJson(response, 200, { notifications: [] })
       await ensureScheduleNotifications(user)
-      return sendJson(response, 200, { notifications: await listNotifications(user.id) })
+      return sendJson(response, 200, { notifications: (await listNotifications(user.id)).map(notificationPublicView) })
     }
 
     if (request.method === 'POST' && url.pathname === '/api/notifications/read-all') {
@@ -13776,7 +13789,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }))
       await writeStoredArray(notificationFileForUser(user.id), notifications)
       broadcastEvent({ type: 'notifications-read', userId: user.id, notificationId: null, readAt }, (client) => client.user.id === user.id)
-      return sendJson(response, 200, { notifications })
+      return sendJson(response, 200, { notifications: notifications.map(notificationPublicView) })
     }
 
     const notificationReadRoute = url.pathname.match(/^\/api\/notifications\/([^/]+)\/read$/)
@@ -13792,7 +13805,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const updated = notifications.map((notification) => notification.id === notificationId ? { ...notification, readAt } : notification)
       await writeStoredArray(notificationFileForUser(user.id), updated)
       broadcastEvent({ type: 'notifications-read', userId: user.id, notificationId, readAt }, (client) => client.user.id === user.id)
-      return sendJson(response, 200, { notification: { ...target, readAt } })
+      return sendJson(response, 200, { notification: notificationPublicView({ ...target, readAt }) })
     }
 
     if (request.method === 'POST' && url.pathname === '/api/auth/logout') {

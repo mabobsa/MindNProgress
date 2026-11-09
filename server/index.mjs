@@ -25,7 +25,7 @@ import { createStorageResources, storageResourceError } from './lib/storageResou
 import { verifiedDoorayApprovalLink } from './lib/doorayApprovalLinkRepair.mjs'
 import { createStorageBudget, currentStorageBudget, withStorageBudget, detachedStorageBudget, readBoundedBody } from './lib/storageBudget.mjs'
 import { createStorageChanges } from './lib/storageChanges.mjs'
-import { compressedRevisionFileName, decodeRevisionText, encodeRevisionBytes, rawRevisionFileName, selectRevisionFiles } from './lib/revisionFiles.mjs'
+import { compareRevisionsNewestFirst, compressedRevisionFileName, decodeRevisionText, encodeRevisionBytes, rawRevisionFileName, revisionIdTime, selectRevisionFiles } from './lib/revisionFiles.mjs'
 import { createStorageJournal, storageDigest, storagePhase, storageRequestError } from './lib/storageJournal.mjs'
 import { backfillDailyBackupHistory } from './lib/dailyBackupHistory.mjs'
 import { createDocumentReconstruction, reconstructionError } from './lib/documentReconstruction.mjs'
@@ -7640,23 +7640,49 @@ function revisionSummary(revision) {
   }
 }
 
+// 이력 목록은 파일 이름(이력 ID의 저장 시각)으로 최신순 정렬하고 요청한 쪽의 이력만 읽는다.
+// 예전에는 모든 이력을 읽어 정렬해 이력 1,197개 문서가 약 38초 걸렸다. offset은 정렬한 이력 파일 위치이며,
+// 다른 문서의 이력·잘못된 형식·읽을 수 없는 파일은 건너뛰고 기록을 남긴다(그때만 한 쪽이 limit보다 짧다).
+// snapshotSha256은 복원 시점의 정규화 규칙과 같아야 하므로 저장하지 않고 조회할 때 계산한다.
 async function listMapRevisions(mapId, { offset = 0, limit = 50 } = {}) {
   const directory = revisionDirectoryForMap(mapId)
   try {
     const entries = await readdir(directory, { withFileTypes: true })
-    const revisions = await Promise.all(selectRevisionFiles(entries.filter((entry) => entry.isFile()).map((entry) => entry.name), isValidRevisionId)
-      .map(({ name }) => readRevisionFile(directory, name)))
-    const summaries = revisions
-      .filter((revision) => revision?.mapId === mapId && isValidMap(revision.map))
-      .sort((first, second) => String(second.archivedAt).localeCompare(String(first.archivedAt)))
-      .map(revisionSummary)
-    const page = summaries.slice(offset, offset + limit)
-    const nextOffset = offset + page.length
-    return {
-      revisions: page,
-      hasMore: nextOffset < summaries.length,
-      nextOffset: nextOffset < summaries.length ? nextOffset : null,
+    const files = selectRevisionFiles(entries.filter((entry) => entry.isFile()).map((entry) => entry.name), isValidRevisionId)
+    const preloaded = new Map()
+    const candidates = []
+    for (const file of files) {
+      let time = revisionIdTime(file.id)
+      if (time === null) {
+        // 이력 ID 규칙 밖의 이름만 열어 archivedAt으로 자리를 정한다.
+        const revision = await readRevisionFile(directory, file.name).catch(() => null)
+        preloaded.set(file.name, revision)
+        const archivedAt = Date.parse(revision?.archivedAt)
+        time = Number.isFinite(archivedAt) ? archivedAt : 0
+      }
+      candidates.push({ ...file, time })
     }
+    candidates.sort(compareRevisionsNewestFirst)
+    const revisions = []
+    let index = Math.max(0, offset)
+    while (index < candidates.length && revisions.length < limit) {
+      const candidate = candidates[index++]
+      let revision = preloaded.get(candidate.name) ?? null
+      if (!preloaded.has(candidate.name)) {
+        try { revision = await readRevisionFile(directory, candidate.name) }
+        catch (error) {
+          if (error?.code !== 'ENOENT') console.warn('[History list skipped]', JSON.stringify({ mapId, file: candidate.name, reason: error?.message ?? 'read failed' }))
+          continue
+        }
+      }
+      if (revision?.mapId !== mapId || !isValidMap(revision.map)) {
+        console.warn('[History list skipped]', JSON.stringify({ mapId, file: candidate.name, reason: 'not a revision of this document' }))
+        continue
+      }
+      revisions.push(revisionSummary(revision))
+    }
+    const hasMore = index < candidates.length
+    return { revisions, hasMore, nextOffset: hasMore ? index : null }
   } catch (error) {
     if (error?.code === 'ENOENT') return { revisions: [], hasMore: false, nextOffset: null }
     throw error

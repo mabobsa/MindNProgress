@@ -38,6 +38,25 @@ export function selectRevisionFiles(names, isValidRevisionId = () => true) {
   return [...selected].map(([id, name]) => ({ id, name }))
 }
 
+// 이력 ID는 `${Date.now().toString(36)}-${임의 hex}`라 앞부분이 저장 시각(밀리초)이다.
+// 2026-11-09 운영 이력 25,066개에서 이 시각의 순서는 archivedAt 순서와 모두 같았다(차이 최대 1.8초, 역전 0건).
+const REVISION_ID_TIME = /^([0-9a-z]{6,12})-[0-9a-f]+$/
+const EARLIEST_REVISION_TIME = Date.UTC(2020, 0, 1)
+const LATEST_REVISION_TIME = Date.UTC(2100, 0, 1)
+
+/** 이력 ID에서 저장 시각(밀리초)을 읽는다. 규칙에 맞지 않으면 null이다. */
+export function revisionIdTime(revisionId) {
+  const match = REVISION_ID_TIME.exec(String(revisionId))
+  if (!match) return null
+  const time = parseInt(match[1], 36)
+  return Number.isFinite(time) && time >= EARLIEST_REVISION_TIME && time < LATEST_REVISION_TIME ? time : null
+}
+
+/** 최신순 비교. 같은 시각이면 ID로 정해 순서가 항상 같다. */
+export function compareRevisionsNewestFirst(first, second) {
+  return second.time - first.time || (second.id < first.id ? -1 : second.id > first.id ? 1 : 0)
+}
+
 export function encodeRevisionBytes(content) {
   return brotliCompressSync(Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf8'), {
     params: { [constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY },

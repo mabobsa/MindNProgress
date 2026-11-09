@@ -25,6 +25,7 @@ import { createStorageResources, storageResourceError } from './lib/storageResou
 import { verifiedDoorayApprovalLink } from './lib/doorayApprovalLinkRepair.mjs'
 import { createStorageBudget, currentStorageBudget, withStorageBudget, detachedStorageBudget, readBoundedBody } from './lib/storageBudget.mjs'
 import { createStorageChanges } from './lib/storageChanges.mjs'
+import { compressedRevisionFileName, decodeRevisionText, encodeRevisionBytes, rawRevisionFileName, selectRevisionFiles } from './lib/revisionFiles.mjs'
 import { createStorageJournal, storageDigest, storagePhase, storageRequestError } from './lib/storageJournal.mjs'
 import { backfillDailyBackupHistory } from './lib/dailyBackupHistory.mjs'
 import { createDocumentReconstruction, reconstructionError } from './lib/documentReconstruction.mjs'
@@ -323,8 +324,10 @@ const invalidateStorageFile = (file) => {
     scheduleRevision++
   } else if (['_document-lifecycle.json', '_users.json'].includes(path.basename(file))) scheduleRevision++
 }
+// 반영이 끝난 after-image는 다시 읽지 않으므로 백그라운드에서 압축 보관한다. 기동 직후 1분은 기다린다.
 const storageJournal = createStorageJournal({ root: dataDirectory, resources: storageResources, keyForFile: resourceForFile,
-  invalidate: (file) => invalidateStorageFile(file) })
+  invalidate: (file) => invalidateStorageFile(file), compressAppliedImages: process.env.MNP_JOURNAL_IMAGE_COMPRESSION !== '0',
+  imageCompactionStartDelayMs: Number(process.env.MNP_JOURNAL_IMAGE_COMPACTION_DELAY_MS ?? 60_000) })
 const storageChanges = createStorageChanges({
   root: dataDirectory, resources: storageResources, keyForFile: resourceForFile,
   journal: storageJournal, invalidate: invalidateStorageFile,
@@ -1827,9 +1830,8 @@ async function migrateStoredMapCreationMetadata() {
     try {
       const revisionDirectory = revisionDirectoryForMap(mapId)
       const revisionEntries = await readdir(revisionDirectory, { withFileTypes: true })
-      for (const revisionEntry of revisionEntries) {
-        if (!revisionEntry.isFile() || !revisionEntry.name.endsWith('.json')) continue
-        const revision = JSON.parse(await readFile(path.join(revisionDirectory, revisionEntry.name), 'utf8'))
+      for (const { name } of selectRevisionFiles(revisionEntries.filter((entry) => entry.isFile()).map((entry) => entry.name))) {
+        const revision = await readRevisionFile(revisionDirectory, name)
         if (revision?.mapId !== mapId || !isValidMap(revision.map)) continue
         if (!earliestRevision || String(revision.archivedAt).localeCompare(String(earliestRevision.archivedAt)) < 0) earliestRevision = revision
       }
@@ -7482,11 +7484,16 @@ async function archiveMapRevision(map, user, reason) {
       version: map.version ?? 1,
     },
   }
-  const revisionFile = path.join(directory, `${revisionId}.json`)
+  // 이력은 특정 상황(목록·복원·일일 백업 보정·이미지 정리)에서만 읽으므로 압축해 저장하고 읽을 때 푼다.
+  const revisionFile = path.join(directory, compressedRevisionFileName(revisionId))
   const temporaryFile = `${revisionFile}.${randomBytes(4).toString('hex')}.tmp`
-  await writeFile(temporaryFile, `${JSON.stringify(revision, null, 2)}\n`, 'utf8')
+  await writeFile(temporaryFile, encodeRevisionBytes(JSON.stringify(revision)))
   await replaceFileWithRetry(temporaryFile, revisionFile)
   return revision
+}
+
+async function readRevisionFile(directory, name) {
+  return JSON.parse(decodeRevisionText(name, await readFile(path.join(directory, name))))
 }
 
 async function writeDailyBackup(map, user, reason = 'automatic', date = seoulDateString(), { overwrite = true } = {}) {
@@ -7637,9 +7644,8 @@ async function listMapRevisions(mapId, { offset = 0, limit = 50 } = {}) {
   const directory = revisionDirectoryForMap(mapId)
   try {
     const entries = await readdir(directory, { withFileTypes: true })
-    const revisions = await Promise.all(entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && isValidRevisionId(entry.name.slice(0, -5)))
-      .map(async (entry) => JSON.parse(await readFile(path.join(directory, entry.name), 'utf8'))))
+    const revisions = await Promise.all(selectRevisionFiles(entries.filter((entry) => entry.isFile()).map((entry) => entry.name), isValidRevisionId)
+      .map(({ name }) => readRevisionFile(directory, name)))
     const summaries = revisions
       .filter((revision) => revision?.mapId === mapId && isValidMap(revision.map))
       .sort((first, second) => String(second.archivedAt).localeCompare(String(first.archivedAt)))
@@ -7660,7 +7666,10 @@ async function listMapRevisions(mapId, { offset = 0, limit = 50 } = {}) {
 async function readMapRevision(mapId, revisionId) {
   if (!isValidRevisionId(revisionId)) return null
   try {
-    const revision = JSON.parse(await readFile(path.join(revisionDirectoryForMap(mapId), `${revisionId}.json`), 'utf8'))
+    const directory = revisionDirectoryForMap(mapId)
+    let revision
+    try { revision = await readRevisionFile(directory, compressedRevisionFileName(revisionId)) }
+    catch (error) { if (error?.code !== 'ENOENT') throw error; revision = await readRevisionFile(directory, rawRevisionFileName(revisionId)) }
     return revision?.mapId === mapId && isValidMap(revision.map)
       ? { ...revision, map: normalizeMapForPersistence(revision.map) }
       : null

@@ -71,7 +71,7 @@ test('Windows 백업은 모든 파일을 보존하고 기존 복원 및 손상 �
     for (const [name, bytes] of dataFiles) await writeFixtureFile(fixtureProject, `server/data/${name}`, bytes)
     for (const [name, bytes] of configFiles) await writeFixtureFile(fixtureProject, name, bytes)
     await mkdir(path.join(fixtureProject, 'server/data/empty-directory'), { recursive: true })
-    for (const relativePath of ['scripts/cleanup-image-assets.mjs', 'server/lib/imageAssetCleanup.mjs', 'server/lib/imageAssets.mjs']) {
+    for (const relativePath of ['scripts/cleanup-image-assets.mjs', 'server/lib/imageAssetCleanup.mjs', 'server/lib/imageAssets.mjs', 'server/lib/revisionFiles.mjs']) {
       const target = path.join(fixtureProject, relativePath)
       await mkdir(path.dirname(target), { recursive: true })
       await copyFile(path.join(projectDirectory, relativePath), target)

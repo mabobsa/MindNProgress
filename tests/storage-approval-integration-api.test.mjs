@@ -67,7 +67,7 @@ test('승인 callback의 모든 정본 교체 경계는 04 journal의 확정 전
       const original = structuredClone(approval.jobs[0].approval); delete original.conversation
       assert.deepEqual(original, beforeApproval.jobs[0].approval)
       const history = await readdir(path.join(api.data, '_history', api.ids[0]))
-      assert.equal(history.filter(file => file.endsWith('.json')).length, 1)
+      assert.equal(history.filter(file => /\.json(\.br)?$/.test(file)).length, 1)
       const once = await api.read('map-bench-0.json')
       await api.restart()
       assert.deepEqual(await api.read('map-bench-0.json'), once, '다시 시작해도 버전·연결 중복 없음')

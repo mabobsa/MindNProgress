@@ -2,7 +2,15 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { channel } from 'node:diagnostics_channel'
+import { promisify } from 'node:util'
+import { brotliCompress, brotliDecompress, constants as zlibConstants } from 'node:zlib'
 import { replaceFileWithRetry } from './replaceFileWithRetry.mjs'
+
+const brotliCompressAsync = promisify(brotliCompress)
+const brotliDecompressAsync = promisify(brotliDecompress)
+// 반영이 끝난 after-image의 압축본 접미사. 12MB 위임 상태 사본 기준 원문의 약 8%가 된다.
+const COMPRESSED_IMAGE_SUFFIX = '.br'
+const COMPRESSED_IMAGE_QUALITY = 4
 
 export const storagePhase = channel('mindnprogress.storage.phase')
 export const storageHash = (bytes) => bytes === null ? null : createHash('sha256').update(bytes).digest('hex')
@@ -25,7 +33,8 @@ export function validateStorageRequestId(id, now = Date.now(), known = false) {
 
 // journal이 결과의 원본이다. 메모리 인덱스는 시작 시 journal에서 다시 만든다.
 export function createStorageJournal({ root, resources, keyForFile, invalidate = () => {}, io = fs, now = Date.now,
-  phase = async (name, detail) => storagePhase.publish({ name, ...detail }), recoverConcurrency = 16 }) {
+  phase = async (name, detail) => storagePhase.publish({ name, ...detail }), recoverConcurrency = 16, compressAppliedImages = false,
+  imageCompactionStartDelayMs = 0 }) {
   const base = path.resolve(root)
   const directory = path.join(base, '_storage-transactions')
   const records = new Map()
@@ -97,6 +106,47 @@ export function createStorageJournal({ root, resources, keyForFile, invalidate =
     return null
   }
   function release(request) { if (request) inflight.delete(request.requestId) }
+  // 반영이 끝난 기록의 after-image는 다시 읽지 않는다(applied 있음은 재반영하지 않음). 결과 보존 기간(24시간) 동안 압축해 둔다.
+  // 저장 요청의 잠금·응답과 무관한 백그라운드 대기열에서 하나씩 비동기로 처리하고, 실패하면 원문 사본을 그대로 둔다.
+  // 기동 직후의 디스크 경합을 피하도록 첫 작업은 지정한 시간 뒤에 시작한다. 타이머는 종료를 붙잡지 않는다.
+  const imageCompaction = { queue: imageCompactionStartDelayMs > 0 ? new Promise((resolve) => {
+    const timer = setTimeout(resolve, imageCompactionStartDelayMs); timer.unref?.()
+  }) : Promise.resolve(), scheduled: new Set() }
+  function scheduleImageCompaction(record) {
+    if (!compressAppliedImages || !record?.terminalAt || record.rejected || imageCompaction.scheduled.has(record.transactionId)) return
+    imageCompaction.scheduled.add(record.transactionId)
+    const images = (record.files ?? []).map((entry) => entry.image).filter(Boolean)
+    if (!images.length) return
+    imageCompaction.queue = imageCompaction.queue.then(() => compactImages(record.transactionId, images)).catch(() => {})
+  }
+  async function compactImages(id, images) {
+    for (const image of images) {
+      const raw = location(id, image)
+      const bytes = await optional(raw)
+      if (bytes === null) continue
+      const packed = await brotliCompressAsync(bytes, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: COMPRESSED_IMAGE_QUALITY } })
+      // 압축본을 풀어 원문과 같을 때만 원문 사본을 지운다.
+      if (!(await brotliDecompressAsync(packed)).equals(bytes)) continue
+      const packedFile = `${raw}${COMPRESSED_IMAGE_SUFFIX}`
+      const temporary = `${packedFile}.${randomBytes(6).toString('hex')}.tmp`
+      try {
+        // 정리로 기록 폴더가 사라졌으면 다시 만들지 않는다(mkdir 없이 쓴다).
+        await io.writeFile(temporary, packed)
+        const handle = await io.open(temporary, 'r+')
+        try { await handle.sync() } finally { await handle.close() }
+        await replaceFileWithRetry(temporary, packedFile)
+      } finally { await io.rm(temporary, { force: true }).catch(() => {}) }
+      await io.rm(raw, { force: true })
+    }
+  }
+  // redo는 반영 전 기록만 하므로 원문 사본을 읽는다. 압축본만 남은 경우도 풀어서 같은 해시 검사를 한다.
+  async function readImage(id, image) {
+    const raw = await optional(location(id, image))
+    if (raw !== null) return raw
+    const packed = await optional(location(id, `${image}${COMPRESSED_IMAGE_SUFFIX}`))
+    if (packed === null) throw Object.assign(new Error(`ENOENT: ${image}`), { code: 'ENOENT' })
+    return brotliDecompressAsync(packed)
+  }
   async function apply(record) {
     const files = []
     // 전수 조건 검사 뒤 redo한다. 임의의 다른 정본을 한 파일이라도 발견하면 덮지 않는다.
@@ -105,7 +155,7 @@ export function createStorageJournal({ root, resources, keyForFile, invalidate =
       if (keyForFile(file) !== entry.key) throw new Error('JOURNAL_RESOURCE_MISMATCH')
       const actual = storageHash(await optional(file))
       if (actual !== entry.before && actual !== entry.after) throw new Error('JOURNAL_HASH_MISMATCH')
-      const bytes = entry.image ? await io.readFile(location(record.transactionId, entry.image)) : null
+      const bytes = entry.image ? await readImage(record.transactionId, entry.image) : null
       if (storageHash(bytes) !== entry.after) throw new Error('JOURNAL_IMAGE_MISMATCH')
       files.push({ entry, file, bytes, actual })
     }
@@ -128,6 +178,7 @@ export function createStorageJournal({ root, resources, keyForFile, invalidate =
     Object.assign(record, applied)
     endApply(record)
     await phase('after-applied', { transactionId: record.transactionId })
+    scheduleImageCompaction(record)
   }
   function quarantine(record) {
     record.recoveryRequired = true
@@ -250,7 +301,8 @@ export function createStorageJournal({ root, resources, keyForFile, invalidate =
       if (!record || record.transactionId !== id || marker.intentSha256 !== storageDigest(record)) throw new Error('JOURNAL_CORRUPT')
       register(record)
       const applied = settled(entry.applied)
-      if (applied) Object.assign(record, applied)
+      // 이미 반영된 기록의 원문 사본(압축 도입 전 기록 포함)은 기동을 기다리게 하지 않고 백그라운드에서 압축한다.
+      if (applied) { Object.assign(record, applied); scheduleImageCompaction(record) }
       else { beginApply(record); try { await apply(record) } catch { quarantine(record) } }
       record.effectsDone = settled(entry.effects)?.done ?? []
     }
@@ -278,5 +330,6 @@ export function createStorageJournal({ root, resources, keyForFile, invalidate =
     }
   }
   return { commit, reject, recover, lookup, release, result, records, pending, effectDone, cleanup, transactionId, effectTransactionId, phase,
+    imageCompactionIdle: () => imageCompaction.queue,
     visibilityEpoch: () => visibilityEpoch, isApplying: (key) => applying.has(key) }
 }

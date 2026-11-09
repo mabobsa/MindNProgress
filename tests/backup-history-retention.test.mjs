@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -68,24 +68,27 @@ for (const [shellName, shell] of shells) {
       a10: `map-a/${revisionName(kstTime(60, 10))}`, a11: `map-a/${revisionName(kstTime(60, 11))}`, a12: `map-a/${revisionName(kstTime(60, 12))}`,
       aLegacy: 'map-a/legacy-revision-a.json', a59: `map-a/${revisionName(kstTime(59, 9))}`,
       b08: `map-b/${revisionName(kstTime(60, 8))}`, b20: `map-b/${revisionName(kstTime(60, 20))}`,
+      // 압축 이력(.json.br)도 이름의 이력 ID로 시각을 읽어 같은 규칙을 적용한다.
+      c09: `map-c/${revisionName(kstTime(60, 9))}.br`, c15: `map-c/${revisionName(kstTime(60, 15))}.br`,
     }
     const recent = { a5x: `map-a/${revisionName(kstTime(5, 10))}`, a5y: `map-a/${revisionName(kstTime(5, 11))}` }
     const historyFiles = new Map([
       [older.a10, revision(kstTime(60, 10), 'a10')], [older.a11, revision(kstTime(60, 11), 'a11')], [older.a12, revision(kstTime(60, 12), 'a12')],
       [older.aLegacy, revision(kstTime(60, 13), 'a-legacy')], [older.a59, revision(kstTime(59, 9), 'a59')],
       [older.b08, revision(kstTime(60, 8), 'b08')], [older.b20, revision(kstTime(60, 20), 'b20')],
+      [older.c09, randomBytes(300)], [older.c15, randomBytes(300)],
       [recent.a5x, revision(kstTime(5, 10), 'a5x')], [recent.a5y, revision(kstTime(5, 11), 'a5y')],
       ['map-a/unknown-time.json', Buffer.from('{"note":"저장 시각이 없는 파일"}')],
       ['map-a/notes.txt', Buffer.from('이력 형식이 아닌 파일')],
       ['map-b/attachments/x.bin', randomBytes(256)],
       ['index.json', Buffer.from('{"kind":"history-index"}')],
     ])
-    const excluded = new Set([older.a10, older.a11, older.a12, older.b08])
+    const excluded = new Set([older.a10, older.a11, older.a12, older.b08, older.c09])
     const otherFiles = new Map([['map-a.json', Buffer.from('{"id":"map-a"}')], ['_comments/map-a.json', Buffer.from('[]')], ['_daily-backups/map-a/2026-09-01.json', Buffer.from('{}')]])
     try {
       for (const [name, bytes] of historyFiles) await writeFixtureFile(fixtureProject, `${history}/${name}`, bytes)
       for (const [name, bytes] of otherFiles) await writeFixtureFile(fixtureProject, `server/data/${name}`, bytes)
-      for (const relativePath of ['scripts/cleanup-image-assets.mjs', 'server/lib/imageAssetCleanup.mjs', 'server/lib/imageAssets.mjs']) {
+      for (const relativePath of ['scripts/cleanup-image-assets.mjs', 'server/lib/imageAssetCleanup.mjs', 'server/lib/imageAssets.mjs', 'server/lib/revisionFiles.mjs']) {
         await mkdir(path.dirname(path.join(fixtureProject, relativePath)), { recursive: true })
         await copyFile(path.join(projectDirectory, relativePath), path.join(fixtureProject, relativePath))
       }
@@ -112,14 +115,14 @@ for (const [shellName, shell] of shells) {
         const retention = manifest.historyRetention
         assert.equal(retention.mode, 'daily-latest-before-cutoff')
         assert.equal(retention.totalFiles, historyFiles.size)
-        assert.equal(retention.olderFiles, 7)
+        assert.equal(retention.olderFiles, 9)
         assert.equal(retention.excludedFiles, excluded.size)
         assert.equal(retention.includedFiles, historyFiles.size - excluded.size)
         assert.equal(retention.excludedBytes, [...excluded].reduce((sum, name) => sum + historyFiles.get(name).length, 0))
         assert.match(retention.cutoff, /T00:00:00(\.0+)?\+09:00$/, '기준 시각은 한국 시간 자정이다')
-        assert.match(stdout, /문서 이력 7개 중 4개/)
+        assert.match(stdout, /문서 이력 9개 중 5개/)
         const restoreGuide = await readArchiveText(shell, archivePath, 'RESTORE.txt')
-        assert.match(restoreGuide, /문서 이력: 기준 시각보다 오래된 문서 이력.*포함 9개, 제외 4개/)
+        assert.match(restoreGuide, /문서 이력: 기준 시각보다 오래된 문서 이력.*포함 10개, 제외 5개/)
       })
       await t.test('운영 데이터의 이력은 그대로 둔다', async () => {
         for (const [name, bytes] of historyFiles) assert.deepEqual(await readFile(path.join(fixtureProject, history, name)), bytes)
@@ -128,7 +131,26 @@ for (const [shellName, shell] of shells) {
         const all = await backup(path.join(temporaryRoot, 'backups-all'), ['-KeepAllHistory'])
         assert.equal(all.manifest.historyRetention.mode, 'all')
         assert.equal(all.manifest.files.filter((file) => file.path.startsWith(`${history}/`)).length, historyFiles.size)
-        assert.match(all.stdout, /문서 이력 13개를 모두 백업에 포함합니다/)
+        assert.match(all.stdout, /문서 이력 15개를 모두 백업에 포함합니다/)
+      })
+      await t.test('이전 백업이 남긴 6시간 지난 복사본과 미완성 ZIP만 정리한다', async () => {
+        const destination = path.join(temporaryRoot, 'backups-stale')
+        const folder = path.join(destination, '2026-01-05')
+        const oldStaging = path.join(folder, `.staging-${'a'.repeat(32)}`)
+        const freshStaging = path.join(folder, `.staging-${'b'.repeat(32)}`)
+        const oldPartial = path.join(folder, 'MindNProgress_2026-01-05_060000.zip.partial.zip')
+        const unrelated = path.join(folder, 'keep.txt')
+        for (const file of [path.join(oldStaging, 'server', 'data', 'x.json'), path.join(freshStaging, 'y.json'), oldPartial, unrelated]) {
+          await writeFixtureFile(path.dirname(file), path.basename(file), Buffer.from('x'))
+        }
+        const old = new Date(Date.now() - 7 * 3_600_000)
+        for (const item of [oldStaging, oldPartial, unrelated]) await utimes(item, old, old)
+        const result = await backup(destination)
+        assert.match(result.stdout, /이전 백업이 남긴 미완성 산출물을 정리했습니다/)
+        await assert.rejects(stat(oldStaging), { code: 'ENOENT' })
+        await assert.rejects(stat(oldPartial), { code: 'ENOENT' })
+        await stat(freshStaging)
+        await stat(unrelated)
       })
     } finally {
       assert.equal(path.dirname(temporaryRoot), path.resolve(tmpdir()))
@@ -221,6 +243,7 @@ test('백업 뒤 서버 시작은 작업 스케줄러 등록 작업이 있을 �
     })
   } finally {
     assert.equal(path.dirname(temporaryRoot), path.resolve(tmpdir()))
-    await rm(temporaryRoot, { recursive: true, force: true })
+    // 가짜 런처(node)는 작업 폴더를 현재 폴더로 잡고 따로 끝난다. 부하가 크면 늦게 끝나 EBUSY가 나므로 잠시 기다려 다시 지운다.
+    await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
   }
 })

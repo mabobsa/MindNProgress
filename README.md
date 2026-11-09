@@ -142,6 +142,8 @@ MindNProgress_Backup.bat
 
 변경 이력(`server/data/_history`)은 백업 날짜(한국 시간) 한 달 전 0시를 기준 시각으로 삼아, 그보다 오래된 이력은 문서·날짜별로 가장 늦게 저장된 1개만 백업에 담습니다. 기준 시각 이후 이력, 저장 시각을 알 수 없는 파일과 이력 밖의 데이터는 모두 담으며 운영 데이터의 이력은 지우지 않습니다. 기준 시각과 포함·제외 개수는 `manifest.json`의 `historyRetention`과 `RESTORE.txt`에 기록됩니다. 전체 이력이 필요하면 `MindNProgress_Backup.bat -KeepAllHistory`로 실행하거나 `MNP_BACKUP_KEEP_ALL_HISTORY=1`을 지정합니다.
 
+변경 이력은 `<이력ID>.json.br`(brotli)로 압축해 저장하고 읽을 때 풀며, 압축 이전 이력(`.json`)도 계속 읽습니다. 저장 복구 기록의 변경 후 파일 사본은 반영이 끝난 뒤 백그라운드에서 압축해 보관합니다. 기존 이력 변환(`scripts/compress-revision-history.mjs`)과 세부 규칙은 [변경 이력·저장 복구 사본 압축 보관](docs/history-storage-compression.md)을 참고하세요. 백업은 시작할 때 이전 실행이 강제 종료로 남긴 6시간 지난 복사본과 미완성 ZIP을 정리합니다.
+
 서버를 다시 시작할 때는 작업 스케줄러에 상시 실행 작업 `\MindNProgress`가 등록된 설치면 `scripts/mnp-runtime.ps1 -Action start`를, 등록 작업이 없는 설치면 기존 런처를 사용합니다. 등록 작업이 있는데 시작에 실패하면 런처로 대신 띄우지 않고 오류로 종료합니다.
 
 각 ZIP에는 파일별 크기와 SHA-256을 기록한 `manifest.json`과 수동 복원 안내 `RESTORE.txt`가 포함됩니다. 백업 배치는 .NET ZIP API의 `Fastest` 수준으로 압축하며, 기존 `Optimal` 수준보다 압축 속도를 우선하므로 ZIP 크기는 커질 수 있습니다. 검증할 때는 ZIP 내부 파일을 스트림으로 읽어 크기와 SHA-256을 manifest와 대조한 뒤에만 완료 처리합니다. 검증용 압축 해제 폴더를 만들지 않으며, ZIP 구조와 기존 복원 배치의 호환성은 유지합니다. 복원은 동일한 소스 버전을 준비한 후 다음처럼 실행합니다.

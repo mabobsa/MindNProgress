@@ -42,6 +42,26 @@ function Remove-SafeDirectory([string]$Path, [string]$AllowedRoot) {
   Remove-Item -LiteralPath $Path -Recurse -Force
 }
 
+# 백업이 강제 종료되면 복사본(.staging-*)과 미완성 ZIP(*.partial.zip)이 날짜 폴더에 남는다(2026-11-09에 약 17GB).
+# 다른 백업이 쓰는 중일 수 있는 최근 산출물은 두고 MinimumAge보다 오래된 것만 지운다. 정리에 실패해도 이번 백업은 계속한다.
+function Remove-StaleBackupArtifacts([string]$BackupRoot, [TimeSpan]$MinimumAge) {
+  if (-not (Test-Path -LiteralPath $BackupRoot -PathType Container)) { return }
+  $cutoff = (Get-Date).Add(-$MinimumAge)
+  foreach ($dateFolder in @(Get-ChildItem -LiteralPath $BackupRoot -Directory -Force | Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}$' })) {
+    foreach ($item in @(Get-ChildItem -LiteralPath $dateFolder.FullName -Force)) {
+      $isStaging = $item.PSIsContainer -and $item.Name -match '^\.staging-[0-9a-f]{32}$'
+      $isPartial = -not $item.PSIsContainer -and $item.Name -match '^MindNProgress_\d{4}-\d{2}-\d{2}_\d{6}(-\d{2})?\.zip\.partial\.zip$'
+      if (-not ($isStaging -or $isPartial) -or $item.LastWriteTime -ge $cutoff) { continue }
+      try {
+        if ($isStaging) { Remove-SafeDirectory $item.FullName $BackupRoot } else { Remove-Item -LiteralPath $item.FullName -Force }
+        Write-Output ('[MindNProgress] 이전 백업이 남긴 미완성 산출물을 정리했습니다: {0}' -f $item.FullName)
+      } catch {
+        Write-Warning ('이전 백업이 남긴 미완성 산출물을 정리하지 못했습니다. 백업은 계속합니다: {0} ({1})' -f $item.FullName, $_.Exception.Message)
+      }
+    }
+  }
+}
+
 function Get-RelativeFilePath([string]$FilePath, [string]$RootPath) {
   $fullFile = [System.IO.Path]::GetFullPath($FilePath)
   $fullRoot = [System.IO.Path]::GetFullPath($RootPath).TrimEnd('\', '/')
@@ -167,9 +187,10 @@ function Get-Sha256([string]$Path) {
 }
 
 # 문서 이력 파일의 저장 시각. 이력 ID 앞부분은 저장 시각(밀리초)의 36진수이고, 형식이 다르면 파일 앞부분의 archivedAt을 읽는다.
+# 압축 이력(<이력ID>.json.br)도 같은 이름 규칙이라 내용을 풀지 않고 이름에서 시각을 읽는다.
 # 시각을 알 수 없으면 $null을 돌려주며, 호출 측은 그 파일을 그대로 백업한다.
 function Get-HistoryRevisionTime([System.IO.FileInfo]$File) {
-  if ($File.Name -cmatch '^([0-9a-z]{6,12})-[0-9a-f]+\.json$') {
+  if ($File.Name -cmatch '^([0-9a-z]{6,12})-[0-9a-f]+\.json(\.br)?$') {
     $digits = '0123456789abcdefghijklmnopqrstuvwxyz'
     [long]$milliseconds = 0
     foreach ($character in $Matches[1].ToCharArray()) { $milliseconds = $milliseconds * 36 + $digits.IndexOf($character) }
@@ -367,6 +388,8 @@ if (Test-PathSameOrInside $backupRoot $resolvedProject) {
 
 $dateText = Get-Date -Format 'yyyy-MM-dd'
 $timeText = Get-Date -Format 'HHmmss'
+Remove-StaleBackupArtifacts $backupRoot ([TimeSpan]::FromHours(6))
+
 $dateDirectory = Join-Path $backupRoot $dateText
 New-Item -ItemType Directory -Force -Path $dateDirectory | Out-Null
 

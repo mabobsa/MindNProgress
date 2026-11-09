@@ -174,7 +174,7 @@ test('동일 ID 20회·순차 재전송은 문서·revision·알림·댓글·tog
     assert.equal(replay.body.transactionId, committed.body.transactionId)
   }
   assert.equal((await api.read(`${mapId}.json`)).version, 2)
-  assert.equal((await readdir(path.join(api.data, '_history', mapId))).filter((p) => p.endsWith('.json')).length, 1)
+  assert.equal((await readdir(path.join(api.data, '_history', mapId))).filter((p) => /\.json(\.br)?$/.test(p)).length, 1)
   assert.equal((await api.read(`_daily-backups/${mapId}/${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date())}.json`)).map.version, 2)
   const commentId = newStorageRequestId()
   const commentBody = { nodeId: 'card-1', summary: '[진행] @다른 편집자 중복 없는 알림', detail: '동일 논리 요청' }
@@ -242,7 +242,7 @@ for (const phase of ['before-intent', 'after-intent', 'before-commit', 'after-co
     assert.equal(retried.body.map.version, 2)
     const bytes = await readFile(path.join(api.data, `${mapId}.json`))
     assert.equal(retried.body.resources.find((r) => r.path === `${mapId}.json`).sha256, storageHash(bytes))
-    assert.equal((await readdir(path.join(api.data, '_history', mapId))).filter((p) => p.endsWith('.json')).length, 1)
+    assert.equal((await readdir(path.join(api.data, '_history', mapId))).filter((p) => /\.json(\.br)?$/.test(p)).length, 1)
     assert.deepEqual(retried.body.sideEffectsPending, [])
   })
 }

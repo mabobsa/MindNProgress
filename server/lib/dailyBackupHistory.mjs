@@ -1,5 +1,6 @@
 import { readFile, readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { decodeRevisionText, isCompressedRevisionFileName, selectRevisionFiles } from './revisionFiles.mjs'
 
 const schemaVersion = 1
 
@@ -59,9 +60,9 @@ export async function backfillDailyBackupHistory({
     if (error?.code !== 'ENOENT') throw error
     entries = []
   }
-  const sources = await Promise.all(entries
-    .filter(entry => entry.isFile() && entry.name.endsWith('.json') && isValidRevisionId(entry.name.slice(0, -5)))
-    .map(async entry => ({ name: entry.name, info: await stat(path.join(directory, entry.name)) })))
+  // 원문(.json)과 압축(.json.br) 이력을 모두 읽는다. 같은 이력 ID는 압축본 하나만 쓴다.
+  const sources = await Promise.all(selectRevisionFiles(entries.filter(entry => entry.isFile()).map(entry => entry.name), isValidRevisionId)
+    .map(async ({ name }) => ({ name, info: await stat(path.join(directory, name)) })))
   const revisions = {}
   const latestByDate = new Map()
   const result = { created: 0, historyReadCount: 0, reusedHistoryCount: 0, indexWritten: false }
@@ -69,7 +70,9 @@ export async function backfillDailyBackupHistory({
 
   async function readRevision(source) {
     const file = path.join(directory, source.name)
-    const text = await readText(file, 'utf8')
+    const text = isCompressedRevisionFileName(source.name)
+      ? decodeRevisionText(source.name, await readText(file))
+      : await readText(file, 'utf8')
     result.historyReadCount += 1
     if (!sameFile(source.info, await stat(file))) {
       throw new Error('일일 백업 보정 중 이력 파일이 변경됐습니다. 완료 인덱스를 저장하지 않습니다.')

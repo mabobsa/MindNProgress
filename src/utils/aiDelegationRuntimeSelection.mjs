@@ -1,3 +1,6 @@
+// 2026-11-09 사용자 결정: 하위 위임의 AI 설정은 계정 메뉴 「AI 위임 규칙」(서버 규칙)으로 일원화했다.
+// 대화 시작 화면의 위임 설정은 코드와 저장값을 남긴 채 사용하지 않는다(미사용 고정). true로 바꾸면 다시 쓸 수 있다.
+export const AI_DELEGATION_DIALOG_SETTING_AVAILABLE = false
 const storagePrefix = 'mindnprogress-ai-delegation-runtime:'
 const optionalFields = ['modelId', 'mode', 'thoughtLevel']
 export const AI_DELEGATION_NARRATIVE_MAX_LENGTH = 4_000

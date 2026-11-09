@@ -1,6 +1,7 @@
 export type AiDelegationRuntime = { agentId: string; modelId: string; mode: string; thoughtLevel: string }
 export type AiDelegationPreferences = { enabled: boolean; selection: AiDelegationRuntime; narrativeMode: boolean; narrativeText: string }
 export const AI_DELEGATION_NARRATIVE_MAX_LENGTH: number
+export const AI_DELEGATION_DIALOG_SETTING_AVAILABLE: boolean
 type StorageReader = Pick<Storage, 'getItem'>
 type StorageWriter = Pick<Storage, 'setItem'>
 type Agent = { id: string; models: readonly { id: string }[]; modes: readonly { id: string }[]; thoughtLevels: readonly { id: string }[] }

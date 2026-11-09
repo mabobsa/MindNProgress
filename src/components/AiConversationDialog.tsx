@@ -19,6 +19,7 @@ import {
 import { loadAiConversationRole, type AiConversationRole } from '../utils/aiConversationRole.mjs'
 import { defaultAiSkillIds } from '../utils/aiSkillSelection.mjs'
 import {
+  AI_DELEGATION_DIALOG_SETTING_AVAILABLE,
   AI_DELEGATION_NARRATIVE_MAX_LENGTH,
   normalizeAiDelegationPreferences,
   normalizeAiDelegationRuntime,
@@ -128,7 +129,7 @@ function readMcpSelections(fallback = new Set<string>()) {
   }
 }
 
-export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, groupId, knowledgeSources, initialRequest, fullInitialRequest, doorayApproval, reconstructionRequestId, cardLayoutRequestId, launchInWebUi, onClose }: {
+export function AiConversationDialog({ userId, documentId, documentTitle, cardId, cardTitle, purpose, groupId, knowledgeSources, initialRequest, fullInitialRequest, doorayApproval, reconstructionRequestId, cardLayoutRequestId, launchInWebUi, onClose, delegationSettingAvailable = AI_DELEGATION_DIALOG_SETTING_AVAILABLE }: {
   userId: string
   documentId: string
   documentTitle: string
@@ -144,6 +145,8 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   cardLayoutRequestId?: string
   launchInWebUi: boolean
   onClose: () => void
+  /** 대화 시작 화면의 위임 설정 사용 가능 여부. 기본은 서버 위임 규칙으로 일원화해 쓰지 않는다. */
+  delegationSettingAvailable?: boolean
 }) {
   const [options, setOptions] = useState<AionOptions | null>(null)
   const [machineId, setMachineId] = useState('')
@@ -175,6 +178,8 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   const delegationPreferences = activeDelegationSelection?.value ?? normalizeAiDelegationPreferences(null)
   const resolvedDelegation = resolveAiDelegationRuntime(delegationPreferences.selection, options?.machineId === machineId ? options.agents : [])
   const delegationRuntime = resolvedDelegation.selection
+  // 사용하지 않는 동안에는 저장된 위임 설정을 전달하지도 바꾸지도 않는다(저장값은 남긴다).
+  const delegationEnabled = delegationSettingAvailable && delegationPreferences.enabled
   const [workspace, setWorkspace] = useState('')
   const [workspaceExplicit, setWorkspaceExplicit] = useState(false)
   const [workspaceSavedScope, setWorkspaceSavedScope] = useState<'document' | 'group' | null>(null)
@@ -285,7 +290,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   const delegationModel = delegationAgent?.models.find((item) => item.id === delegationRuntime.modelId)
   const delegationMode = delegationAgent?.modes.find((item) => item.id === delegationRuntime.mode)
   const delegationThoughtLevel = delegationAgent?.thoughtLevels.find((item) => item.id === delegationRuntime.thoughtLevel)
-  const delegationInstruction = delegationPreferences.enabled ? buildAiDelegationModelInstruction({
+  const delegationInstruction = delegationEnabled ? buildAiDelegationModelInstruction({
     narrativeMode: delegationPreferences.narrativeMode,
     narrativeText: delegationPreferences.narrativeText,
     agentName: delegationAgent?.name,
@@ -293,10 +298,10 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
     mode: delegationMode?.label,
     thoughtLevel: delegationThoughtLevel?.label,
   }) : ''
-  const delegationSummary = !delegationPreferences.enabled ? '미사용' : delegationPreferences.narrativeMode
+  const delegationSummary = !delegationSettingAvailable ? '미사용 · 계정 메뉴의 AI 위임 규칙 적용' : !delegationEnabled ? '미사용' : delegationPreferences.narrativeMode
     ? `서술형 · ${delegationPreferences.narrativeText.trim().replace(/\s+/g, ' ') || '입력 없음'}`
     : [delegationAgent?.name, delegationModel?.label, delegationMode?.label, delegationThoughtLevel?.label].filter(Boolean).join(', ') || '선택사항'
-  const delegationNotice = activeDelegationSelection?.notice || (delegationPreferences.enabled && !delegationPreferences.narrativeMode && resolvedDelegation.unavailableFields.length
+  const delegationNotice = !delegationSettingAvailable ? '' : activeDelegationSelection?.notice || (delegationEnabled && !delegationPreferences.narrativeMode && resolvedDelegation.unavailableFields.length
     ? `현재 목록에 없는 ${resolvedDelegation.unavailableFields.join('·')} 항목은 지정 안 함으로 두었습니다.` : '')
   const automaticRequest = combineAiEditorRequest(role?.automaticRequest, '', role?.fullInitialRequest, delegationInstruction)
   const selectedMcpServers = options?.mcpServers.filter((server) => server.required || selectedMcpIds.has(server.id)) ?? []
@@ -315,7 +320,7 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   }
 
   const changeDelegationPreferences = (value: AiDelegationPreferences) => {
-    if (loading || launching || confirmation.pending || !options || options.machineId !== machineId) return
+    if (!delegationSettingAvailable || loading || launching || confirmation.pending || !options || options.machineId !== machineId) return
     const selection = normalizeAiDelegationPreferences(value)
     const saved = saveAiDelegationPreferences(userId, machineId, selection)
     setDelegationSelection({ userId, machineId, value: selection,
@@ -634,13 +639,16 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
                 <span className="ai-section-label">AI 위임 모델</span>
                 <span className="ai-section-selection" title={delegationSummary}>{delegationSummary}</span>
                 <label className="ai-delegation-enabled-toggle" onClick={(event) => event.stopPropagation()}>
-                  <input type="checkbox" checked={delegationPreferences.enabled} onChange={(event) => changeDelegationPreferences({ ...delegationPreferences, enabled: event.target.checked })} />
+                  <input type="checkbox" checked={delegationEnabled} disabled={!delegationSettingAvailable} onChange={(event) => changeDelegationPreferences({ ...delegationPreferences, enabled: event.target.checked })} />
                   <span>AI 위임 모델 사용</span>
                 </label>
               </summary>
-              {(delegationPreferences.enabled || delegationNotice) && <div className="ai-delegation-model-content">
+              {!delegationSettingAvailable && <div className="ai-delegation-model-content">
+                <p className="ai-delegation-model-notice" role="note">하위 카드 위임의 AI 종류·모델·사고 수준은 계정 메뉴의 「AI 위임 규칙」을 서버가 적용합니다. 이 화면의 위임 설정은 사용하지 않으며, 이전에 저장한 값은 지우지 않고 보관합니다.</p>
+              </div>}
+              {(delegationEnabled || delegationNotice) && <div className="ai-delegation-model-content">
                 {delegationNotice && <p className="ai-delegation-model-notice" role="status">{delegationNotice}</p>}
-                {delegationPreferences.enabled && <>
+                {delegationEnabled && <>
                 <div className="ai-delegation-model-guidance">
                   <p>하위 카드에 위임할 AI 설정을 자동 적용 내용에 추가합니다. {delegationPreferences.narrativeMode ? '사용할 AI와 모델, 권한, 사고 수준 등의 조건을 자유롭게 작성하세요.' : 'AI 종류를 먼저 선택하고, 필요한 항목만 지정하세요.'} 마지막 설정은 이 계정·실행 머신별로 자동 복원됩니다.</p>
                   <label className="ai-delegation-narrative-toggle">

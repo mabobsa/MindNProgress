@@ -55,7 +55,7 @@ let sequence = 0;
 window.renderDialog = (input = {}, flags = {}) => {
   Object.assign(window.audit,{calls:[],fail:false,hold:false,closed:0,launchStatus:null,statusHttp:0,confirmationError:'',createdConversationId:null,canRetry:false,approvalRequest:null,context:{map:{id:'map-coordinator',nodes:[{id:'root',data:{kind:'root'}},{id:'child',data:{kind:'task'}}],edges:[{source:'root',target:'child'}]},groupProject:{groupId:'group-manager',role:'coordinator',coordinatorMapId:'map-coordinator'}},...flags});
   window.audit.userId = input.userId || 'fixture';
-  flushSync(()=>root.render(React.createElement(AiConversationDialog,{key:++sequence,userId:'fixture',documentId:'map-coordinator',documentTitle:'총괄 문서',cardId:'root',cardTitle:'총괄 루트',purpose:'card',knowledgeSources:[],launchInWebUi:true,onClose:()=>window.audit.closed++,...input})));
+  flushSync(()=>root.render(React.createElement(AiConversationDialog,{key:++sequence,userId:'fixture',documentId:'map-coordinator',documentTitle:'총괄 문서',cardId:'root',cardTitle:'총괄 루트',purpose:'card',knowledgeSources:[],launchInWebUi:true,onClose:()=>window.audit.closed++,delegationSettingAvailable:true,...input})));
 };
 window.fixtureReady = true;
 `
@@ -218,6 +218,23 @@ test('실제 대화 팝업의 총괄 전문·선택적 위임 모델·전달 목
     assert.deepEqual(await delegationValues(), ['claude', 'opus', 'accept-edits', 'high'])
     assert.equal(await preview(), DEFAULT_AI_EDITOR_REQUEST + '\n\n' + instruction, '다시 열면 마지막 설정을 자동 적용한다')
     assert.equal(await evaluate('window.audit.calls.some(c=>c.method==="POST")'), false, '자동 복원은 대화나 위임을 실행하지 않는다')
+
+    // 2026-11-09: 앱 기본값은 위임 설정 미사용 고정이다(서버 위임 규칙으로 일원화). 저장된 사용 설정이 있어도 전달·변경하지 않고 저장값은 남긴다.
+    await open({ cardId: 'child', delegationSettingAvailable: false })
+    assert.equal(await delegationEnabled(), false)
+    assert.equal(await evaluate('document.querySelector(".ai-delegation-enabled-toggle input").disabled'), true)
+    assert.equal(await evaluate('document.querySelector(".ai-delegation-model-section .ai-section-selection").textContent'), '미사용 · 계정 메뉴의 AI 위임 규칙 적용')
+    assert.deepEqual(await delegationValues(), [])
+    assert.match(await evaluate('document.querySelector(".ai-delegation-model-notice").textContent'), /계정 메뉴의 「AI 위임 규칙」/)
+    assert.equal(await preview(), DEFAULT_AI_EDITOR_REQUEST, '미사용 고정이면 저장된 위임 설정을 전달하지 않는다')
+    await evaluate('document.querySelector(".ai-delegation-model-section").open=true;document.querySelector(".ai-delegation-model-section").scrollIntoView({block:"center"})')
+    const offShot = await send('Page.captureScreenshot', { format: 'png' })
+    await writeFile(path.join(tmpdir(), 'mnp-delegation-model-off.png'), Buffer.from(offShot.data, 'base64'))
+    await evaluate('document.querySelector(".ai-dialog footer .primary").click()')
+    await waitFor(() => evaluate('window.audit.closed === 1'))
+    assert.ok((await evaluate('window.audit.calls.find(c=>c.url.endsWith("/external-conversation-launches")).body.prompt')).endsWith(DEFAULT_AI_EDITOR_REQUEST))
+    await open({ cardId: 'child' })
+    assert.deepEqual(await delegationValues(), ['claude', 'opus', 'accept-edits', 'high'], '미사용 고정 동안 저장값을 지우지 않는다')
 
     await evaluate('window.fixtureReady=false')
     await send('Page.reload')

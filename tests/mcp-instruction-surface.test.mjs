@@ -55,6 +55,8 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     const tools = [...(await client.listTools()).tools].sort((a, b) => a.name.localeCompare(b.name))
     assert.deepEqual(tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), fixture)
     assert.equal(tools.length, 61)
+    // 2026-11-09: tools/list에서 $schema와 정수 표현 한도(MAX_SAFE_INTEGER)만 뺀다(mcp/toolListSurface.mjs). 입력 검증은 그대로다.
+    assert.ok(tools.every((tool) => !('$schema' in tool.inputSchema)) && !JSON.stringify(tools).includes(String(Number.MAX_SAFE_INTEGER)))
     // REQ-MNP-04: 기존 변경 도구의 requestId/resultOnly 호환 확장. 도구 개수는 유지한다.
     // 2026-10-29: get_group_context의 detailLevel·mapId와 list_group_document_instructions의 instructionId를 추가했다.
     // 2026-10-29: get_context 응답 예산의 회수 경로로 get_card에 fields·includeComments를 추가했다.
@@ -67,9 +69,11 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     // 2026-11-03(6b032e2): checkpoint_ai_workspace의 commit-changes paths 설명에 폴더 범위와 삭제 포함을 추가했다.
     // 2026-11-09: delegate_ai_work·send_group_document_instruction에 위임 규칙 입력(workType·analysisDepth·aiPolicyOverride)을
     //   추가하고 newConversation의 agentId·modelId를 선택 항목으로 바꿨다. 도구 개수는 유지한다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '89a19063811d831cb976969c6f964b66e5e1ec960b6a6e573d9fd0770698c5a4')
+    // 2026-11-09: 문맥 손실 없는 표면 축소로 tools/list의 $schema·MAX_SAFE_INTEGER 한도를 빼고(A1),
+    //   저장 도구 23개의 설명 꼬리말에서 resultOnly 속성 설명과 같은 문장을 뺐다(B1). 83,542자 → 79,258자.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '558e4f676a857ddfff2cc69643993fc1f8921fd67d2d8de15184deb94aaaa68d')
     const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
-    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '137d9f530db1c165bdf24719cee9e227ae18e1a3ad9aaba8ba7feaceb591cf61')
+    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'e4a63e47c4ff4bb435d2e4bae09ce5bac0cfd17aacba1b635afb2156a7e3d8b0')
     assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 235)
     const handoff = tools.find((tool) => tool.name === 'mindnprogress_start_card_conversation')
     assert.deepEqual(handoff.inputSchema.required, ['mapId', 'cardId', 'requestId'])
@@ -79,7 +83,9 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     for (const tool of tools.filter((tool) => storageWriteTools.has(tool.name))) {
       assert.ok(tool.inputSchema.properties.requestId.pattern || tool.inputSchema.properties.proposalRequestId)
       assert.equal(tool.inputSchema.properties.resultOnly.type, 'boolean')
-      assert.match(tool.description, /변경 본문 없이 결과만 조회/)
+      // 2026-11-09: resultOnly 안내는 같은 뜻의 속성 설명에만 두고, 재전송 안내는 응답 유실 문장에 합쳤다.
+      assert.match(tool.description, / 응답 유실은 unknown이며 같은 requestId로 재전송하거나 확인합니다\./)
+      assert.match(tool.inputSchema.properties.resultOnly.description, /requestId만으로 기존 결과를 조회하며 저장을 시작하지 않음/)
     }
     const metaRecovery = tools.find(tool => tool.name === 'mindnprogress_recover_ai_delegation').inputSchema.properties.untrackedMetaRecovery
     assert.deepEqual(metaRecovery.required, ['path', 'expectedSha256', 'mainCommit'])
@@ -92,7 +98,7 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
         || ['mindnprogress_get_shared_knowledge_review_context', 'mindnprogress_apply_shared_knowledge_review'].includes(tool.name)) continue
       const original = baselineDescriptions.get(tool.name)
       if (!original) continue // 배열로 등록되는 복구 도구는 아래 의미 검사에서 검증한다.
-      const currentDescription = storageWriteTools.has(tool.name) ? tool.description.split(' requestId를 보존해 재전송하세요.')[0] : tool.description
+      const currentDescription = storageWriteTools.has(tool.name) ? tool.description.split(' 응답 유실은 unknown이며 같은 requestId로')[0] : tool.description
       // 그룹 문맥 요약 기본값(2026-10-29)은 기준선 설명을 그대로 두고 summary·full 안내만 뒤에 덧붙였다.
       if (tool.name === 'mindnprogress_get_group_context') {
         assert.ok(currentDescription.startsWith(original.slice(1, -1)), `${tool.name}의 기준선 설명 문장을 그대로 유지한다.`)

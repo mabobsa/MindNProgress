@@ -8,6 +8,7 @@ import { documentReconstructionGuide } from '../src/utils/documentReconstruction
 import { MNP_CONTEXT_LIFECYCLE, MNP_MCP_SERVER_INSTRUCTIONS } from '../src/utils/aiContextInstructions.mjs'
 import { AI_DELEGATION_ID_PATTERN } from '../server/lib/aiDelegations.mjs'
 import { AI_DELEGATION_ANALYSIS_DEPTHS, AI_DELEGATION_WORK_TYPES } from '../server/lib/aiDelegationPolicy.mjs'
+import { compactToolListMessage } from './toolListSurface.mjs'
 import { GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN } from '../server/lib/groupDocumentInstructions.mjs'
 import { CARD_CONVERSATION_START_REQUEST_ID } from '../server/lib/cardConversationStarts.mjs'
 import { AI_CONVERSATION_SELECTION_INSTRUCTION, aiConversationSelectionRules } from './aiConversationSelectionPolicy.mjs'
@@ -559,7 +560,8 @@ function registerTool(server, name, description, schema, handler, options = {}) 
         .describe(proposalId ? '논리 저장 ID(mnpw:...) 또는 기존 호출의 제안 대상 ID. 논리 ID 사용 시 대상은 proposalRequestId로 지정' : '같은 논리 저장의 재전송에 유지할 요청 ID'),
       ...(proposalId ? { proposalRequestId: proposalId.optional().describe('논리 저장 requestId와 함께 사용할 기존 제안 대상 ID') } : {}),
       resultOnly: z.boolean().optional().describe('true이면 requestId만으로 기존 결과를 조회하며 저장을 시작하지 않음') }
-    description += ' requestId를 보존해 재전송하세요. resultOnly=true는 변경 본문 없이 결과만 조회합니다. 응답 유실은 unknown이며 같은 ID로 확인합니다.'
+    // resultOnly 안내는 같은 뜻의 resultOnly 속성 설명이 있어 반복하지 않는다(23개 도구).
+    description += ' 응답 유실은 unknown이며 같은 requestId로 재전송하거나 확인합니다.'
     if (proposalId) description += ' 기존 제안 대상 requestId 호출도 유지합니다. 이 호출의 응답은 기존 requestId와 논리 저장 storageRequestId를 함께 반환합니다. 새 호출은 proposalRequestId와 mnpw 형식 requestId를 구분하세요.'
     handler = async (rawInput) => {
       const legacyProposalId = proposalId && rawInput.requestId && !rawInput.requestId.startsWith('mnpw:') ? rawInput.requestId : null
@@ -2893,7 +2895,11 @@ async function main() {
     ? apiRequest(`/api/notifications/${encodeURIComponent(operation.notificationId)}/read`, { method: 'PATCH' })
     : apiRequest('/api/notifications/read-all', { method: 'POST' }))
 
-  await server.connect(new StdioServerTransport())
+  const transport = new StdioServerTransport()
+  // 도구 목록의 의미 없는 직렬화 표기만 빼서 보낸다(mcp/toolListSurface.mjs). SDK에는 변환 옵션을 줄 자리가 없다.
+  const send = transport.send.bind(transport)
+  transport.send = (message, ...rest) => send(compactToolListMessage(message), ...rest)
+  await server.connect(transport)
 }
 
 main().catch((error) => {

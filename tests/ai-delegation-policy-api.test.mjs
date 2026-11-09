@@ -21,7 +21,7 @@ const agentRows = [
     config_options: [{ category: 'thought_level', options: options('high', 'xhigh', 'max') }] },
 ]
 // 이어가기 대상의 현재 모델. 목록에 없는 대화(새로 만든 위임 대화 등)는 Codex Sol이다.
-const conversationModels = { parent: ['claude', 'opus'], 'old-claude': ['claude', 'opus'], 'old-sol': ['codex', 'gpt-6.1-sol'], 'root-astra': ['codex', 'gpt-6-astra'] }
+const conversationModels = { parent: ['claude', 'opus'], 'old-claude': ['claude', 'opus'], 'old-sol': ['codex', 'gpt-6.1-sol'], 'old-claude-retry': ['claude', 'opus'], 'root-astra': ['codex', 'gpt-6-astra'] }
 const link = (conversationId) => ({ conversationId, homeMachineId: 'isolated-storage',
   agent: { id: conversationModels[conversationId][0], label: conversationModels[conversationId][0] },
   model: { id: conversationModels[conversationId][1], label: conversationModels[conversationId][1] },
@@ -69,6 +69,7 @@ test('위임 규칙은 업무 유형·카드 구분으로 새 대화 설정을 �
       map.edges = map.edges.map((edge) => edge.target === 'card-19' ? { ...edge, source: 'card-1' } : edge)
       Object.assign(map.nodes[5].data, { aiConversationId: 'old-claude', aiConversations: [link('old-claude')] })
       Object.assign(map.nodes[6].data, { aiConversationId: 'old-sol', aiConversations: [link('old-sol')] })
+      Object.assign(map.nodes[11].data, { aiConversationId: 'old-claude-retry', aiConversations: [link('old-claude-retry')] })
       await writeFile(path.join(data, `${ids[0]}.json`), JSON.stringify(map))
       const target = fixture(ids[1])
       Object.assign(target.nodes[0].data, { aiConversationId: 'root-astra', aiConversations: [link('root-astra')] })
@@ -179,6 +180,23 @@ test('위임 규칙은 업무 유형·카드 구분으로 새 대화 설정을 �
     agentRows[1].available_models.available_models = options('gpt-6.1-sol', 'gpt-6-astra')
 
     // 규칙 값이 없는 이전 도구 정의의 요청은 기존처럼 상위 대화 설정을 상속한다.
+    // 전환 기록과 운영 사례: 이어가기 요청이 문서 버전 충돌로 실패한 뒤 같은 지시로 재접수돼 새 대화로 바뀌어도 접수 실패 경고가 해제된다.
+    const storedDelegations = async () => { const stored = await api.read('_ai-delegations.json'); return Array.isArray(stored) ? stored : stored.delegations ?? Object.values(stored) }
+    assert.deepEqual((await storedDelegations()).find((item) => item.id === 'policy:card-5').aiPolicyResumeConversion,
+      { conversationId: 'old-claude', currentModelId: 'opus', expectedModelId: 'gpt-6.1-sol' })
+    const retryBase = await request(11, { workType: 'other', strategy: 'resume', conversationId: 'old-claude-retry' })
+    const staleRetry = await api.call(endpoint, 'POST', { ...retryBase, idempotencyKey: 'policy:retry-first', sourceRevision: retryBase.sourceRevision + 100 }, origin)
+    assert.equal(staleRetry.body.reasonCode, 'AI_DELEGATION_VERSION_CONFLICT', JSON.stringify(staleRetry.body))
+    const failureId = staleRetry.body.requestFailure.retryReference.requestId
+    const retried = await api.call(endpoint, 'POST', { ...retryBase, idempotencyKey: 'policy:retry-second', retryOfRequestId: failureId }, origin)
+    assert.equal(retried.body.reasonCode, 'AI_DELEGATION_ACCEPTED', JSON.stringify(retried.body))
+    assert.equal(retried.body.delegation.strategy, 'new')
+    assert.equal(retried.body.aiPolicy.resumeConversion.conversationId, 'old-claude-retry')
+    const listed = await api.call(`/api/maps/${mapId}/ai-delegations?parentCardId=card-0`, 'GET', undefined, origin)
+    const retriedFailure = listed.body.requestFailures.find((item) => item.id === failureId)
+    assert.equal(retriedFailure.resolvedByDelegationId, 'policy:retry-second', JSON.stringify(retriedFailure.retryVerification))
+    assert.equal(retriedFailure.retryVerification.method, 'retry-reference')
+
     const legacy = await api.call(endpoint, 'POST', await request(9), origin)
     assert.equal(legacy.body.reasonCode, 'AI_DELEGATION_ACCEPTED', JSON.stringify(legacy.body))
     assert.equal(legacy.body.aiPolicy, undefined)

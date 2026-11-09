@@ -25,12 +25,20 @@ function failureError(status, reasonCode, message) {
 const retryablePreflightCodes = new Set(['AI_DELEGATION_VERSION_CONFLICT', 'AI_DELEGATION_ALREADY_ACTIVE', 'AI_DELEGATION_CONVERSATION_BUSY'])
 const instructionDigest = instruction => createHash('sha256').update(instruction).digest('hex')
 
-function sameWork(failure, candidate) {
+// 위임 규칙이 이어가기를 새 대화로 바꾼 위임은 서버가 바꾼 방식·대화가 아니라 원래 요청한 방식·대화로 비교한다.
+const requestedStrategy = candidate => candidate.aiPolicyResumeConversion ? 'resume' : candidate.strategy
+const requestedConversation = candidate => candidate.aiPolicyResumeConversion?.conversationId ?? candidate.targetConversationId
+
+function sameInstruction(failure, candidate) {
   return sameRequestScope(failure, candidate) && failure.instructionHash
     && failure.instructionHash === candidate.instructionHash
     && failure.parentConversationId && failure.parentConversationId === candidate.parentConversationId
-    && failure.strategy === candidate.strategy
-    && (!failure.requestedConversationId || failure.requestedConversationId === candidate.targetConversationId)
+}
+
+function sameWork(failure, candidate) {
+  return sameInstruction(failure, candidate)
+    && failure.strategy === requestedStrategy(candidate)
+    && (!failure.requestedConversationId || failure.requestedConversationId === requestedConversation(candidate))
 }
 
 function verifiedReplacement(failure, delegations, records = []) {
@@ -48,13 +56,15 @@ function verifiedReplacement(failure, delegations, records = []) {
       visited.add(id)
       if (id === failure.id) return true
       const previous = records.find(record => record.id === id)
-      if (!previous || previous.phase !== 'preflight' || previous.executionState !== 'not-started' || !sameWork(previous, candidate)) return false
+      // 재접수 참조는 접수 때 validateRetry가 원 요청과 같은 업무인지 이미 확인했다. 그 뒤 서버가 바꿀 수 있는 방식·대화는 비교하지 않는다.
+      if (!previous || previous.phase !== 'preflight' || previous.executionState !== 'not-started' || !sameInstruction(previous, candidate)) return false
       id = previous.retryOfRequestId
     }
     return false
   }
-  const candidate = [...delegations.values()].filter(item => sameWork(failure, item)
-    && (retryablePreflightCodes.has(failure.reasonCode) || referencesFailure(item)))
+  const candidate = [...delegations.values()].filter(item => referencesFailure(item)
+    ? sameInstruction(failure, item)
+    : retryablePreflightCodes.has(failure.reasonCode) && sameWork(failure, item))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0]
   return candidate ? { id: candidate.id, method: referencesFailure(candidate) ? 'retry-reference' : 'same-instruction' } : null
 }

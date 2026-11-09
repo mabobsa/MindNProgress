@@ -12268,6 +12268,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           targetHomeMachineId,
           childOperationId: id,
           strategy,
+          // 위임 규칙으로 이어가기를 새 대화로 바꿨다면 원래 요청한 대화를 남긴다(접수 실패 재접수 판정에 쓴다).
+          ...(aiPolicyResumeConversion ? { aiPolicyResumeConversion } : {}),
           conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
           ...(appliedContextOverride ? { contextOverride: { ...appliedContextOverride, appliedAt: now } } : {}),
           decisionReason,
@@ -12363,6 +12365,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
               targetHomeMachineId,
               childOperationId: id,
               strategy,
+              // 위임 규칙으로 이어가기를 새 대화로 바꿨다면 원래 요청한 대화를 남긴다(접수 실패 재접수 판정에 쓴다).
+              ...(aiPolicyResumeConversion ? { aiPolicyResumeConversion } : {}),
               conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
               ...(appliedContextOverride ? { contextOverride: { ...appliedContextOverride, appliedAt: now } } : {}),
               decisionReason,
@@ -12612,6 +12616,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         targetHomeMachineId,
         childOperationId: id,
         strategy,
+        // 위임 규칙으로 이어가기를 새 대화로 바꿨다면 원래 요청한 대화를 남긴다(접수 실패 재접수 판정에 쓴다).
+        ...(aiPolicyResumeConversion ? { aiPolicyResumeConversion } : {}),
         conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
         ...(appliedContextOverride ? { contextOverride: { ...appliedContextOverride, appliedAt: now } } : {}),
         decisionReason,

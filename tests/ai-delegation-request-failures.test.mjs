@@ -382,3 +382,29 @@ test('연속 접수 실패의 참조 체인은 원 요청까지 해제하고 실
   assert.equal(unknown.retryReference, undefined)
   assert.throws(() => ledger.validateRetry(original, unknown.id, new Map()), { reasonCode: 'AI_DELEGATION_RETRY_REFERENCE_INVALID' })
 })
+
+test('위임 규칙이 이어가기를 새 대화로 바꾼 재접수도 같은 업무로 확인하고, 근거 없는 후보는 여전히 고르지 않는다', async () => {
+  // 2026-11-09 운영 사례: resume 요청이 문서 버전 충돌로 실패한 뒤 같은 지시로 재접수됐고, 서버가 위임 규칙 모델과 다른 대화라 새 대화로 바꿨다.
+  const ledger = await createAiDelegationRequestFailures(memoryLedger().dependencies)
+  const original = { ...context, parentConversationId: 'parent-conversation', requestedConversationId: 'old-conversation', strategy: 'resume' }
+  const versionConflict = { status: 409, reasonCode: 'AI_DELEGATION_VERSION_CONFLICT', message: '문서가 변경되었습니다.' }
+  const failed = await ledger.record(original, versionConflict)
+  const instructionHash = createHash('sha256').update(original.instruction).digest('hex')
+  // 접수 때는 전환 전 요청으로 재접수 참조를 검증한다.
+  assert.equal(ledger.validateRetry({ ...original, delegationId: 'retry', requestSignature: 'rev52' }, failed.id, new Map()), failed.id)
+  const converted = { ...original, id: 'retry', requestSignature: 'rev52', state: 'completed', createdAt: '2999-01-01', instructionHash,
+    strategy: 'new', targetConversationId: 'new-conversation' }
+  const verify = (delegation) => ledger.list({ mapId: context.mapId, delegations: new Map([[delegation.id, delegation]]) })[0].retryVerification
+
+  // 재접수 참조가 있으면 전환 기록이 없는 이전 기록(운영 rev52)도 확인한다.
+  assert.deepEqual([verify({ ...converted, retryOfRequestId: failed.id }).state, verify({ ...converted, retryOfRequestId: failed.id }).method], ['confirmed', 'retry-reference'])
+  // 참조 없이 다시 접수한 경우는 전환 기록의 원래 대화로 비교한다.
+  const recorded = { ...converted, aiPolicyResumeConversion: { conversationId: 'old-conversation', currentModelId: 'opus', expectedModelId: 'gpt-6.1-sol' } }
+  assert.deepEqual([verify(recorded).state, verify(recorded).method], ['confirmed', 'same-instruction'])
+  // 전환 기록도 참조도 없으면 다른 업무일 수 있으므로 확인하지 않는다.
+  assert.equal(verify(converted).state, 'unverified')
+  assert.equal(verify({ ...recorded, aiPolicyResumeConversion: { conversationId: 'other-conversation' } }).state, 'unverified')
+  // 참조가 있어도 지시·상위 대화가 다르면 확인하지 않는다.
+  assert.equal(verify({ ...converted, retryOfRequestId: failed.id, instructionHash: 'different' }).state, 'unverified')
+  assert.equal(verify({ ...converted, retryOfRequestId: failed.id, parentConversationId: 'other' }).state, 'unverified')
+})

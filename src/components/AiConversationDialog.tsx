@@ -285,18 +285,18 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
   const delegationModel = delegationAgent?.models.find((item) => item.id === delegationRuntime.modelId)
   const delegationMode = delegationAgent?.modes.find((item) => item.id === delegationRuntime.mode)
   const delegationThoughtLevel = delegationAgent?.thoughtLevels.find((item) => item.id === delegationRuntime.thoughtLevel)
-  const delegationInstruction = buildAiDelegationModelInstruction({
+  const delegationInstruction = delegationPreferences.enabled ? buildAiDelegationModelInstruction({
     narrativeMode: delegationPreferences.narrativeMode,
     narrativeText: delegationPreferences.narrativeText,
     agentName: delegationAgent?.name,
     model: delegationModel?.label,
     mode: delegationMode?.label,
     thoughtLevel: delegationThoughtLevel?.label,
-  })
-  const delegationSummary = delegationPreferences.narrativeMode
+  }) : ''
+  const delegationSummary = !delegationPreferences.enabled ? '미사용' : delegationPreferences.narrativeMode
     ? `서술형 · ${delegationPreferences.narrativeText.trim().replace(/\s+/g, ' ') || '입력 없음'}`
     : [delegationAgent?.name, delegationModel?.label, delegationMode?.label, delegationThoughtLevel?.label].filter(Boolean).join(', ') || '선택사항'
-  const delegationNotice = activeDelegationSelection?.notice || (!delegationPreferences.narrativeMode && resolvedDelegation.unavailableFields.length
+  const delegationNotice = activeDelegationSelection?.notice || (delegationPreferences.enabled && !delegationPreferences.narrativeMode && resolvedDelegation.unavailableFields.length
     ? `현재 목록에 없는 ${resolvedDelegation.unavailableFields.join('·')} 항목은 지정 안 함으로 두었습니다.` : '')
   const automaticRequest = combineAiEditorRequest(role?.automaticRequest, '', role?.fullInitialRequest, delegationInstruction)
   const selectedMcpServers = options?.mcpServers.filter((server) => server.required || selectedMcpIds.has(server.id)) ?? []
@@ -630,8 +630,17 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
                 <span>이 계정을 {CLAUDE_ACCOUNT_ROLE_LABELS[claudeAccountPurposeRole]}의 기본 계정으로 사용</span>
               </label>)}
             <details className="ai-delegation-model-section">
-              <summary><span className="ai-section-label">AI 위임 모델</span><span className="ai-section-selection" title={delegationSummary}>{delegationSummary}</span></summary>
-              <div className="ai-delegation-model-content">
+              <summary>
+                <span className="ai-section-label">AI 위임 모델</span>
+                <span className="ai-section-selection" title={delegationSummary}>{delegationSummary}</span>
+                <label className="ai-delegation-enabled-toggle" onClick={(event) => event.stopPropagation()}>
+                  <input type="checkbox" checked={delegationPreferences.enabled} onChange={(event) => changeDelegationPreferences({ ...delegationPreferences, enabled: event.target.checked })} />
+                  <span>AI 위임 모델 사용</span>
+                </label>
+              </summary>
+              {(delegationPreferences.enabled || delegationNotice) && <div className="ai-delegation-model-content">
+                {delegationNotice && <p className="ai-delegation-model-notice" role="status">{delegationNotice}</p>}
+                {delegationPreferences.enabled && <>
                 <div className="ai-delegation-model-guidance">
                   <p>하위 카드에 위임할 AI 설정을 자동 적용 내용에 추가합니다. {delegationPreferences.narrativeMode ? '사용할 AI와 모델, 권한, 사고 수준 등의 조건을 자유롭게 작성하세요.' : 'AI 종류를 먼저 선택하고, 필요한 항목만 지정하세요.'} 마지막 설정은 이 계정·실행 머신별로 자동 복원됩니다.</p>
                   <label className="ai-delegation-narrative-toggle">
@@ -639,7 +648,6 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
                     <span>서술형 작성</span>
                   </label>
                 </div>
-                {delegationNotice && <p className="ai-delegation-model-notice" role="status">{delegationNotice}</p>}
                 {delegationPreferences.narrativeMode ? <label className="ai-request ai-delegation-narrative">
                   <span>위임 AI 설정 (선택사항)</span>
                   <textarea value={delegationPreferences.narrativeText} rows={4} maxLength={AI_DELEGATION_NARRATIVE_MAX_LENGTH}
@@ -664,7 +672,8 @@ export function AiConversationDialog({ userId, documentId, documentTitle, cardId
                     {delegationAgent?.thoughtLevels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                   </select></label>
                 </div>}
-              </div>
+                </>}
+              </div>}
             </details>
             <details className="ai-workspace-section" open={dialogSections.sections.workspace}>
               <summary onClick={(event) => { event.preventDefault(); dialogSections.toggle('workspace') }}>

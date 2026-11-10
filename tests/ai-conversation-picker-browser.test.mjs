@@ -139,8 +139,26 @@ test('대화 선택 목록의 보조 정보는 다크모드·호버·비활성 �
     assert.equal(await evaluate('document.querySelectorAll(".ai-conversation-choice-delete").length'), 0)
     await waitFor(() => evaluate('typeof window.pickerFetch.releaseDetails==="function"'))
     const checked = () => evaluate('[...document.querySelectorAll(".ai-conversation-primary-choice input")].flatMap((el,i)=>el.checked?[i]:[])')
+    const touchPrimaryCorners = async index => {
+      await evaluate(`document.querySelectorAll('.ai-conversation-primary-choice')[${index}].scrollIntoView({block:'nearest'})`)
+      await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 })
+      try {
+        for (const [right, bottom] of [[false, false], [true, false], [false, true], [true, true]]) {
+          const bounds = await evaluate(`(()=>{const r=document.querySelectorAll('.ai-conversation-primary-choice')[${index}].getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`)
+          assert.ok(bounds.width >= 76 && bounds.height >= 44, '담당 터치 영역은 가로 76px, 세로 44px 이상이다')
+          const point = { x: bounds.x + (right ? bounds.width - 3 : 3), y: bounds.y + (bottom ? bounds.height - 3 : 3) }
+          assert.equal(await evaluate(`document.elementFromPoint(${point.x},${point.y})?.closest('.ai-conversation-primary-choice')===document.querySelectorAll('.ai-conversation-primary-choice')[${index}]`), true, '영역 가장자리도 대화 열기 버튼과 분리한다')
+          await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...point, radiusX: 1, radiusY: 1, force: 1, id: 1 }] })
+          await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+          await waitFor(async () => (await checked())[0] === index)
+          assert.equal(await evaluate('window.audit.selected'), null, '담당 영역의 모서리를 터치해도 대화를 열지 않는다')
+        }
+      } finally {
+        await send('Emulation.setTouchEmulationEnabled', { enabled: false })
+      }
+    }
     assert.deepEqual(await checked(), [0], '기존 목록은 최신 대화 하나만 담당으로 체크한다')
-    await evaluate('document.querySelectorAll(".ai-conversation-primary-choice input")[1].click()')
+    await touchPrimaryCorners(1)
     await waitFor(async () => (await checked())[0] === 1)
     assert.deepEqual(await evaluate('window.primary.calls'), [{id:'conversation-1',cardId:'root',expected:'conversation-0'}])
     assert.equal(await evaluate('window.audit.selected'), null, '담당 체크만 바꾸면 대화를 열지 않는다')
@@ -195,6 +213,7 @@ test('대화 선택 목록의 보조 정보는 다크모드·호버·비활성 �
     await delay(180)
     await assertContrast('좁은 화면에서도 보조 정보의 대비 유지')
     assert.equal(await evaluate('(()=>{const el=document.querySelector(".ai-conversation-picker"),r=el.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&el.scrollWidth<=el.clientWidth})()'), true)
+    await touchPrimaryCorners(0)
     await screenshot('dark-mobile.png')
     await evaluate('window.setTheme("light")')
     await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 0, y: 0 })

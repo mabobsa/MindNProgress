@@ -10,7 +10,7 @@ AionUi 백엔드는 현재 대화가 MindNProgress 카드에 연결되어 있는
 
 `PUT /api/maps/{mapId}/cards/{cardId}/ai-conversations/primary`는 로그인한 편집자가 사용한다. `conversationId`와 현재 선택인 `expectedPrimaryConversationId`를 보내며, 다른 곳에서 선택이 바뀌었으면 409로 응답한다. 연결된 대화와 머신 접근 권한을 검증하고 `aiPrimaryConversationId`만 변경한다. 이 API는 Aion 대화를 실행하거나 조회하지 않는다. 카드 대화 목록 응답의 `primaryConversationId`로 선택을 확인할 수 있다.
 
-총괄 지시 시 담당 모델이 위임 규칙과 다르면 규칙 모델에 맞는 최신 연결 대화를 담당으로 지정하고, 없으면 새로 만든다. 자세한 전환·예외·대기 동작은 [AI 위임 규칙](ai-delegation-policy.md)의 담당 대화 항목을 따른다.
+총괄 지시와 하위 카드 위임 모두 담당 모델이 위임 규칙과 다르면 규칙 모델에 맞는 최신 연결 대화를 담당으로 지정하고, 없으면 새로 만든다. 하위 위임의 담당 저장은 실행 확인 후 이루어진다. 자세한 전환·예외·대기 동작은 [AI 위임 규칙](ai-delegation-policy.md)의 담당 대화 항목을 따른다.
 
 ## 자기 카드의 후속 대화 시작
 
@@ -152,7 +152,7 @@ GET /api/integrations/aionui/conversations/{conversationId}/mindnprogress
 - 판정 기준은 MnP 카드의 담당 선택이다. 미지정 상태의 기존 카드는 가장 최신 연결 대화를 초기 담당으로 취급한다.
 - 담당을 바꾸면 다음 조회부터 새 담당은 `primary`, 이전 담당은 `auxiliary`다. 담당을 삭제해 재선택을 기다리는 상태면 남은 대화는 모두 `auxiliary`, 담당 ID는 `null`이다.
 - 연결이 없으면 기존처럼 `exists=false`, `target=null`이다. 구버전 서버가 새 필드를 생략하면 **역할 미확인**으로 처리하며 담당이나 보조라고 추정하지 않는다.
-- 조회는 MnP 저장 데이터만 사용한다. Aion 모델·런타임 추가 조회, 담당 자동 변경, 문서 저장을 수행하지 않는다. 위임 규칙에 따른 담당 자동 교체는 그룹 지시 접수 시 처리한다.
+- 조회는 MnP 저장 데이터만 사용한다. Aion 모델·런타임 추가 조회, 담당 자동 변경, 문서 저장을 수행하지 않는다. 위임 규칙에 따른 담당 자동 교체는 그룹 지시 접수 또는 하위 위임 실행 확인 시 처리한다.
 - 응답은 `Cache-Control: no-store`다. Aion에서 별도로 캐시한다면 담당 변경 후 이전·새 담당 대화의 연결 정보를 다시 조회해야 한다. 이 API 추가만으로 Aion의 기존 제목이 자동 변경되지는 않는다.
 
 ## 같은 계정·디바이스 화면 선택

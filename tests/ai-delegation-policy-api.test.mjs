@@ -23,12 +23,17 @@ const agentRows = [
 ]
 // 이어가기 대상의 현재 모델. 목록에 없는 대화(새로 만든 위임 대화 등)는 Codex Sol이다.
 const conversationModels = { parent: ['claude', 'opus'], 'old-claude': ['claude', 'opus'], 'old-sol': ['codex', 'gpt-6.1-sol'], 'old-claude-retry': ['claude', 'opus'], 'root-astra': ['codex', 'gpt-6-astra'], 'root-astra-alone': ['codex', 'gpt-6-astra'], 'root-opus-old': ['claude', 'opus'], 'root-opus-new': ['claude', 'opus'] }
+for (const card of [12, 13, 14, 15, 16, 17, 18]) {
+  conversationModels[`sub-${card}-opus`] = ['claude', 'opus']
+  conversationModels[`sub-${card}-sol-old`] = ['codex', 'gpt-6.1-sol']
+  conversationModels[`sub-${card}-sol-new`] = ['codex', 'gpt-6.1-sol']
+}
 const link = (conversationId) => ({ conversationId, homeMachineId: 'isolated-storage',
   agent: { id: conversationModels[conversationId][0], label: conversationModels[conversationId][0] },
   model: { id: conversationModels[conversationId][1], label: conversationModels[conversationId][1] },
   skills: [], mcpServers: [], startedBy: { id: 'user-editor', label: '김용민' } })
 
-test('위임 규칙은 업무 유형·카드 구분으로 새 대화 설정을 정하고, 규칙 모델과 다른 이어가기는 새 대화로 실행한다', { timeout: 90_000 }, async (t) => {
+test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사용하고 후보가 없을 때만 새 담당을 생성한다', { timeout: 90_000 }, async (t) => {
   const creates = []
   const unavailableConversationIds = new Set()
   const busy = new Set()
@@ -76,7 +81,21 @@ test('위임 규칙은 업무 유형·카드 구분으로 새 대화 설정을 �
       Object.assign(map.nodes[5].data, { aiConversationId: 'old-claude', aiConversations: [link('old-claude')] })
       Object.assign(map.nodes[6].data, { aiConversationId: 'old-sol', aiConversations: [link('old-sol')] })
       Object.assign(map.nodes[11].data, { aiConversationId: 'old-claude-retry', aiConversations: [link('old-claude-retry')] })
+      for (const card of [12, 13, 14, 15, 16, 17, 18]) Object.assign(map.nodes[card].data, {
+        aiConversationId: `sub-${card}-opus`, aiPrimaryConversationId: [13, 17].includes(card) ? `sub-${card}-sol-old` : card === 16 ? null : `sub-${card}-opus`,
+        aiConversations: [
+          { ...link(`sub-${card}-sol-new`), startedAt: '2026-11-09T00:00:00Z' },
+          { ...link(`sub-${card}-sol-old`), startedAt: '2026-11-08T00:00:00Z' },
+          { ...link(`sub-${card}-opus`), startedAt: '2026-11-10T00:00:00Z' },
+        ],
+      })
       await writeFile(path.join(data, `${ids[0]}.json`), JSON.stringify(map))
+      await writeFile(path.join(data, '_ai-delegations.json'), JSON.stringify([{
+        id: 'interrupted-original', mapId: ids[0], parentCardId: 'card-0', targetCardId: 'card-17',
+        parentConversationId: 'parent', targetConversationId: 'sub-17-opus', state: 'waiting-child-resume',
+        childStatus: 'interrupted', strategy: 'resume', startedBy: 'user-editor',
+        createdAt: '2026-11-10T00:00:00.000Z', updatedAt: '2026-11-10T00:00:00.000Z',
+      }]))
       const target = fixture(ids[1])
       Object.assign(target.nodes[0].data, { aiConversationId: 'root-astra', aiConversations: [
         { ...link('root-opus-old'), startedAt: '2026-11-08T00:00:00Z' },
@@ -132,6 +151,7 @@ test('위임 규칙은 업무 유형·카드 구분으로 새 대화 설정을 �
     assert.deepEqual(sub.aiPolicy.applied, { agent: 'Codex CLI', model: 'gpt-6.1-sol', thoughtLevel: 'xhigh', mode: 'full-access' })
     const subLink = (await currentMap(mapId)).nodes[2].data.aiConversations.at(-1)
     assert.deepEqual([subLink.agent.id, subLink.model.id, subLink.thoughtLevel.id, subLink.mode.id], ['codex', 'gpt-6.1-sol', 'xhigh', 'full-access'])
+    assert.equal((await currentMap(mapId)).nodes[2].data.aiPrimaryConversationId, subLink.conversationId)
 
     // 하위에 다시 위임하는 중간 카드도 하위 카드 규칙, 복잡한 분석은 max.
     const middle = await invoke('delegate_ai_work', { mapId, ...await request(1, { workType: 'other', analysisDepth: 'deep' }) })
@@ -158,6 +178,7 @@ test('위임 규칙은 업무 유형·카드 구분으로 새 대화 설정을 �
     assert.deepEqual(converted.aiPolicy.resumeConversion, { conversationId: 'old-claude', currentModelId: 'opus', expectedModelId: 'gpt-6.1-sol' })
     assert.equal(converted.delegation.strategy, 'new')
     assert.deepEqual((await currentMap(mapId)).nodes[5].data.aiConversations.map((item) => item.conversationId), ['old-claude', `child-${creates.length}`])
+    assert.equal((await currentMap(mapId)).nodes[5].data.aiPrimaryConversationId, converted.delegation.targetConversationId)
     const convertedRepeat = await invoke('delegate_ai_work', { mapId, ...await request(5, { workType: 'other', strategy: 'resume', conversationId: 'old-claude' }),
       sourceRevision: converted.delegation.sourceRevision })
     assert.equal(convertedRepeat.reasonCode, 'AI_DELEGATION_REPEATED', '같은 요청을 다시 보내도 새 대화를 또 만들지 않는다')
@@ -167,6 +188,59 @@ test('위임 규칙은 업무 유형·카드 구분으로 새 대화 설정을 �
     const sameModel = await api.call(endpoint, 'POST', { ...await request(6, { workType: 'other', strategy: 'resume', conversationId: 'old-sol' }) }, origin)
     assert.equal(sameModel.body.reasonCode, 'AI_DELEGATION_CONVERSATION_ASSESSMENT_REQUIRED', JSON.stringify(sameModel.body))
     assert.equal(creates.length, countBeforeSame)
+
+    // 실제 사례: 담당 Opus와 규칙 Sol이 다르면 요청한 후보와 무관하게 최신 Sol을 선택·저장한다.
+    const beforeCandidate = (await currentMap(mapId)).nodes[12].data
+    const candidateRequest = await request(12, { workType: 'other', strategy: 'resume', conversationId: 'sub-12-sol-old' })
+    const candidate = await invoke('delegate_ai_work', { mapId, ...candidateRequest })
+    assert.equal(candidate.delegation.targetConversationId, 'sub-12-sol-new')
+    assert.equal(candidate.delegation.strategy, 'resume')
+    assert.equal(creates.at(-1).create, undefined)
+    assert.equal(candidate.aiPolicy.primaryResolution.expectedConversationId, 'sub-12-opus')
+    assert.equal((await currentMap(mapId)).nodes[12].data.aiPrimaryConversationId, 'sub-12-sol-new')
+    const candidateData = (await currentMap(mapId)).nodes[12].data
+    assert.equal(candidateData.aiConversationId, beforeCandidate.aiConversationId, '담당 전환이 최신 생성 대화 정보를 바꾸지 않는다')
+    assert.deepEqual(candidateData.aiConversations.find((item) => item.conversationId === 'sub-12-sol-new'),
+      beforeCandidate.aiConversations.find((item) => item.conversationId === 'sub-12-sol-new'), '이어가는 대화의 생성 시각·메타데이터를 보존한다')
+    const beforeRepeat = creates.length
+    assert.equal((await invoke('delegate_ai_work', { mapId, ...candidateRequest })).repeated, true)
+    assert.equal(creates.length, beforeRepeat)
+    // 모델이 이미 맞는 담당은 최신 보조 후보가 있어도 유지한다. new 요청도 담당을 재사용한다.
+    const kept = await invoke('delegate_ai_work', { mapId, ...await request(13, { workType: 'other' }) })
+    assert.equal(kept.delegation.targetConversationId, 'sub-13-sol-old')
+    assert.equal(creates.at(-1).create, undefined)
+    const beforeRejected = creates.length
+    unavailableConversationIds.add('sub-14-sol-new')
+    const lookupFailure = await api.call(endpoint, 'POST', await request(14, { workType: 'other' }), origin)
+    assert.equal(lookupFailure.body.reasonCode, 'AI_DELEGATION_PRIMARY_LOOKUP_UNAVAILABLE')
+    busy.add('sub-15-sol-new')
+    const busyCandidate = await api.call(endpoint, 'POST', await request(15, { workType: 'other' }), origin)
+    assert.equal(busyCandidate.body.reasonCode, 'AI_DELEGATION_CONVERSATION_BUSY')
+    assert.equal((await currentMap(mapId)).nodes[15].data.aiPrimaryConversationId, 'sub-15-opus')
+    assert.equal((await api.call(endpoint, 'POST', await request(16, { workType: 'other' }), origin)).body.reasonCode, 'AI_DELEGATION_PRIMARY_REQUIRED')
+    assert.equal(creates.length, beforeRejected, '조회 실패·실행 중·담당 해제 상태에서는 새 대화를 생성하지 않는다')
+    const recovered = await invoke('delegate_ai_work', { mapId, ...await request(17, {
+      workType: 'other', strategy: 'resume', conversationId: 'sub-17-opus',
+    }) })
+    assert.equal(recovered.delegation.targetConversationId, 'sub-17-opus', '중단된 동일 위임은 원래 대화에서 복구한다')
+    assert.equal(recovered.delegation.resumesDelegationId, 'interrupted-original')
+    assert.equal(recovered.delegation.primarySelection, undefined)
+    assert.equal((await currentMap(mapId)).nodes[17].data.aiPrimaryConversationId, 'sub-17-sol-old')
+    const explicit = await invoke('delegate_ai_work', { mapId, ...await request(18, {
+      workType: 'other', aiPolicyOverride: { evidence: '사용자가 이번 작업을 별도 Sonnet 대화에 지정했습니다.' },
+      newConversation: { agentId: 'claude', modelId: 'sonnet', thoughtLevelId: 'high' },
+    }) })
+    assert.equal(explicit.delegation.primarySelection, undefined)
+    assert.equal(created().modelId, 'sonnet')
+    assert.equal((await currentMap(mapId)).nodes[18].data.aiPrimaryConversationId, 'sub-18-opus')
+
+    // new 요청이 최신 담당 이어가기로 자동 선택된 뒤 바쁨으로 실패해도, 원 요청으로 재접수할 수 있다.
+    busy.clear()
+    const retryAfterBusy = await invoke('delegate_ai_work', { mapId, ...await request(15, { workType: 'other',
+      retryOfRequestId: busyCandidate.body.requestFailure.retryReference.requestId,
+    }) })
+    assert.equal(retryAfterBusy.delegation.targetConversationId, 'sub-15-sol-new')
+    assert.equal((await currentMap(mapId)).nodes[15].data.aiPrimaryConversationId, 'sub-15-sol-new')
 
     // 사용자가 직접 지정한 설정은 근거와 함께일 때만 규칙 대신 쓴다.
     const override = await invoke('delegate_ai_work', { mapId, ...await request(7, { workType: 'other',

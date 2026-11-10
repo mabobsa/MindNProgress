@@ -57,7 +57,7 @@ async function startAionUi(t, worker) {
     if (url.pathname === '/api/internal/external-conversation-dispatches' && request.method === 'POST') {
       posted.push(body)
       const lease = body.workspaceLease
-      const receipt = { operationId: body.operationId, conversationId: body.targetConversationId, state: 'running', turnId: `turn-${posted.length}`,
+      const receipt = { operationId: body.operationId, conversationId: body.targetConversationId ?? 'new-primary', state: 'running', turnId: `turn-${posted.length}`,
         ...(lease ? { workspaceLease: { workspaceId: lease.workspaceId, jobId: lease.jobId, leaseId: lease.leaseId, projectRoot: lease.projectRoot } } : {}) }
       receipts.set(body.operationId, receipt)
       return send(receipt, 202)
@@ -110,10 +110,12 @@ async function startServer({ dataDirectory, registryFile, upstreamPort, pollInte
       body: JSON.stringify({ email: 'admin@mind.local', password: adminPassword }) })
     assert.equal(login.status, 200, errors)
     const headers = { Cookie: login.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' }
-    const get = async (pathname) => {
+    const get = async (pathname, { allowProcessing = false } = {}) => {
       const response = await fetch(baseUrl + pathname, { headers })
+      const body = await response.json()
+      if (allowProcessing && response.status === 503 && body.code === 'STORAGE_PROCESSING') return null
       assert.equal(response.status, 200, `${pathname}\n${errors}`)
-      return response.json()
+      return body
     }
     return { get, stop, errors: () => errors }
   } catch (error) {
@@ -203,4 +205,64 @@ test('작업공간 대기 후 시작할 때 요청 때 인정한 포화 예외�
   } finally {
     await second.stop()
   }
+})
+
+for (const strategy of ['resume', 'new']) test(`재시작한 하위 위임 대기열은 ${strategy} 실행 확인 후 담당을 저장하고 사용자 선택·모델 변경을 보존한다`, {
+  timeout: Number(process.env.MNP_REAL_GIT_TEST_TIMEOUT_MS) || 120_000,
+}, async (t) => {
+  const { integration, worker, registryFile, dataDirectory } = await poolFixture(t)
+  const aion = await startAionUi(t, worker)
+  const names = ['changed', 'model-changed', 'stable']
+  const map = { id: 'map-primary', title: '하위 담당 대기열 검증', version: 1,
+    nodes: [{ id: 'parent-card', position: { x: 0, y: 0 }, data: { kind: 'root', label: '상위', aiConversationId: 'parent-conversation' } },
+      ...names.map((name, index) => ({ id: name, position: { x: 300, y: index * 200 }, data: { kind: 'task', label: name,
+        isWork: true, status: 'planned', progress: 0, aiConversationId: `old-${name}`,
+        aiPrimaryConversationId: name === 'changed' ? `target-${name}` : `old-${name}`,
+        aiConversations: [{ conversationId: `old-${name}` }, { conversationId: `target-${name}` }],
+      } }))], edges: names.map(name => ({ id: `edge-${name}`, source: 'parent-card', target: name })) }
+  await writeFile(path.join(dataDirectory, 'map-primary.json'), JSON.stringify(map))
+  const first = await startServer({ dataDirectory, registryFile, upstreamPort: aion.port, pollIntervalMs: 3_600_000 })
+  let assessment
+  try {
+    const listed = await first.get('/api/maps/map-primary/cards/stable/ai-conversations')
+    assessment = listed.conversations.find(item => item.conversationId === 'target-stable').contextHealth.assessmentId
+  } finally { await first.stop() }
+  const instruction = '담당 선택 대기열 검증 작업을 수행하세요.'
+  const queued = names.map((name, index) => ({
+    id: `queued-${name}`, requestSignature: `signature-${name}`, mapId: map.id, parentCardId: 'parent-card',
+    targetCardId: name, parentConversationId: 'parent-conversation', targetConversationId: strategy === 'resume' ? `target-${name}` : '',
+    childOperationId: `queued-${name}`, strategy, sourceRevision: 1, decisionReason: '담당 변경 검증',
+    conversationAssessmentId: assessment, instructionHash: createHash('sha256').update(instruction).digest('hex'),
+    state: 'waiting-workspace', resource: { kind: 'workspace_pool', key: 'test', projectRoot: integration }, startedBy: 'user-admin',
+    pendingInstruction: instruction,
+    pendingSelection: aiDelegationSelectionFromSource({ agent: { id: 'test-agent', label: '검증 AI' }, model: { id: 'test-model', label: '검증 모델' }, workspace: worker }),
+    pendingWorkspaceHint: integration, workspaceWaitStartedAt: '2026-11-11T00:00:00.000Z',
+    workspaceWaitReasonCode: 'AI_WORKSPACE_ALLOCATION_PENDING',
+    createdAt: `2026-11-11T00:00:0${index}.000Z`, updatedAt: '2026-11-11T00:00:00.000Z',
+    primarySelection: { expectedConversationId: `old-${name}`, modelId: name === 'model-changed' ? 'another-model' : 'test-model',
+      strategy, conversationId: strategy === 'resume' ? `target-${name}` : null },
+  })).filter(record => strategy === 'resume' || record.targetCardId !== 'model-changed')
+  await writeFile(path.join(dataDirectory, '_ai-delegations.json'), JSON.stringify(queued))
+  const second = await startServer({ dataDirectory, registryFile, upstreamPort: aion.port, pollIntervalMs: 200 })
+  try {
+    let delegations
+    for (let attempt = 0; attempt < 180; attempt++) {
+      const result = await second.get('/api/maps/map-primary/ai-delegations', { allowProcessing: true })
+      if (!result) { await pause(100); continue }
+      delegations = result.delegations
+      if (delegations.find(item => item.id === 'queued-stable')?.state === 'running') break
+      await pause(100)
+    }
+    assert.equal(delegations.find(item => item.id === 'queued-changed').failureReasonCode, 'AI_DELEGATION_PRIMARY_CHANGED')
+    if (strategy === 'resume') assert.equal(delegations.find(item => item.id === 'queued-model-changed').failureReasonCode, 'AI_DELEGATION_PRIMARY_MODEL_CHANGED')
+    const stable = delegations.find(item => item.id === 'queued-stable')
+    assert.equal(stable.state, 'running', JSON.stringify({ stable, errors: second.errors() }))
+    assert.equal(stable.linkError, null)
+    assert.equal(aion.posted.length, 1)
+    assert.equal(aion.posted[0].strategy, strategy)
+    const updated = (await second.get('/api/maps/map-primary')).map
+    assert.equal(updated.nodes.find(node => node.id === 'stable').data.aiPrimaryConversationId, strategy === 'resume' ? 'target-stable' : 'new-primary')
+    assert.equal(updated.nodes.find(node => node.id === 'changed').data.aiPrimaryConversationId, 'target-changed')
+    assert.equal(updated.nodes.find(node => node.id === 'stable').data.aiConversations.length, strategy === 'resume' ? 2 : 3)
+  } finally { await second.stop() }
 })

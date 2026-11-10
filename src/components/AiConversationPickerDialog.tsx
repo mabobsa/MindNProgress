@@ -190,7 +190,7 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
           <button type="button" onClick={onClose} disabled={Boolean(deleting) || primarySaving} aria-label="AI 대화 선택 닫기">×</button>
         </header>
         {deleting && <div className="ai-conversation-picker-progress" role="status">{deleting.name} 보관·삭제 중… 완료될 때까지 기다려 주세요.</div>}
-        {!documentMode && onSetPrimaryConversation && <div className="ai-conversation-picker-primary-guide">담당은 하나만 선택할 수 있습니다. 총괄 지시 시 위임 규칙과 모델이 다르면 일치하는 최신 대화로 담당을 변경하고, 없으면 새로 생성합니다.</div>}
+        {!documentMode && onSetPrimaryConversation && <div className="ai-conversation-picker-primary-guide">담당은 하나만 선택할 수 있습니다. 총괄 지시·하위 위임 시 규칙과 모델이 다르면 일치하는 최신 대화로 담당을 변경하고, 없으면 새로 생성합니다.</div>}
         {primarySaving && <div className="ai-conversation-picker-progress" role="status">담당 대화 저장 중…</div>}
         <div className="ai-conversation-picker-content">
           {!groups && !error && <div className="ai-conversation-picker-message">연결된 대화를 확인하는 중…</div>}

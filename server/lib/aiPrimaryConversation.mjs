@@ -21,6 +21,28 @@ export async function resolvePrimaryConversationPolicy(data, rule, readModel) {
   return { previousConversationId: primaryConversationId, conversationId: null, currentModelId, expectedModelId: rule.modelId, strategy: 'new' }
 }
 
+const delegationPrimaryError = (reasonCode, message) => Object.assign(new Error(message), { status: 409, reasonCode })
+
+export async function resolveAiDelegationPrimary(data, rule, readModel, request) {
+  const expectedConversationId = primaryAiConversationIdFromData(data)
+  const links = aiConversationLinksFromData(data)
+  if (links.length && !links.some((link) => link.conversationId === expectedConversationId)) {
+    throw delegationPrimaryError('AI_DELEGATION_PRIMARY_REQUIRED', '담당 대화가 없습니다. AI 대화 선택 목록에서 담당을 체크해 주세요.')
+  }
+  const resolution = await resolvePrimaryConversationPolicy(data, rule, readModel)
+  const conversationId = resolution ? resolution.conversationId : expectedConversationId
+  return { expectedConversationId, modelId: rule.modelId,
+    requestedStrategy: request.strategy, requestedConversationId: request.conversationId,
+    strategy: conversationId ? 'resume' : 'new', conversationId,
+    ...(resolution ? { resolution } : {}) }
+}
+
+export function assertAiDelegationPrimaryUnchanged(data, selection) {
+  if (selection && primaryAiConversationIdFromData(data) !== selection.expectedConversationId) {
+    throw delegationPrimaryError('AI_DELEGATION_PRIMARY_CHANGED', '위임 준비 중 담당 대화가 변경되었습니다. 최신 담당과 위임 규칙으로 다시 요청해 주세요.')
+  }
+}
+
 // 담당 선택과 새 대화 생성을 분리하여 보조 대화로 지시가 임의 전달되지 않도록 한다.
 export function resolveGroupInstructionConversation(data, { strategy, conversationId = '', targetConversationRole = 'primary', overrideEvidence }) {
   const links = aiConversationLinksFromData(data)

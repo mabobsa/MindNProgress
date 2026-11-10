@@ -25,9 +25,9 @@ function failureError(status, reasonCode, message) {
 const retryablePreflightCodes = new Set(['AI_DELEGATION_VERSION_CONFLICT', 'AI_DELEGATION_ALREADY_ACTIVE', 'AI_DELEGATION_CONVERSATION_BUSY'])
 const instructionDigest = instruction => createHash('sha256').update(instruction).digest('hex')
 
-// 위임 규칙이 이어가기를 새 대화로 바꾼 위임은 서버가 바꾼 방식·대화가 아니라 원래 요청한 방식·대화로 비교한다.
-const requestedStrategy = candidate => candidate.aiPolicyResumeConversion ? 'resume' : candidate.strategy
-const requestedConversation = candidate => candidate.aiPolicyResumeConversion?.conversationId ?? candidate.targetConversationId
+// 위임 규칙이 담당·실행 방식을 바꾼 위임도 원래 요청한 방식·대화로 비교한다.
+const requestedStrategy = candidate => candidate.primarySelection?.requestedStrategy ?? (candidate.aiPolicyResumeConversion ? 'resume' : candidate.strategy)
+const requestedConversation = candidate => candidate.primarySelection?.requestedConversationId ?? candidate.aiPolicyResumeConversion?.conversationId ?? candidate.targetConversationId
 
 function sameInstruction(failure, candidate) {
   return sameRequestScope(failure, candidate) && failure.instructionHash

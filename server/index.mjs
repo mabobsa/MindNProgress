@@ -54,7 +54,7 @@ import {
   legacyGroupDelegationCreationAllowed,
   normalizeGroupDocumentReplyTarget,
 } from './lib/groupDocumentInstructions.mjs'
-import { resolveGroupInstructionConversation, resolvePrimaryConversationPolicy } from './lib/aiPrimaryConversation.mjs'
+import { resolveGroupInstructionConversation, resolvePrimaryConversationPolicy, resolveAiDelegationPrimary, assertAiDelegationPrimaryUnchanged } from './lib/aiPrimaryConversation.mjs'
 import { createDoorayResponseIntegration } from './lib/doorayResponseIntegration.mjs'
 import { createDoorayResponsePreferences } from './lib/doorayResponsePreferences.mjs'
 import { AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, GROUP_AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_FOLLOWUP_INSTRUCTION, AI_DELEGATION_REPORT_INSTRUCTION, AI_DELEGATION_RESULT_INSTRUCTION } from '../src/utils/aiApprovalInstructions.mjs'
@@ -2731,22 +2731,6 @@ async function delegationCreateSelection(targetCard, requestedSelection, parentA
   return selection
 }
 
-// 위임 규칙의 모델과 다른 대화를 이어가려 하면 새 대화로 실행한다(사용자 결정 2026-11-09).
-// 현재 모델을 확인하지 못하면 바꾸지 않고 기존 이어가기 검사에 맡긴다.
-async function aiDelegationPolicyResumeConversion(policyRule, conversationId, linked) {
-  let conversation = null
-  try {
-    conversation = await fetchAiConversationRuntime(conversationId)
-  } catch (error) {
-    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
-    return null
-  }
-  const currentModelId = String(conversation?.extra?.current_model_id ?? '').trim()
-    || aiConversationLinkFromAionUiConversation(conversation)?.model?.id || linked?.model?.id || ''
-  if (aiDelegationResumeModelMatches(policyRule, currentModelId) !== false) return null
-  return { conversationId, currentModelId, expectedModelId: policyRule.modelId }
-}
-
 function issueDelegatedAttribution({ mapId, cardId, conversationId, selection, startedBy, homeMachineId }) {
   const token = randomBytes(32).toString('base64url')
   const now = Date.now()
@@ -3500,6 +3484,47 @@ async function restoreAiDelegationResumeReservation(delegation, error) {
   })
 }
 
+// 실행이 확인된 뒤에만 담당을 저장한다. 생성·전송 중 사람이 바꾼 담당은 덮어쓰지 않는다.
+async function linkAiDelegationConversation({ map, targetCard, targetConversationId, strategy, selection,
+  targetHomeMachineId, workspaceLease, instruction, user, primarySelection = null, startedBy = user.id, startedAt = new Date().toISOString() }) {
+  if (strategy !== 'new' && !primarySelection) return { updatedMap: map, linkError: null }
+  try {
+    return await withDocument(map.id, async () => {
+      documentReconstruction.assertWritable(map.id)
+      const current = await readMap(map.id)
+      const card = current?.nodes.find((node) => node.id === targetCard.id)
+      if (!card || current.trashedAt || current.archivedAt || card.data.reference) throw new Error('대상 원본 카드를 변경할 수 없습니다.')
+      const currentPrimary = primaryAiConversationIdFromData(card.data)
+      const changed = primarySelection && ![primarySelection.expectedConversationId, targetConversationId].includes(currentPrimary)
+      const previous = aiConversationLinksFromData(card.data).find((link) => link.conversationId === targetConversationId)
+      if (strategy === 'resume' && !previous) throw new Error('담당 후보와 카드의 연결이 사라졌습니다.')
+      const link = strategy === 'resume' ? previous : normalizeAiConversationLink({
+        conversationId: targetConversationId, homeMachineId: targetHomeMachineId,
+        agent: selection.agent, model: selection.model, providerId: selection.providerId,
+        mode: selection.mode, thoughtLevel: selection.thoughtLevel,
+        skills: selection.enabledSkillIds.map((id) => ({ id, label: id })),
+        mcpServers: selection.mcpIds.map((id) => ({ id, label: id })), workspace: selection.workspace,
+        claudeAccountId: selection.claudeAccountId, workspacePoolId: workspaceLease?.poolId ?? null,
+        requestPreview: instruction, startedBy: { id: startedBy, label: users.find((candidate) => candidate.id === startedBy)?.name ?? startedBy }, startedAt, linkedAt: startedAt,
+      })
+      const linkError = changed ? '위임 전송 중 담당이 변경되어 기존 선택을 유지했습니다. 실행 대화와 담당을 확인해 주세요.' : null
+      if (strategy === 'resume' && (changed || currentPrimary === targetConversationId)) return { updatedMap: current, linkError }
+      const updatedMap = await saveMap(map.id, {
+        nodes: current.nodes.map((node) => node.id === card.id ? { ...node,
+          data: withAiConversationLink(node.data, link, { makePrimary: Boolean(primarySelection && !changed), makeCurrent: strategy === 'new' }),
+        } : node), edges: current.edges,
+      }, user, current.title, current.color, 'content', { expectedVersion: current.version })
+      broadcastEvent({ type: 'ai-conversation-linked', mapId: map.id, nodeId: card.id,
+        conversationId: targetConversationId, conversation: link, sourceClientId: null,
+        updatedAt: updatedMap.updatedAt, updatedBy: publicUser(user) })
+      return { updatedMap, linkError }
+    })
+  } catch (error) {
+    console.warn('[AI delegation conversation link]', error)
+    return { updatedMap: map, linkError: '위임 실행은 시작됐지만 카드 연결·담당을 저장하지 못했습니다.' }
+  }
+}
+
 async function dispatchPreparedAiDelegation({
   queuedDelegation = null,
   id,
@@ -3521,6 +3546,17 @@ async function dispatchPreparedAiDelegation({
   parentHomeMachineId = conversationHomeMachineId(parentAttribution?.conversationId),
   targetHomeMachineId = machineRegistry.mainMachineId,
 }) {
+  if (queuedDelegation?.primarySelection) {
+    const current = await readMap(map.id)
+    const card = current?.nodes.find((node) => node.id === targetCard.id)
+    try {
+      if (!card || current.trashedAt) throw aiDelegationDispatchError('대기 중 대상 카드가 변경되었습니다.', 409, 'AI_DELEGATION_PRIMARY_CHANGED')
+      assertAiDelegationPrimaryUnchanged(card.data, queuedDelegation.primarySelection)
+    } catch (error) {
+      if (workspaceLease && !resumedDelegation) await workspacePoolManager.cancel(workspaceLease.leaseId, error.message)
+      throw error
+    }
+  }
   if (strategy === 'new' && isAiDelegationModelBlocked(selection?.model?.id)) {
     throw aiDelegationDispatchError('공통 모델 정책에서 선택한 모델이 제한되어 대기 중인 위임을 전달하지 않았습니다. 허용 모델로 다시 요청하세요.', 409, 'AI_DELEGATION_MODEL_BLOCKED')
   }
@@ -3712,45 +3748,10 @@ async function dispatchPreparedAiDelegation({
   })
   await Promise.all([persistAiAttributions(), persistAiConversationAttributions(), persistAiConversationOrigins()])
 
-  let updatedMap = map
-  let linkError = null
-  if (strategy === 'new') {
-    const latestMap = await readMap(map.id)
-    const latestTargetCard = latestMap?.nodes.find((node) => node.id === targetCard.id)
-    if (!latestMap || latestMap.trashedAt || !latestTargetCard) {
-      linkError = '새 대화는 생성됐지만 대상 카드가 변경되어 연결하지 못했습니다.'
-    } else {
-      const conversationLink = normalizeAiConversationLink({
-        conversationId: targetConversationId,
-        homeMachineId: targetHomeMachineId,
-        agent: selection.agent,
-        model: selection.model,
-        providerId: selection.providerId,
-        mode: selection.mode,
-        thoughtLevel: selection.thoughtLevel,
-        skills: selection.enabledSkillIds.map((skillId) => ({ id: skillId, label: skillId })),
-        mcpServers: selection.mcpIds.map((mcpId) => ({ id: mcpId, label: mcpId })),
-        workspace: selection.workspace,
-        claudeAccountId: selection.claudeAccountId,
-        workspacePoolId: workspaceLease?.poolId ?? null,
-        requestPreview: instruction,
-        startedBy: { id: attribution.startedBy, label: users.find((candidate) => candidate.id === attribution.startedBy)?.name ?? attribution.startedBy },
-        startedAt: new Date().toISOString(),
-        linkedAt: new Date().toISOString(),
-      })
-      try {
-        updatedMap = await linkStoredConversation(map.id, targetCard.id, targetConversationId, conversationLink, user)
-        broadcastEvent({
-          type: 'ai-conversation-linked', mapId: map.id, nodeId: targetCard.id,
-          conversationId: targetConversationId, conversation: conversationLink,
-          sourceClientId: null, updatedAt: updatedMap.updatedAt, updatedBy: publicUser(user),
-        })
-      } catch (error) {
-        linkError = '새 대화는 생성됐지만 대상 카드의 대화 목록에 연결하지 못했습니다.'
-        console.warn('[AI delegation conversation link]', error)
-      }
-    }
-  }
+  const { updatedMap, linkError } = await linkAiDelegationConversation({
+    map, targetCard, targetConversationId, strategy, selection, targetHomeMachineId,
+    workspaceLease, instruction, user, primarySelection: queuedDelegation?.primarySelection, startedBy: attribution.startedBy,
+  })
 
   const now = new Date().toISOString()
   const delegation = {
@@ -4449,16 +4450,22 @@ async function restoreConfirmedAiDelegationDispatch(delegation, map, parentMap, 
     startedBy: { id: delegation.startedBy, label: user.name },
     startedAt: normalizedIsoDate(conversation.created_at) ?? delegation.createdAt, linkedAt: new Date().toISOString(),
   })
-  const updatedMap = await linkStoredConversation(map.id, delegation.targetCardId, conversationId, link, user)
+  const linked = delegation.primarySelection
+    ? await linkAiDelegationConversation({ map, targetCard: map.nodes.find((node) => node.id === delegation.targetCardId),
+        targetConversationId: conversationId, strategy: 'new', selection: { ...selection, workspace: workspaceLease.projectRoot }, targetHomeMachineId: machineId,
+        workspaceLease, instruction: delegation.pendingInstruction ?? delegation.instructionPreview, user,
+        primarySelection: delegation.primarySelection, startedBy: delegation.startedBy, startedAt: link.startedAt })
+    : { updatedMap: await linkStoredConversation(map.id, delegation.targetCardId, conversationId, link, user), linkError: null }
+  const updatedMap = linked.updatedMap
   rememberAiConversationOrigin({ conversationId, mapId: map.id, cardId: delegation.targetCardId,
     startedBy: delegation.startedBy, homeMachineId: machineId, linkedAt: link.linkedAt,
     workspace: workspaceLease.projectRoot, workspacePoolId: workspaceLease.poolId })
   await persistAiConversationOrigins()
-  const updated = await updateAiDelegation(delegation.id, { targetConversationId: conversationId, workspaceLease,
+  const updated = await updateAiDelegation(delegation.id, { targetConversationId: conversationId, workspaceLease, linkError: linked.linkError,
     dispatchRecoveryProof: dispatch.recoveryProof ?? { kind: 'original-operation', operationId: delegation.childOperationId },
     childTurnId: dispatch.turnId ?? null, dispatchLinkRecoveredAt: new Date().toISOString(),
     attemptHistory: aiDelegationAttemptHistory(delegation, '기존 실행 조회와 Git·세션 검증 후 누락된 대화 연결 복구') })
-  broadcastEvent({ type: 'ai-conversation-linked', mapId: map.id, nodeId: delegation.targetCardId,
+  if (!delegation.primarySelection) broadcastEvent({ type: 'ai-conversation-linked', mapId: map.id, nodeId: delegation.targetCardId,
     conversationId, conversation: link, sourceClientId: null, updatedAt: updatedMap.updatedAt, updatedBy: publicUser(user) })
   return { delegation: updated, map: updatedMap }
 }
@@ -5165,6 +5172,14 @@ async function drainWaitingWorkspaceDelegations() {
       continue
     }
 
+    try {
+      assertAiDelegationPrimaryUnchanged(targetCard.data, queued.primarySelection)
+    } catch (error) {
+      await updateAiDelegation(queued.id, { state: 'failed', childStatus: 'rejected', resource: null,
+        failureReasonCode: error.reasonCode, childError: error.message })
+      clearAiDelegationWaitPoll(queued.id)
+      continue
+    }
     let resumedDelegation = queued.resumesDelegationId
       ? aiDelegations.get(queued.resumesDelegationId) ?? null
       : null
@@ -5232,7 +5247,16 @@ async function drainWaitingWorkspaceDelegations() {
 
     if (queued.strategy === 'resume') {
       try {
-        const conversation = await fetchAiConversationRuntime(queued.targetConversationId)
+        const linked = aiConversationLinksFromData(targetCard.data).find((link) => link.conversationId === queued.targetConversationId)
+        const conversation = await fetchAiConversationRuntime(queued.targetConversationId, linked)
+        const currentModelId = conversation?.extra?.current_model_id || aiConversationLinkFromAionUiConversation(conversation)?.model?.id
+          || linked?.model?.id
+        if (queued.primarySelection && aiDelegationResumeModelMatches(queued.primarySelection, currentModelId) !== true) {
+          await updateAiDelegation(queued.id, { state: 'failed', childStatus: 'rejected', resource: null,
+            failureReasonCode: 'AI_DELEGATION_PRIMARY_MODEL_CHANGED', childError: '대기 중 담당 후보 모델이 변경되었습니다. 최신 후보와 규칙으로 다시 요청해 주세요.' })
+          clearAiDelegationWaitPoll(queued.id)
+          continue
+        }
         const runtime = normalizeAiConversationRuntime(queued.targetConversationId, conversation)
         if (runtime.state !== 'idle') {
           const workspaceWaitMessage = `대상 대화가 ${runtime.state} 상태이므로 유휴 상태를 기다리고 있습니다.`
@@ -11883,10 +11907,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const runDelegation = async () => {
       const id = String(body.idempotencyKey ?? '').trim()
       const targetCardId = String(body.targetCardId ?? '').trim()
-      // 위임 규칙과 모델이 다른 대화의 이어가기는 아래에서 새 대화로 바뀐다.
+      // 규칙에 맞는 담당을 재사용하고, 일치 후보가 없을 때만 새 대화로 바꾼다.
       let strategy = String(body.strategy ?? '').trim()
       const conversationId = String(body.conversationId ?? '').trim()
-      const conversationAssessmentId = String(body.conversationAssessmentId ?? '').trim()
+      let conversationAssessmentId = String(body.conversationAssessmentId ?? '').trim()
       const contextOverride = requestedAiConversationContextOverride(body)
       const instruction = String(body.instruction ?? '').trim()
       const decisionReason = String(body.decisionReason ?? '').trim()
@@ -11928,7 +11952,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       aiDelegationRequestContexts.set(response, requestContext)
       let targetHomeMachineId
       try {
-        if (strategy === 'resume') {
+        if (strategy === 'resume' && conversationId) {
           targetHomeMachineId = conversationHomeMachineId(conversationId)
           const requestedResumeMachineId = String(body.machineId ?? '').trim()
           const normalizedResumeMachineId = normalizeMachineId(requestedResumeMachineId)
@@ -12142,19 +12166,45 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const aiPolicyRule = aiPolicyRequest && !aiPolicyRequest.override
         ? resolveAiDelegationPolicyRule(aiPolicyRequest, aiPolicyCardLevel, aiPolicySnapshot) : null
       let aiPolicyResumeConversion = null
+      let primarySelection = null
+      let primaryTargetChanged = false
       // 중단된 같은 위임의 재개는 원래 대화에서 마저 끝내야 하므로 바꾸지 않는다.
-      if (strategy === 'resume' && aiPolicyRule
-        && /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(targetConversationId) && isAiConversationLinked(targetCard.data, targetConversationId)
-        && !activeAiDelegationsForConversation(aiDelegations.values(), { mapId, targetCardId: targetCard.id, targetConversationId, excludeId: id })
-          .some((delegation) => delegation.state === 'waiting-child-resume')) {
-        aiPolicyResumeConversion = await aiDelegationPolicyResumeConversion(aiPolicyRule, targetConversationId,
-          aiConversationLinksFromData(targetCard.data).find((candidate) => candidate.conversationId === targetConversationId))
-        if (aiPolicyResumeConversion) {
-          strategy = 'new'
-          targetConversationId = ''
-          Object.assign(requestContext, { strategy, requestedConversationId: '' })
-          console.info('[AI delegation policy resume conversion]', JSON.stringify({ delegationId: id, mapId, targetCardId: targetCard.id, ...aiPolicyResumeConversion }))
+      const interruptedResume = strategy === 'resume' && activeAiDelegationsForConversation(aiDelegations.values(), {
+        mapId, targetCardId: targetCard.id, targetConversationId, excludeId: id,
+      }).some((delegation) => delegation.state === 'waiting-child-resume')
+      if (aiPolicyRule && !interruptedResume) {
+        try {
+          primarySelection = await resolveAiDelegationPrimary(targetCard.data, aiPolicyRule, async (link) => {
+            resolveTargetMachineForUser(user, conversationHomeMachineId(link.conversationId, link))
+            let conversation
+            try { conversation = await fetchAiConversationRuntime(link.conversationId, link) }
+            catch (error) { if (error.status === 404) return null; throw error }
+            const modelId = String(conversation?.extra?.current_model_id ?? '').trim()
+              || aiConversationLinkFromAionUiConversation(conversation)?.model?.id || link.model?.id
+            if (!modelId) throw new Error('후보 대화의 모델을 확인하지 못했습니다.')
+            return modelId
+          }, { strategy, conversationId })
+        } catch (error) {
+          throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+          return sendAiDelegationResponse(response, error.reasonCode ? error.status : 503,
+            error.reasonCode ?? 'AI_DELEGATION_PRIMARY_LOOKUP_UNAVAILABLE',
+            error.reasonCode ? error.message : '규칙에 맞는 담당 후보를 확인하지 못했습니다. 후보 없음으로 판단해 새 대화를 만들지 않았습니다.')
         }
+        primaryTargetChanged = strategy !== primarySelection.strategy || targetConversationId !== (primarySelection.conversationId ?? '')
+        if (strategy === 'resume' && primarySelection.strategy === 'new') aiPolicyResumeConversion = {
+          conversationId, currentModelId: primarySelection.resolution?.currentModelId, expectedModelId: aiPolicyRule.modelId,
+        }
+        strategy = primarySelection.strategy
+        targetConversationId = primarySelection.conversationId ?? ''
+        if (primaryTargetChanged) conversationAssessmentId = ''
+        if (strategy === 'resume') {
+          const chosenLink = aiConversationLinksFromData(targetCard.data).find((link) => link.conversationId === targetConversationId)
+          targetHomeMachineId = resolveTargetMachineForUser(user, conversationHomeMachineId(targetConversationId, chosenLink)).machineId
+          if (!await aionCoreSupportsExplicitCompletionAfterInterruption(targetHomeMachineId)) return sendAiDelegationResponse(
+            response, 503, 'AIONCORE_EXPLICIT_COMPLETION_UNAVAILABLE', '담당 대화 머신의 AionCore를 최신 빌드로 재기동해 주세요.')
+        }
+        // 실패 후 재접수는 자동 선택 전의 요청 전략·대화를 기준으로 확인한다.
+        requestContext.targetHomeMachineId = targetHomeMachineId
       }
       if (strategy === 'resume') {
         if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(targetConversationId)
@@ -12171,14 +12221,18 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         const linked = aiConversationLinksFromData(targetCard.data)
           .find((candidate) => candidate.conversationId === targetConversationId)
         try {
-          const conversation = await fetchAiConversationRuntime(targetConversationId)
+          const conversation = await fetchAiConversationRuntime(targetConversationId, linked)
           const runtime = normalizeAiConversationRuntime(targetConversationId, conversation)
           if (runtime.state !== 'idle') {
             return sendAiDelegationResponse(response, 409, 'AI_DELEGATION_CONVERSATION_BUSY',
               `대화가 ${runtime.state} 상태이므로 지금 이어갈 수 없습니다.`, { runtime })
           }
           if (!resumesInterruptedDelegation) {
+            const currentModelId = conversation?.extra?.current_model_id || aiConversationLinkFromAionUiConversation(conversation)?.model?.id || linked?.model?.id
+            if (primarySelection && aiDelegationResumeModelMatches(aiPolicyRule, currentModelId) !== true) return sendAiDelegationResponse(
+              response, 409, 'AI_DELEGATION_PRIMARY_MODEL_CHANGED', '담당 후보의 모델이 변경되었습니다. 최신 후보를 확인해 다시 요청하세요.')
             const contextHealth = await inspectAiConversationContextHealth(targetConversationId, conversation, targetHomeMachineId, {}, linked?.model?.id)
+            if (primaryTargetChanged) conversationAssessmentId = contextHealth.assessmentId
             if (!conversationAssessmentId) {
               return sendAiDelegationResponse(response, 409, 'AI_DELEGATION_CONVERSATION_ASSESSMENT_REQUIRED',
                 '일반적인 기존 대화 이어가기는 최신 문맥 상태 평가가 필요합니다. 대화 후보를 다시 조회해 assessmentId를 전달하세요.', {
@@ -12191,7 +12245,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
                 contextHealth,
               })
             }
-            const contextDecision = resolveAiConversationContextOverride(contextHealth, contextOverride)
+            const contextDecision = resolveAiConversationContextOverride(contextHealth, primaryTargetChanged ? null : contextOverride)
             if (!contextDecision.allowed) {
               return sendAiDelegationResponse(response, 409, aiDelegationContextReasonCode(contextDecision.code),
                 contextDecision.message, { contextHealth })
@@ -12202,8 +12256,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           selection = aiDelegationSelectionFromSource({
             ...recovered,
             ...linked,
-            agent: linked?.agent ?? recovered?.agent,
-            model: linked?.model ?? recovered?.model,
+            agent: recovered?.agent ?? linked?.agent,
+            model: recovered?.model ?? linked?.model,
             mode: linked?.mode ?? recovered?.mode,
             thoughtLevel: linked?.thoughtLevel ?? recovered?.thoughtLevel,
             skills: linked?.skills?.length ? linked.skills : recovered?.skills,
@@ -12233,6 +12287,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         adjustments: strategy === 'new' && aiPolicyRule ? aiDelegationPolicyAdjustments(body.newConversation, selection) : [],
         resumeConversion: aiPolicyResumeConversion,
       })
+      if (primarySelection) requestContext.aiPolicy.primaryResolution = primarySelection
       if (strategy === 'new' && isAiDelegationModelBlocked(selection.model.id)) return sendAiDelegationResponse(
         response, 409, 'AI_DELEGATION_MODEL_BLOCKED',
         `${blockedAiModelLabels()} 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.`,
@@ -12360,6 +12415,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           strategy,
           // 위임 규칙으로 이어가기를 새 대화로 바꿨다면 원래 요청한 대화를 남긴다(접수 실패 재접수 판정에 쓴다).
           ...(aiPolicyResumeConversion ? { aiPolicyResumeConversion } : {}),
+          ...(primarySelection ? { primarySelection } : {}),
           conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
           ...(appliedContextOverride ? { contextOverride: { ...appliedContextOverride, appliedAt: now } } : {}),
           decisionReason,
@@ -12402,6 +12458,13 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           repeated: false,
           details: { observedAt: now, workerCounts },
         })
+      }
+      if (primarySelection) {
+        const latestMap = await readMap(mapId)
+        const latestCard = latestMap?.nodes.find((node) => node.id === targetCard.id)
+        if (!latestCard || latestMap.trashedAt) return sendAiDelegationResponse(
+          response, 409, 'AI_DELEGATION_PRIMARY_CHANGED', '위임 준비 중 대상 카드가 변경되었습니다.')
+        assertAiDelegationPrimaryUnchanged(latestCard.data, primarySelection)
       }
       let workspaceLease = null
       if (expectsWorkspacePool
@@ -12457,6 +12520,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
               strategy,
               // 위임 규칙으로 이어가기를 새 대화로 바꿨다면 원래 요청한 대화를 남긴다(접수 실패 재접수 판정에 쓴다).
               ...(aiPolicyResumeConversion ? { aiPolicyResumeConversion } : {}),
+              ...(primarySelection ? { primarySelection } : {}),
               conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
               ...(appliedContextOverride ? { contextOverride: { ...appliedContextOverride, appliedAt: now } } : {}),
               decisionReason,
@@ -12649,45 +12713,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       })
       await Promise.all([persistAiAttributions(), persistAiConversationAttributions(), persistAiConversationOrigins()])
 
-      let updatedMap = map
-      let linkError = null
-      if (strategy === 'new') {
-        const latestMap = await readMap(mapId)
-        const latestTargetCard = latestMap?.nodes.find((node) => node.id === targetCard.id)
-        if (!latestMap || latestMap.trashedAt || !latestTargetCard) {
-          linkError = '새 대화는 생성됐지만 대상 카드가 변경되어 연결하지 못했습니다.'
-        } else {
-          const conversationLink = normalizeAiConversationLink({
-            conversationId: targetConversationId,
-            homeMachineId: targetHomeMachineId,
-            agent: selection.agent,
-            model: selection.model,
-            providerId: selection.providerId,
-            mode: selection.mode,
-            thoughtLevel: selection.thoughtLevel,
-            skills: selection.enabledSkillIds.map((skillId) => ({ id: skillId, label: skillId })),
-            mcpServers: selection.mcpIds.map((mcpId) => ({ id: mcpId, label: mcpId })),
-            workspace: selection.workspace,
-            claudeAccountId: selection.claudeAccountId,
-            workspacePoolId: workspaceLease?.poolId ?? null,
-            requestPreview: instruction,
-            startedBy: { id: attribution.startedBy, label: users.find((candidate) => candidate.id === attribution.startedBy)?.name ?? attribution.startedBy },
-            startedAt: new Date().toISOString(),
-            linkedAt: new Date().toISOString(),
-          })
-          try {
-            updatedMap = await linkStoredConversation(mapId, targetCard.id, targetConversationId, conversationLink, user)
-            broadcastEvent({
-              type: 'ai-conversation-linked', mapId, nodeId: targetCard.id,
-              conversationId: targetConversationId, conversation: conversationLink,
-              sourceClientId: null, updatedAt: updatedMap.updatedAt, updatedBy: publicUser(user),
-            })
-          } catch (error) {
-            linkError = '새 대화는 생성됐지만 대상 카드의 대화 목록에 연결하지 못했습니다.'
-            console.warn('[AI delegation conversation link]', error)
-          }
-        }
-      }
+      const { updatedMap, linkError } = await linkAiDelegationConversation({
+        map, targetCard, targetConversationId, strategy, selection, targetHomeMachineId,
+        workspaceLease, instruction, user, primarySelection, startedBy: attribution.startedBy,
+      })
 
       const now = new Date().toISOString()
       const delegation = {
@@ -12708,6 +12737,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         strategy,
         // 위임 규칙으로 이어가기를 새 대화로 바꿨다면 원래 요청한 대화를 남긴다(접수 실패 재접수 판정에 쓴다).
         ...(aiPolicyResumeConversion ? { aiPolicyResumeConversion } : {}),
+        ...(primarySelection ? { primarySelection } : {}),
         conversationAssessmentId: strategy === 'resume' ? conversationAssessmentId : null,
         ...(appliedContextOverride ? { contextOverride: { ...appliedContextOverride, appliedAt: now } } : {}),
         decisionReason,

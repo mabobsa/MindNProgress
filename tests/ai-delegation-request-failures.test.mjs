@@ -408,3 +408,19 @@ test('위임 규칙이 이어가기를 새 대화로 바꾼 재접수도 같은 
   assert.equal(verify({ ...converted, retryOfRequestId: failed.id, instructionHash: 'different' }).state, 'unverified')
   assert.equal(verify({ ...converted, retryOfRequestId: failed.id, parentConversationId: 'other' }).state, 'unverified')
 })
+
+test('담당 자동 선택으로 새 요청을 이어가거나 기존 후보를 바꿔도 원 요청의 재접수를 확인한다', async () => {
+  for (const strategy of ['new', 'resume']) {
+    const ledger = await createAiDelegationRequestFailures(memoryLedger().dependencies)
+    const original = { ...context, strategy, parentConversationId: 'parent-conversation', requestedConversationId: strategy === 'resume' ? 'old-choice' : '' }
+    await ledger.record(original, { ...failure, reasonCode: 'AI_DELEGATION_CONVERSATION_BUSY' })
+    const accepted = { ...original, id: 'later', requestSignature: 'new-revision', state: 'running', createdAt: '2999-01-01',
+      instructionHash: createHash('sha256').update(original.instruction).digest('hex'), strategy: 'resume', targetConversationId: 'latest-match',
+      primarySelection: { requestedStrategy: strategy, requestedConversationId: original.requestedConversationId } }
+    const verify = (candidate) => ledger.list({ mapId: context.mapId, delegations: new Map([[candidate.id, candidate]]) })[0].retryVerification
+    assert.equal(verify(accepted).state, 'confirmed')
+    assert.equal(verify(accepted).method, 'same-instruction')
+    assert.equal(verify({ ...accepted, primarySelection: undefined }).state, 'unverified')
+    assert.equal(verify({ ...accepted, instructionHash: 'different' }).state, 'unverified')
+  }
+})

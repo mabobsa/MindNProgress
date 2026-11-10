@@ -30,7 +30,7 @@ const responseBudgetAppendices = new Map([
   ['mindnprogress_list_group_document_instructions', /^ 응답이 약 4만 자를 넘으면 queued·delivered 지시는 그대로 두고 대상 문서별 최신 지시는 마지막까지 남기며, 정리된 이력만 오래된 지시부터 원문 생략, 요약\(summary=true\), 개수화 순으로 줄여 응답 앞쪽 responseBudget과 omitted에 표기합니다\. 생략된 지시는 instructionId와 includeContent=true로 한 건씩 조회하세요\.$/],
   ['mindnprogress_update_card', /^ affected의 card는 이번에 보낸 필드와 저장 중 바뀐 필드를 원문으로 주고, 그 밖의 1,000자 초과 필드는 card\.omittedFields와 textIntegrity로만 표시합니다\. affectedCards에는 요청 카드를 빼고 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다\.$/],
   // 2026-11-09: 위임 AI 설정은 서버 위임 규칙이 정한다. 규칙 표 자체는 설명에 옮겨 적지 않는다(규칙 변경 때 AI에 다시 전달하지 않기 위해서).
-  ['mindnprogress_delegate_ai_work', /^ 새 대화의 CLI·모델·사고 강도는 서버 위임 규칙이 workType·analysisDepth와 대상 카드 구분으로 정해 응답 aiPolicy로 알리며, 규칙 모델과 다른 대화를 resume으로 요청하면 새 대화로 실행하므로 instruction은 새 대화도 이해하도록 쓰세요\.$/],
+  ['mindnprogress_delegate_ai_work', /^ 새 대화의 CLI·모델·사고 강도는 서버 위임 규칙이.*하위 카드도 담당 대화를 우선합니다\..*일치 모델의 최신 연결 대화를 선택하고, 없을 때만 새 대화를 생성합니다\..*aiPolicy.primaryResolution.*중단된 동일 위임의 복구.*instruction은 새 대화도 이해하도록 쓰세요\.$/],
   ['mindnprogress_send_group_document_instruction', /^ 기본 수신자는 AI 대화 선택에서 체크한 담당 대화\(primaryConversationId\)입니다\..*규칙 모델과 일치하는 최신 대화를 담당으로 바꾸어 이어갑니다\..*일치하는 대화가 없으면 규칙에 맞는 새 대화를 생성해 담당으로 지정합니다\..*aiPolicy.primaryResolution.*targetConversationRole=auxiliary.*사용합니다\.$/],
 ])
 // send_group_document_instruction(실제 서버 동작에 맞춘 정정)과 get_document(2026-10-21 승인 view 인자)는 재생성 기준선과

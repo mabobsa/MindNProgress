@@ -2,6 +2,6 @@
 export const REFERENCE_MANAGED_DATA_KEYS = new Set([
   'label', 'description', 'sharedKnowledge', 'sharedKnowledgeUpdatedAt',
   'sharedKnowledgeUpdatedBy', 'sharedKnowledgeReview', 'progress', 'status',
-  'taskUrl', 'externalLink', 'webLink', 'aiConversationId', 'aiConversations',
+  'taskUrl', 'externalLink', 'webLink', 'aiConversationId', 'aiPrimaryConversationId', 'aiConversations',
   'isWork', 'assigneeId', 'dueDate', 'checklist', 'waitingItems',
 ])

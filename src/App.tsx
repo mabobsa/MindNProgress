@@ -883,6 +883,7 @@ function mergeResolvedReferenceData(localData: MindNodeData, resolvedData: MindN
     externalLink: resolvedData.externalLink,
     webLink: resolvedData.webLink,
     aiConversationId: resolvedData.aiConversationId,
+    aiPrimaryConversationId: resolvedData.aiPrimaryConversationId,
     aiConversations: resolvedData.aiConversations,
     isWork: resolvedData.isWork,
     assigneeId: resolvedData.assigneeId,
@@ -4603,6 +4604,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       card: MindMapNode
       removedConversationId: string
       latestConversationId: string | null
+      primaryConversationId: string | null
     }>(`/api/maps/${encodeURIComponent(mapId)}/cards/${encodeURIComponent(cardId)}/ai-conversations/${encodeURIComponent(conversationId)}`, {
       method: 'DELETE',
     })
@@ -4610,7 +4612,16 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       reconcileRemoteMap(result.map)
       setSavedAt('서버와 동기화됨')
     }
-    return { latestConversationId: result.latestConversationId }
+    return { latestConversationId: result.latestConversationId, primaryConversationId: result.primaryConversationId }
+  }
+
+  const setPrimaryAiConversation = async (mapId: string, cardId: string, conversationId: string, expectedPrimaryConversationId: string | null) => {
+    const result = await apiRequest<{ map: MapDocument; primaryConversationId: string | null }>(
+      `/api/maps/${encodeURIComponent(mapId)}/cards/${encodeURIComponent(cardId)}/ai-conversations/primary`, {
+        method: 'PUT', body: JSON.stringify({ conversationId, expectedPrimaryConversationId }),
+      })
+    if (mapId === activeMapId) reconcileRemoteMap(result.map)
+    return { primaryConversationId: result.primaryConversationId }
   }
 
   const startOrOpenContextNodeAiConversation = () => {
@@ -5616,6 +5627,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       nodes: nodesToCopy.map((candidate) => {
         const copiedData = structuredClone(candidate.data)
         delete copiedData.aiConversationId
+        delete copiedData.aiPrimaryConversationId
         delete copiedData.aiConversations
         return {
           sourceNodeId: candidate.id,
@@ -5727,6 +5739,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
           label,
           kind: 'task',
           aiConversationId: undefined,
+          aiPrimaryConversationId: undefined,
           aiConversations: undefined,
           reference: pasteMode === 'reference' ? originalReference : pasteMode === 'clone' ? undefined : copiedData.reference,
           blockedBy: remappedBlockedBy.length > 0 ? remappedBlockedBy : undefined,
@@ -9532,6 +9545,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
             aiConversationPicker.cardId,
             conversationId,
           )}
+          onSetPrimaryConversation={(conversationId, cardId, expected) => setPrimaryAiConversation(aiConversationPicker.mapId, cardId, conversationId, expected)}
           onClose={() => setAiConversationPicker(null)}
         />
       )}

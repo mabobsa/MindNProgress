@@ -175,6 +175,8 @@ test('실제 삭제 API는 보관 검증·실행 및 공용 연결 보호·재�
     const deleted = await deleting
     assert.equal(deleted.status, 200)
     assert.equal(deleted.body.card.data.description, '보관 확인 중 작성한 최신 본문')
+    assert.equal(deleted.body.primaryConversationId, null, '초기 담당인 최신 대화를 삭제해도 다른 보조 대화를 담당으로 자동 지정하지 않는다')
+    assert.equal((await request(`${endpoint}?view=linked`)).body.primaryConversationId, null)
   } finally {
     releaseArchive?.()
     if (child && child.exitCode === null) { child.kill(); await new Promise((resolve) => { child.once('exit', resolve); setTimeout(resolve, 3000) }) }

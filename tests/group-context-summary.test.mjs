@@ -72,7 +72,7 @@ test('요약은 그룹 기준·guide 전문을 유지하고 원문 대신 길이
     assert.equal(item.root.id, document.root.id)
     // get_card의 textIntegrity와 같은 계산이어야 AI가 원문 회수 결과와 변경 여부를 대조할 수 있다.
     assert.deepEqual(item.root.textIntegrity, { description: textIntegrity(document.root.data.description), sharedKnowledge: textIntegrity(document.root.data.sharedKnowledge) })
-    assert.deepEqual(item.root.data, { label: document.root.data.label, status: document.root.data.status, progress: document.root.data.progress, aiConversationCount: 0 })
+    assert.deepEqual(item.root.data, { label: document.root.data.label, status: document.root.data.status, progress: document.root.data.progress, aiPrimaryConversationId: null, aiConversationCount: 0 })
     assert.deepEqual(item.work, document.work)
     assert.equal(item.waiting.items, document.waitingDetails.length, '대기 건수는 생략 없이 원문 수와 같다')
     assert.equal(item.waiting.cards.reduce((sum, card) => sum + card.labels.length, 0) + item.waiting.omittedCards, item.waiting.items)

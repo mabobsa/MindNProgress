@@ -101,6 +101,24 @@ export function isAiConversationLinked(data, conversationId) {
   return aiConversationIdsFromData(data).includes(String(conversationId ?? ''))
 }
 
+export function primaryAiConversationIdFromData(data) {
+  // 기존 카드는 가장 최근 생성된 대화를 초기 담당으로 취급한다. 명시적인 null은 담당 재선택 대기다.
+  if (Object.hasOwn(data ?? {}, 'aiPrimaryConversationId')) return data.aiPrimaryConversationId || null
+  return aiConversationLinksFromData(data).at(-1)?.conversationId ?? null
+}
+
+export function withAiConversationLink(data, value, { makePrimary = false, makeCurrent = true } = {}) {
+  const link = normalizeAiConversationLink(value)
+  if (!link) return { ...data }
+  const existing = aiConversationLinksFromData(data)
+  return {
+    ...data,
+    ...(makeCurrent ? { aiConversationId: link.conversationId } : {}),
+    aiPrimaryConversationId: makePrimary || existing.length === 0 ? link.conversationId : primaryAiConversationIdFromData(data),
+    aiConversations: appendAiConversationLink(data, link),
+  }
+}
+
 export function appendAiConversationLink(data, value) {
   const link = normalizeAiConversationLink(value)
   if (!link) return aiConversationLinksFromData(data)

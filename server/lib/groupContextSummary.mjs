@@ -1,4 +1,5 @@
 import { cardTextIntegrity } from '../../mcp/cardTextPatch.mjs'
+import { primaryAiConversationIdFromData } from '../../src/utils/aiConversations.mjs'
 
 // 그룹 문맥 요약은 AI 조회 전용이다. 화면은 기존 전체 응답을 그대로 사용한다.
 // 원문은 길이·SHA-256·건수·미리보기로 바꾸되 생략한 항목과 회수 경로를 detail에 남겨 조용히 누락하지 않는다.
@@ -38,7 +39,7 @@ function documentSummary(document, coordinatorMapId) {
     // get_document outline처럼 긴 본문은 data에서 빼고 textIntegrity(길이·SHA-256)만 둔다. get_card 응답과 그대로 대조된다.
     root: document.root ? {
       id: document.root.id,
-      data: { label: data.label, status: data.status, progress: data.progress, aiConversationCount: data.aiConversations?.length ?? (data.aiConversationId ? 1 : 0) },
+      data: { label: data.label, status: data.status, progress: data.progress, aiPrimaryConversationId: primaryAiConversationIdFromData(data), aiConversationCount: data.aiConversations?.length ?? (data.aiConversationId ? 1 : 0) },
       textIntegrity: cardTextIntegrity(data),
     } : null,
     runtime: document.runtime, work: document.work,

@@ -650,11 +650,12 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.ok(documentSummary.documentInstructions.every((item) => item.targetMapId === instructionDocument.id))
 
     const latestInstructionTarget = (await api(`/api/maps/${instructionDocument.id}`)).body.map
+    assert.equal(latestInstructionTarget.nodes[0].data.aiPrimaryConversationId, instructed.body.instruction.targetConversationId, '첫 대화가 담당으로 저장된다')
     const queuedInstructionArgs = {
       ...instructionArgs,
       targetRevision: latestInstructionTarget.version,
       strategy: 'resume',
-      conversationId: instructed.body.instruction.targetConversationId,
+      conversationId: undefined,
       conversationAssessmentId: await assessmentIdFor(instructionDocument.id, instructionDocument.nodes[0].id, instructed.body.instruction.targetConversationId),
       decisionReason: '같은 문서 담당 대화의 후속 지시입니다.',
       instruction: '같은 승인 범위에서 문서 내부 진행 상태를 다시 확인하세요.',
@@ -667,6 +668,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       const blockedGroupNew = await api(instructionUrl, 'POST', {
         ...instructionArgs, targetRevision: latestInstructionTarget.version,
         idempotencyKey: `group-instruction-blocked-model-new-${blockedSuffix}`,
+        targetConversationRole: 'auxiliary', workType: 'other', aiPolicyOverride: { evidence: '사용자가 지정한 모델의 보조 대화 생성 차단을 검증합니다.' },
         newConversation: { agentId: 'claude', modelId: blockedModelId, workspace: projectDirectory },
       }, sourceHeaders)
       assert.equal(blockedGroupNew.status, 409)
@@ -678,6 +680,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       const blockedGroupResumeId = `group-instruction-blocked-model-resume-${blockedSuffix}`
       const blockedGroupResume = await api(instructionUrl, 'POST', {
         ...queuedInstructionArgs,
+        workType: 'other', aiPolicyOverride: { evidence: '사용자가 현재 담당 모델을 그대로 사용하도록 지정했습니다.' },
         conversationAssessmentId: blockedGroupCandidate.contextHealth.assessmentId,
         idempotencyKey: blockedGroupResumeId,
       }, sourceHeaders)
@@ -686,7 +689,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       assert.equal(calls.some((call) => call.operationId === `gdi:${blockedGroupResumeId}`), false)
     }
     conversations.get(instructedConversationId).extra.current_model_id = 'opus'
-    busyGroupInstructionConversationReads = 2
+    busyGroupInstructionConversationReads = 3
     const queuedInstruction = await api(instructionUrl, 'POST', queuedInstructionArgs, sourceHeaders)
     assert.equal(queuedInstruction.status, 202, JSON.stringify(queuedInstruction.body))
     assert.equal(queuedInstruction.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_QUEUED')

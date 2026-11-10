@@ -20,6 +20,7 @@ type ConversationListItem = AiConversationLink & {
 
 type ConversationListResponse = {
   latestConversationId: string | null
+  primaryConversationId?: string | null
   conversations: ConversationListItem[]
   error?: string
 }
@@ -40,14 +41,15 @@ function runtimeLabel(runtime: AiConversationRuntime, available: boolean) {
   return { className: 'idle', label: '대화 대기' }
 }
 
-export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentTitle, onSelect, onStartNew, onDeleteConversation, onClose }: {
+export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentTitle, onSelect, onStartNew, onDeleteConversation, onSetPrimaryConversation, onClose }: {
   mapId: string
   cardId?: string
   cardTitle?: string
   documentTitle?: string
   onSelect: (conversation: ConversationListItem, cardId: string) => void
   onStartNew?: () => void
-  onDeleteConversation: (conversationId: string, cardId: string) => Promise<{ latestConversationId: string | null }>
+  onDeleteConversation: (conversationId: string, cardId: string) => Promise<{ latestConversationId: string | null; primaryConversationId?: string | null }>
+  onSetPrimaryConversation?: (conversationId: string, cardId: string, expectedPrimaryConversationId: string | null) => Promise<{ primaryConversationId: string | null }>
   onClose: () => void
 }) {
   const documentMode = !cardId
@@ -58,9 +60,29 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
   const [contextMenu, setContextMenu] = useState<{ cardId: string; conversation: ConversationListItem; x: number; y: number; trigger: HTMLElement } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const deletionPending = useRef(false)
+  const [primarySaving, setPrimarySaving] = useState(false)
+  const primaryPending = useRef(false)
+
+  const setPrimary = async (group: ConversationCardGroup, conversationId: string) => {
+    if (!onSetPrimaryConversation || primaryPending.current || deletionPending.current) return
+    const previous = group.primaryConversationId === undefined ? group.latestConversationId : group.primaryConversationId
+    if (previous === conversationId) return
+    primaryPending.current = true
+    setPrimarySaving(true)
+    setDeleteError('')
+    try {
+      const result = await onSetPrimaryConversation(conversationId, group.cardId, previous)
+      setGroups((current) => current?.map((item) => item.cardId === group.cardId ? { ...item, primaryConversationId: result.primaryConversationId } : item) ?? current)
+    } catch (failure) {
+      setDeleteError(failure instanceof Error ? failure.message : '담당 대화를 저장하지 못했습니다.')
+    } finally {
+      primaryPending.current = false
+      setPrimarySaving(false)
+    }
+  }
 
   const deleteConversation = async (conversation: ConversationListItem, targetCardId: string) => {
-    if (!conversation.accessible || conversation.machineOnline === false || deletionPending.current) return
+    if (!conversation.accessible || conversation.machineOnline === false || deletionPending.current || primaryPending.current) return
     setContextMenu(null)
     const confirmed = window.confirm(`${conversation.name || 'AI 대화'}를 삭제할까요?\nAion에 존재하는 대화는 보관함으로 옮긴 것을 확인한 뒤 이 카드의 연결 기록을 삭제합니다.`)
     if (!confirmed) return
@@ -72,6 +94,8 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
       setGroups((current) => current?.map((group) => group.cardId === targetCardId ? {
         ...group,
         latestConversationId: deleted.latestConversationId,
+        primaryConversationId: deleted.primaryConversationId === undefined
+          ? (group.primaryConversationId === conversation.conversationId ? null : group.primaryConversationId) : deleted.primaryConversationId,
         conversations: group.conversations.filter((item) => item.conversationId !== conversation.conversationId),
       } : group) ?? current)
     } catch (deleteFailure) {
@@ -133,7 +157,7 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
       if (contextMenu) {
         contextMenu.trigger.focus()
         setContextMenu(null)
-      } else if (!deletionPending.current) onClose()
+      } else if (!deletionPending.current && !primaryPending.current) onClose()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
@@ -159,13 +183,15 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
   }
 
   return (
-    <div className="ai-conversation-picker-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) { if (contextMenu) setContextMenu(null); else if (!deletionPending.current) onClose() } }}>
+    <div className="ai-conversation-picker-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) { if (contextMenu) setContextMenu(null); else if (!deletionPending.current && !primaryPending.current) onClose() } }}>
       <section className={`ai-conversation-picker${documentMode ? ' document-conversations' : ''}`} role="dialog" aria-modal="true" aria-label={documentMode ? '문서 AI 대화 목록' : 'AI 대화 선택'}>
         <header>
           <div><span>AionUi 연동</span><strong>{documentMode ? 'AI 대화 목록' : 'AI 대화 선택'}</strong><small>{documentMode ? documentTitle : cardTitle}</small></div>
-          <button type="button" onClick={onClose} disabled={Boolean(deleting)} aria-label="AI 대화 선택 닫기">×</button>
+          <button type="button" onClick={onClose} disabled={Boolean(deleting) || primarySaving} aria-label="AI 대화 선택 닫기">×</button>
         </header>
         {deleting && <div className="ai-conversation-picker-progress" role="status">{deleting.name} 보관·삭제 중… 완료될 때까지 기다려 주세요.</div>}
+        {!documentMode && onSetPrimaryConversation && <div className="ai-conversation-picker-primary-guide">담당은 하나만 선택할 수 있습니다. 총괄 지시 시 위임 규칙과 모델이 다르면 일치하는 최신 대화로 담당을 변경하고, 없으면 새로 생성합니다.</div>}
+        {primarySaving && <div className="ai-conversation-picker-progress" role="status">담당 대화 저장 중…</div>}
         <div className="ai-conversation-picker-content">
           {!groups && !error && <div className="ai-conversation-picker-message">연결된 대화를 확인하는 중…</div>}
           {error && <div className="ai-conversation-picker-message error"><strong>대화 목록을 불러오지 못했습니다.</strong><span>{error}</span></div>}
@@ -199,10 +225,18 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
                       openMenu(conversation, group.cardId, rect.left + 16, rect.top + 28, event.target as HTMLElement)
                     }}
                   >
+                    {!documentMode && onSetPrimaryConversation && <label className="ai-conversation-primary-choice">
+                      <input type="checkbox"
+                        checked={(group.primaryConversationId === undefined ? group.latestConversationId : group.primaryConversationId) === conversation.conversationId}
+                        disabled={primarySaving || Boolean(deleting) || !conversation.accessible || conversation.linkMissing === true}
+                        onChange={() => { void setPrimary(group, conversation.conversationId) }}
+                        aria-label={`${conversation.name || conversation.conversationId} 담당 대화`} />
+                      담당
+                    </label>}
                     <button
                       type="button"
                       className="ai-conversation-choice-open"
-                      disabled={!conversation.accessible || conversation.machineOnline === false || Boolean(deleting)}
+                      disabled={!conversation.accessible || conversation.machineOnline === false || Boolean(deleting) || primarySaving}
                       title={!conversation.accessible ? '이 머신을 사용할 권한이 없습니다.' : conversation.machineOnline === false ? '머신이 연결되어 있지 않습니다.' : undefined}
                       onClick={() => onSelect(conversation, group.cardId)}
                     >
@@ -266,8 +300,8 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
         </div>
         <footer className="ai-conversation-picker-actions">
           {documentMode && <small>대화를 우클릭해 하나씩 삭제할 수 있습니다.</small>}
-          <button type="button" onClick={onClose} disabled={Boolean(deleting)}>{documentMode ? '닫기' : '취소'}</button>
-          {!documentMode && onStartNew && <button type="button" className="primary" onClick={onStartNew} disabled={Boolean(deleting)}><span aria-hidden="true">✦</span>새 AI 대화 시작</button>}
+          <button type="button" onClick={onClose} disabled={Boolean(deleting) || primarySaving}>{documentMode ? '닫기' : '취소'}</button>
+          {!documentMode && onStartNew && <button type="button" className="primary" onClick={onStartNew} disabled={Boolean(deleting) || primarySaving}><span aria-hidden="true">✦</span>새 AI 대화 시작</button>}
         </footer>
         {contextMenu && (
           <div ref={menuRef} className="ai-conversation-picker-menu" role="menu" aria-label="AI 대화 메뉴"

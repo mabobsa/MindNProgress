@@ -238,14 +238,14 @@ test('자기 카드 대화 인계는 원문·권한·중복 방지·원격 호�
   // 연결 기록(acct-2)보다 AionUi가 반환한 현재 대화의 실제 계정(기본 계정)을 우선한다.
   assert.equal(creates[3].create.claudeAccountId, undefined)
   const latest = await currentMap(), switched = structuredClone(latest)
-  switched.nodes[0].data.aiConversationId = 'previous'
+  switched.nodes[0].data.aiPrimaryConversationId = 'previous'
   const changed = await api.call(`/api/maps/${mapId}/content-patch`, 'PATCH', {
     baseVersion: latest.version, patch: createMapContentPatch(latest, switched),
   })
   assert.equal(changed.status, 200, JSON.stringify(changed.body))
   Object.assign(dispatches.get(creates[3].operationId), { state: 'running', turnId: 'turn-four' })
   await until(async () => (await result(fourth.requestId, 'next-3')).body.reasonCode === 'CARD_CONVERSATION_START_REPRESENTATIVE_CHANGED', '대표 변경 충돌 확인 실패')
-  assert.equal((await currentMap()).nodes[0].data.aiConversationId, 'previous', '도중에 바뀐 대표 연결을 덮어쓰지 않는다')
+  assert.equal((await currentMap()).nodes[0].data.aiPrimaryConversationId, 'previous', '도중에 바뀐 담당 연결을 덮어쓰지 않는다')
   assert.equal(creates.length, 4)
   assert.ok(!calls.some(({ url }) => /stop|cancel|interrupt|archive/.test(url)), '이전 대화를 중지하거나 보관하지 않는다')
 })

@@ -9,7 +9,24 @@ import {
   isAiConversationLinked,
   normalizeAiConversationLink,
   removeAiConversationLink,
+  primaryAiConversationIdFromData,
+  withAiConversationLink,
 } from '../src/utils/aiConversations.mjs'
+
+test('기존 카드는 최신 대화가 초기 담당이고 보조 대화 추가·갱신으로 담당이 바뀌지 않는다', () => {
+  const legacy = { aiConversationId: 'older', aiConversations: [
+    { conversationId: 'newer', startedAt: '2026-11-10T01:00:00Z' },
+    { conversationId: 'older', startedAt: '2026-11-09T01:00:00Z' },
+  ] }
+  assert.equal(primaryAiConversationIdFromData(legacy), 'newer')
+  const added = withAiConversationLink(legacy, { conversationId: 'auxiliary', startedAt: '2026-11-11T01:00:00Z' })
+  assert.equal(added.aiConversationId, 'auxiliary')
+  assert.equal(added.aiPrimaryConversationId, 'newer')
+  assert.equal(withAiConversationLink(added, { conversationId: 'older' }).aiPrimaryConversationId, 'newer')
+  assert.equal(withAiConversationLink({}, { conversationId: 'first' }).aiPrimaryConversationId, 'first')
+  assert.equal(withAiConversationLink(added, { conversationId: 'successor' }, { makePrimary: true }).aiPrimaryConversationId, 'successor')
+  assert.equal(withAiConversationLink({ ...added, aiPrimaryConversationId: null }, { conversationId: 'another' }).aiPrimaryConversationId, null)
+})
 
 test('기존 단일 대화 ID를 정보가 없는 연결 이력으로 호환한다', () => {
   assert.deepEqual(aiConversationLinksFromData({ aiConversationId: 'conversation-legacy' }), [{

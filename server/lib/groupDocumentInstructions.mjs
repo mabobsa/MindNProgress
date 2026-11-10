@@ -93,6 +93,7 @@ export function createGroupDocumentInstructionSignature({
   newConversation,
   contextOverride = null,
   aiPolicy = null,
+  targetConversationRole = 'primary',
 }) {
   const requestedConversation = newConversation && typeof newConversation === 'object'
     ? {
@@ -130,6 +131,7 @@ export function createGroupDocumentInstructionSignature({
     ...(contextOverride ? { contextOverride: { reasonCode: contextOverride.reasonCode, reason: contextOverride.reason } } : {}),
     // 위임 규칙 값(workType 등)이 없는 이전 요청의 서명도 그대로 둔다.
     ...(aiPolicy ? { aiPolicy } : {}),
+    ...(targetConversationRole !== 'primary' ? { targetConversationRole } : {}),
   })).digest('hex')
 }
 

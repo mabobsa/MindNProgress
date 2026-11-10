@@ -78,6 +78,7 @@ test('대화 ID 조회 후 복원·연결은 원본 문서와 귀속을 함께 �
   assert.equal(result.status, 200, JSON.stringify(result.body))
   assert.equal(result.body.card.data.description, '연결 조회 중 저장한 최신 본문')
   assert.equal(result.body.card.data.aiConversationId, 'restore-me')
+  assert.equal(result.body.card.data.aiPrimaryConversationId, 'old', '보조 대화 연결로 기존 담당을 바꾸지 않는다')
   assert.deepEqual(result.body.card.data.aiConversations.map((item) => item.conversationId).sort(), ['old', 'restore-me'])
   assert.equal(result.body.conversation.agent.id, 'codex', '클라이언트가 보낸 가짜 메타데이터를 저장하지 않는다')
   assert.equal(result.body.conversation.startedAt, new Date(1793000000000).toISOString())

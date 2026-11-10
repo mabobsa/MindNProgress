@@ -12,6 +12,7 @@ export const REFERENCE_CONTENT_KEYS = Object.freeze([
   'externalLink',
   'webLink',
   'aiConversationId',
+  'aiPrimaryConversationId',
   'aiConversations',
   'isWork',
   'assigneeId',

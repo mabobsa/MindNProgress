@@ -28,6 +28,7 @@ const conversations = ['running','waiting-confirmation','idle','unknown','unavai
 }));
 window.audit={selected:null,started:0,closed:0};
 window.deletion={calls:[],confirm:false,fail:false,pending:false,release:null};
+window.primary={calls:[],fail:false,pending:false,release:null};
 window.confirm=()=>window.deletion.confirm;
 window.pickerFetch={requests:[],releaseDetails:null};
 window.fetch = (url,init) => {
@@ -44,6 +45,12 @@ window.fetch = (url,init) => {
 createRoot(document.getElementById('root')).render(React.createElement(AiConversationPickerDialog,{
   mapId:'test-map',cardId:'root',cardTitle:'문서 작업공간 개선',onClose:()=>window.audit.closed++,
   onSelect:c=>window.audit.selected=c.conversationId,onStartNew:()=>window.audit.started++,
+  onSetPrimaryConversation:async(id,cardId,expected)=>{
+    window.primary.calls.push({id,cardId,expected});
+    if(window.primary.fail) throw Error('담당 저장 실패: 선택을 유지합니다.');
+    if(window.primary.pending) await new Promise(resolve=>window.primary.release=resolve);
+    return {primaryConversationId:id};
+  },
   onDeleteConversation:async(id)=>{
     window.deletion.calls.push(id);
     if(window.deletion.fail) throw Error('보관 확인 실패: 연결을 유지합니다.');
@@ -131,8 +138,25 @@ test('대화 선택 목록의 보조 정보는 다크모드·호버·비활성 �
     assert.equal(await evaluate('document.querySelector(".ai-conversation-choice-status").textContent'), '상태 확인 중')
     assert.equal(await evaluate('document.querySelectorAll(".ai-conversation-choice-delete").length'), 0)
     await waitFor(() => evaluate('typeof window.pickerFetch.releaseDetails==="function"'))
+    const checked = () => evaluate('[...document.querySelectorAll(".ai-conversation-primary-choice input")].flatMap((el,i)=>el.checked?[i]:[])')
+    assert.deepEqual(await checked(), [0], '기존 목록은 최신 대화 하나만 담당으로 체크한다')
+    await evaluate('document.querySelectorAll(".ai-conversation-primary-choice input")[1].click()')
+    await waitFor(async () => (await checked())[0] === 1)
+    assert.deepEqual(await evaluate('window.primary.calls'), [{id:'conversation-1',cardId:'root',expected:'conversation-0'}])
+    assert.equal(await evaluate('window.audit.selected'), null, '담당 체크만 바꾸면 대화를 열지 않는다')
     await evaluate('window.pickerFetch.releaseDetails()')
     await waitFor(() => evaluate('document.querySelector(".ai-conversation-choice-status").textContent==="AI 작업 중"'))
+    assert.deepEqual(await checked(), [1], '늦게 도착한 상세 조회가 담당 선택을 덮어쓰지 않는다')
+    await evaluate('window.primary.fail=true;document.querySelectorAll(".ai-conversation-primary-choice input")[2].click()')
+    await waitFor(() => evaluate('document.querySelector("[role=alert]")?.textContent.includes("담당 저장 실패")'))
+    assert.deepEqual(await checked(), [1], '저장 실패 시 이전 선택 유지')
+    await evaluate('window.primary.fail=false;window.primary.pending=true;document.querySelectorAll(".ai-conversation-primary-choice input")[2].click()')
+    await waitFor(() => evaluate('typeof window.primary.release==="function"'))
+    assert.equal(await evaluate('[...document.querySelectorAll(".ai-conversation-primary-choice input")].every(el=>el.disabled)'), true)
+    await evaluate('window.primary.release();window.primary.pending=false')
+    await waitFor(async () => (await checked())[0] === 2)
+    await evaluate('document.querySelectorAll(".ai-conversation-primary-choice input")[0].click()')
+    await waitFor(async () => (await checked())[0] === 0)
     assert.equal(await evaluate('window.pickerFetch.requests.length'), 2)
     assert.equal(await evaluate('window.pickerFetch.requests[0].endsWith("?view=linked")'), true)
     const typography = () => evaluate('[...document.querySelectorAll(".ai-conversation-choice:first-child *")].map(el=>getComputedStyle(el).fontSize)')

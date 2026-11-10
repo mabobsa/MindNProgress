@@ -4,6 +4,14 @@ AionUi 백엔드는 현재 대화가 MindNProgress 카드에 연결되어 있는
 
 브라우저에 MindNProgress 연동 토큰을 노출하지 않도록 두 API는 AionUi 백엔드에서 호출한다.
 
+## 카드의 담당 대화 선택
+
+「AI 대화 선택」 목록의 담당 체크박스는 카드당 하나만 선택할 수 있으며 체크 변경 즉시 저장된다. 기존 카드의 초기 담당은 가장 최신 대화다. 다른 대화를 열거나 새 보조 대화를 연결해도 선택은 유지한다.
+
+`PUT /api/maps/{mapId}/cards/{cardId}/ai-conversations/primary`는 로그인한 편집자가 사용한다. `conversationId`와 현재 선택인 `expectedPrimaryConversationId`를 보내며, 다른 곳에서 선택이 바뀌었으면 409로 응답한다. 연결된 대화와 머신 접근 권한을 검증하고 `aiPrimaryConversationId`만 변경한다. 이 API는 Aion 대화를 실행하거나 조회하지 않는다. 카드 대화 목록 응답의 `primaryConversationId`로 선택을 확인할 수 있다.
+
+총괄 지시 시 담당 모델이 위임 규칙과 다르면 규칙 모델에 맞는 최신 연결 대화를 담당으로 지정하고, 없으면 새로 만든다. 자세한 전환·예외·대기 동작은 [AI 위임 규칙](ai-delegation-policy.md)의 담당 대화 항목을 따른다.
+
 ## 자기 카드의 후속 대화 시작
 
 `mindnprogress_start_card_conversation`은 사용자가 요청한 인계를 위해 현재 대화의 원본 카드에 후속 대화를 만든다. 그룹 총괄 루트도 사용할 수 있으며, 하위 카드 위임이나 worker 배정을 수행하지 않는다. 현재 대화와 같은 실행 머신만 지원한다.
@@ -99,10 +107,14 @@ GET /api/integrations/aionui/conversations/{conversationId}/mindnprogress
   "exists": true,
   "target": {
     "mapId": "map-123",
-    "documentTitle": "총괄 문서",
+    "documentTitle": "개발 문서",
     "cardId": "card-456",
     "cardTitle": "연결 기능",
-    "archived": false
+    "archived": false,
+    "titlePrefix": "[상위] ",
+    "cardRole": "document-root",
+    "conversationRole": "primary",
+    "primaryConversationId": "2b31432e"
   },
   "selectionAvailable": true,
   "matchingViewCount": 1,
@@ -113,6 +125,35 @@ GET /api/integrations/aionui/conversations/{conversationId}/mindnprogress
 ```
 
 `target.titlePrefix`는 최신 문서 계층으로 판정한 대화 역할의 접두어다. 그룹 총괄 루트는 `[그룹 총괄] `, 일반 문서의 최상위 원본 카드는 `[상위] `, 하위 카드와 참조 카드는 빈 문자열을 반환한다. 신규 대화 제목과 자동 위임으로 생성한 제목에 같은 규칙을 적용한다. 기존 대화는 AionUi의 제목 동기화 버튼으로 반영하며, `[지식정리]` 등 별도 작업 용도의 접두어는 유지한다. 구버전 MnP가 이 필드를 생략하면 AionUi는 기존 역할 접두어를 보존한다.
+
+### 담당·보조 구분
+
+2026-11-10부터 같은 조회 응답의 `target`에 다음 필드를 추가한다. 별도 API를 호출하거나 제목 문자열을 분석할 필요가 없다. `POST .../mindnprogress/select`의 `target`에도 같은 필드가 포함된다.
+
+| 필드 | 값과 의미 |
+| --- | --- |
+| `cardRole` | `group-coordinator`: 그룹 총괄 루트, `document-root`: 일반 문서 최상위 원본 카드, `card`: 그 밖의 카드 |
+| `conversationRole` | `primary`: 이 카드의 담당 대화, `auxiliary`: 이 카드의 보조 대화 |
+| `primaryConversationId` | 현재 담당 대화 ID. 담당이 없으면 `null` |
+
+`cardRole`과 `conversationRole`은 서로 독립이다. 같은 상위 카드에 연결된 담당·보조 대화는 모두 `cardRole=document-root`이며 `conversationRole`만 다르다. 그룹 총괄 카드도 같은 방식이다. `titlePrefix`는 기존 `[상위] `·`[그룹 총괄] ` 계약을 유지하므로 이것만 보고 담당으로 판단하면 안 된다. Aion은 `conversationRole`로 담당·보조 배지나 제목 표기를 조합한다.
+
+보조 대화의 응답 예시는 다음과 같다.
+
+```json
+{
+  "cardRole": "group-coordinator",
+  "conversationRole": "auxiliary",
+  "primaryConversationId": "conversation-primary",
+  "titlePrefix": "[그룹 총괄] "
+}
+```
+
+- 판정 기준은 MnP 카드의 담당 선택이다. 미지정 상태의 기존 카드는 가장 최신 연결 대화를 초기 담당으로 취급한다.
+- 담당을 바꾸면 다음 조회부터 새 담당은 `primary`, 이전 담당은 `auxiliary`다. 담당을 삭제해 재선택을 기다리는 상태면 남은 대화는 모두 `auxiliary`, 담당 ID는 `null`이다.
+- 연결이 없으면 기존처럼 `exists=false`, `target=null`이다. 구버전 서버가 새 필드를 생략하면 **역할 미확인**으로 처리하며 담당이나 보조라고 추정하지 않는다.
+- 조회는 MnP 저장 데이터만 사용한다. Aion 모델·런타임 추가 조회, 담당 자동 변경, 문서 저장을 수행하지 않는다. 위임 규칙에 따른 담당 자동 교체는 그룹 지시 접수 시 처리한다.
+- 응답은 `Cache-Control: no-store`다. Aion에서 별도로 캐시한다면 담당 변경 후 이전·새 담당 대화의 연결 정보를 다시 조회해야 한다. 이 API 추가만으로 Aion의 기존 제목이 자동 변경되지는 않는다.
 
 ## 같은 계정·디바이스 화면 선택
 

@@ -31,7 +31,7 @@ const responseBudgetAppendices = new Map([
   ['mindnprogress_update_card', /^ affected의 card는 이번에 보낸 필드와 저장 중 바뀐 필드를 원문으로 주고, 그 밖의 1,000자 초과 필드는 card\.omittedFields와 textIntegrity로만 표시합니다\. affectedCards에는 요청 카드를 빼고 서버가 함께 조정한 카드의 상태 요약과 changedKeys만 있습니다\.$/],
   // 2026-11-09: 위임 AI 설정은 서버 위임 규칙이 정한다. 규칙 표 자체는 설명에 옮겨 적지 않는다(규칙 변경 때 AI에 다시 전달하지 않기 위해서).
   ['mindnprogress_delegate_ai_work', /^ 새 대화의 CLI·모델·사고 강도는 서버 위임 규칙이 workType·analysisDepth와 대상 카드 구분으로 정해 응답 aiPolicy로 알리며, 규칙 모델과 다른 대화를 resume으로 요청하면 새 대화로 실행하므로 instruction은 새 대화도 이해하도록 쓰세요\.$/],
-  ['mindnprogress_send_group_document_instruction', /^ 새 문서 담당 대화의 CLI·모델·사고 강도는 서버 위임 규칙이 workType·analysisDepth로 정해 응답 aiPolicy로 알리며, 규칙 모델과 다른 대화를 resume으로 요청하면 새 대화로 전달하므로 instruction은 새 대화도 이해하도록 쓰세요\.$/],
+  ['mindnprogress_send_group_document_instruction', /^ 기본 수신자는 AI 대화 선택에서 체크한 담당 대화\(primaryConversationId\)입니다\..*규칙 모델과 일치하는 최신 대화를 담당으로 바꾸어 이어갑니다\..*일치하는 대화가 없으면 규칙에 맞는 새 대화를 생성해 담당으로 지정합니다\..*aiPolicy.primaryResolution.*targetConversationRole=auxiliary.*사용합니다\.$/],
 ])
 // send_group_document_instruction(실제 서버 동작에 맞춘 정정)과 get_document(2026-10-21 승인 view 인자)는 재생성 기준선과
 // 설명이 같아졌으므로 다른 도구와 같이 기준선 전문 비교 대상이다. 아래 의미 검사는 재생성 이후를 대비한 보조 안전망이다.
@@ -71,10 +71,11 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     //   추가하고 newConversation의 agentId·modelId를 선택 항목으로 바꿨다. 도구 개수는 유지한다.
     // 2026-11-09: 문맥 손실 없는 표면 축소로 tools/list의 $schema·MAX_SAFE_INTEGER 한도를 빼고(A1),
     //   저장 도구 23개의 설명 꼬리말에서 resultOnly 속성 설명과 같은 문장을 뺐다(B1). 83,542자 → 79,258자.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '558e4f676a857ddfff2cc69643993fc1f8921fd67d2d8de15184deb94aaaa68d')
+    // 2026-11-10: 그룹 지시에 담당·보조 역할과 규칙 모델별 담당 자동 선택을 추가한다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '03d606ac20ee80b44586b2eb94e2f5ed76d4408d87d05e86a2648e54fd4e3d21')
     const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
-    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'e4a63e47c4ff4bb435d2e4bae09ce5bac0cfd17aacba1b635afb2156a7e3d8b0')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 235)
+    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '633344436ea864526fc87e866ac6f4e2e0f02d8135401fdc544896071a1ddfcc')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 236)
     const handoff = tools.find((tool) => tool.name === 'mindnprogress_start_card_conversation')
     assert.deepEqual(handoff.inputSchema.required, ['mapId', 'cardId', 'requestId'])
     assert.equal(handoff.inputSchema.properties.resultOnly.type, 'boolean')

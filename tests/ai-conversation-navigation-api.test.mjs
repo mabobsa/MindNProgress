@@ -189,6 +189,7 @@ test('AionUi 대화 조회와 화면 선택은 연결된 카드 및 같은 계�
   const mapId = 'map-conversation-navigation'
   const cardId = 'card-navigation'
   const conversationId = 'conversation-navigation'
+  const auxiliaryConversationId = 'conversation-navigation-auxiliary'
   const legacyConversationId = 'conversation-legacy'
   const cardOwnerConversationId = 'conversation-card-owner'
   const attributionConversationId = 'conversation-attribution-owner'
@@ -210,7 +211,7 @@ test('AionUi 대화 조회와 화면 선택은 연결된 카드 및 같은 계�
         conversationId: linkedConversationId,
         linkedAt,
         ...(startedBy ? { startedBy: { id: startedBy, label: startedBy } } : {}),
-      }],
+      }, ...(id === cardId ? [{ conversationId: auxiliaryConversationId, linkedAt: '2026-09-14T00:00:00.000Z' }] : [])],
     },
   })
   await writeFile(path.join(dataDirectory, `${mapId}.json`), JSON.stringify({
@@ -251,6 +252,7 @@ test('AionUi 대화 조회와 화면 선택은 연결된 카드 및 같은 계�
   await writeFile(path.join(dataDirectory, '_ai-conversation-origins.json'), JSON.stringify([
     { conversationId: rootConversationId, mapId: rootMapId, cardId: 'document-root', startedBy: 'user-admin', linkedAt },
     { conversationId, mapId, cardId, startedBy: 'user-admin', homeMachineId: 'macbook', linkedAt },
+    { conversationId: auxiliaryConversationId, mapId, cardId, startedBy: 'user-admin', homeMachineId: 'macbook', linkedAt },
     { conversationId: legacyConversationId, mapId, cardId: 'card-legacy', linkedAt },
     { conversationId: cardOwnerConversationId, mapId, cardId: 'card-owner-link', linkedAt },
     { conversationId: attributionConversationId, mapId, cardId: 'card-owner-attribution', linkedAt },
@@ -360,6 +362,9 @@ test('AionUi 대화 조회와 화면 선택은 연결된 카드 및 같은 계�
         cardTitle: '대화 탐색 카드',
         archived: false,
         titlePrefix: '[그룹 총괄] ',
+        cardRole: 'group-coordinator',
+        conversationRole: 'primary',
+        primaryConversationId: conversationId,
         group: {
           id: groupId,
           title: '변경된 그룹 이름',
@@ -375,10 +380,19 @@ test('AionUi 대화 조회와 화면 선택은 연결된 카드 및 같은 계�
 
     const matchingHeaderLookup = await fetch(endpoint, { headers: accountHeaders })
     assert.equal(matchingHeaderLookup.status, 200)
+    const auxiliaryLookup = await (await fetch(endpointFor(auxiliaryConversationId), { headers })).json()
+    assert.equal(auxiliaryLookup.exists, true)
+    assert.equal(auxiliaryLookup.target.cardRole, 'group-coordinator')
+    assert.equal(auxiliaryLookup.target.conversationRole, 'auxiliary')
+    assert.equal(auxiliaryLookup.target.primaryConversationId, conversationId)
+    assert.equal(auxiliaryLookup.target.titlePrefix, '[그룹 총괄] ', '그룹 총괄 카드의 보조 대화도 카드 역할 접두어는 유지한다')
     const rootLookupResponse = await fetch(`${baseUrl}/api/integrations/aionui/conversations/${rootConversationId}/mindnprogress`, { headers })
     assert.equal(rootLookupResponse.status, 200)
     const rootLookup = await rootLookupResponse.json()
     assert.equal(rootLookup.target.titlePrefix, '[상위] ')
+    assert.equal(rootLookup.target.cardRole, 'document-root')
+    assert.equal(rootLookup.target.conversationRole, 'primary')
+    assert.equal(rootLookup.target.primaryConversationId, rootConversationId)
     assert.equal(rootLookup.target.group, undefined)
 
     const mismatchingHeaderLookup = await fetch(endpoint, {
@@ -449,6 +463,9 @@ test('AionUi 대화 조회와 화면 선택은 연결된 카드 및 같은 계�
       assert.equal(fallbackLookup.matchingViewCount, 1)
       assert.equal(fallbackLookup.target.group, undefined)
       assert.equal(fallbackLookup.target.titlePrefix, '')
+      assert.equal(fallbackLookup.target.cardRole, 'card')
+      assert.equal(fallbackLookup.target.conversationRole, 'primary')
+      assert.equal(fallbackLookup.target.primaryConversationId, serverOwnedConversationId)
     }
 
     const remoteLookup = await (await fetch(endpoint, { headers: remoteHeaders })).json()

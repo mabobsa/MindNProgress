@@ -161,6 +161,7 @@ export type MindNodeData = {
   onExternalLinkResizeEnd?: (resize: ResizeSnapRequest) => void
   taskUrl?: string
   aiConversationId?: string
+  aiPrimaryConversationId?: string | null
   aiConversations?: AiConversationLink[]
   reference?: MindNodeReference
   referenceUnresolved?: boolean

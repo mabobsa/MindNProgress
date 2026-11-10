@@ -1873,7 +1873,9 @@ async function main() {
     })
     return {
       ...result,
-      selectionRule: aiConversationSelectionRules(),
+      selectionRule: { ...aiConversationSelectionRules(),
+        groupInstruction: '그룹 문서 지시는 primaryConversationId의 담당이 우선입니다. 위임 규칙과 담당 모델이 다르면 서버가 일치 모델의 최신 연결 대화를 담당으로 바꾸거나, 없을 때만 새 담당을 만듭니다. 실행 중인 일치 대화는 대기하며 다른 대화를 추가 생성하지 않습니다.',
+      },
     }
   })
 
@@ -1911,7 +1913,7 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_send_group_document_instruction', '그룹 총괄 문서의 루트 AI가 같은 그룹에 속한 다른 문서의 원본 루트 AI에 승인된 문서별 지시 전문을 전달합니다. 이 도구는 AI 작업 위임이나 worker 배정이 아닙니다. 대상 문서 AI가 담당 분석·카드 정비를 수행하고, 승인된 실제 구현은 자기 문서의 하위 업무 카드에 별도로 위임합니다. 전달 전 mindnprogress_get_group_context에서 그룹 설정 버전과 대상 문서 버전, 두 단계 사용자 승인 범위를 확인하세요. 서버는 대상 문서 AI가 지시를 받은 첫 응답 턴만 replied 상태와 response로 기록하며 총괄 대화를 자동 재개하거나 이후 턴의 보고를 전달하지 않습니다. 최종 완료 보고는 대상 문서 AI가 지시 전문의 회신 방법에 따라 session-message로 회신 대상 대화에 직접 보내며 기본 대상은 현재 총괄 대화입니다. 사용자가 이번 지시에서 다른 대화를 명시한 경우에만 replyTarget을 explicit으로 지정하세요. 과거 지시·AION_SESSION_MESSAGE·reply_to를 근거로 대상을 추정하지 마세요. 대상 AI가 응답 중이면 지시를 내구 대기열에 보존하고 유휴 상태에서 자동 전달합니다. 모든 응답의 reasonCode와 message를 함께 읽고, queued·delivered·replied 상태를 업무 완료로 해석하지 마세요. 새 문서 담당 대화의 CLI·모델·사고 강도는 서버 위임 규칙이 workType·analysisDepth로 정해 응답 aiPolicy로 알리며, 규칙 모델과 다른 대화를 resume으로 요청하면 새 대화로 전달하므로 instruction은 새 대화도 이해하도록 쓰세요.', {
+  registerTool(server, 'mindnprogress_send_group_document_instruction', '그룹 총괄 문서의 루트 AI가 같은 그룹에 속한 다른 문서의 원본 루트 AI에 승인된 문서별 지시 전문을 전달합니다. 이 도구는 AI 작업 위임이나 worker 배정이 아닙니다. 대상 문서 AI가 담당 분석·카드 정비를 수행하고, 승인된 실제 구현은 자기 문서의 하위 업무 카드에 별도로 위임합니다. 전달 전 mindnprogress_get_group_context에서 그룹 설정 버전과 대상 문서 버전, 두 단계 사용자 승인 범위를 확인하세요. 서버는 대상 문서 AI가 지시를 받은 첫 응답 턴만 replied 상태와 response로 기록하며 총괄 대화를 자동 재개하거나 이후 턴의 보고를 전달하지 않습니다. 최종 완료 보고는 대상 문서 AI가 지시 전문의 회신 방법에 따라 session-message로 회신 대상 대화에 직접 보내며 기본 대상은 현재 총괄 대화입니다. 사용자가 이번 지시에서 다른 대화를 명시한 경우에만 replyTarget을 explicit으로 지정하세요. 과거 지시·AION_SESSION_MESSAGE·reply_to를 근거로 대상을 추정하지 마세요. 대상 AI가 응답 중이면 지시를 내구 대기열에 보존하고 유휴 상태에서 자동 전달합니다. 모든 응답의 reasonCode와 message를 함께 읽고, queued·delivered·replied 상태를 업무 완료로 해석하지 마세요. 기본 수신자는 AI 대화 선택에서 체크한 담당 대화(primaryConversationId)입니다. 기존 카드는 최신 대화가 초기 담당이며 새 보조 대화 추가로 바뀌지 않습니다. resume의 conversationId를 생략하면 담당을 사용합니다. 담당 모델이 위임 규칙과 다르면 연결된 대화 중 규칙 모델과 일치하는 최신 대화를 담당으로 바꾸어 이어갑니다. 일치하는 대화가 없으면 규칙에 맞는 새 대화를 생성해 담당으로 지정합니다. 이때 이전 conversationId·문맥 평가를 재사용하지 않고 서버가 대상 후보를 평가하며, 실제 선택은 응답의 instruction과 aiPolicy.primaryResolution에서 확인하세요. 담당 모델이 이미 규칙과 같으면 기존 담당을 유지합니다. 수동 담당 교체는 사용자가 체크를 변경하거나 명시적인 인계 도구를 사용합니다. 보조 AI를 이번 지시에 사용하라는 사용자 요청이 있을 때만 targetConversationRole=auxiliary와 aiPolicyOverride.evidence를 함께 지정하세요. 규칙 모델 불일치가 아닌 경우 strategy=new는 첫 담당 생성 또는 명시적으로 요청한 보조 대화 생성에만 사용합니다.', {
     mapId: z.string().min(1).describe('현재 그룹 총괄 루트 카드가 속한 문서 ID'),
     targetMapId: z.string().min(1).describe('지시를 받을 같은 그룹 소속 문서 ID. 대상 카드는 서버가 원본 루트로 확정합니다.'),
     targetRevision: z.number().int().positive().describe('get_group_context에서 확인한 대상 문서의 최신 version'),
@@ -1919,8 +1921,9 @@ async function main() {
     instructionType: z.enum(['planning', 'scope-adjustment', 'execution', 'validation', 'status-request']).describe('지시의 목적'),
     approvalScope: z.enum(['analysis-only', 'card-maintenance', 'implementation', 'validation']).describe('사용자에게 승인받아 대상 문서 AI가 수행할 수 있는 최대 범위'),
     approvalEvidence: z.string().min(1).max(10000).describe('사용자의 실제 승인 발언, 승인 범위와 확인 가능한 대화·메시지 출처. 분석 전용이면 해당 분석 요청 근거를 전달하며 확인하지 못한 근거를 만들지 않습니다. 이 전문을 instruction에 반복하지 않습니다.'),
-    strategy: z.enum(['resume', 'new']).describe('resume은 대상 문서 루트에 연결된 기존 대화 이어가기, new는 새 문서 담당 대화 생성'),
-    conversationId: z.string().min(1).max(120).optional().describe('resume일 때 이어갈 대상 문서 루트의 conversationId'),
+    strategy: z.enum(['resume', 'new']).describe('resume은 담당 대화 이어가기, new는 첫 담당 생성 또는 명시적으로 요청한 보조 대화 생성'),
+    targetConversationRole: z.enum(['primary', 'auxiliary']).optional().describe('생략하면 primary: 체크된 담당에게만 전달. auxiliary는 사용자가 이번 지시에서 보조 AI 사용을 지정한 경우만 허용하며 aiPolicyOverride.evidence에 근거를 전달. 담당 선택은 바꾸지 않음'),
+    conversationId: z.string().min(1).max(120).optional().describe('resume일 때 대상 대화. 기본은 primaryConversationId이며 생략 가능. auxiliary는 연결된 보조 대화 ID를 반드시 지정'),
     conversationAssessmentId: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('resume일 때 mindnprogress_list_ai_conversations가 대상 루트 대화의 contextHealth.assessmentId로 반환한 최신 평가 ID'),
     ...contextOverrideArgument('지시 기록'),
     machineId: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/).optional().describe('new일 때 실행할 머신. resume은 기존 대화의 머신으로 고정됩니다.'),

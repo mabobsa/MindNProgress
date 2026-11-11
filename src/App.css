@@ -754,7 +754,23 @@
 .distributed-work-field select { width: 100%; padding: 9px 10px; color: #39333f; border: 1px solid #dfdbe5; border-radius: 8px; outline: 0; background: white; font-size: 10px; }
 .distributed-work-field select:disabled { color: #a49eaa; background: #f6f4f9; }
 .distributed-work-field > small { color: #a49eaa; font-size: 7px; }
-.distributed-work-machines h4, .distributed-work-register h4 { margin: 0 0 8px; color: #5f5866; font-size: 9px; font-weight: 700; }
+.distributed-work-machines h4, .distributed-work-register h4, .distributed-work-pools h4 { margin: 0 0 8px; color: #5f5866; font-size: 9px; font-weight: 700; }
+.distributed-work-pools { display: flex; flex-direction: column; gap: 8px; min-width: 0; color: #5f5866; font-size: 9px; line-height: 1.6; overflow-wrap: anywhere; }
+.distributed-work-pools h4 { margin: 0; }
+.distributed-work-pools p { margin: 0; }
+.distributed-work-pools code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 8px; white-space: pre-wrap; user-select: text; }
+.distributed-work-pool-meta { color: #746d7d; font-size: 8px; }
+.distributed-work-pool-meta > code { display: block; color: #5f5866; }
+.distributed-work-pool-empty { padding: 10px 11px; border: 1px dashed #ddd8e6; border-radius: 8px; background: #fbfafd; }
+.distributed-work-pool { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 10px 11px; border: 1px solid #e8e4ee; border-radius: 8px; background: #fbfafd; }
+.distributed-work-pool-heading { color: #39333f; font-size: 9px; }
+.distributed-work-pool ul { display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.distributed-work-pool li { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 8px; border: 1px solid #e8e4ee; border-radius: 6px; background: white; }
+.distributed-work-pool li > span, .distributed-work-pool li > small { font-size: 8px; }
+.distributed-work-pool li > small { color: #746d7d; }
+.distributed-work-pool > button { align-self: flex-start; max-width: 100%; padding: 7px 10px; color: #4a3fa8; border: 1px solid #d5cef0; border-radius: 7px; background: #f4f2fd; font-size: 8px; font-weight: 700; cursor: pointer; }
+.distributed-work-pool > button:hover:not(:disabled) { background: #ece9f7; }
+.distributed-work-pool > button:disabled { opacity: .5; cursor: not-allowed; }
 .distributed-work-machines ul { display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; list-style: none; }
 .distributed-work-machines li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #e8e4ee; border-radius: 8px; }
 .distributed-work-machines li.disabled { opacity: .55; }

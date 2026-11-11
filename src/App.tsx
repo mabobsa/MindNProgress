@@ -2263,20 +2263,26 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
               <small>새 대화와 위임에서 미리 선택될 머신입니다. 매번 다르게 고를 수 있습니다.</small>
             </label>
 
-            <div className="distributed-work-machines">
+            <div className="distributed-work-pools">
               <h4>원격 Unity Fork 풀</h4>
-              <p>서브 머신 registry의 coordinatorId: <code>{workspaceCoordinatorId ?? '확인 중'}</code></p>
-              {remotePools.length === 0 && <p>Runner가 보고한 관리형 Fork 풀이 없습니다. 일반 대화 경로는 풀 등록이 아닙니다.</p>}
+              <p className="distributed-work-pool-meta">서브 머신 registry의 coordinatorId: <code>{workspaceCoordinatorId ?? '확인 중'}</code></p>
+              {remotePools.length === 0 && <p className="distributed-work-pool-empty">Runner가 보고한 관리형 Fork 풀이 없습니다. 일반 대화 경로는 풀 등록이 아닙니다.</p>}
               {remotePools.map((pool) => (
-                <section key={`${pool.machineId}:${pool.poolId}`}>
-                  <strong>{pool.machineId} · {pool.poolId} · {pool.stale ? '보고 만료' : pool.approved ? '승인됨' : '승인 대기'}</strong>
-                  <p>origin: <code>{pool.originUrl.replace(/(https?:\/\/)[^/@]+@/, '$1[인증정보 생략]@')}</code></p>
+                <section className="distributed-work-pool" key={`${pool.machineId}:${pool.poolId}`}>
+                  <strong className="distributed-work-pool-heading">{pool.machineId} · {pool.poolId} · {pool.stale ? '보고 만료' : pool.approved ? '승인됨' : '승인 대기'}</strong>
+                  <p className="distributed-work-pool-meta">origin: <code>{pool.originUrl.replace(/(https?:\/\/)[^/@]+@/, '$1[인증정보 생략]@')}</code></p>
                   <ul>{pool.workspaces.map((worker) => (
-                    <li key={worker.workspaceId}><code>{worker.projectRoot}</code> · {worker.status}{worker.dirty ? ' · 미커밋 변경 있음' : ''}{worker.leaseId ? ` · ${worker.leaseId}` : ''}<small>Git 보고: {worker.branch} · {worker.headCommit.slice(0, 10)} · AI runtime {worker.runtimeIdle ? '유휴' : '사용 중'}</small></li>
+                    <li key={worker.workspaceId}>
+                      <code>{worker.projectRoot}</code>
+                      <span>{worker.status}{worker.dirty ? ' · 미커밋 변경 있음' : ''}{worker.leaseId ? ` · ${worker.leaseId}` : ''}</span>
+                      <small>Git 보고: {worker.branch} · {worker.headCommit.slice(0, 10)} · AI runtime {worker.runtimeIdle ? '유휴' : '사용 중'}</small>
+                    </li>
                   ))}</ul>
                   <button type="button" disabled={submitting || pool.stale && !pool.approved} onClick={() => void registerWorkspacePool(pool)}>{pool.approved ? '새 배정 비활성화' : '풀 등록 승인'}</button>
                 </section>
               ))}
+            </div>
+            <div className="distributed-work-machines">
               <h4>등록된 머신</h4>
               <ul>
                 {machines.map((machine) => {

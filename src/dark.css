@@ -1049,9 +1049,41 @@
 
 [data-theme="dark"] .distributed-work-field > span,
 [data-theme="dark"] .distributed-work-machines h4,
+[data-theme="dark"] .distributed-work-pools h4,
 [data-theme="dark"] .distributed-work-register h4,
 [data-theme="dark"] .distributed-work-register-fields span {
   color: var(--theme-text-secondary);
+}
+
+[data-theme="dark"] .distributed-work-pools,
+[data-theme="dark"] .distributed-work-pool-meta > code {
+  color: var(--theme-text-secondary);
+}
+
+[data-theme="dark"] .distributed-work-pool-meta,
+[data-theme="dark"] .distributed-work-pool li > small {
+  color: var(--theme-text-muted);
+}
+
+[data-theme="dark"] .distributed-work-pool-heading {
+  color: var(--theme-text);
+}
+
+[data-theme="dark"] .distributed-work-pool,
+[data-theme="dark"] .distributed-work-pool-empty {
+  border-color: var(--theme-border);
+  background: var(--theme-surface-raised);
+}
+
+[data-theme="dark"] .distributed-work-pool li,
+[data-theme="dark"] .distributed-work-pool > button {
+  color: var(--theme-text-secondary);
+  border-color: var(--theme-border-strong);
+  background: var(--theme-surface);
+}
+
+[data-theme="dark"] .distributed-work-pool > button:hover:not(:disabled) {
+  background: var(--theme-surface-hover);
 }
 
 [data-theme="dark"] .distributed-work-toggle,

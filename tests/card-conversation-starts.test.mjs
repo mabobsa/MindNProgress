@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildCardConversationStartPrompt, cardConversationStartHash, cardConversationStartView,
-  isCardConversationWorkerWorkspace, normalizeCardConversationStart } from '../server/lib/cardConversationStarts.mjs'
+  cardConversationStartId, createCardConversationStarts, isCardConversationWorkerWorkspace, normalizeCardConversationStart } from '../server/lib/cardConversationStarts.mjs'
 
 const input = { requestId: 'handoff:1', predecessorConversationId: 'previous',
   newConversation: { agentId: 'claude', modelId: 'opus', mcpIds: ['b', 'a', 'b'] },
@@ -45,4 +45,37 @@ test('worker 루트와 하위 폴더는 차단하며 통합·형제 경로는 �
   for (const workspace of ['C:/Git/Main', 'C:/Git/Fork10', 'C:/Git/Fork1/../Main', '/Users/other/worker', null]) {
     assert.equal(isCardConversationWorkerWorkspace(workspace, roots), false, String(workspace))
   }
+})
+
+test('인수 확인과 겹친 이전 실행 설정 조회로 담당을 전환하지 않고 확인 후 다시 검증한다', async () => {
+  const id = cardConversationStartId('editor', 'map', 'card', input.requestId)
+  const records = new Map([[id, { id, requestId: input.requestId, mapId: 'map', cardId: 'card', startedBy: 'editor',
+    input, predecessorConversationId: 'previous', conversationId: 'successor', state: 'observing',
+    acceptanceRequired: true, attemptedAt: new Date().toISOString(), requestedConfig: { modelId: 'opus', thoughtLevelId: 'xhigh' } }]])
+  let firstConfigRead, releaseFirstRead, promotions = 0, level = 'high'
+  const reading = new Promise(resolve => { firstConfigRead = resolve })
+  const firstResponse = new Promise(resolve => { releaseFirstRead = resolve })
+  const pending = []
+  const config = value => ({ model: { value: 'opus', source: 'runtime' }, thought_level: { value, source: 'runtime' } })
+  const starts = createCardConversationStarts({ records, mutate: async (_map, action) => action(), persist: async () => {},
+    validate: async () => {}, promote: async () => { promotions++ }, background: action => {
+      const promise = Promise.resolve().then(action); pending.push(promise); return promise
+    }, call: async (_machine, url) => {
+      if (url.includes('/external-conversation-dispatches/')) return { operationId: id, conversationId: 'successor', turnId: 'turn', state: 'running' }
+      if (firstConfigRead) { const notify = firstConfigRead; firstConfigRead = null; notify(); return firstResponse }
+      return config(level)
+    } })
+  const query = (conversationId = 'previous', acceptHandoff = false) => starts.submit({ userId: 'editor', mapId: 'map', cardId: 'card',
+    source: { mapId: 'map', cardId: 'card', conversationId, startedBy: 'editor' } }, { requestId: input.requestId, resultOnly: true, acceptHandoff })
+  await query(); await reading
+  await query('successor', true)
+  releaseFirstRead(config('xhigh'))
+  await pending.at(-1)
+  assert.equal(promotions, 0, '인수 전에 시작한 설정 조회는 전환 근거로 사용하지 않는다')
+  await query(); await pending.at(-1)
+  assert.equal(promotions, 0, '인수 후 실제 설정이 다르면 담당을 유지한다')
+  level = 'xhigh'
+  await query(); await pending.at(-1)
+  assert.equal(promotions, 1)
+  assert.equal(records.get(id).state, 'ready')
 })

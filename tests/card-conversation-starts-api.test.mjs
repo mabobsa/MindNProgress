@@ -174,7 +174,8 @@ test('자기 카드 대화 인계는 원문·권한·중복 방지·원격 호�
   assert.equal(creates[0].create.claudeAccountId, undefined)
   dispatches.get(creates[0].operationId).state = 'running'
   dispatches.get(creates[0].operationId).turnId = 'turn-one'
-  await until(async () => (await result()).body.state === 'linked', '첫 실행 확인 뒤 대표 연결이 전환되지 않았습니다.')
+  await until(async () => (await result()).body.runtimeConfig?.model.source === 'snapshot', '첫 실행 뒤 설정 조회가 이루어지지 않았습니다.')
+  assert.equal((await currentMap()).nodes[0].data.aiConversationId, 'previous', '실제 실행 설정 확인 전에는 대표를 전환하지 않는다')
   const linked = (await result()).body
   assert.equal(linked.runtimeConfig.model.source, 'snapshot')
   assert.equal(linked.requestedConfig.claudeAccountId, 'default')

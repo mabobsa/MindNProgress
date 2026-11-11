@@ -89,6 +89,8 @@ import {
   parseAiDelegationPolicyRequest,
   resolveAiDelegationPolicyRule,
 } from './lib/aiDelegationPolicy.mjs'
+import { delegationResumeRuntimePolicy, ensureDelegationRuntimePolicy } from './lib/aiDelegationRuntimePolicy.mjs'
+import { createRootHandoffPlan, buildRootHandoffRequest, rootHandoffDocumentHash } from './lib/rootConversationHandoff.mjs'
 import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
 import { reconcileLostIntegrationWaits } from './lib/aiIntegrationWaitRecovery.mjs'
@@ -2800,7 +2802,7 @@ function sendGroupDocumentInstructionResponse(response, statusCode, reasonCode, 
 
 function groupDocumentInstructionReason(instruction) {
   if (instruction.state === 'queued') return {
-    reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_QUEUED',
+    reasonCode: instruction.rootHandoff ? instruction.reasonCode : 'GROUP_DOCUMENT_INSTRUCTION_QUEUED',
     message: instruction.message ?? '대상 문서 루트 AI가 현재 응답 중이어서 지시 전문을 대기열에 보관했습니다. 유휴 상태가 되면 같은 지시를 자동 전달합니다.',
   }
   if (instruction.state === 'delivered') return {
@@ -2886,7 +2888,7 @@ async function targetReadyForGroupDocumentInstruction(instruction, targetCard) {
   return workStates?.cards?.every((card) => ['idle', 'unlinked'].includes(card.state)) === true
 }
 
-async function linkGroupDocumentInstructionConversation({ instruction, targetMap, targetCard, targetConversationId, selection, attribution, user }) {
+async function linkGroupDocumentInstructionConversation({ instruction, targetMap, targetCard, targetConversationId, selection, attribution, user, runtimePolicyVerification }) {
   rememberAiConversationOrigin({
     conversationId: targetConversationId,
     mapId: targetMap.id,
@@ -2911,7 +2913,11 @@ async function linkGroupDocumentInstructionConversation({ instruction, targetMap
     refreshedAt: new Date().toISOString(),
   })
   await Promise.all([persistAiAttributions(), persistAiConversationAttributions(), persistAiConversationOrigins()])
-  if (instruction.strategy !== 'new') return { mapVersion: targetMap.version, linkError: null }
+  if (instruction.strategy !== 'new') {
+    const linked = await linkAiDelegationConversation({ map: targetMap, targetCard, targetConversationId, strategy: 'resume',
+      selection, user, runtimePolicyVerification })
+    return { mapVersion: linked.updatedMap.version, linkError: linked.linkError }
+  }
 
   const latestMap = await readMap(targetMap.id)
   const latestTargetCard = latestMap?.nodes.find((node) => node.id === targetCard.id)
@@ -2954,7 +2960,100 @@ async function linkGroupDocumentInstructionConversation({ instruction, targetMap
   }
 }
 
+async function advanceRootConversationHandoff(instruction) {
+  const handoff = instruction.rootHandoff
+  const wait = (reasonCode, message, patch = {}) => updateGroupDocumentInstruction(instruction.id, {
+    state: 'queued', reasonCode, message, ...patch,
+  })
+  const fail = (reasonCode, message) => updateGroupDocumentInstruction(instruction.id, { state: 'failed', reasonCode, message })
+  try {
+    // 담당 연결과 인계 ready는 같은 트랜잭션으로 저장된다. 서로 다른 시점의 값을 섞어 실패로 판단하지 않는다.
+    const { parentMap, targetMap, parentCard, targetCard, start } = await withResources([
+      { key: `doc:${instruction.parentMapId}`, mode: 'read' }, { key: `doc:${instruction.targetMapId}`, mode: 'read' },
+      { key: resourceForFile(cardConversationStartsFile), mode: 'read' },
+    ], async () => ({ ...await groupDocumentInstructionMaps(instruction),
+      start: [...cardConversationStartRecords.values()].find((item) => item.requestId === handoff.requestId
+        && item.policyInstructionId === instruction.id) }))
+    if (!parentMap || parentMap.trashedAt || !targetMap || targetMap.trashedAt || targetMap.archivedAt || !parentCard || !targetCard) {
+      return fail('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_CARD_CHANGED', '인계 대상 문서를 찾을 수 없거나 편집할 수 없습니다.')
+    }
+    const groupId = await groupProjects.authorizeDocumentInstruction(parentMap, parentCard.id, targetMap, targetCard.id)
+    const group = await groupProjects.context(groupId)
+    if (groupId !== instruction.groupId || group.project.version !== instruction.groupProjectVersion
+      || parentMap.version !== instruction.sourceRevision || rootHandoffDocumentHash(targetMap, targetCard.id) !== handoff.documentHash) {
+      return fail('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_REVISION_CHANGED', '인계 대기 중 문서 내용 또는 그룹 기준이 변경되었습니다. 기존 담당을 유지하며 새 업무를 전달하지 않았습니다.')
+    }
+    const primary = primaryAiConversationIdFromData(targetCard.data)
+    if (primary !== handoff.predecessorConversationId && primary !== start?.conversationId) {
+      return fail('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_PRIMARY_CHANGED', '인계 중 사용자가 담당 대화를 변경하여 자동 전환을 중단했습니다.')
+    }
+    if (start) {
+      if (start.state === 'failed') return fail('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_FAILED', `후속 대화 인계가 거절되었습니다: ${start.reasonCode}`)
+      if (start.state !== 'ready') {
+        cardConversationStarts.continue(start.id)
+        return wait('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_ACCEPTANCE_PENDING', '후속 대화의 인수 확인과 실제 실행 설정 확인을 기다리고 있습니다.', {
+          rootHandoff: { ...handoff, conversationId: start.conversationId ?? null, startState: start.state, reasonCode: start.reasonCode ?? null },
+        })
+      }
+      if (primary !== start.conversationId || !start.acceptedAt) {
+        return fail('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_UNCONFIRMED', '후속 대화의 인수 또는 담당 연결을 확인하지 못했습니다.')
+      }
+      const linked = aiConversationLinksFromData(targetCard.data).find((item) => item.conversationId === start.conversationId)
+      const conversation = await fetchAiConversationRuntime(start.conversationId, linked)
+      if (normalizeAiConversationRuntime(start.conversationId, conversation).state !== 'idle') {
+        return wait('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_TURN_PENDING', '후속 대화의 인수 확인 턴이 끝나기를 기다리고 있습니다.')
+      }
+      const health = await inspectAiConversationContextHealth(start.conversationId, conversation, instruction.targetHomeMachineId,
+        { excludeInstructionId: instruction.id }, instruction.primaryPolicyModelId)
+      return wait('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_COMPLETED', '루트 담당 인계를 완료했습니다. 보관한 업무 지시를 새 담당에게 전달합니다.', {
+        strategy: 'resume', requestedConversationId: start.conversationId, expectedPrimaryConversationId: start.conversationId,
+        targetRevision: targetMap.version, conversationAssessmentId: health.assessmentId, contextOverride: null,
+        resumeRuntimePolicy: { modelId: start.requestedConfig.modelId, thoughtLevelId: start.requestedConfig.thoughtLevelId },
+        rootHandoff: { ...handoff, conversationId: start.conversationId, acceptedAt: start.acceptedAt, completedAt: new Date().toISOString() },
+      })
+    }
+    if (cardConversationHandoffBusy(handoff.predecessorConversationId, instruction.id)) {
+      return wait('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_WORK_PENDING', '기존 담당의 위임·복구·완료 보고가 끝나기를 기다리고 있습니다. 새 업무 지시는 보관했습니다.')
+    }
+    if (!handoff.requestedAt) {
+      const linked = aiConversationLinksFromData(targetCard.data).find((item) => item.conversationId === handoff.predecessorConversationId)
+      const conversation = await fetchAiConversationRuntime(handoff.predecessorConversationId, linked)
+      if (normalizeAiConversationRuntime(handoff.predecessorConversationId, conversation).state !== 'idle') {
+        return wait('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_TARGET_BUSY', '기존 담당의 현재 응답이 끝나면 인계 준비를 요청합니다.')
+      }
+      // 원격 요청 이전에 의도를 저장한다. 응답 유실 뒤에는 같은 operation을 조회하며 중복 전송하지 않는다.
+      const saved = await wait('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_REQUESTED', '기존 담당에게 루트 대화 인계를 요청했습니다.', {
+        rootHandoff: { ...handoff, requestedAt: new Date().toISOString() },
+      })
+      try {
+        await fetchAionUiOn(instruction.targetHomeMachineId, '/api/internal/external-conversation-dispatches', {
+          method: 'POST', timeoutMs: 30_000, strictJson: true, singleTarget: true, noMutationRetry: true,
+          body: { operationId: handoff.operationId, actorConversationId: handoff.predecessorConversationId,
+            strategy: 'resume', targetConversationId: handoff.predecessorConversationId, instruction: buildRootHandoffRequest(instruction) },
+        })
+      } catch (error) { throwIfRuntimeStopping(error, runtimeLifecycle.signal) }
+      return saved
+    }
+    const dispatch = await fetchAionUiOn(instruction.targetHomeMachineId,
+      `/api/internal/external-conversation-dispatches/${encodeURIComponent(handoff.operationId)}`, { strictJson: true, singleTarget: true })
+    if (dispatch.operationId !== handoff.operationId || dispatch.conversationId !== handoff.predecessorConversationId) {
+      return fail('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_DISPATCH_MISMATCH', '인계 준비 실행의 대화와 요청 ID가 일치하지 않습니다.')
+    }
+    if (['completed', 'failed', 'recovery_required', 'waiting_resume'].includes(dispatch.state)) {
+      // 상태 조회 도중 기존 담당이 인계를 접수했다면 다음 주기에 해당 접수 건을 확인한다.
+      if ([...cardConversationStartRecords.values()].some((item) => item.requestId === handoff.requestId
+        && item.policyInstructionId === instruction.id)) return instruction
+      return fail('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_NOT_SUBMITTED', '기존 담당이 후속 대화 인계를 접수하지 못했습니다. 기존 대화의 응답을 확인하세요. 새 업무는 실행하지 않았습니다.')
+    }
+    return wait('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_PREPARING', '기존 담당이 업무 맥락과 승인 범위를 정리해 후속 대화에 인계하고 있습니다.')
+  } catch (error) {
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    return wait('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_STATUS_UNAVAILABLE', '인계 처리 상태를 확인하지 못했습니다. 기존 요청을 보존했으며 중복 생성·업무 전송은 하지 않습니다.')
+  }
+}
+
 async function runGroupDocumentInstructionDispatch(instruction, user) {
+    if (instruction.rootHandoff && !instruction.rootHandoff.completedAt) return advanceRootConversationHandoff(instruction)
     const validation = await validateQueuedGroupDocumentInstruction(instruction)
     if (!validation.valid) return updateGroupDocumentInstruction(instruction.id, {
       state: 'expired', reasonCode: validation.reasonCode, message: validation.message,
@@ -3020,6 +3119,15 @@ async function runGroupDocumentInstructionDispatch(instruction, user) {
       state: 'expired', reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_MODEL_BLOCKED',
       message: `공통 모델 정책에서 ${selection.model.id} 모델이 제한되어 대기 중인 지시를 전달하지 않았습니다. 허용 모델로 다시 요청하세요.`,
     })
+    let runtimePolicyVerification
+    try {
+      runtimePolicyVerification = await ensureDelegationRuntimePolicy({ conversationId: instruction.requestedConversationId,
+        policy: instruction.resumeRuntimePolicy, fetchOn: fetchAionUiOn, machineId: instruction.targetHomeMachineId })
+      if (runtimePolicyVerification) selection.thoughtLevel = { id: runtimePolicyVerification.thoughtLevelId, label: runtimePolicyVerification.thoughtLevelId }
+    } catch (error) {
+      throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+      return updateGroupDocumentInstruction(instruction.id, { state: 'failed', reasonCode: error.code, message: error.message })
+    }
     const { token: attributionToken, attribution } = issueDelegatedAttribution({
       mapId: targetMap.id,
       cardId: targetCard.id,
@@ -3117,10 +3225,11 @@ async function runGroupDocumentInstructionDispatch(instruction, user) {
       }
     }
     const linked = await linkGroupDocumentInstructionConversation({
-      instruction, targetMap, targetCard, targetConversationId, selection, attribution, user,
+      instruction, targetMap, targetCard, targetConversationId, selection, attribution, user, runtimePolicyVerification,
     })
     return updateGroupDocumentInstruction(instruction.id, {
       state: 'delivered',
+      ...(runtimePolicyVerification ? { runtimePolicyVerification } : {}),
       reasonCode: linked.linkError ? 'GROUP_DOCUMENT_INSTRUCTION_DELIVERED_WITH_LINK_WARNING' : 'GROUP_DOCUMENT_INSTRUCTION_DELIVERED',
       message: linked.linkError
         ? `${linked.linkError} 지시 전문은 전달됐으며 연결 상태를 확인해 주세요.`
@@ -3487,8 +3596,8 @@ async function restoreAiDelegationResumeReservation(delegation, error) {
 
 // 실행이 확인된 뒤에만 담당을 저장한다. 생성·전송 중 사람이 바꾼 담당은 덮어쓰지 않는다.
 async function linkAiDelegationConversation({ map, targetCard, targetConversationId, strategy, selection,
-  targetHomeMachineId, workspaceLease, instruction, user, primarySelection = null, startedBy = user.id, startedAt = new Date().toISOString() }) {
-  if (strategy !== 'new' && !primarySelection) return { updatedMap: map, linkError: null }
+  targetHomeMachineId, workspaceLease, instruction, user, primarySelection = null, runtimePolicyVerification = null, startedBy = user.id, startedAt = new Date().toISOString() }) {
+  if (strategy !== 'new' && !primarySelection && !runtimePolicyVerification) return { updatedMap: map, linkError: null }
   try {
     return await withDocument(map.id, async () => {
       documentReconstruction.assertWritable(map.id)
@@ -3499,7 +3608,7 @@ async function linkAiDelegationConversation({ map, targetCard, targetConversatio
       const changed = primarySelection && ![primarySelection.expectedConversationId, targetConversationId].includes(currentPrimary)
       const previous = aiConversationLinksFromData(card.data).find((link) => link.conversationId === targetConversationId)
       if (strategy === 'resume' && !previous) throw new Error('담당 후보와 카드의 연결이 사라졌습니다.')
-      const link = strategy === 'resume' ? previous : normalizeAiConversationLink({
+      const link = strategy === 'resume' ? { ...previous, ...(runtimePolicyVerification ? { thoughtLevel: selection.thoughtLevel } : {}) } : normalizeAiConversationLink({
         conversationId: targetConversationId, homeMachineId: targetHomeMachineId,
         agent: selection.agent, model: selection.model, providerId: selection.providerId,
         mode: selection.mode, thoughtLevel: selection.thoughtLevel,
@@ -3509,7 +3618,8 @@ async function linkAiDelegationConversation({ map, targetCard, targetConversatio
         requestPreview: instruction, startedBy: { id: startedBy, label: users.find((candidate) => candidate.id === startedBy)?.name ?? startedBy }, startedAt, linkedAt: startedAt,
       })
       const linkError = changed ? '위임 전송 중 담당이 변경되어 기존 선택을 유지했습니다. 실행 대화와 담당을 확인해 주세요.' : null
-      if (strategy === 'resume' && (changed || currentPrimary === targetConversationId)) return { updatedMap: current, linkError }
+      if (strategy === 'resume' && (changed || currentPrimary === targetConversationId)
+        && (!runtimePolicyVerification || previous.thoughtLevel?.id === selection.thoughtLevel?.id)) return { updatedMap: current, linkError }
       const updatedMap = await saveMap(map.id, {
         nodes: current.nodes.map((node) => node.id === card.id ? { ...node,
           data: withAiConversationLink(node.data, link, { makePrimary: Boolean(primarySelection && !changed), makeCurrent: strategy === 'new' }),
@@ -3576,6 +3686,16 @@ async function dispatchPreparedAiDelegation({
     )
   }
 
+  let runtimePolicyVerification
+  try {
+    runtimePolicyVerification = await ensureDelegationRuntimePolicy({ conversationId: requestedConversationId,
+      policy: strategy === 'resume' && !resumedDelegation ? queuedDelegation?.resumeRuntimePolicy : null,
+      fetchOn: fetchAionUiOn, machineId: targetHomeMachineId })
+    if (runtimePolicyVerification) selection.thoughtLevel = { id: runtimePolicyVerification.thoughtLevelId, label: runtimePolicyVerification.thoughtLevelId }
+  } catch (error) {
+    if (workspaceLease && !resumedDelegation) await workspacePoolManager.cancel(workspaceLease.leaseId, error.message)
+    throw error
+  }
   let targetConversationId = requestedConversationId
   let reservedDelegation = resumedDelegation
   if (reservedDelegation && aiDelegations.get(reservedDelegation.id)?.state !== 'resuming') {
@@ -3751,12 +3871,13 @@ async function dispatchPreparedAiDelegation({
 
   const { updatedMap, linkError } = await linkAiDelegationConversation({
     map, targetCard, targetConversationId, strategy, selection, targetHomeMachineId,
-    workspaceLease, instruction, user, primarySelection: queuedDelegation?.primarySelection, startedBy: attribution.startedBy,
+    workspaceLease, instruction, user, primarySelection: queuedDelegation?.primarySelection, runtimePolicyVerification, startedBy: attribution.startedBy,
   })
 
   const now = new Date().toISOString()
   const delegation = {
     ...(queuedDelegation ?? {}),
+    ...(runtimePolicyVerification ? { runtimePolicyVerification } : {}),
     id,
     requestSignature,
     mapId: map.id,
@@ -5957,9 +6078,38 @@ function fetchAiConversationRuntimeSnapshot(machineId = machineRegistry.mainMach
   return request
 }
 
+function cardConversationHandoffBusy(conversationId, excludedInstructionId = null) {
+  const references = (item) => ['conversationId', 'parentConversationId', 'targetConversationId', 'requestedConversationId', 'sourceConversationId', 'replyConversationId']
+      .some((key) => item?.[key] === conversationId)
+  return [...aiDelegations.values()].some((item) => references(item)
+      && (!['completed', 'cancelled', 'closed'].includes(item.state) || item.reportPending || item.pendingRecovery
+        || aiDelegationActions.has(item.id) || integrationRecoveryQueue.running.has(item.id)))
+      // failed 그룹 지시는 폴링·재전송으로 다시 처리되지 않는 종료 상태라 인계를 막지 않는다.
+      || [...groupDocumentInstructions.values()].some((item) => item.id !== excludedInstructionId && references(item)
+        && (!['replied', 'failed', 'cancelled', 'closed', 'expired'].includes(item.state) || groupDocumentInstructionActions.has(item.id)))
+      || [...Object.values(localWorkspacePoolManager.state?.leases ?? {}), ...Object.values(remoteWorkspacePool.state?.leases ?? {})]
+        .some((item) => references(item) && !['completed', 'cancelled'].includes(item.status))
+}
+
 const persistCardConversationStarts = () => persistSharedState(cardConversationStartsFile, () => [...cardConversationStartRecords.values()])
 const cardConversationStarts = createCardConversationStarts({
   records: cardConversationStartRecords,
+  enrich(record) {
+    const owner = [...groupDocumentInstructions.values()].find((item) => item.rootHandoff?.requestId === record.requestId)
+    if (!owner) return record
+    if (owner.state !== 'queued' || owner.targetMapId !== record.mapId || owner.targetCardId !== record.cardId
+      || owner.startedBy !== record.startedBy || owner.rootHandoff.predecessorConversationId !== record.predecessorConversationId
+      || owner.targetHomeMachineId !== record.machineId) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_POLICY_CHANGED', '현재 루트 인계 요청과 대화·카드·실행 머신이 일치하지 않습니다.')
+    }
+    for (const key of ['agentId', 'modelId', 'thoughtLevelId', 'modeId', 'workspace', 'claudeAccountId']) {
+      const supplied = record.input.newConversation[key]
+      if (supplied !== undefined && supplied !== owner.rootHandoff.newConversation[key]) {
+        throw cardConversationStartError('CARD_CONVERSATION_START_POLICY_CHANGED', '인계 설정이 서버 위임 규칙과 다릅니다. 서버가 안내한 설정으로 요청하세요.')
+      }
+    }
+    return { ...record, policyInstructionId: owner.id, acceptanceRequired: true }
+  },
   persist: persistCardConversationStarts,
   mutate: (mapId, action) => withAiResources([mapId], () => storageChanges.run(async () => {
     const stores = [cardConversationStartRecords, aiAttributions, aiConversationOrigins, aiConversationAttributions]
@@ -5977,6 +6127,13 @@ const cardConversationStarts = createCardConversationStarts({
     const card = map?.nodes.find((node) => node.id === record.cardId)
     if (!map || map.trashedAt || !card) throw cardConversationStartError('CARD_CONVERSATION_START_CARD_NOT_FOUND', '인계할 카드를 찾을 수 없습니다.', 404)
     if (resultOnly) return
+    if (record.policyInstructionId) {
+      const owner = groupDocumentInstructions.get(record.policyInstructionId)
+      if (!owner || owner.state !== 'queued' || owner.rootHandoff?.requestId !== record.requestId
+        || rootHandoffDocumentHash(map, record.cardId) !== owner.rootHandoff.documentHash) {
+        throw cardConversationStartError('CARD_CONVERSATION_START_POLICY_CHANGED', '대기 지시 또는 인계 대상 문서가 변경되어 담당을 전환하지 않았습니다.')
+      }
+    }
     documentReconstruction.assertWritable(record.mapId)
     if (map.archivedAt || card.data.reference || card.data.kind === 'image') {
       throw cardConversationStartError('CARD_CONVERSATION_START_ORIGINAL_CARD_REQUIRED', '편집 가능한 원본 카드에서만 대화를 인계할 수 있습니다.')
@@ -5992,16 +6149,7 @@ const cardConversationStarts = createCardConversationStarts({
       throw cardConversationStartError('CARD_CONVERSATION_START_REPRESENTATIVE_CHANGED', '현재 카드의 대표 대화가 이전 대화와 다릅니다.')
     }
     if (record.linkedAt) return
-    const references = (item) => ['conversationId', 'parentConversationId', 'targetConversationId', 'requestedConversationId', 'sourceConversationId', 'replyConversationId']
-      .some((key) => item?.[key] === record.predecessorConversationId)
-    const busy = [...aiDelegations.values()].some((item) => references(item)
-      && (!['completed', 'cancelled', 'closed'].includes(item.state) || item.reportPending || item.pendingRecovery
-        || aiDelegationActions.has(item.id) || integrationRecoveryQueue.running.has(item.id)))
-      // failed 그룹 지시는 폴링·재전송으로 다시 처리되지 않는 종료 상태라 인계를 막지 않는다.
-      || [...groupDocumentInstructions.values()].some((item) => references(item)
-        && (!['replied', 'failed', 'cancelled', 'closed', 'expired'].includes(item.state) || groupDocumentInstructionActions.has(item.id)))
-      || [...Object.values(localWorkspacePoolManager.state?.leases ?? {}), ...Object.values(remoteWorkspacePool.state?.leases ?? {})]
-        .some((item) => references(item) && !['completed', 'cancelled'].includes(item.status))
+    const busy = cardConversationHandoffBusy(record.predecessorConversationId, record.policyInstructionId)
     if (busy) throw cardConversationStartError('CARD_CONVERSATION_START_WORK_BUSY', '진행 중인 위임·그룹 지시 또는 작업공간 복구·보고를 마친 뒤 인계하세요.')
     if (aiConversationRemoval.isRemoving(record.predecessorConversationId)) {
       throw cardConversationStartError('CARD_CONVERSATION_START_REMOVAL_PENDING', '이전 대화의 삭제 처리가 진행 중입니다.')
@@ -6022,7 +6170,9 @@ const cardConversationStarts = createCardConversationStarts({
         ? String(current.extra?.claude_account_id ?? '').trim() || DEFAULT_CLAUDE_ACCOUNT_ID
         : previous?.claudeAccountId ?? DEFAULT_CLAUDE_ACCOUNT_ID
     }
-    const selection = await delegationCreateSelection({ ...card, data: { ...card.data, aiConversations: previous ? [previous] : [] } },
+    const policyInstruction = record.policyInstructionId ? groupDocumentInstructions.get(record.policyInstructionId) : null
+    const selection = policyInstruction ? aiDelegationSelectionFromSource(policyInstruction.pendingSelection)
+      : await delegationCreateSelection({ ...card, data: { ...card.data, aiConversations: previous ? [previous] : [] } },
       { ...record.input.newConversation, claudeAccountId }, { ...previous, conversationId: record.predecessorConversationId, selection: previous,
         homeMachineId: record.machineId }, record.machineId, { inheritClaudeAccount: true })
     if (requestedClaudeAccountId && selection.claudeAccountId !== requestedClaudeAccountId) {
@@ -11662,8 +11812,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
               const model = String(conversation?.extra?.current_model_id ?? '').trim()
                 || aiConversationLinkFromAionUiConversation(conversation)?.model?.id || link.model?.id
               if (!model) throw new Error('연결된 대화의 현재 모델을 확인할 수 없습니다.')
-              return model
-            })
+              return { modelId: model, backend: conversation?.extra?.backend }
+            }, { handoffOnBackendChange: true })
           }
         } catch (error) {
           throwIfRuntimeStopping(error, runtimeLifecycle.signal)
@@ -11756,7 +11906,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           }
         } else {
           try {
-            selection = await delegationCreateSelection(targetCard, body.newConversation, parentAttribution, targetHomeMachineId,
+            const previous = aiConversationLinksFromData(targetCard.data).find((link) => link.conversationId === primaryBeforeRequest)
+            const sourceCard = primaryResolution?.requiresHandoff
+              ? { ...targetCard, data: { ...targetCard.data, aiConversations: previous ? [previous] : [], aiConversationId: primaryBeforeRequest } } : targetCard
+            selection = await delegationCreateSelection(sourceCard, body.newConversation, parentAttribution, targetHomeMachineId,
               { policyRule: aiPolicyRule, policy: aiPolicySnapshot })
           } catch (error) {
             if (String(error.reasonCode ?? '').startsWith('AI_DELEGATION_POLICY_')) {
@@ -11772,6 +11925,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           response, 409, 'GROUP_DOCUMENT_INSTRUCTION_SELECTION_UNRESOLVED',
           '대상 문서 루트 AI의 종류와 모델 정보를 확인하지 못했습니다.',
         )
+        const resumeRuntimePolicy = delegationResumeRuntimePolicy(strategy, aiPolicyRule)
+        if (resumeRuntimePolicy) selection.thoughtLevel = { id: resumeRuntimePolicy.thoughtLevelId, label: resumeRuntimePolicy.thoughtLevelId }
         const aiPolicyView = aiPolicyRequest ? aiDelegationPolicyView({
           request: aiPolicyRequest, cardLevel: aiPolicyCardLevel, rule: aiPolicyRule, selection, policy: aiPolicySnapshot,
           adjustments: strategy === 'new' && aiPolicyRule ? aiDelegationPolicyAdjustments(body.newConversation, selection) : [],
@@ -11782,6 +11937,13 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           `${blockedAiModelLabels()} 모델로 새 위임 대화를 만들지 않습니다. 사용 가능한 다른 모델을 newConversation에 명시하세요.`,
         )
 
+        if ([...groupDocumentInstructions.values()].some((item) => item.state === 'queued' && item.rootHandoff
+          && !item.rootHandoff.completedAt && item.targetMapId === targetMapId && item.targetCardId === targetCard.id)) {
+          return sendGroupDocumentInstructionResponse(response, 409, 'GROUP_DOCUMENT_INSTRUCTION_HANDOFF_PENDING',
+            '이 문서 루트의 담당 인계가 진행 중입니다. 기존 그룹 지시의 인계 상태를 확인한 뒤 추가 지시를 보내세요.')
+        }
+        const rootHandoff = primaryResolution?.requiresHandoff
+          ? createRootHandoffPlan(id, targetMap, targetCard.id, primaryBeforeRequest, selection, aiPolicyView.revision) : null
         const now = new Date().toISOString()
         const replyTarget = {
           mode: requestedReplyTarget.mode,
@@ -11800,6 +11962,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           expectedPrimaryConversationId: primaryResolution?.strategy === 'resume' ? requestedConversationId : primaryBeforeRequest,
           ...(primaryResolution ? { primaryResolution } : {}),
           ...(aiPolicyRule ? { primaryPolicyModelId: aiPolicyRule.modelId } : {}),
+          ...(rootHandoff ? { rootHandoff } : {}),
           parentCardId: parentCard.id,
           parentCardLabel: parentCard.data?.label ?? parentCard.id,
           parentConversationId: parentAttribution.conversationId,
@@ -11828,6 +11991,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           pendingInstruction: instructionText,
           pendingApprovalEvidence: approvalEvidence,
           pendingSelection: selection,
+          ...(resumeRuntimePolicy ? { resumeRuntimePolicy } : {}),
           startedBy: parentAttribution.startedBy ?? user.id,
           createdAt: now,
           updatedAt: now,
@@ -12320,6 +12484,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
       if (!selection) return sendAiDelegationResponse(response, 409, 'AI_DELEGATION_SELECTION_UNRESOLVED',
         '위임 대화의 AI 종류와 모델 정보를 확인하지 못했습니다.')
+      const resumeRuntimePolicy = delegationResumeRuntimePolicy(strategy, aiPolicyRule, interruptedResume)
+      if (resumeRuntimePolicy) selection.thoughtLevel = { id: resumeRuntimePolicy.thoughtLevelId, label: resumeRuntimePolicy.thoughtLevelId }
       if (aiPolicyRequest) requestContext.aiPolicy = aiDelegationPolicyView({
         request: aiPolicyRequest, cardLevel: aiPolicyCardLevel, rule: aiPolicyRule, selection, policy: aiPolicySnapshot,
         adjustments: strategy === 'new' && aiPolicyRule ? aiDelegationPolicyAdjustments(body.newConversation, selection) : [],
@@ -12471,6 +12637,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           startedBy: parentAttribution.startedBy ?? user.id,
           pendingInstruction: instruction,
           pendingSelection: selection,
+          ...(resumeRuntimePolicy ? { resumeRuntimePolicy } : {}),
           pendingWorkspaceHint: workspacePoolHint,
           ...(resumedDelegation ? { resumesDelegationId: resumedDelegation.id } : {}),
           workspaceWaitStartedAt: now,
@@ -12574,6 +12741,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
               startedBy: parentAttribution.startedBy ?? user.id,
               pendingInstruction: instruction,
               pendingSelection: selection,
+              ...(resumeRuntimePolicy ? { resumeRuntimePolicy } : {}),
               pendingWorkspaceHint: workspacePoolHint,
               ...(resumedDelegation ? { resumesDelegationId: resumedDelegation.id } : {}),
               workspaceWaitStartedAt: now,
@@ -12599,6 +12767,15 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         throw error
       }
 
+      let runtimePolicyVerification
+      try {
+        runtimePolicyVerification = await ensureDelegationRuntimePolicy({ conversationId: targetConversationId,
+          policy: resumedDelegation ? null : resumeRuntimePolicy, fetchOn: fetchAionUiOn, machineId: targetHomeMachineId })
+        if (runtimePolicyVerification) selection.thoughtLevel = { id: runtimePolicyVerification.thoughtLevelId, label: runtimePolicyVerification.thoughtLevelId }
+      } catch (error) {
+        if (workspaceLease && !resumedDelegation) await workspacePoolManager.cancel(workspaceLease.leaseId, error.message)
+        throw error
+      }
       if (resumedDelegation) {
         resumedDelegation = await updateAiDelegation(resumedDelegation.id, {
           state: 'resuming',
@@ -12753,7 +12930,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
 
       const { updatedMap, linkError } = await linkAiDelegationConversation({
         map, targetCard, targetConversationId, strategy, selection, targetHomeMachineId,
-        workspaceLease, instruction, user, primarySelection, startedBy: attribution.startedBy,
+        workspaceLease, instruction, user, primarySelection, runtimePolicyVerification, startedBy: attribution.startedBy,
       })
 
       const now = new Date().toISOString()
@@ -12761,6 +12938,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         id,
         requestSignature,
         ...(requestContext.retryOfRequestId ? { retryOfRequestId: requestContext.retryOfRequestId } : {}),
+        ...(runtimePolicyVerification ? { resumeRuntimePolicy, runtimePolicyVerification } : {}),
         mapId,
         ...groupScope,
         parentCardId: parentCard.id,

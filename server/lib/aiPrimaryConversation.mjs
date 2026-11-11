@@ -3,16 +3,26 @@ import { aiDelegationResumeModelMatches } from './aiDelegationPolicy.mjs'
 
 // 모델이 다를 때만 후보를 최신순으로 확인한다. 실행 중인 일치 대화도 유지하며 전달은 대기열이 맡는다.
 // 조회 실패를 일치 모델 없음으로 취급하면 중복 대화가 생기므로 실패는 호출자에게 그대로 전달한다.
-export async function resolvePrimaryConversationPolicy(data, rule, readModel) {
+export async function resolvePrimaryConversationPolicy(data, rule, readModel, { handoffOnBackendChange = false } = {}) {
   const primaryConversationId = primaryAiConversationIdFromData(data)
   const links = aiConversationLinksFromData(data)
   const primary = links.find((link) => link.conversationId === primaryConversationId)
   if (!primary || !rule) return null
-  const currentModelId = await readModel(primary)
+  const current = await readModel(primary)
+  const currentModelId = typeof current === 'object' && current ? current.modelId : current
+  if (handoffOnBackendChange) {
+    if (!current?.backend) throw new Error('현재 담당 대화의 CLI를 확인할 수 없습니다.')
+    if (current.backend !== rule.agent.backend) return {
+      previousConversationId: primaryConversationId, conversationId: null,
+      currentModelId, expectedModelId: rule.modelId, strategy: 'new', requiresHandoff: true,
+      previousBackend: current.backend, nextBackend: rule.agent.backend,
+    }
+  }
   if (aiDelegationResumeModelMatches(rule, currentModelId) === true) return null
   for (const candidate of [...links].reverse()) {
     if (candidate.conversationId === primaryConversationId) continue
-    const modelId = await readModel(candidate)
+    const candidateModel = await readModel(candidate)
+    const modelId = typeof candidateModel === 'object' && candidateModel ? candidateModel.modelId : candidateModel
     if (aiDelegationResumeModelMatches(rule, modelId) === true) return {
       previousConversationId: primaryConversationId, conversationId: candidate.conversationId,
       currentModelId, expectedModelId: rule.modelId, strategy: 'resume',

@@ -4,6 +4,18 @@ import { resolveGroupInstructionConversation as resolve, resolvePrimaryConversat
 import { createGroupDocumentInstructionSignature as signature } from '../server/lib/groupDocumentInstructions.mjs'
 
 const data = { aiPrimaryConversationId: 'opus', aiConversationId: 'codex', aiConversations: [{ conversationId: 'opus' }, { conversationId: 'codex' }] }
+
+test('루트 CLI 전환은 일치하는 보조 대화가 있어도 담당 인계를 우선한다', async () => {
+  const read = async (link) => link.conversationId === 'opus' ? { modelId: 'opus', backend: 'claude' }
+    : { modelId: 'gpt-6-astra', backend: 'codex' }
+  const result = await resolvePrimaryConversationPolicy(data, { agent: { backend: 'codex' }, modelId: 'gpt-6-astra' }, read,
+    { handoffOnBackendChange: true })
+  assert.equal(result.requiresHandoff, true); assert.equal(result.previousConversationId, 'opus')
+  assert.equal(result.strategy, 'new'); assert.equal(result.conversationId, null)
+  const reverse = await resolvePrimaryConversationPolicy({ ...data, aiPrimaryConversationId: 'codex' },
+    { agent: { backend: 'claude' }, modelId: 'opus' }, read, { handoffOnBackendChange: true })
+  assert.equal(reverse.requiresHandoff, true)
+})
 test('규칙과 다른 담당은 동일 모델 중 가장 최신 대화로 바꾸고 후보가 없을 때만 생성한다', async () => {
   const card = { aiPrimaryConversationId: 'current', aiConversations: [
     { conversationId: 'recent', startedAt: '2026-11-09T00:00:00Z' },

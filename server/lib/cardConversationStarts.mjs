@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { MNP_CONTEXT_BOOTSTRAP_INSTRUCTION } from '../../src/utils/aiContextInstructions.mjs'
 import { AI_EXECUTION_APPROVAL_INSTRUCTION } from '../../src/utils/aiApprovalInstructions.mjs'
+import { aiDelegationResumeModelMatches } from './aiDelegationPolicy.mjs'
 
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/
 export const CARD_CONVERSATION_START_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,95}$/
@@ -38,7 +39,9 @@ export function normalizeCardConversationStart(body) {
   }
   const requestId = text(body?.requestId, 96, true)
   if (!CARD_CONVERSATION_START_REQUEST_ID.test(requestId)) fail()
-  if (body.resultOnly === true) return { requestId, resultOnly: true }
+  if (body.acceptHandoff !== undefined && typeof body.acceptHandoff !== 'boolean') fail()
+  if (body.resultOnly === true) return { requestId, resultOnly: true, ...(body.acceptHandoff ? { acceptHandoff: true } : {}) }
+  if (body.acceptHandoff) fail()
   if (body.resultOnly !== undefined && body.resultOnly !== false) fail()
   const predecessorConversationId = text(body.predecessorConversationId, 120, true)
   if (!identifier.test(predecessorConversationId)) fail()
@@ -64,7 +67,8 @@ export function normalizeCardConversationStart(body) {
 }
 
 export function buildCardConversationStartPrompt(record, token) {
-  return `# MindNProgress 카드 대화 인계\n\n${MNP_CONTEXT_BOOTSTRAP_INSTRUCTION}\n\n- mapId: \`${record.mapId}\`\n- cardId: \`${record.cardId}\`\n- editorId: \`${record.startedBy}\`\n- attributionToken: \`${token}\`\n- 이전 대화: \`${record.predecessorConversationId}\`\n\n${AI_EXECUTION_APPROVAL_INSTRUCTION}\n\n이 대화는 같은 카드의 후속 대화입니다. 하위 카드 위임이나 worker 배정이 아닙니다. 최초 get_context의 역할·그룹 규칙을 따르고, 기존 승인 범위를 확대하지 마세요. 이전 대화의 종료, 진행 중인 위임의 소유권 이전과 외부 회신 주소 변경은 이 요청에 포함되지 않습니다.\n\n## 사용자 요청 근거\n\n${record.input.approvalEvidence}\n\n## 첫 메시지 원문\n\n${record.input.initialMessage}`
+  const acceptance = record.acceptanceRequired ? `\n\n## 루트 담당 인수 확인\n\n이번 첫 턴은 인계문과 get_context·그룹 기준을 읽고 인수 가능 여부를 확인하는 작업만 수행하세요. 아직 담당 전환 전이며 카드·코드 변경, 위임, 외부 보고를 하지 마세요. 인수할 수 있으면 mindnprogress_start_card_conversation에 mapId=${record.mapId}, cardId=${record.cardId}, requestId=${record.requestId}, resultOnly=true, acceptHandoff=true를 보내세요. 인수할 수 없으면 해당 호출 없이 부족한 사항을 답변하세요. 확인 후 턴을 종료하고 서버가 보내는 다음 업무 지시를 기다리세요. 기존 사용자 대기·중지 지시는 인계 후에도 유효합니다.` : ''
+  return `# MindNProgress 카드 대화 인계\n\n${MNP_CONTEXT_BOOTSTRAP_INSTRUCTION}\n\n- mapId: \`${record.mapId}\`\n- cardId: \`${record.cardId}\`\n- editorId: \`${record.startedBy}\`\n- attributionToken: \`${token}\`\n- 이전 대화: \`${record.predecessorConversationId}\`\n\n${AI_EXECUTION_APPROVAL_INSTRUCTION}\n\n이 대화는 같은 카드의 후속 대화입니다. 하위 카드 위임이나 worker 배정이 아닙니다. 최초 get_context의 역할·그룹 규칙을 따르고, 기존 승인 범위를 확대하지 마세요. 이전 대화의 종료, 진행 중인 위임의 소유권 이전과 외부 회신 주소 변경은 이 요청에 포함되지 않습니다.${acceptance}\n\n## 사용자 요청 근거\n\n${record.input.approvalEvidence}\n\n## 첫 메시지 원문\n\n${record.input.initialMessage}`
 }
 
 export function cardConversationStartView(record, repeated = false) {
@@ -75,12 +79,14 @@ export function cardConversationStartView(record, repeated = false) {
     machineId: record.machineId, repeated, reasonCode: record.reasonCode ?? null,
     message: ready ? '새 대화의 실행 시작과 카드 대표 연결을 확인했습니다. 업무 완료를 의미하지 않습니다.'
       : record.state === 'linked' ? '첫 메시지 실행과 대표 연결은 확인했으며 실제 실행 설정을 확인 중입니다.'
+        : record.state === 'awaiting-acceptance' ? '후속 대화의 인수 확인을 기다리고 있습니다. 기존 담당은 유지합니다.'
         : record.state === 'failed' ? '대화 생성 전 요청이 거절됐습니다. 사유를 해결한 뒤 새 requestId로 요청하세요.'
         : record.state === 'recovery-required'
           ? '인계 처리가 완료되지 않았습니다. 같은 requestId로 결과를 확인하세요. 이전 대화는 중지하지 않았습니다.'
           : '대화 인계 요청을 처리 중입니다. 접수 상태는 대화 생성이나 메시지 전달 완료가 아닙니다.',
     delivery: { state: record.deliveryState ?? 'not-started', turnId: record.turnId ?? null, operationId: record.id },
     linked: Boolean(record.linkedAt), linkedAt: record.linkedAt ?? null,
+    ...(record.acceptanceRequired ? { acceptanceRequired: true, acceptedAt: record.acceptedAt ?? null } : {}),
     requestedConfig: record.requestedConfig ?? null, runtimeConfig: record.runtimeConfig ?? null,
     initialMessage: { length: record.input.initialMessage.length, sha256: cardConversationStartHash(record.input.initialMessage) },
     createdAt: record.createdAt, updatedAt: record.updatedAt,
@@ -91,7 +97,7 @@ export function cardConversationStartView(record, repeated = false) {
 
 // 원격 호출은 mutate 밖에서만 수행한다. 생성 직전 의도와 불변 payload를 저장하며,
 // 결과가 불명확하면 operationId 조회만 수행해 중복 생성·전송을 피한다.
-export function createCardConversationStarts({ records, mutate, persist, validate, prepare, bind, promote,
+export function createCardConversationStarts({ records, mutate, persist, validate, prepare, bind, promote, enrich = (record) => record,
   call, background, now = Date.now, log = () => {} }) {
   const active = new Map()
   const logged = new Map()
@@ -172,14 +178,8 @@ export function createCardConversationStarts({ records, mutate, persist, validat
         return
       }
     }
-    if (!record.linkedAt) {
-      record = await mutate(record.mapId, async () => {
-        const current = records.get(id)
-        await validate(current, { initial: false })
-        await promote(current)
-        return save(current, { state: 'linked', linkedAt: timestamp(), reasonCode: null })
-      })
-    }
+    // 인수 확인과 동시에 진행된 이전 조회를 사용하지 않고, 확인 이후 다시 읽은 실행 설정으로 승격한다.
+    const acceptedBeforeVerification = !record.acceptanceRequired || Boolean(record.acceptedAt)
     let runtimeConfig
     try {
       const raw = await call(record.machineId, `/api/conversations/${encodeURIComponent(record.conversationId)}/runtime-config`,
@@ -191,9 +191,25 @@ export function createCardConversationStarts({ records, mutate, persist, validat
     } catch { return }
     const required = ['model', ...(record.requestedConfig.modeId ? ['mode'] : []),
       ...(record.requestedConfig.thoughtLevelId ? ['thoughtLevel'] : [])]
-    const verified = required.every((key) => runtimeConfig[key].source === 'runtime' && runtimeConfig[key].value)
-    await update(id, { runtimeConfig, state: verified ? 'ready' : 'linked',
-      reasonCode: verified ? null : 'CARD_CONVERSATION_START_RUNTIME_UNCONFIRMED' })
+    const expected = { model: record.requestedConfig.modelId, mode: record.requestedConfig.modeId, thoughtLevel: record.requestedConfig.thoughtLevelId }
+    const verified = required.every((key) => runtimeConfig[key].source === 'runtime'
+      && (key === 'model' ? aiDelegationResumeModelMatches({ modelId: expected.model }, runtimeConfig.model.value) === true
+        : runtimeConfig[key].value === expected[key]))
+    record = await update(id, { runtimeConfig })
+    if (!verified) {
+      await update(id, { state: 'observing', reasonCode: 'CARD_CONVERSATION_START_RUNTIME_UNCONFIRMED' })
+      return
+    }
+    if (!acceptedBeforeVerification) {
+      await update(id, { state: 'awaiting-acceptance', reasonCode: 'CARD_CONVERSATION_START_ACCEPTANCE_REQUIRED' })
+      return
+    }
+    await mutate(record.mapId, async () => {
+      const current = records.get(id)
+      await validate(current, { initial: false })
+      if (!current.linkedAt) await promote(current)
+      return save(current, { state: 'ready', linkedAt: current.linkedAt ?? timestamp(), reasonCode: null })
+    })
   }
   function kick(id) {
     if (active.has(id) || terminal.has(records.get(id)?.state)) return
@@ -219,6 +235,7 @@ export function createCardConversationStarts({ records, mutate, persist, validat
     void operation.catch(() => {}).finally(() => active.delete(id))
   }
   return {
+    continue: (id) => kick(id),
     isActive: (mapId) => [...records.values()].some((record) => record.mapId === mapId && active.has(record.id)),
     isPending: (record) => !terminal.has(record.state) && !record.linkedAt,
     async submit({ userId, mapId, cardId, source }, body) {
@@ -238,6 +255,12 @@ export function createCardConversationStarts({ records, mutate, persist, validat
           if (signature && existing.signature !== signature) throw cardConversationStartError('CARD_CONVERSATION_START_IDEMPOTENCY_CONFLICT', '같은 requestId가 다른 인계 내용에 사용되었습니다.')
           repeated = true
           await validate(existing, { initial: false, resultOnly: true })
+          if (input.acceptHandoff) {
+            if (!existing.acceptanceRequired || source.conversationId !== existing.conversationId) {
+              throw cardConversationStartError('CARD_CONVERSATION_START_ACCEPTOR_MISMATCH', '인수 확인은 새 후속 대화에서만 할 수 있습니다.', 403)
+            }
+            if (!existing.acceptedAt) await save(existing, { acceptedAt: timestamp(), acceptedByConversationId: source.conversationId })
+          }
           return
         }
         if (input.resultOnly) throw cardConversationStartError('CARD_CONVERSATION_START_NOT_FOUND', '인계 요청을 찾을 수 없습니다.', 404)
@@ -245,9 +268,9 @@ export function createCardConversationStarts({ records, mutate, persist, validat
         if ([...records.values()].some((record) => record.mapId === mapId && record.cardId === cardId && !terminal.has(record.state) && !record.linkedAt)) {
           throw cardConversationStartError('CARD_CONVERSATION_START_PENDING', '이 카드에 처리 중인 인계 요청이 있습니다. 기존 requestId로 확인하세요.')
         }
-        const record = { id, requestId: input.requestId, signature, input, mapId, cardId, startedBy: userId,
+        const record = await enrich({ id, requestId: input.requestId, signature, input, mapId, cardId, startedBy: userId,
           predecessorConversationId: source.conversationId, machineId: input.machineId ?? source.homeMachineId,
-          state: 'reserved', createdAt: timestamp(), updatedAt: timestamp() }
+          state: 'reserved', createdAt: timestamp(), updatedAt: timestamp() })
         await validate(record, { initial: true })
         records.set(id, record)
         await persist()

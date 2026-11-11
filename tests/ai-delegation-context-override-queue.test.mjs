@@ -44,6 +44,7 @@ async function poolFixture(t) {
 async function startAionUi(t, worker) {
   const posted = []
   const receipts = new Map()
+  const effort = new Map()
   const upstream = createServer(async (request, response) => {
     const chunks = []
     for await (const chunk of request) chunks.push(chunk)
@@ -64,6 +65,14 @@ async function startAionUi(t, worker) {
     }
     const operation = url.pathname.match(/^\/api\/internal\/external-conversation-dispatches\/([^/]+)$/)
     if (operation) return receipts.has(decodeURIComponent(operation[1])) ? send(receipts.get(decodeURIComponent(operation[1]))) : send({}, 404)
+    const configId = url.pathname.split('/')[3]
+    if (url.pathname.endsWith('/runtime/ensure')) return send({ runtime: { state: 'idle' },
+      config_options: [{ id: 'effort', category: 'thought_level', options: [{ value: 'xhigh' }, { value: 'high' }] }] })
+    if (url.pathname.endsWith('/runtime-config')) return send({ model: { value: 'test-model', source: 'runtime' },
+      thought_level: { value: effort.get(configId) ?? 'high', source: 'runtime' } })
+    if (request.method === 'PUT' && url.pathname.includes('/config-options/')) {
+      effort.set(configId, body.value); return send({ confirmation: 'observed' })
+    }
     if (/^\/api\/conversations\/[^/]+\/usage$/.test(url.pathname)) return send({ used: 170_000, size: 200_000 })
     if (/^\/api\/conversations\/[^/]+\/messages$/.test(url.pathname)) {
       return send({ items: [{ id: 'message-1', type: 'text', position: 'left', content: { content: '이전 작업 결과' } }], has_more_before: false })
@@ -78,7 +87,7 @@ async function startAionUi(t, worker) {
   })
   await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve))
   t.after(async () => { upstream.closeAllConnections(); await new Promise((resolve) => upstream.close(resolve)) })
-  return { port: upstream.address().port, posted }
+  return { port: upstream.address().port, posted, effort }
 }
 
 async function startServer({ dataDirectory, registryFile, upstreamPort, pollIntervalMs }) {
@@ -236,6 +245,7 @@ for (const strategy of ['resume', 'new']) test(`재시작한 하위 위임 대�
     state: 'waiting-workspace', resource: { kind: 'workspace_pool', key: 'test', projectRoot: integration }, startedBy: 'user-admin',
     pendingInstruction: instruction,
     pendingSelection: aiDelegationSelectionFromSource({ agent: { id: 'test-agent', label: '검증 AI' }, model: { id: 'test-model', label: '검증 모델' }, workspace: worker }),
+    ...(strategy === 'resume' ? { resumeRuntimePolicy: { modelId: 'test-model', thoughtLevelId: 'xhigh' } } : {}),
     pendingWorkspaceHint: integration, workspaceWaitStartedAt: '2026-11-11T00:00:00.000Z',
     workspaceWaitReasonCode: 'AI_WORKSPACE_ALLOCATION_PENDING',
     createdAt: `2026-11-11T00:00:0${index}.000Z`, updatedAt: '2026-11-11T00:00:00.000Z',
@@ -260,6 +270,10 @@ for (const strategy of ['resume', 'new']) test(`재시작한 하위 위임 대�
     assert.equal(stable.linkError, null)
     assert.equal(aion.posted.length, 1)
     assert.equal(aion.posted[0].strategy, strategy)
+    if (strategy === 'resume') {
+      assert.equal(aion.effort.get('target-stable'), 'xhigh')
+      assert.equal(stable.runtimePolicyVerification.thoughtLevelId, 'xhigh')
+    }
     const updated = (await second.get('/api/maps/map-primary')).map
     assert.equal(updated.nodes.find(node => node.id === 'stable').data.aiPrimaryConversationId, strategy === 'resume' ? 'target-stable' : 'new-primary')
     assert.equal(updated.nodes.find(node => node.id === 'changed').data.aiPrimaryConversationId, 'target-changed')

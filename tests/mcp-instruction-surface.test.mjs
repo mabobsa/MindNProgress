@@ -73,13 +73,15 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     //   저장 도구 23개의 설명 꼬리말에서 resultOnly 속성 설명과 같은 문장을 뺐다(B1). 83,542자 → 79,258자.
     // 2026-11-10: 그룹 지시에 담당·보조 역할과 규칙 모델별 담당 자동 선택을 추가한다.
     // 2026-11-11: 중단된 통합 충돌 복구에 원본 해시를 지정하는 선택적 줄바꿈 보존·정리를 추가한다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'c0aaa383ebf0fe982dec3ae90972946604706bf44c1d3259abbe083c5eab6edb')
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '1b3df8b5062db99177c49ff6228e4e73f10ff20cb24d81cfba1396f581f161d6')
+    // 2026-11-11: 자동 루트 인계의 후속 대화가 보내는 acceptHandoff 인수 확인을 추가한다.
     const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
     assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'a7fd81c559b7815604537a2db2b1dc1e81d76f69be63c904a8e0d9b060d6c04b')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 237)
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 238)
     const handoff = tools.find((tool) => tool.name === 'mindnprogress_start_card_conversation')
     assert.deepEqual(handoff.inputSchema.required, ['mapId', 'cardId', 'requestId'])
     assert.equal(handoff.inputSchema.properties.resultOnly.type, 'boolean')
+    assert.equal(handoff.inputSchema.properties.acceptHandoff.type, 'boolean')
     assert.equal(handoff.inputSchema.properties.newConversation.properties.claudeAccountId.maxLength, 120)
     assert.match(handoff.description, /자기 원본 카드.*첫 메시지.*현재 대화는 중지하지.*같은 requestId/s)
     for (const tool of tools.filter((tool) => storageWriteTools.has(tool.name))) {

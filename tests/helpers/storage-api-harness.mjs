@@ -48,13 +48,14 @@ export async function storageApi(t, { documents = 96, seed = async () => {}, moc
       MNP_AIONUI_DISCOVERY_FILE: path.join(directory, 'no-discovery.json'), MNP_AIONUI_USAGE_FILE: path.join(directory, 'no-usage.json'),
       AIONUI_CONVERSATION_ID: '', MNP_ADMIN_EMAIL: 'isolated@mind.local', MNP_ADMIN_PASSWORD: 'IsolatedOnly!2026', ...env },
   }
-  let child, exited
+  let child, exited, control
   const launch = () => {
     child = spawn(process.execPath, ['--import', new URL('./storage-fs-barrier.mjs', import.meta.url).href,
       '--import', new URL('./storage-crash-phases.mjs', import.meta.url).href, 'server/index.mjs'], spawnOptions)
     child.stdout.on('data', (chunk) => { output += chunk })
     child.stderr.on('data', (chunk) => { output += chunk })
     exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })))
+    control = storageControl(child, data)
   }
   launch()
   t.after(async () => {
@@ -80,7 +81,8 @@ export async function storageApi(t, { documents = 96, seed = async () => {}, moc
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).catch((error) => { throw new Error(`${method} ${route}: ${error.message}\n${output}`, { cause: error }) })
     return { status: response.status, body: await response.json() }
   }
-  return { data, ids, base, headers, call, ...storageControl(child, data), output: () => output,
+  return { data, ids, base, headers, call,
+    ...Object.fromEntries(Object.keys(control).map(name => [name, (...args) => control[name](...args)])), output: () => output,
     env: spawnOptions.env, directory,
     restart: async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); const exit = await exited; launch(); await waitReady(); return exit },
     stop: async () => { child.kill('SIGKILL'); return exited },

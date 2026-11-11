@@ -1746,6 +1746,83 @@ export class WorkspacePoolManager {
     })
   }
 
+  async resumeIntegrationConflict(leaseId, { mapId, cardId, conversationId, expectedLease, trackedEolRecovery, actor } = {}) {
+    return this.runExclusive(async () => {
+      const reject = message => { throw new WorkspacePoolUnavailableError(message, [], 'INTEGRATION_CONFLICT_RECOVERY_UNSAFE') }
+      const lease = this.state?.leases?.[leaseId]
+      if (!lease || lease.status !== 'awaiting-conflict-resolution'
+        || lease.result?.status !== 'awaiting-conflict-resolution' || lease.resultCorrection
+        || lease.result.integrationBranch !== lease.integrationBranch
+        || lease.result.integrationBaseCommit !== lease.integrationBaseCommit) {
+        reject('중단된 통합 충돌 해결 lease를 확인할 수 없습니다.')
+      }
+      if (!conversationId || lease.conversationId !== conversationId || lease.mapId !== mapId || lease.cardId !== cardId
+        || !expectedLease || ['leaseId', 'jobId', 'workspaceId'].some(key => expectedLease[key] !== lease[key])
+        || normalizedPath(expectedLease.projectRoot) !== normalizedPath(lease.projectRoot)) {
+        reject('통합 복구 요청의 문서·카드·대화 또는 작업공간 배정이 일치하지 않습니다.')
+      }
+      if (this.state.integrationLeaseId !== leaseId) reject('통합 잠금 소유권이 현재 lease와 일치하지 않습니다.')
+      if (Object.values(this.state.leases).some(candidate => candidate.leaseId !== leaseId
+        && candidate.conversationId === conversationId && !['completed', 'cancelled', 'quarantined'].includes(candidate.status))) {
+        reject('같은 대화가 다른 활성 작업공간에 연결되어 있습니다.')
+      }
+      const workspace = this.registry?.workers.find(candidate => candidate.id === lease.workspaceId)
+      const workspaceState = this.state.workspaces[lease.workspaceId]
+      if (!workspace || workspaceState?.status !== 'resolving-integration-conflict'
+        || workspaceState.leaseId !== leaseId || workspaceState.jobId !== lease.jobId
+        || normalizedPath(workspace.root) !== normalizedPath(lease.projectRoot)) {
+        reject('통합 복구 작업공간의 점유 상태가 lease와 일치하지 않습니다.')
+      }
+      const metadata = await readJson(path.join(workspace.root, '.ai-workspace.json'), null)
+      const session = await readJson(path.join(workspace.root, '.ai-session.json'), null)
+      if (metadata?.workspaceId !== workspace.id || normalizedPath(metadata?.projectRoot) !== normalizedPath(workspace.root)
+        || session?.workspaceId !== workspace.id || session?.leaseId !== leaseId || session?.jobId !== lease.jobId
+        || normalizedPath(session?.projectRoot) !== normalizedPath(workspace.root)
+        || session?.phase !== 'integration-conflict' || session?.branch !== lease.integrationBranch
+        || session?.baseCommit !== lease.integrationBaseCommit
+        || (session?.conversationId && session.conversationId !== conversationId)) {
+        reject('통합 복구 작업공간의 메타데이터 또는 세션이 변경됐습니다.')
+      }
+      const branch = await this.git(workspace.root, ['branch', '--show-current'])
+      if (!lease.integrationBranch || branch !== lease.integrationBranch
+        || await this.git(workspace.root, ['rev-parse', `refs/heads/${lease.branch}`]) !== lease.headCommit) {
+        reject('통합 브랜치 또는 보존된 원 작업 커밋이 변경됐습니다.')
+      }
+      const integration = this.registry.integration
+      if (!integration || await this.git(integration.root, ['branch', '--show-current']) !== lease.baseBranch
+        || await this.git(integration.root, ['rev-parse', 'HEAD']) !== lease.integrationBaseCommit) {
+        reject('통합 기준 작업공간의 브랜치 또는 HEAD가 변경됐습니다.')
+      }
+      for (const entry of ['index.lock', 'MERGE_HEAD', 'REBASE_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']) {
+        if (await this.gitPathExists(workspace.root, entry)) reject(`통합 복구 중 다른 Git 작업을 발견했습니다: ${entry}`)
+      }
+      if (await this.git(workspace.root, ['ls-files', '--unmerged']) && !await this.gitPathExists(workspace.root, 'CHERRY_PICK_HEAD')) {
+        reject('미해결 충돌이 있지만 진행 중인 cherry-pick을 확인할 수 없습니다.')
+      }
+      const todoPath = await this.git(workspace.root, ['rev-parse', '--git-path', 'sequencer/todo'])
+      const todo = await readFile(path.resolve(workspace.root, todoPath), 'utf8').catch(error => {
+        if (error.code === 'ENOENT') return ''
+        throw error
+      })
+      if (todo.split(/\r?\n/).some(line => line.trim() && !/^pick [a-f0-9]+(?: |$)/.test(line))) {
+        reject('통합 cherry-pick 외 Git 순차 작업이 남아 있습니다.')
+      }
+      // 미해결 cherry-pick과 이미 해결·커밋된 후보 모두 같은 통합 상태에서 이어간다.
+      // 일반 reuseLease와 달리 source 브랜치로 전환하거나 잠금을 해제하지 않는다.
+      await this.git(workspace.root, ['merge-base', '--is-ancestor', lease.integrationBaseCommit, 'HEAD'])
+      if (lease.trackedEolRecovery?.phase === 'preserved' && !trackedEolRecovery) {
+        reject('줄바꿈 정리가 중단됐습니다. 원래 승인한 파일·해시로 복구를 다시 요청하세요.')
+      }
+      if (trackedEolRecovery) {
+        await recoverTrackedCheckoutEol({ workerRoot: workspace.root, sharedRoot: this.registry.sharedRoot,
+          lease, request: trackedEolRecovery, actor, persist: () => this.persist(),
+          expectedHead: await this.git(workspace.root, ['rev-parse', 'HEAD']) })
+      }
+      return { ...publicLease(lease), branch: lease.integrationBranch, baseCommit: lease.integrationBaseCommit,
+        phase: 'integration-conflict', sourceBranch: lease.branch, sourceBaseCommit: lease.baseCommit }
+    })
+  }
+
   async bindConversation(leaseId, conversationId) {
     return this.runExclusive(async () => {
       const normalizedLeaseId = String(leaseId ?? '').trim()

@@ -87,6 +87,14 @@ lease 상태는 위 작업공간 상태와 대부분 같은 이름을 쓰고, �
 
 원격 Fork 체크포인트도 Runner에서 `WorkspacePoolManager.checkpoint`를 거치므로 아래 경로 제한이 똑같이 적용되고, 거부 사유는 코디네이터에서도 같은 `reasonCode`로 보인다. Runner 머신이 이 방어가 없는 이전 코드로 실행 중이면 적용되지 않으므로 Runner도 함께 갱신해야 한다.
 
+## 중단된 통합 충돌 해결 재개
+
+위임이 `integration-recovery-required`, lease가 `awaiting-conflict-resolution`이면 `기존 작업 재개` 또는 `mindnprogress_recover_ai_delegation`으로 원 담당 대화에서 이어간다. 일반 작업용 `reuseLease`로 되돌리지 않는다. 서버는 원 통합 실행·턴의 중단과 대화의 유휴 상태를 확인한 뒤 문서·카드·대화·lease, 작업공간 메타데이터·세션, 통합 잠금 소유권, source 커밋과 통합 기준 HEAD를 대사한다. 불일치하면 실행하지 않고 보존한다.
+
+재개 전문의 할당 브랜치·기준 커밋은 `.ai-session.json`과 같은 통합 후보 기준이다. 해결 전의 cherry-pick은 이어가고, 이미 해결·커밋된 후보는 재적용하지 않고 최종 검증만 수행한다. 재개 자체는 잠금이나 회차를 바꾸지 않는다. 완료된 통합이 정상 반영된 뒤 기존 완료 경로에서 잠금을 해제한다. 요청 전달 여부가 불명확하면 저장한 operation을 조회하며, 재시작 후 미접수가 확인된 요청도 같은 operation·전문으로만 재전달한다.
+
+줄바꿈만 달라진 추적 파일은 선택적인 `trackedEolRecovery={expectedHead, files:[{path, expectedSha256}]}`로 정확한 후보 HEAD와 승인한 원본을 지정할 수 있다. 서버는 일반 파일·UTF-8·`-text` 속성, index 일치와 CRLF→LF 외 차이가 없음을 검증하고 공유 루트의 `workspace-drift/<workspaceId>/eol-recovery-...`에 원본과 귀속 기록을 보존한 뒤 정리한다. 다른 파일 변경이나 실제 내용 차이, 진행 중인 Git 작업이 있으면 거부한다. 이 기능은 자동 dirty 정리나 잠금 강제 해제가 아니다. 원격 Runner 소유 lease는 이 로컬 복구 경로에서 처리하지 않는다.
+
 ## 체크포인트 경로 제한
 
 `mindnprogress_checkpoint_ai_workspace`는 프로젝트 루트의 `knowledge-inbox/` 아래 파일을 추가·수정하는 변경을 `AI_WORKSPACE_CHECKPOINT_PATH_REJECTED`로 거부한다. 예전 위임 전문의 상대 경로 안내 때문에 지식 제안 파일이 게임 저장소에 커밋된 사고를 막기 위한 방어이며, 이미 추적된 파일의 삭제는 막지 않는다.

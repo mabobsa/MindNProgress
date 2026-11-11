@@ -54,11 +54,12 @@ async function regularPath(root, relative, allowMissing = false) {
 }
 
 // 호출자는 먼저 lease·세션·source·부분 적용·sequencer를 검증한다.
-// 명시적 결과 보존 반환에만 사용하며 일반 통합이나 dirty 자동 정리에는 사용하지 않는다.
-export async function recoverTrackedCheckoutEol({ workerRoot, sharedRoot, lease, request, actor, persist }) {
+// 명시적 결과 보존 반환 또는 중단된 충돌 해결 재개에만 사용한다. 일반 dirty 자동 정리는 금지한다.
+export async function recoverTrackedCheckoutEol({ workerRoot, sharedRoot, lease, request, actor, persist,
+  expectedHead = lease.result?.integrationFailureHeadCommit }) {
   let record = lease.trackedEolRecovery
   const plan = normalizeTrackedEolRecovery(request ?? record?.plan)
-  if (plan.expectedHead !== lease.result?.integrationFailureHeadCommit) unsafe('줄바꿈 복구 HEAD가 실패한 통합 후보와 다릅니다.')
+  if (plan.expectedHead !== expectedHead) unsafe('줄바꿈 복구 HEAD가 확인된 통합 후보와 다릅니다.')
   if (record && (record.leaseId !== lease.leaseId || record.sourceHead !== lease.headCommit
     || record.jobId !== lease.jobId || record.workspaceId !== lease.workspaceId
     || JSON.stringify(record.plan) !== JSON.stringify(plan)

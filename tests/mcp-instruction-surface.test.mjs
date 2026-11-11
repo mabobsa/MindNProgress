@@ -72,10 +72,11 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     // 2026-11-09: 문맥 손실 없는 표면 축소로 tools/list의 $schema·MAX_SAFE_INTEGER 한도를 빼고(A1),
     //   저장 도구 23개의 설명 꼬리말에서 resultOnly 속성 설명과 같은 문장을 뺐다(B1). 83,542자 → 79,258자.
     // 2026-11-10: 그룹 지시에 담당·보조 역할과 규칙 모델별 담당 자동 선택을 추가한다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '03d606ac20ee80b44586b2eb94e2f5ed76d4408d87d05e86a2648e54fd4e3d21')
+    // 2026-11-11: 중단된 통합 충돌 복구에 원본 해시를 지정하는 선택적 줄바꿈 보존·정리를 추가한다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'c0aaa383ebf0fe982dec3ae90972946604706bf44c1d3259abbe083c5eab6edb')
     const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
-    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '633344436ea864526fc87e866ac6f4e2e0f02d8135401fdc544896071a1ddfcc')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 236)
+    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'a7fd81c559b7815604537a2db2b1dc1e81d76f69be63c904a8e0d9b060d6c04b')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 237)
     const handoff = tools.find((tool) => tool.name === 'mindnprogress_start_card_conversation')
     assert.deepEqual(handoff.inputSchema.required, ['mapId', 'cardId', 'requestId'])
     assert.equal(handoff.inputSchema.properties.resultOnly.type, 'boolean')
@@ -92,6 +93,11 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     assert.deepEqual(metaRecovery.required, ['path', 'expectedSha256', 'mainCommit'])
     assert.equal(metaRecovery.additionalProperties, false)
     assert.match(metaRecovery.description, /사용자가 승인한.*원본 보존.*같은 GUID.*다른 변경은 정리하지/s)
+    const eolRecovery = tools.find(tool => tool.name === 'mindnprogress_recover_ai_delegation').inputSchema.properties.trackedEolRecovery
+    assert.deepEqual(eolRecovery.required, ['expectedHead', 'files'])
+    assert.equal(eolRecovery.additionalProperties, false)
+    assert.equal(eolRecovery.properties.files.items.additionalProperties, false)
+    assert.match(eolRecovery.description, /사용자가 승인한.*원본 백업.*내용 차이.*거부/s)
     // 2026-10-22 작업 트리 기준 재생성 기준선(capture-guidance-evidence.mjs --rebaseline-working-tree)의 registerTool 직접 등록 수
     assert.equal(baselineDescriptions.size, 58)
     for (const tool of tools) {

@@ -631,7 +631,7 @@ export class RemoteWorkspacePool {
 
 export function remoteWorkspaceFacade(local, remote) {
   const methods = new Set(['bindConversation', 'reuseLease', 'checkpoint', 'finalize', 'cancel', 'quarantine', 'reactivateQuarantinedLease'])
-  const unsupported = new Set(['completeConflictResolution', 'prepareIntegrationResultCorrection', 'resumeIntegrationResultCorrection',
+  const unsupported = new Set(['completeConflictResolution', 'resumeIntegrationConflict', 'prepareIntegrationResultCorrection', 'resumeIntegrationResultCorrection',
     'recoverCheckpointedFinalizationFailure', 'recoverLegacyDirtyIntegration', 'recoverLocalChangesIntegrationFailure', 'recoverUntrackedIntegrationFailure',
     'recoverIntegrationHeadChangedFailure', 'recoverIntegrationCandidateWorktreeFailure', 'recoverIntegrationGitStatusFailure', 'recoverCheckpointIntegrationFailure', 'releasePreservedIntegrationFailure'])
   return new Proxy(local, { get(target, property) {

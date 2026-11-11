@@ -2359,7 +2359,11 @@ async function main() {
       expectedSha256: z.string().regex(/^[a-f0-9]{64}$/),
       mainCommit: z.string().regex(/^[a-f0-9]{40}$/),
     }).strict().optional().describe('사용자가 승인한 단일 미추적 Assets/*.cs.meta의 원본 보존·정리. Git 잠금 통합 재시도에만 지정합니다. 정확한 경로·원본 SHA-256·최신 main HEAD를 전달하며 같은 GUID의 등록 메타가 main에 있어야 합니다. 다른 변경은 정리하지 않습니다.'),
-  }, async ({ mapId, delegationId, instruction, sourceRevision, recoveryMode, untrackedMetaRecovery, recoveryRequestId }) => {
+    trackedEolRecovery: z.object({
+      expectedHead: z.string().regex(/^[a-f0-9]{40}$/),
+      files: z.array(z.object({ path: z.string().min(1), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).min(1).max(64),
+    }).strict().optional().describe('중단된 통합 충돌 재개 시 사용자가 승인한 줄바꿈 전용 변경만 원본 백업 후 정리합니다. 후보 HEAD와 각 파일의 원본 SHA-256을 명시합니다. CRLF→LF 외 내용 차이·index 변경·다른 파일 변경이 있으면 거부하며 자동 삭제하지 않습니다.'),
+  }, async ({ mapId, delegationId, instruction, sourceRevision, recoveryMode, untrackedMetaRecovery, trackedEolRecovery, recoveryRequestId }) => {
     const origin = delegationOriginForMap(mapId)
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/ai-delegations/${encodeURIComponent(delegationId)}/recover`, {
       method: 'POST',
@@ -2372,6 +2376,7 @@ async function main() {
       timeoutMs: 60_000,
       body: JSON.stringify({ instruction, sourceRevision, ...(recoveryMode ? { recoveryMode } : {}),
         ...(recoveryRequestId ? { recoveryRequestId } : {}),
+        ...(trackedEolRecovery ? { trackedEolRecovery } : {}),
         ...(untrackedMetaRecovery ? { untrackedMetaRecovery } : {}) }),
     })
   })

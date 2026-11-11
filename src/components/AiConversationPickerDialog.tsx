@@ -225,10 +225,10 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
                       openMenu(conversation, group.cardId, rect.left + 16, rect.top + 28, event.target as HTMLElement)
                     }}
                   >
-                    {!documentMode && onSetPrimaryConversation && <label className="ai-conversation-primary-choice">
+                    {!documentMode && onSetPrimaryConversation && conversation.linkMissing !== true && <label className="ai-conversation-primary-choice">
                       <input type="checkbox"
                         checked={(group.primaryConversationId === undefined ? group.latestConversationId : group.primaryConversationId) === conversation.conversationId}
-                        disabled={primarySaving || Boolean(deleting) || !conversation.accessible || conversation.linkMissing === true}
+                        disabled={primarySaving || Boolean(deleting) || !conversation.accessible}
                         onChange={() => { void setPrimary(group, conversation.conversationId) }}
                         aria-label={`${conversation.name || conversation.conversationId} 담당 대화`} />
                       담당

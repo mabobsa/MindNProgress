@@ -1,22 +1,45 @@
 import { createHash } from 'node:crypto'
+import { digest } from './contentPreconditions.mjs'
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
 // 인계 자체가 추가하는 AI 연결만 제외한다. 업무 내용·계층·그룹 기준 변경은 별도로 재검토한다.
-export function rootHandoffDocumentHash(map, cardId) {
-  return hash({ title: map.title, edges: map.edges, nodes: map.nodes.map((node) => {
+export function rootHandoffDocumentHash(map, cardId, version = 2) {
+  const content = { title: map.title, edges: map.edges, nodes: map.nodes.map((node) => {
     if (node.id !== cardId) return node
     const data = { ...node.data }
     for (const key of ['aiConversationId', 'aiPrimaryConversationId', 'aiConversations']) delete data[key]
     return { ...node, data }
-  }) })
+  }) }
+  // 객체 속성 순서는 저장 정규화로 바뀔 수 있다. 배열 순서와 실제 값은 그대로 비교한다.
+  if (version === 2) return digest(content)
+  if (version === 1) return hash(content)
+  throw new Error('지원하지 않는 루트 인계 내용 해시 버전입니다.')
+}
+
+export function rootHandoffDocumentMatches(map, cardId, handoff) {
+  return rootHandoffDocumentHash(map, cardId, handoff.documentHashVersion ?? 1) === handoff.documentHash
+}
+
+// 이미 저장한 해시를 현재 값으로 덮어쓰지 않는다. 접수 당시 원문을 먼저 구버전 해시로 증명한다.
+export function upgradeRootHandoffHash(instruction, baseline, currentMap, now = new Date().toISOString()) {
+  const handoff = instruction.rootHandoff
+  if (!handoff || (handoff.documentHashVersion ?? 1) !== 1 || handoff.completedAt
+    || !baseline?.map || baseline.map.id !== instruction.targetMapId || currentMap.id !== instruction.targetMapId
+    || (baseline.revisionId && baseline.map.version !== instruction.targetRevision)
+    || !rootHandoffDocumentMatches(baseline.map, instruction.targetCardId, handoff)) return null
+  const documentHash = rootHandoffDocumentHash(baseline.map, instruction.targetCardId)
+  if (documentHash !== rootHandoffDocumentHash(currentMap, instruction.targetCardId)) return null
+  return { ...handoff, documentHash, documentHashVersion: 2, legacyDocumentHash: handoff.documentHash,
+    hashUpgrade: { upgradedAt: now, baselineRevisionId: baseline.revisionId ?? null, baselineVersion: baseline.map.version,
+      previousInstructionState: instruction.state, previousReasonCode: instruction.reasonCode ?? null } }
 }
 
 export function createRootHandoffPlan(instructionId, map, cardId, predecessorConversationId, selection, policyRevision) {
   const key = hash([instructionId, map.id, cardId, predecessorConversationId, policyRevision])
   return {
     requestId: `root-handoff:${key}`, operationId: `rhp:${key}`,
-    predecessorConversationId, documentHash: rootHandoffDocumentHash(map, cardId), policyRevision,
+    predecessorConversationId, documentHash: rootHandoffDocumentHash(map, cardId), documentHashVersion: 2, policyRevision,
     newConversation: {
       agentId: selection.agent.id, modelId: selection.model.id,
       thoughtLevelId: selection.thoughtLevel.id,

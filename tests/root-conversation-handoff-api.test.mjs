@@ -5,6 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fixture, storageApi } from './helpers/storage-api-harness.mjs'
 import { aiDelegationPolicy } from '../server/lib/aiDelegationPolicy.mjs'
+import { rootHandoffDocumentHash } from '../server/lib/rootConversationHandoff.mjs'
 
 const pause = () => new Promise(resolve => setTimeout(resolve, 40))
 async function until(action, label) {
@@ -30,6 +31,7 @@ for (const nextBackend of ['codex', 'claude']) test(`루트 CLI 인계 ${nextBac
     backend: id === 'auxiliary' ? nextBackend : previousBackend, level: 'high',
   }]))
   const dispatches = new Map(), sends = []
+  let baselineMap
   let configSource = 'runtime', correctConfig = true, losePrepareResponse = true
   const remote = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost').pathname
@@ -103,6 +105,7 @@ for (const nextBackend of ['codex', 'claude']) test(`루트 CLI 인계 ${nextBac
   const submitted = await api.call(groupPath, 'POST', request, origin('parent', parentMap))
   assert.equal(submitted.status, 202, JSON.stringify(submitted.body))
   assert.equal(submitted.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_HANDOFF_WORK_PENDING')
+  baselineMap = await currentMap()
   assert.equal(sends.length, 0); assert.equal(await primary(), 'previous')
   // 격리 데이터에서 기존 보고 완료를 재현하고 서버를 다시 읽힌다.
   await api.stop()
@@ -131,6 +134,38 @@ for (const nextBackend of ['codex', 'claude']) test(`루트 CLI 인계 ${nextBac
   assert.equal((await result('previous', true)).status, 403, '이전 담당은 후속 담당의 인수 확인을 대신할 수 없다')
   assert.equal((await result('successor', true)).status, 202)
   assert.equal(await primary(), 'previous', '인수했어도 잘못된 사고 강도이면 담당을 바꾸지 않는다')
+  if (nextBackend === 'codex') {
+    // 첫 필드 시험과 같이 연결 저장 뒤 속성 순서만 달라져 실패한 구버전 기록을 재현한다.
+    await api.stop()
+    const storedInstructions = await api.read('_group-document-instructions.json')
+    const stored = storedInstructions.find(item => item.id === request.idempotencyKey)
+    delete stored.rootHandoff.documentHashVersion
+    stored.rootHandoff.documentHash = rootHandoffDocumentHash(baselineMap, 'card-0', 1)
+    stored.state = 'failed'; stored.reasonCode = 'GROUP_DOCUMENT_INSTRUCTION_HANDOFF_REVISION_CHANGED'
+    await writeFile(path.join(api.data, '_group-document-instructions.json'), JSON.stringify(storedInstructions))
+    const starts = await api.read('_card-conversation-starts.json'), start = starts.find(item => item.requestId === handoff.requestId)
+    start.state = 'recovery-required'; start.reasonCode = 'CARD_CONVERSATION_START_POLICY_CHANGED'
+    const acceptedAt = start.acceptedAt
+    await writeFile(path.join(api.data, '_card-conversation-starts.json'), JSON.stringify(starts))
+    const document = await api.read(`${targetMap}.json`)
+    document.nodes[1].data = Object.fromEntries(Object.entries(document.nodes[1].data).reverse())
+    const actualChange = structuredClone(document); actualChange.nodes[1].data.description += ' 사용자 요구사항 변경'
+    await writeFile(path.join(api.data, `${targetMap}.json`), JSON.stringify(actualChange))
+    await api.restart()
+    assert.equal((await query()).state, 'failed', '실제 내용이 바뀐 건은 재시작해도 복구하지 않는다')
+    assert.equal(await primary(), 'previous')
+    await api.stop()
+    await writeFile(path.join(api.data, `${targetMap}.json`), JSON.stringify(document))
+    await api.restart()
+    const recovered = await query()
+    assert.equal(recovered.state, 'queued', JSON.stringify(recovered) + '\n' + api.output().split('\n').filter(line => line.includes('Root handoff hash')).join('\n'))
+    assert.equal(recovered.rootHandoff.documentHashVersion, 2)
+    assert.equal(recovered.rootHandoff.legacyDocumentHash, stored.rootHandoff.documentHash)
+    assert.ok(recovered.rootHandoff.hashUpgrade.baselineRevisionId)
+    const preserved = (await api.read('_card-conversation-starts.json')).find(item => item.requestId === handoff.requestId)
+    assert.equal(preserved.conversationId, 'successor'); assert.equal(preserved.acceptedAt, acceptedAt)
+    assert.equal(await primary(), 'previous', '복구만으로 설정 검증을 건너뛰지 않는다')
+  }
   correctConfig = true; configSource = 'snapshot'
   await result(); assert.equal(await primary(), 'previous', '스냅샷만으로 실행 설정을 확인하지 않는다')
   configSource = 'runtime'

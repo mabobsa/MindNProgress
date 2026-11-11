@@ -90,7 +90,7 @@ import {
   resolveAiDelegationPolicyRule,
 } from './lib/aiDelegationPolicy.mjs'
 import { delegationResumeRuntimePolicy, ensureDelegationRuntimePolicy } from './lib/aiDelegationRuntimePolicy.mjs'
-import { createRootHandoffPlan, buildRootHandoffRequest, rootHandoffDocumentHash } from './lib/rootConversationHandoff.mjs'
+import { createRootHandoffPlan, buildRootHandoffRequest, rootHandoffDocumentMatches, upgradeRootHandoffHash } from './lib/rootConversationHandoff.mjs'
 import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
 import { reconcileLostIntegrationWaits } from './lib/aiIntegrationWaitRecovery.mjs'
@@ -2980,7 +2980,7 @@ async function advanceRootConversationHandoff(instruction) {
     const groupId = await groupProjects.authorizeDocumentInstruction(parentMap, parentCard.id, targetMap, targetCard.id)
     const group = await groupProjects.context(groupId)
     if (groupId !== instruction.groupId || group.project.version !== instruction.groupProjectVersion
-      || parentMap.version !== instruction.sourceRevision || rootHandoffDocumentHash(targetMap, targetCard.id) !== handoff.documentHash) {
+      || parentMap.version !== instruction.sourceRevision || !rootHandoffDocumentMatches(targetMap, targetCard.id, handoff)) {
       return fail('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_REVISION_CHANGED', '인계 대기 중 문서 내용 또는 그룹 기준이 변경되었습니다. 기존 담당을 유지하며 새 업무를 전달하지 않았습니다.')
     }
     const primary = primaryAiConversationIdFromData(targetCard.data)
@@ -3455,6 +3455,62 @@ async function loadGroupDocumentInstructions() {
   }
   if (rejectedCount > 0) {
     console.warn(`[Group document instruction storage] ${rejectedCount}개 항목을 무시했으며 원본 파일은 덮어쓰지 않았습니다.`)
+  }
+}
+
+// aa18a00의 속성 순서 의존 해시를 이력 증거가 있는 경우에만 갱신한다. 원격 호출·대화 생성은 하지 않는다.
+async function upgradeStoredRootHandoffHashes() {
+  for (const instruction of [...groupDocumentInstructions.values()]) {
+    const handoff = instruction.rootHandoff
+    const failedByRevision = instruction.state === 'failed' && instruction.reasonCode === 'GROUP_DOCUMENT_INSTRUCTION_HANDOFF_REVISION_CHANGED'
+    if (!handoff || (handoff.documentHashVersion ?? 1) !== 1 || handoff.completedAt
+      || !(instruction.state === 'queued' || failedByRevision) || !instruction.pendingInstruction || !instruction.pendingSelection) continue
+    try {
+      const { parentMap, targetMap, parentCard, targetCard } = await groupDocumentInstructionMaps(instruction)
+      if (!parentMap || parentMap.trashedAt || parentMap.archivedAt || !targetMap || targetMap.trashedAt || targetMap.archivedAt
+        || !parentCard || !targetCard || parentMap.version !== instruction.sourceRevision
+        || primaryAiConversationIdFromData(targetCard.data) !== handoff.predecessorConversationId) continue
+      documentReconstruction.assertWritable(targetMap.id)
+      const groupId = await groupProjects.authorizeDocumentInstruction(parentMap, parentCard.id, targetMap, targetCard.id)
+      if (groupId !== instruction.groupId || (await groupProjects.context(groupId)).project.version !== instruction.groupProjectVersion) continue
+      // 이후 요청이나 사람의 담당 변경을 이전 요청의 복구로 되돌리지 않는다.
+      if ([...groupDocumentInstructions.values()].some((item) => item.id !== instruction.id
+        && item.targetMapId === instruction.targetMapId && item.targetCardId === instruction.targetCardId
+        && item.createdAt >= instruction.createdAt)) continue
+      const start = [...cardConversationStartRecords.values()].find((item) => item.policyInstructionId === instruction.id
+        && item.requestId === handoff.requestId && item.mapId === targetMap.id && item.cardId === targetCard.id
+        && item.predecessorConversationId === handoff.predecessorConversationId)
+      if (failedByRevision && (!start?.conversationId || !start.acceptanceRequired || !start.acceptedAt
+        || start.acceptedByConversationId !== start.conversationId || start.linkedAt || start.state !== 'recovery-required'
+        || start.reasonCode !== 'CARD_CONVERSATION_START_POLICY_CHANGED')) continue
+      let upgraded = upgradeRootHandoffHash(instruction, { map: targetMap }, targetMap)
+      if (!upgraded) {
+        const directory = revisionDirectoryForMap(targetMap.id)
+        let entries
+        try { entries = await readdir(directory, { withFileTypes: true }) }
+        catch (error) { if (error.code === 'ENOENT') continue; throw error }
+        // 인계 접수 이후의 가까운 이력만 본다. 이력을 전수 스캔하거나 증거 없이 기준을 바꾸지 않는다.
+        const candidates = selectRevisionFiles(entries.filter((entry) => entry.isFile()).map((entry) => entry.name), isValidRevisionId)
+          .map((file) => ({ ...file, time: revisionIdTime(file.id) ?? 0 }))
+          .filter((file) => file.time >= Date.parse(instruction.createdAt) - 1000).sort(compareRevisionsNewestFirst).slice(0, 64)
+        for (const file of candidates) {
+          const revision = await readRevisionFile(directory, file.name).catch(() => null)
+          if (revision?.mapId !== targetMap.id || !isValidMap(revision.map)) continue
+          upgraded = upgradeRootHandoffHash(instruction, { map: revision.map, revisionId: revision.id }, targetMap)
+          if (upgraded) break
+        }
+      }
+      if (!upgraded) continue
+      await withAiResources([parentMap.id, targetMap.id], () => updateGroupDocumentInstruction(instruction.id, {
+        rootHandoff: upgraded,
+        ...(failedByRevision ? { state: 'queued', reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_HANDOFF_HASH_RECOVERED',
+          message: '인계 전 이력과 현재 문서의 내용 일치를 확인했습니다. 기존 후속 대화와 인수 기록으로 인계를 재개합니다.' } : {}),
+      }))
+      console.info('[Root handoff hash upgrade]', JSON.stringify({ instructionId: instruction.id,
+        conversationId: start?.conversationId ?? null, requeued: failedByRevision, baselineRevisionId: upgraded.hashUpgrade.baselineRevisionId }))
+    } catch (error) {
+      console.warn('[Root handoff hash upgrade]', JSON.stringify({ instructionId: instruction.id, reason: error.code ?? 'verification-failed' }))
+    }
   }
 }
 
@@ -6130,7 +6186,7 @@ const cardConversationStarts = createCardConversationStarts({
     if (record.policyInstructionId) {
       const owner = groupDocumentInstructions.get(record.policyInstructionId)
       if (!owner || owner.state !== 'queued' || owner.rootHandoff?.requestId !== record.requestId
-        || rootHandoffDocumentHash(map, record.cardId) !== owner.rootHandoff.documentHash) {
+        || !rootHandoffDocumentMatches(map, record.cardId, owner.rootHandoff)) {
         throw cardConversationStartError('CARD_CONVERSATION_START_POLICY_CHANGED', '대기 지시 또는 인계 대상 문서가 변경되어 담당을 전환하지 않았습니다.')
       }
     }
@@ -8882,6 +8938,8 @@ const doorayResponses = createDoorayResponseIntegration({
 })
 
 startupTiming.mark('preferencesAndIntegrations')
+await upgradeStoredRootHandoffHashes()
+startupTiming.mark('rootHandoffHashUpgrade')
 await removeLegacyAiCompletionNotifications().catch((error) => console.warn('[AI completion notification cleanup]', error))
 startupTiming.mark('removeLegacyAiNotifications')
 await cleanupCompletedAiHistory().catch((error) => console.warn('[AI history cleanup deferred]', error))

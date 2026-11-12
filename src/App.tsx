@@ -2538,6 +2538,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
   const [assigneeFilter, setAssigneeFilter] = useState('all')
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(() => new Set())
   const [creatingMap, setCreatingMap] = useState(false)
+  const [newMapGroupId, setNewMapGroupId] = useState<string | null>(null)
+  const [mapCreationBusy, setMapCreationBusy] = useState(false)
+  const mapCreationPending = useRef(false)
   const [creatingGroup, setCreatingGroup] = useState(false)
   const [newMapTitle, setNewMapTitle] = useState('')
   const [newGroupName, setNewGroupName] = useState('')
@@ -5880,9 +5883,23 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
     setLiveCursors({})
   }, [activeMapId])
 
+  const toggleNewMapForm = (groupId: string | null) => {
+    if (mapCreationPending.current) return
+    setCreatingMap(!creatingMap || newMapGroupId !== groupId)
+    if (newMapGroupId !== groupId) setNewMapTitle('')
+    setNewMapGroupId(groupId)
+    setCreatingGroup(false)
+    setSaveError('')
+    if (groupId) setCollapsedDocumentGroupIds((current) => {
+      const next = new Set(current)
+      next.delete(groupId)
+      return next
+    })
+  }
+
   const createMap = async () => {
     const title = newMapTitle.trim()
-    if (!title || mode !== 'editor') return
+    if (!title || mode !== 'editor' || mapCreationPending.current) return
     const rootId = `root-${Date.now()}`
     const map: Pick<MapDocument, 'nodes' | 'edges'> = {
       nodes: [{
@@ -5901,22 +5918,64 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
       edges: [],
     }
 
+    mapCreationPending.current = true
+    setMapCreationBusy(true)
     setSaveError('')
+    let createdMapId: string | null = null
     try {
-      const created = await apiRequest<{ map: MapDocument; summary: MapSummary; documentLayout: DocumentLayout }>('/api/maps', {
-        method: 'POST',
-        body: JSON.stringify({ title, map }),
-      })
-      setDocuments((current) => [...current, created.summary])
-      setDocumentLayout(created.documentLayout)
-      setCreatingMap(false)
-      setNewMapTitle('')
-      setSelectedGroupId(null)
-      setActiveMapId(created.summary.id)
+      if (newMapGroupId) {
+        const groupUrl = `/api/groups/${encodeURIComponent(newMapGroupId)}`
+        const context = await apiRequest<{ project: { version: number } }>(groupUrl)
+        const created = await apiRequest<{ map: MapDocument }>(`${groupUrl}/documents`, {
+          method: 'POST',
+          body: JSON.stringify({ title, description: map.nodes[0].data.description, baseVersion: context.project.version }),
+        })
+        createdMapId = created.map.id
+        const library = await apiRequest<DocumentLibraryResponse>('/api/maps')
+        setDocuments(library.maps)
+        setDocumentLayout(library.documentLayout)
+      } else {
+        const created = await apiRequest<{ map: MapDocument; summary: MapSummary; documentLayout: DocumentLayout }>('/api/maps', {
+          method: 'POST',
+          body: JSON.stringify({ title, map }),
+        })
+        createdMapId = created.summary.id
+        setDocuments((current) => [...current, created.summary])
+        setDocumentLayout(created.documentLayout)
+      }
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : '새 문서를 만들지 못했습니다.')
+      setSaveError(createdMapId
+        ? '문서는 생성되었지만 목록을 갱신하지 못했습니다. 새로고침해 주세요.'
+        : error instanceof Error ? error.message : '새 문서를 만들지 못했습니다.')
+    } finally {
+      // 생성 후 목록 조회만 실패했을 때 같은 문서를 다시 생성하지 않는다.
+      if (createdMapId) {
+        setCreatingMap(false)
+        setNewMapTitle('')
+        setNewMapGroupId(null)
+        setSearchTerm('')
+        setSelectedGroupId(null)
+        setActiveMapId(createdMapId)
+      }
+      mapCreationPending.current = false
+      setMapCreationBusy(false)
     }
   }
+
+  const renderNewMapForm = (groupId: string | null = null) => (
+    <form className={`new-map-form ${groupId ? 'group-new-map-form' : ''}`} onSubmit={(event) => { event.preventDefault(); void createMap() }} onKeyDown={(event) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        if (!mapCreationPending.current) setCreatingMap(false)
+      }
+    }}>
+      <input value={newMapTitle} onChange={(event) => setNewMapTitle(event.target.value)} placeholder="새 마인드맵 이름" aria-label="새 마인드맵 이름" maxLength={80} disabled={mapCreationBusy} autoFocus />
+      <div className="new-map-form-actions">
+        <button type="submit" disabled={!newMapTitle.trim() || mapCreationBusy}>{!mapCreationBusy && <Icon name="plus" size={14} />}{mapCreationBusy ? '생성 중…' : '생성'}</button>
+        <button type="button" disabled={mapCreationBusy} onClick={() => setCreatingMap(false)}>취소</button>
+      </div>
+    </form>
+  )
 
   const renameActiveMap = async (value: string) => {
     const title = value.trim()
@@ -7680,6 +7739,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                   <button
                     aria-label="새 문서 그룹"
                     title="새 문서 그룹"
+                    disabled={mapCreationBusy}
                     onClick={() => { setCreatingGroup((current) => !current); setCreatingMap(false) }}
                   >
                     <Icon name="folder" size={15} />
@@ -7687,9 +7747,10 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                   <button
                     aria-label="새 마인드맵"
                     title="새 마인드맵"
-                    onClick={() => { setCreatingMap((current) => !current); setCreatingGroup(false) }}
+                    disabled={mapCreationBusy}
+                    onClick={() => toggleNewMapForm(null)}
                   >
-                    <Icon name={creatingMap ? 'close' : 'plus'} size={16} />
+                    <Icon name={creatingMap && !newMapGroupId ? 'close' : 'plus'} size={16} />
                   </button>
                 </div>
               )}
@@ -7710,12 +7771,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                 <Icon name="search" size={16} />
                 <input placeholder="문서 검색" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} />
               </label>
-              {creatingMap && (
-                <form className="new-map-form" onSubmit={(event) => { event.preventDefault(); void createMap() }}>
-                  <input value={newMapTitle} onChange={(event) => setNewMapTitle(event.target.value)} placeholder="새 마인드맵 이름" maxLength={80} autoFocus />
-                  <button type="submit" disabled={!newMapTitle.trim()}><Icon name="plus" size={14} />생성</button>
-                </form>
-              )}
+              {creatingMap && !newMapGroupId && renderNewMapForm()}
               {creatingGroup && (
                 <form className="new-map-form new-group-form" onSubmit={(event) => { event.preventDefault(); createDocumentGroup() }}>
                   <input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} placeholder="새 그룹 이름" maxLength={80} autoFocus />
@@ -7906,6 +7962,7 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                         </button>
                         {mode === 'editor' && (
                           <div className="document-group-actions">
+                            <button type="button" disabled={mapCreationBusy} onClick={() => toggleNewMapForm(group.id)} aria-label={`${group.name}에 새 마인드맵 추가`} title="새 마인드맵 추가" aria-expanded={creatingMap && newMapGroupId === group.id}><Icon name="plus" size={12} /></button>
                             <button type="button" onClick={() => renameDocumentGroup(group)} aria-label={`${group.name} 이름 변경`}><Icon name="edit" size={11} /></button>
                             <button type="button" onClick={() => deleteDocumentGroup(group)} aria-label={`${group.name} 그룹 삭제`}><Icon name="close" size={11} /></button>
                           </div>
@@ -7913,8 +7970,9 @@ function Workspace({ user, onLogout, initialDeepLink, initialGroupId, theme, onT
                       </div>
                       {!collapsed && (
                         <div className="document-group-items">
+                          {creatingMap && newMapGroupId === group.id && renderNewMapForm(group.id)}
                           {visibleGroupDocuments.map((document) => renderDocumentListItem(document, { type: 'group', groupId: group.id }))}
-                          {visibleGroupDocuments.length === 0 && <div className="empty-document-group">문서를 이 그룹으로 드래그하세요.</div>}
+                          {visibleGroupDocuments.length === 0 && !(creatingMap && newMapGroupId === group.id) && <div className="empty-document-group">문서를 이 그룹으로 드래그하세요.</div>}
                         </div>
                       )}
                     </section>

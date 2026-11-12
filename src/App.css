@@ -267,6 +267,10 @@
 .new-map-form input:focus { border-color: #8173df; }
 .new-map-form button { width: 100%; display: flex; align-items: center; justify-content: center; gap: 5px; margin-top: 6px; padding: 7px; color: white; border: 0; border-radius: 7px; background: #6657d9; font-size: 9px; font-weight: 700; cursor: pointer; }
 .new-map-form button:disabled { opacity: .45; cursor: default; }
+.new-map-form-actions { display: flex; gap: 5px; }
+.new-map-form-actions button { white-space: nowrap; }
+.new-map-form-actions button[type="button"] { width: auto; flex: 0 0 auto; padding-inline: 12px; background: #77717d; }
+.group-new-map-form { margin: 4px 0 8px; }
 .map-list { min-height: 0; position: relative; flex: 1 1 0; display: flex; flex-direction: column; gap: 4px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .library-top-item { min-width: 0; }
 .map-item { width: 100%; min-height: 48px; display: grid; grid-template-columns: 8px 1fr auto; align-items: center; gap: 10px; padding: 10px; border: 0; border-radius: 9px; background: transparent; text-align: left; cursor: pointer; }
@@ -305,6 +309,7 @@
 .document-group-header:hover .document-group-actions,
 .document-group-header:focus-within .document-group-actions { opacity: 1; }
 .document-group-actions button { display: grid; place-items: center; padding: 4px; color: #a19aa7; border: 0; border-radius: 5px; background: transparent; cursor: pointer; }
+.document-group-actions button:disabled { opacity: .45; cursor: default; }
 .document-group-actions button:hover { color: #5f52c5; background: white; }
 .document-group-actions button:last-child:hover { color: #c45555; background: #fff0f0; }
 .document-group-items { display: flex; flex-direction: column; gap: 2px; margin: 3px 0 1px 14px; padding-left: 7px; border-left: 1px solid #ddd8e5; }

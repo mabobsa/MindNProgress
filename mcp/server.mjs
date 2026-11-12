@@ -1245,7 +1245,7 @@ async function main() {
 
   registerTool(server, 'mindnprogress_list_archived_documents', '보관 문서를 조회합니다. 보관함은 휴지통과 다르며 기존 URL·카드·댓글·이미지·Ref를 유지하는 읽기 전용 원본입니다.', {}, async () => apiRequest('/api/maps/archive'))
 
-  registerTool(server, 'mindnprogress_set_document_archive', '사용자가 승인한 문서만 보관하거나 복원합니다. 원본 버전과 현재 lifecycleVersion을 전달하세요. AI 작업이 미종료이거나 상태를 확인할 수 없으면 보관하지 않습니다. 그룹 총괄 문서는 기준점으로 유지합니다.', {
+  registerTool(server, 'mindnprogress_set_document_archive', '사용자가 승인한 문서만 보관하거나 복원합니다. 원본 버전과 현재 lifecycleVersion을 전달하세요. AI 작업이 미종료이거나 상태를 확인할 수 없으면 보관하지 않습니다. 그룹 총괄 문서는 다른 활성 문서와 진행 중인 위임·복구·문서 지시가 없을 때만 개별 보관할 수 있으며 그룹 기획·승인 기록은 보존됩니다.', {
     mapId: z.string().min(1), baseVersion: z.number().int().positive(), baseLifecycleVersion: z.number().int().nonnegative(),
     archived: z.boolean(), reason: z.string().min(1),
   }, async ({ mapId, ...body }) => apiRequest(`/api/maps/${encodeURIComponent(mapId)}/archive`, { method: 'PATCH', body: JSON.stringify(body) }))

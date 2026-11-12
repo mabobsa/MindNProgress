@@ -31,6 +31,7 @@ import { compareRevisionsNewestFirst, compressedRevisionFileName, decodeRevision
 import { createStorageJournal, storageDigest, storagePhase, storageRequestError } from './lib/storageJournal.mjs'
 import { backfillDailyBackupHistory } from './lib/dailyBackupHistory.mjs'
 import { createDocumentReconstruction, reconstructionError } from './lib/documentReconstruction.mjs'
+import { assertCoordinatorArchiveAllowed } from './lib/coordinatorArchive.mjs'
 import { createReconstructionRequests } from './lib/documentReconstructionRequests.mjs'
 import { createCardLayoutRequests } from './lib/cardLayoutRequests.mjs'
 import {
@@ -8772,13 +8773,20 @@ documentReconstruction = await createDocumentReconstruction({
       })) throw reconstructionError('AI가 실행 중이거나 상태를 확인하지 못했습니다. 작업 상태를 확인한 뒤 다시 시도하세요.', 409, 'RECONSTRUCTION_AI_BUSY')
     }
   },
-  checkGroup: async (mapIds) => {
+  checkGroup: async (mapIds, { operation } = {}) => {
     const layout = await readDocumentLayout((await listMaps()).map((map) => map.id))
     const memberships = new Set(mapIds.map((id) => layout.groups.find((group) => group.mapIds.includes(id))?.id ?? null))
     if (memberships.size > 1) throw reconstructionError('한 번의 전환에는 같은 그룹의 문서만 포함하세요. 그룹 밖 문서는 그룹 밖 문서끼리 정리할 수 있습니다.', 409)
     for (const group of layout.groups.filter((group) => group.mapIds.some((id) => mapIds.includes(id)))) {
       const project = await groupProjects.read(group.id)
-      if (mapIds.includes(project.coordinatorMapId)) throw reconstructionError('그룹 총괄 문서는 현재 기준과 승인 범위의 기준점으로 유지하세요. 이번 전환에는 하위 문서만 포함할 수 있습니다.', 409, 'RECONSTRUCTION_COORDINATOR')
+      if (!mapIds.includes(project.coordinatorMapId)) continue
+      if (operation !== 'archive' || mapIds.length !== 1) {
+        throw reconstructionError('그룹 총괄 문서는 현재 기준과 승인 범위의 기준점으로 유지하세요. 이번 전환에는 하위 문서만 포함할 수 있습니다.', 409, 'RECONSTRUCTION_COORDINATOR')
+      }
+      assertCoordinatorArchiveAllowed({ group, coordinatorMapId: project.coordinatorMapId,
+        delegations: aiDelegations.values(), documentInstructions: groupDocumentInstructions.values(),
+        delegationInFlight: (id) => aiDelegationActions.has(id) || integrationRecoveryQueue.running.has(id),
+        instructionInFlight: (id) => groupDocumentInstructionActions.has(id) })
     }
   },
   groupContext: async (mapIds) => {

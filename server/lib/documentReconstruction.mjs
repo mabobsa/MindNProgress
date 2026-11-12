@@ -343,7 +343,7 @@ export async function createDocumentReconstruction({ dataDirectory, writeJson, r
       if (body.archived !== true && body.archived !== false) throw reconstructionError('보관 또는 복원을 선택하세요.')
       lockedIds.add(mapId)
       try {
-      if (body.archived) { await checkIdle([mapId]); await checkGroup([mapId]) }
+      if (body.archived) { await checkIdle([mapId]); await checkGroup([mapId], { operation: 'archive' }) }
       const layout = await readLayout((await listMaps()).map((m) => m.id))
       const next = structuredClone(state)
       const history = [...(metadata(mapId).archiveHistory ?? []), { archived: body.archived, at: new Date().toISOString(), by: user, reason: String(body.reason ?? '') }]

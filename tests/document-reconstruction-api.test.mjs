@@ -21,7 +21,8 @@ test('보관·전환 HTTP/MCP 경로는 임시 서버에서 원본·댓글·이�
   const port = probe.address().port
   await new Promise((resolve) => probe.close(resolve))
   const base = `http://127.0.0.1:${port}`
-  const fakeAion = createHttpServer((request, response) => { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ success: true, data: { unavailable: true } })) })
+  let runtimeSnapshot = { unavailable: true }
+  const fakeAion = createHttpServer((request, response) => { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ success: true, data: runtimeSnapshot })) })
   await new Promise((resolve) => fakeAion.listen(0, '127.0.0.1', resolve))
   const env = { ...process.env, MNP_DATA_DIR: directory, MNP_TOKEN_FILE: path.join(directory, '_integration-token'), MNP_API_HOST: '127.0.0.1', MNP_API_PORT: String(port), MNP_WEB_PORT: String(port), MNP_API_URL: base, MNP_ADMIN_PASSWORD: 'TestOnly!2026', MNP_ADMIN_EMAIL: 'reconstruction-test@mind.local', MNP_WORKSPACE_POOL_REGISTRY: path.join(directory, 'no-pool.json'), MNP_MCP_USAGE_DISABLED: '1', AIONUI_CONVERSATION_ID: '', MNP_AIONUI_URL: 'http://127.0.0.1:1' }
   let child; let stderr = ''; let mcp
@@ -251,4 +252,47 @@ test('보관·전환 HTTP/MCP 경로는 임시 서버에서 원본·댓글·이�
   await assert.rejects(readFile(trashFile), { code: 'ENOENT' })
   await assert.rejects(readFile(trashComments), { code: 'ENOENT' })
   assert.equal((await api('/api/maps/trash')).body.maps.some((map) => map.id === trashFixture.id), false)
+
+  // 이력 총괄만 남은 그룹은 보관·재시작·배치 저장·복원을 거쳐도 원문과 그룹 설정을 잃지 않는다.
+  const historyGroupId = 'group-history-coordinator'
+  const currentLayout = (await api('/api/maps')).body.documentLayout
+  currentLayout.groups.push({ id: historyGroupId, name: '이력 그룹', mapIds: [] })
+  currentLayout.items.push({ type: 'group', id: historyGroupId })
+  assert.equal((await api('/api/maps/layout', 'PATCH', { documentLayout: currentLayout })).status, 200)
+  const historyGroup = await api(`/api/groups/${historyGroupId}`, 'PATCH', { baseVersion: 0, createCoordinator: true,
+    source: '보존할 기획 원본', sourceVersion: '승인 당시 버전', objective: '총괄 역할 종료 후 이력 보존', instructions: '기존 승인과 계약을 보존한다.' })
+  assert.equal(historyGroup.status, 200, JSON.stringify(historyGroup.body))
+  const historyMapId = historyGroup.body.coordinator.id
+  const historyMap = (await api(`/api/maps/${historyMapId}`)).body.map
+  const historyRoot = historyMap.nodes[0]
+  Object.assign(historyRoot.data, { aiConversationId: 'history-conversation', aiPrimaryConversationId: 'history-conversation' })
+  const linked = await api(`/api/maps/${historyMapId}`, 'PUT', { map: historyMap, baseVersion: historyMap.version, baseLifecycleVersion: 0 })
+  assert.equal(linked.status, 200, JSON.stringify(linked.body))
+  await api(`/api/maps/${historyMapId}/comments`, 'POST', { nodeId: historyRoot.id, summary: '[결과] 이력 보존 확인' })
+  const historyFile = path.join(directory, historyMapId + '.json')
+  const historyComments = path.join(directory, '_comments', historyMapId + '.json')
+  const groupFile = path.join(directory, '_group-projects', historyGroupId + '.json')
+  const preservedFiles = new Map(await Promise.all([historyFile, historyComments, groupFile].map(async file => [file, await readFile(file)])))
+  const archiveBody = { baseVersion: linked.body.map.version, baseLifecycleVersion: 0, archived: true, reason: '종료된 총괄 이력 보관' }
+  const archivePath = `/api/maps/${historyMapId}/archive`
+  assert.equal((await api(archivePath, 'PATCH', archiveBody)).body.code, 'RECONSTRUCTION_AI_BUSY', 'AI 상태 미확인은 계속 차단한다.')
+  runtimeSnapshot = { schema_version: 1, items: [{ conversation_id: 'history-conversation', runtime: { state: 'running', is_processing: true, pending_confirmations: 0 } }] }
+  assert.equal((await api(archivePath, 'PATCH', archiveBody)).body.code, 'RECONSTRUCTION_AI_BUSY', '실행 중인 AI는 계속 차단한다.')
+  runtimeSnapshot = { schema_version: 1, items: [] }
+  const historyChoices = (await api(`/api/document-reconstructions/choices?groupId=${historyGroupId}`)).body.documents
+  assert.equal(historyChoices.find(doc => doc.id === historyMapId).excluded, true, '총괄을 원본으로 삼는 문서 재구성은 허용하지 않는다.')
+  const archivedCoordinator = await mcp.callTool({ name: 'mindnprogress_set_document_archive', arguments: { mapId: historyMapId, ...archiveBody } })
+  assert.equal(archivedCoordinator.isError, undefined, JSON.stringify(archivedCoordinator))
+  assert.ok((await api(`/api/maps/${historyMapId}`)).body.map.archivedAt)
+  const archivedLayout = (await api('/api/maps')).body.documentLayout
+  assert.deepEqual(archivedLayout.groups.find(g => g.id === historyGroupId).mapIds, [])
+  assert.equal((await api('/api/maps/layout', 'PATCH', { documentLayout: archivedLayout })).status, 200)
+  for (const [file, bytes] of preservedFiles) assert.deepEqual(await readFile(file), bytes)
+  await stop(); await start()
+  assert.deepEqual((await api(`/api/groups/${historyGroupId}`)).body.project, historyGroup.body.project)
+  const restoreCoordinator = await api(archivePath, 'PATCH', { ...archiveBody, archived: false, baseLifecycleVersion: 1 })
+  assert.equal(restoreCoordinator.status, 200, JSON.stringify(restoreCoordinator.body))
+  assert.deepEqual((await api('/api/maps')).body.documentLayout.groups.find(g => g.id === historyGroupId).mapIds, [historyMapId])
+  assert.equal((await api(`/api/groups/${historyGroupId}`)).body.coordinator.id, historyMapId)
+  for (const [file, bytes] of preservedFiles) assert.deepEqual(await readFile(file), bytes)
 })

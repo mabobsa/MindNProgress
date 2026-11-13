@@ -67,7 +67,8 @@ async function startAionUi(t, worker) {
     if (operation) return receipts.has(decodeURIComponent(operation[1])) ? send(receipts.get(decodeURIComponent(operation[1]))) : send({}, 404)
     const configId = url.pathname.split('/')[3]
     if (url.pathname.endsWith('/runtime/ensure')) return send({ runtime: { state: 'idle' },
-      config_options: [{ id: 'effort', category: 'thought_level', options: [{ value: 'xhigh' }, { value: 'high' }] }] })
+      config_options: [{ id: 'effort', category: 'thought_level',
+        options: (configId === 'target-runtime-failed' ? ['high'] : ['xhigh', 'high']).map(value => ({ value })) }] })
     if (url.pathname.endsWith('/runtime-config')) return send({ model: { value: 'test-model', source: 'runtime' },
       thought_level: { value: effort.get(configId) ?? 'high', source: 'runtime' } })
     if (request.method === 'PUT' && url.pathname.includes('/config-options/')) {
@@ -207,10 +208,11 @@ test('작업공간 대기 후 시작할 때 요청 때 인정한 포화 예외�
     assert.notEqual(overridden.state, 'waiting-workspace')
     assert.equal(overridden.conversationContextHealth, undefined)
     assert.deepEqual(overridden.contextOverride, contextOverride, '요청 때 기록한 예외를 시작 뒤에도 그대로 보존한다.')
-    assert.equal(aion.posted.length, 1)
-    assert.equal(aion.posted[0].strategy, 'resume')
-    assert.equal(aion.posted[0].targetConversationId, 'conversation-override')
-    assert.ok(aion.posted[0].workspaceLease?.leaseId, '대기 위임은 작업공간 lease를 받아 시작한다.')
+    const work = aion.posted.filter(item => item.targetConversationId !== 'parent-conversation')
+    assert.equal(work.length, 1)
+    assert.equal(work[0].strategy, 'resume')
+    assert.equal(work[0].targetConversationId, 'conversation-override')
+    assert.ok(work[0].workspaceLease?.leaseId, '대기 위임은 작업공간 lease를 받아 시작한다.')
   } finally {
     await second.stop()
   }
@@ -221,7 +223,7 @@ for (const strategy of ['resume', 'new']) test(`재시작한 하위 위임 대�
 }, async (t) => {
   const { integration, worker, registryFile, dataDirectory } = await poolFixture(t)
   const aion = await startAionUi(t, worker)
-  const names = ['changed', 'model-changed', 'stable']
+  const names = ['changed', 'model-changed', ...(strategy === 'resume' ? ['runtime-failed'] : []), 'stable']
   const map = { id: 'map-primary', title: '하위 담당 대기열 검증', version: 1,
     nodes: [{ id: 'parent-card', position: { x: 0, y: 0 }, data: { kind: 'root', label: '상위', aiConversationId: 'parent-conversation' } },
       ...names.map((name, index) => ({ id: name, position: { x: 300, y: index * 200 }, data: { kind: 'task', label: name,
@@ -231,17 +233,19 @@ for (const strategy of ['resume', 'new']) test(`재시작한 하위 위임 대�
       } }))], edges: names.map(name => ({ id: `edge-${name}`, source: 'parent-card', target: name })) }
   await writeFile(path.join(dataDirectory, 'map-primary.json'), JSON.stringify(map))
   const first = await startServer({ dataDirectory, registryFile, upstreamPort: aion.port, pollIntervalMs: 3_600_000 })
-  let assessment
+  const assessments = {}
   try {
-    const listed = await first.get('/api/maps/map-primary/cards/stable/ai-conversations')
-    assessment = listed.conversations.find(item => item.conversationId === 'target-stable').contextHealth.assessmentId
+    for (const name of names) {
+      const listed = await first.get(`/api/maps/map-primary/cards/${name}/ai-conversations`)
+      assessments[name] = listed.conversations.find(item => item.conversationId === `target-${name}`).contextHealth.assessmentId
+    }
   } finally { await first.stop() }
   const instruction = '담당 선택 대기열 검증 작업을 수행하세요.'
   const queued = names.map((name, index) => ({
     id: `queued-${name}`, requestSignature: `signature-${name}`, mapId: map.id, parentCardId: 'parent-card',
     targetCardId: name, parentConversationId: 'parent-conversation', targetConversationId: strategy === 'resume' ? `target-${name}` : '',
     childOperationId: `queued-${name}`, strategy, sourceRevision: 1, decisionReason: '담당 변경 검증',
-    conversationAssessmentId: assessment, instructionHash: createHash('sha256').update(instruction).digest('hex'),
+    conversationAssessmentId: assessments[name], instructionHash: createHash('sha256').update(instruction).digest('hex'),
     state: 'waiting-workspace', resource: { kind: 'workspace_pool', key: 'test', projectRoot: integration }, startedBy: 'user-admin',
     pendingInstruction: instruction,
     pendingSelection: aiDelegationSelectionFromSource({ agent: { id: 'test-agent', label: '검증 AI' }, model: { id: 'test-model', label: '검증 모델' }, workspace: worker }),
@@ -256,21 +260,40 @@ for (const strategy of ['resume', 'new']) test(`재시작한 하위 위임 대�
   const second = await startServer({ dataDirectory, registryFile, upstreamPort: aion.port, pollIntervalMs: 200 })
   try {
     let delegations
-    for (let attempt = 0; attempt < 180; attempt++) {
+    // 사고 강도 거부 시 실제 Git 작업공간을 회수한 뒤 다음 작업을 배정하므로 전체 처리 시간을 기다린다.
+    const deadline = Date.now() + 60_000
+    while (Date.now() < deadline) {
       const result = await second.get('/api/maps/map-primary/ai-delegations', { allowProcessing: true })
       if (!result) { await pause(100); continue }
       delegations = result.delegations
-      if (delegations.find(item => item.id === 'queued-stable')?.state === 'running') break
+      if (delegations.find(item => item.id === 'queued-stable')?.state === 'running'
+        && delegations.filter(item => item.id !== 'queued-stable').every(item => item.state === 'failed' && item.reportStatus === 'received')) break
       await pause(100)
     }
     assert.equal(delegations.find(item => item.id === 'queued-changed').failureReasonCode, 'AI_DELEGATION_PRIMARY_CHANGED')
     if (strategy === 'resume') assert.equal(delegations.find(item => item.id === 'queued-model-changed').failureReasonCode, 'AI_DELEGATION_PRIMARY_MODEL_CHANGED')
     const stable = delegations.find(item => item.id === 'queued-stable')
-    assert.equal(stable.state, 'running', JSON.stringify({ stable, errors: second.errors() }))
+    assert.equal(stable.state, 'running', JSON.stringify({ delegations, errors: second.errors() }))
     assert.equal(stable.linkError, null)
-    assert.equal(aion.posted.length, 1)
-    assert.equal(aion.posted[0].strategy, strategy)
+    const work = aion.posted.filter(item => item.targetConversationId !== 'parent-conversation')
+    const notices = aion.posted.filter(item => item.targetConversationId === 'parent-conversation')
+    assert.equal(work.length, 1)
+    assert.equal(work[0].strategy, strategy)
+    assert.equal(notices.length, queued.length - 1)
+    for (const failed of delegations.filter(item => item.id !== 'queued-stable')) {
+      assert.equal(failed.state, 'failed')
+      assert.equal(failed.childStatus, 'rejected')
+      assert.equal(failed.reportStatus, 'received')
+      assert.equal(failed.reportPending, false)
+      assert.equal(failed.reportReceipt.kind, 'startup-failure')
+      assert.equal(failed.workCompleted, false)
+      assert.equal(failed.workspaceWaitReasonCode, null)
+      assert.equal(notices.filter(item => item.instruction.includes(`위임 ID: ${failed.id}\n`)).length, 1)
+    }
     if (strategy === 'resume') {
+      const runtimeFailed = delegations.find(item => item.id === 'queued-runtime-failed')
+      assert.equal(runtimeFailed.failureReasonCode, 'AI_DELEGATION_POLICY_RUNTIME_UNSUPPORTED', JSON.stringify(runtimeFailed))
+      assert.equal(aion.effort.has('target-runtime-failed'), false)
       assert.equal(aion.effort.get('target-stable'), 'xhigh')
       assert.equal(stable.runtimePolicyVerification.thoughtLevelId, 'xhigh')
     }

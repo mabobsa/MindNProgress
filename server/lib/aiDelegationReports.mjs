@@ -1,11 +1,12 @@
 import { aiDelegationReportResult, aiDelegationSucceeded } from './aiDelegations.mjs'
+import { isAiDelegationStartupFailure } from './aiDelegationStartupFailure.mjs'
 
 const reportStates = new Set(['waiting-parent', 'waking-parent', 'parent-wake-failed'])
 const sha256 = /^[a-f0-9]{64}$/
 
 function receivedPatch(receipt, delegation) {
   return {
-    state: 'completed', reportReceipt: receipt, reportWaitReason: null,
+    state: isAiDelegationStartupFailure(delegation) ? 'failed' : 'completed', reportReceipt: receipt, reportWaitReason: null,
     reportApprovalRequired: false, parentError: null, completedAt: receipt.at,
     ...(delegation?.parentWakeRetry ? { parentWakeRetry: { ...delegation.parentWakeRetry, status: 'received', nextAttemptAt: null } } : {}),
   }
@@ -15,7 +16,8 @@ function receivedPatch(receipt, delegation) {
 // 상위 턴의 성공/실패는 별도 대화 상태다. 결과 전달 뒤 장시간 실행하거나
 // 사용자가 중지해도 이미 전달된 하위 결과를 미보고/실패로 되돌리지 않는다.
 export function aiDelegationDeliveredReportPatch(delegation, dispatch, at = new Date().toISOString()) {
-  if (!reportStates.has(delegation?.state) || !aiDelegationSucceeded(delegation) || delegation.pendingRecovery) return null
+  if (!reportStates.has(delegation?.state)
+    || (!aiDelegationSucceeded(delegation) && !isAiDelegationStartupFailure(delegation)) || delegation.pendingRecovery) return null
   if (!delegation.wakeOperationId || !sha256.test(delegation.reportPayloadHash ?? '')) return null
   if (dispatch?.conversationId !== delegation.parentConversationId
     || (dispatch.operationId && dispatch.operationId !== delegation.wakeOperationId)) return null
@@ -32,6 +34,7 @@ export function aiDelegationDeliveredReportPatch(delegation, dispatch, at = new 
       parentTurnId: turnId, operationId: delegation.wakeOperationId,
       payloadHash: delegation.reportPayloadHash, resultHash: delegation.reportResultHash ?? null,
       childTurnId: delegation.childTurnId ?? null,
+      ...(isAiDelegationStartupFailure(delegation) ? { kind: 'startup-failure' } : {}),
     }, delegation),
     parentTurnId: turnId, parentDispatchState: dispatch.state,
   }
@@ -65,6 +68,7 @@ export function acknowledgeAiDelegationReport(delegation, { conversationId, resu
 }
 
 export function aiDelegationReportStatus(delegation) {
+  if (isAiDelegationStartupFailure(delegation) && delegation.reportReceipt?.kind === 'startup-failure') return 'received'
   if (delegation?.state === 'completed') return 'received'
   if (delegation?.state === 'parent-wake-failed') return 'failed'
   if (delegation?.state === 'waiting-parent') return 'waiting'

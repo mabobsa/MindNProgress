@@ -56,6 +56,8 @@
 - 즉시 실행과 작업공간 대기열 모두 실제 실행 확인 후 담당을 저장한다. 대기 중 담당·후보 모델이 바뀌면 전달을 중단한다. 전송 중 사람이 담당을 바꾸면 그 선택을 보존하고 연결 경고를 남긴다.
 - 선택 결과는 `aiPolicy.primaryResolution`과 내구 기록 `delegation.primarySelection`으로 확인한다. 새 대화로 전환한 경우 기존 `aiPolicy.resumeConversion`도 유지한다. 같은 멱등 키의 재시도는 기존 실행을 반환한다.
 - 재사용 대화도 실행 직전에 접수 당시 규칙의 사고 강도를 적용한다. AionCore `runtime/ensure`로 실제 옵션을 확인하고 `config-options`로 변경한 뒤 `runtime-config`의 실제 모델·사고 강도를 대조한다. 확인 실패 시 작업 지시는 보내지 않는다. `runtimePolicyVerification`에 이전 값·확인값·시각을 남기며 카드 대화 목록의 사고 강도도 갱신한다. 명시적 규칙 예외와 중단된 기존 위임의 복구에는 새 규칙을 강제하지 않는다.
+- `runtime/ensure` 직후에는 사고 레벨 목록이 아직 도착하지 않을 수 있다. 목록이 비었거나 모델이 저장된 스냅샷으로만 보이면 0.5초 간격으로 확인하며, 최초 조회부터 준비·변경·실제 값 확인 전체를 최대 30초로 제한한다. 요청마다 시간을 초기화하지 않는다. 준비 시간 초과는 `AI_DELEGATION_POLICY_RUNTIME_READINESS_TIMEOUT`, 준비된 목록에 요청값이 없는 경우는 `AI_DELEGATION_POLICY_RUNTIME_UNSUPPORTED`로 구분한다. 실패한 하위 작업을 자동 재실행하지 않는다.
+- 작업공간 대기 접수 후 시작이 거부되면 `reportKind=startup-failure`와 원인 코드를 저장하고 기존 상위 보고 경로로 알린다. 상위가 실행 중이면 유휴 상태를 기다리며, 응답 유실 시 같은 알림 요청의 전달 상태만 확인한다. 전달 확인 후 원 위임은 `failed`, `childStatus=rejected`로 유지하고 `reportStatus=received`로 알림 수신만 구분한다. 수정 이전의 실패 기록을 일괄 재전송하거나 재위임하지 않는다.
 - 중단된 같은 위임의 재개(`waiting-child-resume`)와 `aiPolicyOverride`가 있는 요청은 바꾸지 않는다.
 - 후보 조회 실패는 후보 없음으로 취급하지 않으며 새 대화를 만들지 않는다.
 - 원래 요청한 방식·대화는 `primarySelection.requestedStrategy`·`requestedConversationId`로 남긴다. 이어가기에서 새 대화로 바뀐 경우에는 기존 `aiPolicyResumeConversion`도 남긴다.

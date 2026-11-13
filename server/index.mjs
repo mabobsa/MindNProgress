@@ -91,6 +91,7 @@ import {
   resolveAiDelegationPolicyRule,
 } from './lib/aiDelegationPolicy.mjs'
 import { delegationResumeRuntimePolicy, ensureDelegationRuntimePolicy } from './lib/aiDelegationRuntimePolicy.mjs'
+import { aiDelegationStartupFailureInstruction, isAiDelegationStartupFailure, queuedDelegationFailureReportPatch } from './lib/aiDelegationStartupFailure.mjs'
 import { createRootHandoffPlan, buildRootHandoffRequest, rootHandoffDocumentMatches, upgradeRootHandoffHash } from './lib/rootConversationHandoff.mjs'
 import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
@@ -3123,7 +3124,7 @@ async function runGroupDocumentInstructionDispatch(instruction, user) {
     let runtimePolicyVerification
     try {
       runtimePolicyVerification = await ensureDelegationRuntimePolicy({ conversationId: instruction.requestedConversationId,
-        policy: instruction.resumeRuntimePolicy, fetchOn: fetchAionUiOn, machineId: instruction.targetHomeMachineId })
+        policy: instruction.resumeRuntimePolicy, fetchOn: fetchAionUiOn, machineId: instruction.targetHomeMachineId, signal: runtimeLifecycle.signal })
       if (runtimePolicyVerification) selection.thoughtLevel = { id: runtimePolicyVerification.thoughtLevelId, label: runtimePolicyVerification.thoughtLevelId }
     } catch (error) {
       throwIfRuntimeStopping(error, runtimeLifecycle.signal)
@@ -3412,7 +3413,7 @@ function delegationPublicView(delegation, includeResult = false, { includeFullRe
   publicDelegation.workCompleted = aiDelegationSucceeded(delegation)
   publicDelegation.reportStatus = aiDelegationReportStatus(delegation)
   publicDelegation.reportPending = !aiDelegationIsTerminal(delegation)
-    && aiDelegationSucceeded(delegation) && publicDelegation.reportStatus !== 'received'
+    && (aiDelegationSucceeded(delegation) || isAiDelegationStartupFailure(delegation)) && publicDelegation.reportStatus !== 'received'
   const result = aiDelegationReportResult(delegation)
   publicDelegation.resultAvailability = result.availability
   if (result.availability === 'captured') {
@@ -3747,7 +3748,7 @@ async function dispatchPreparedAiDelegation({
   try {
     runtimePolicyVerification = await ensureDelegationRuntimePolicy({ conversationId: requestedConversationId,
       policy: strategy === 'resume' && !resumedDelegation ? queuedDelegation?.resumeRuntimePolicy : null,
-      fetchOn: fetchAionUiOn, machineId: targetHomeMachineId })
+      fetchOn: fetchAionUiOn, machineId: targetHomeMachineId, signal: runtimeLifecycle.signal })
     if (runtimePolicyVerification) selection.thoughtLevel = { id: runtimePolicyVerification.thoughtLevelId, label: runtimePolicyVerification.thoughtLevelId }
   } catch (error) {
     if (workspaceLease && !resumedDelegation) await workspacePoolManager.cancel(workspaceLease.leaseId, error.message)
@@ -4328,6 +4329,7 @@ function aiDelegationResultSection(reportResult) {
 }
 
 async function parentWakeInstruction(delegation, reportResult = aiDelegationReportResult(delegation)) {
+  if (isAiDelegationStartupFailure(delegation)) return aiDelegationStartupFailureInstruction(delegation)
   const parentMapId = delegation.parentMapId ?? delegation.mapId
   const parentProject = delegation.groupId ? null : await groupProjects.forDocument(parentMapId)
   const groupCoordinator = Boolean(delegation.groupId) || (parentProject?.role === 'coordinator'
@@ -5319,6 +5321,8 @@ function scheduleAiDelegationWaitPoll(delegation, now = Date.now()) {
 }
 
 async function drainWaitingWorkspaceDelegations() {
+  // 접수 이후 거부된 작업은 상위 보고를 거쳐 실패로 종결한다. 하위 실행은 재시도하지 않는다.
+  const updateQueuedAiDelegation = (id, updates) => updateAiDelegation(id, queuedDelegationFailureReportPatch(updates))
   const waiting = [...aiDelegations.values()]
     .filter((delegation) => ['waiting-workspace', 'waiting-integration-clean'].includes(delegation.state))
     .sort((first, second) => String(first.createdAt).localeCompare(String(second.createdAt)))
@@ -5339,7 +5343,7 @@ async function drainWaitingWorkspaceDelegations() {
     if (runtimeLifecycle.signal.aborted) return
     if (!aiDelegationWaitPollDue(aiDelegationWaitPolls.get(queued.id), queued)) continue
     if (integrationDirtyThisTick) {
-      const blocked = await updateAiDelegation(queued.id, {
+      const blocked = await updateQueuedAiDelegation(queued.id, {
         state: 'waiting-integration-clean',
         childStatus: null,
         childError: null,
@@ -5364,7 +5368,7 @@ async function drainWaitingWorkspaceDelegations() {
     if (!map || map.trashedAt || !parentCard || !targetCard || !user
       || !isHierarchyDescendant(map, parentCard.id, targetCard.id)
       || !isAiConversationLinked(parentCard.data, queued.parentConversationId)) {
-      await updateAiDelegation(queued.id, {
+      await updateQueuedAiDelegation(queued.id, {
         state: 'failed',
         childStatus: 'rejected',
         childError: '대기 중 상위 카드, 대상 카드, 편집자 또는 카드 계층이 변경되어 위임을 시작하지 않았습니다.',
@@ -5377,7 +5381,7 @@ async function drainWaitingWorkspaceDelegations() {
     try {
       assertAiDelegationPrimaryUnchanged(targetCard.data, queued.primarySelection)
     } catch (error) {
-      await updateAiDelegation(queued.id, { state: 'failed', childStatus: 'rejected', resource: null,
+      await updateQueuedAiDelegation(queued.id, { state: 'failed', childStatus: 'rejected', resource: null,
         failureReasonCode: error.reasonCode, childError: error.message })
       clearAiDelegationWaitPoll(queued.id)
       continue
@@ -5387,7 +5391,7 @@ async function drainWaitingWorkspaceDelegations() {
       : null
     if (queued.strategy === 'resume') {
       if (!isAiConversationLinked(targetCard.data, queued.targetConversationId)) {
-        await updateAiDelegation(queued.id, {
+        await updateQueuedAiDelegation(queued.id, {
           state: 'failed',
           childStatus: 'rejected',
           childError: '대기 중 대상 카드와 이어갈 AI 대화의 연결이 사라졌습니다.',
@@ -5404,7 +5408,7 @@ async function drainWaitingWorkspaceDelegations() {
         : null
       if (activeRuntime && activeRuntime.state !== 'idle') {
         const workspaceWaitMessage = `대상 대화가 ${activeRuntime.state} 상태이므로 유휴 상태를 기다리고 있습니다.`
-        const blocked = await updateAiDelegation(queued.id, {
+        const blocked = await updateQueuedAiDelegation(queued.id, {
           workspaceWaitError: workspaceWaitMessage,
           workspaceWaitReasonCode: 'AI_DELEGATION_CONVERSATION_BUSY',
           workspaceWaitMessage,
@@ -5413,7 +5417,7 @@ async function drainWaitingWorkspaceDelegations() {
         continue
       }
       if (resumedDelegation && resumedDelegation.state !== 'waiting-child-resume') {
-        await updateAiDelegation(queued.id, {
+        await updateQueuedAiDelegation(queued.id, {
           state: 'failed',
           childStatus: 'rejected',
           childError: '이어받을 이전 위임이 더 이상 재개 대기 상태가 아닙니다.',
@@ -5428,7 +5432,7 @@ async function drainWaitingWorkspaceDelegations() {
 
     if (!await aionCoreSupportsWorkspaceLease(queued.targetHomeMachineId)) {
       const workspaceWaitMessage = '현재 AionCore가 작업공간 lease를 지원하지 않아 재기동을 기다리고 있습니다.'
-      const blocked = await updateAiDelegation(queued.id, {
+      const blocked = await updateQueuedAiDelegation(queued.id, {
         workspaceWaitError: workspaceWaitMessage,
         workspaceWaitReasonCode: 'AIONCORE_WORKSPACE_LEASE_UNAVAILABLE',
         workspaceWaitMessage,
@@ -5438,7 +5442,7 @@ async function drainWaitingWorkspaceDelegations() {
     }
     if (!await aionCoreSupportsExplicitCompletionAfterInterruption(delegationTargetMachineId(queued))) {
       const workspaceWaitMessage = '현재 AionCore가 중단 후 명시적 완료 신호를 지원하지 않아 재기동을 기다리고 있습니다.'
-      const blocked = await updateAiDelegation(queued.id, {
+      const blocked = await updateQueuedAiDelegation(queued.id, {
         workspaceWaitError: workspaceWaitMessage,
         workspaceWaitReasonCode: 'AIONCORE_EXPLICIT_COMPLETION_UNAVAILABLE',
         workspaceWaitMessage,
@@ -5454,7 +5458,7 @@ async function drainWaitingWorkspaceDelegations() {
         const currentModelId = conversation?.extra?.current_model_id || aiConversationLinkFromAionUiConversation(conversation)?.model?.id
           || linked?.model?.id
         if (queued.primarySelection && aiDelegationResumeModelMatches(queued.primarySelection, currentModelId) !== true) {
-          await updateAiDelegation(queued.id, { state: 'failed', childStatus: 'rejected', resource: null,
+          await updateQueuedAiDelegation(queued.id, { state: 'failed', childStatus: 'rejected', resource: null,
             failureReasonCode: 'AI_DELEGATION_PRIMARY_MODEL_CHANGED', childError: '대기 중 담당 후보 모델이 변경되었습니다. 최신 후보와 규칙으로 다시 요청해 주세요.' })
           clearAiDelegationWaitPoll(queued.id)
           continue
@@ -5462,7 +5466,7 @@ async function drainWaitingWorkspaceDelegations() {
         const runtime = normalizeAiConversationRuntime(queued.targetConversationId, conversation)
         if (runtime.state !== 'idle') {
           const workspaceWaitMessage = `대상 대화가 ${runtime.state} 상태이므로 유휴 상태를 기다리고 있습니다.`
-          const blocked = await updateAiDelegation(queued.id, {
+          const blocked = await updateQueuedAiDelegation(queued.id, {
             workspaceWaitError: workspaceWaitMessage,
             workspaceWaitReasonCode: 'AI_DELEGATION_CONVERSATION_BUSY',
             workspaceWaitMessage,
@@ -5481,7 +5485,7 @@ async function drainWaitingWorkspaceDelegations() {
           // 요청 때 인정한 포화 예외는 같은 평가(assessmentId)에서만 다시 인정한다.
           const contextDecision = resolveAiConversationContextOverride(contextHealth, queued.contextOverride ?? null)
           if (contextHealth.assessmentId !== queued.conversationAssessmentId || !contextDecision.allowed) {
-            await updateAiDelegation(queued.id, {
+            await updateQueuedAiDelegation(queued.id, {
               state: 'failed',
               childStatus: 'rejected',
               childError: contextHealth.assessmentId !== queued.conversationAssessmentId
@@ -5497,7 +5501,7 @@ async function drainWaitingWorkspaceDelegations() {
       } catch (error) {
         throwIfRuntimeStopping(error, runtimeLifecycle.signal)
         const workspaceWaitMessage = `대상 AionUi 대화 상태를 확인하지 못했습니다: ${error?.message ?? String(error)}`
-        const blocked = await updateAiDelegation(queued.id, {
+        const blocked = await updateQueuedAiDelegation(queued.id, {
           workspaceWaitError: workspaceWaitMessage,
           workspaceWaitReasonCode: 'AI_DELEGATION_CONVERSATION_RUNTIME_UNAVAILABLE',
           workspaceWaitMessage,
@@ -5509,7 +5513,7 @@ async function drainWaitingWorkspaceDelegations() {
 
     const selection = structuredClone(queued.pendingSelection)
     if (queued.strategy === 'new' && isAiDelegationModelBlocked(selection?.model?.id)) {
-      await updateAiDelegation(queued.id, {
+      await updateQueuedAiDelegation(queued.id, {
         state: 'failed', childStatus: 'rejected', resource: null,
         workspaceWaitReasonCode: 'AI_DELEGATION_MODEL_BLOCKED',
         childError: '공통 모델 정책에서 선택한 모델이 제한되어 대기 중인 위임을 전달하지 않았습니다. 허용 모델로 다시 요청하세요.',
@@ -5538,7 +5542,7 @@ async function drainWaitingWorkspaceDelegations() {
       if (error instanceof WorkspacePoolUnavailableError && error.reasonCode === 'CAPACITY_EXHAUSTED') {
         const capacityMessage = '실제 배정 시도 결과 사용 가능한 worker가 없습니다. FIFO 대기열에 보존되었으므로 같은 작업을 다시 위임하지 마세요.'
         const blocked = queued.state === 'waiting-integration-clean'
-          ? await updateAiDelegation(queued.id, {
+          ? await updateQueuedAiDelegation(queued.id, {
               state: 'waiting-workspace',
               workspaceWaitError: '사용 가능한 AI 작업공간을 기다리고 있습니다.',
               workspaceWaitReasonCode: 'CAPACITY_EXHAUSTED',
@@ -5546,7 +5550,7 @@ async function drainWaitingWorkspaceDelegations() {
               integrationCleanResolvedAt: new Date().toISOString(),
               resource: { kind: 'workspace_pool', key: workspacePoolManager.publicSnapshot().poolId },
             })
-          : await updateAiDelegation(queued.id, {
+          : await updateQueuedAiDelegation(queued.id, {
               workspaceWaitError: '사용 가능한 AI 작업공간을 기다리고 있습니다.',
               workspaceWaitReasonCode: 'CAPACITY_EXHAUSTED',
               workspaceWaitMessage: capacityMessage,
@@ -5556,7 +5560,7 @@ async function drainWaitingWorkspaceDelegations() {
       }
       if (error instanceof WorkspacePoolUnavailableError
         && error.reasonCode === integrationStatusRetryReasonCode) {
-        const blocked = await updateAiDelegation(queued.id, {
+        const blocked = await updateQueuedAiDelegation(queued.id, {
           workspaceWaitError: error.message,
           workspaceWaitReasonCode: error.reasonCode,
           workspaceWaitMessage: error.message,
@@ -5570,7 +5574,7 @@ async function drainWaitingWorkspaceDelegations() {
           ? error.details.map((item) => String(item ?? '').trim()).filter(Boolean)
           : []
         integrationDirtyThisTick = { message: error.message, trackedChanges }
-        const blocked = await updateAiDelegation(queued.id, {
+        const blocked = await updateQueuedAiDelegation(queued.id, {
           state: 'waiting-integration-clean',
           childStatus: null,
           childError: null,
@@ -5588,7 +5592,7 @@ async function drainWaitingWorkspaceDelegations() {
         scheduleAiDelegationWaitPoll(blocked)
         continue
       }
-      await updateAiDelegation(queued.id, {
+      await updateQueuedAiDelegation(queued.id, {
         state: error.workspaceLease?.ownership ? 'recovery-required' : 'failed',
         childStatus: error.workspaceLease?.ownership ? 'interrupted' : 'rejected',
         ...(error.workspaceLease?.ownership ? { workspaceLease: error.workspaceLease, recoveryRequiredAt: new Date().toISOString() } : {}),
@@ -5601,7 +5605,7 @@ async function drainWaitingWorkspaceDelegations() {
       continue
     }
     if (!workspaceLease) {
-      await updateAiDelegation(queued.id, {
+      await updateQueuedAiDelegation(queued.id, {
         state: 'failed',
         childStatus: 'rejected',
         childError: '등록된 AI 작업공간 풀의 lease를 확보하지 못했습니다.',
@@ -5611,7 +5615,7 @@ async function drainWaitingWorkspaceDelegations() {
       continue
     }
     selection.workspace = workspaceLease.projectRoot
-    const starting = await updateAiDelegation(queued.id, {
+    const starting = await updateQueuedAiDelegation(queued.id, {
       state: 'starting',
       workspaceLease,
       resource: null,
@@ -5649,10 +5653,11 @@ async function drainWaitingWorkspaceDelegations() {
     } catch (error) {
       throwIfRuntimeStopping(error, runtimeLifecycle.signal)
       const needsRecovery = ['AI_WORKSPACE_LEASE_MISMATCH', 'AI_WORKSPACE_CONVERSATION_CONFLICT'].includes(error?.code)
-      await updateAiDelegation(queued.id, {
+      await updateQueuedAiDelegation(queued.id, {
         state: needsRecovery ? 'recovery-required' : 'failed',
         childStatus: needsRecovery ? 'interrupted' : 'rejected',
         childError: error?.message ?? String(error),
+        failureReasonCode: error?.reasonCode ?? error?.code ?? 'AI_DELEGATION_START_REJECTED',
         ...(needsRecovery ? { recoveryRequiredAt: new Date().toISOString(), recoveryDetails: error?.details ?? null } : {}),
         resource: null,
       })
@@ -12836,7 +12841,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       let runtimePolicyVerification
       try {
         runtimePolicyVerification = await ensureDelegationRuntimePolicy({ conversationId: targetConversationId,
-          policy: resumedDelegation ? null : resumeRuntimePolicy, fetchOn: fetchAionUiOn, machineId: targetHomeMachineId })
+          policy: resumedDelegation ? null : resumeRuntimePolicy, fetchOn: fetchAionUiOn, machineId: targetHomeMachineId, signal: runtimeLifecycle.signal })
         if (runtimePolicyVerification) selection.thoughtLevel = { id: runtimePolicyVerification.thoughtLevelId, label: runtimePolicyVerification.thoughtLevelId }
       } catch (error) {
         if (workspaceLease && !resumedDelegation) await workspacePoolManager.cancel(workspaceLease.leaseId, error.message)

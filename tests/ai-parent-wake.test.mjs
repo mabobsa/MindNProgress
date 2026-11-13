@@ -5,6 +5,8 @@ import { createAiParentWakeProcessor, parentWakeFailureDiagnostic, recoverableLe
 import { acknowledgeAiDelegationReport, aiDelegationStoredReportDeliveryPatch } from '../server/lib/aiDelegationReports.mjs'
 import { RuntimeStoppingError } from '../server/lib/runtimeStopping.mjs'
 import { groupDelegationReportHint } from '../src/utils/groupOverview.mjs'
+import { aiDelegationStartupFailureInstruction, queuedDelegationFailureReportPatch } from '../server/lib/aiDelegationStartupFailure.mjs'
+import { aiDelegationReportStatus } from '../server/lib/aiDelegationReports.mjs'
 
 const hash = value => createHash('sha256').update(value).digest('hex')
 const networkError = () => new TypeError('fetch failed', { cause: Object.assign(new Error('private socket detail'), { code: 'ECONNRESET' }) })
@@ -53,6 +55,41 @@ function harness(initial = fixture()) {
     advance: (ms = 61_000) => { time += ms }, replace: d => { stored = d },
     process: () => createAiParentWakeProcessor(options)(stored) }
 }
+
+for (const lostResponse of [false, true]) test(`접수 후 시작 실패를 상위에 한 번 전달하고 실패 상태를 유지한다(응답 유실=${lostResponse})`, async () => {
+  const initial = { id: 'rejected', mapId: 'map', parentConversationId: 'parent', targetConversationId: 'child',
+    ...queuedDelegationFailureReportPatch({ state: 'failed', childStatus: 'rejected',
+      childError: '사고 레벨 목록 준비 시간 초과', failureReasonCode: 'AI_DELEGATION_POLICY_RUNTIME_READINESS_TIMEOUT' }) }
+  const h = harness(initial)
+  h.options.instruction = aiDelegationStartupFailureInstruction
+  h.controls.busy = true
+  await h.process()
+  assert.equal(h.stored.reportWaitReason, 'parent-busy')
+  assert.equal(h.requests.length, 0)
+  h.controls.busy = false; h.controls.lostResponse = lostResponse
+  await h.process()
+  assert.match(h.requests[0].body.instruction, /위임 시작 실패 알림/)
+  assert.match(h.requests[0].body.instruction, /AI_DELEGATION_POLICY_RUNTIME_READINESS_TIMEOUT/)
+  if (lostResponse) {
+    assert.equal(h.stored.state, 'waking-parent')
+    h.advance(); await h.process()
+  }
+  assert.equal(h.stored.state, 'failed')
+  assert.equal(h.stored.childStatus, 'rejected')
+  assert.equal(h.stored.reportReceipt.kind, 'startup-failure')
+  assert.equal(aiDelegationReportStatus(h.stored), 'received')
+  await h.process()
+  assert.equal(h.requests.filter(r => r.method === 'POST').length, 1)
+  assert.equal(h.requests[0].body.targetConversationId, 'parent')
+  assert.equal(h.requests[0].body.workspaceLease, undefined)
+})
+
+test('기존 실패 기록을 자동 재전송하지 않고 lease 복구 필요 상태를 보존한다', async () => {
+  const h = harness({ id: 'old-failure', parentConversationId: 'parent', state: 'failed', childStatus: 'rejected' })
+  await h.process(); assert.equal(h.requests.length, 0)
+  const recovery = { state: 'recovery-required', childStatus: 'interrupted' }
+  assert.deepEqual(queuedDelegationFailureReportPatch(recovery), recovery)
+})
 
 test('busy→idle은 관측 시각·턴을 남기고 원 결과로 상위를 한 번만 재개한다', async () => {
   const h = harness(); h.controls.busy = true

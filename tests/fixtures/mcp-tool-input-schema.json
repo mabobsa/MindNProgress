@@ -918,8 +918,8 @@
         },
         "idempotencyKey": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$",
-          "description": "같은 위임의 중복 실행을 막는 안정적인 키. 영문·숫자로 시작하고 영문·숫자·밑줄·하이픈·콜론을 사용해 sourceRevision과 targetCardId를 포함하는 형식을 권장"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+          "description": "같은 위임의 중복 실행을 막는 안정적인 키. 영문·숫자로 시작하고 영문·숫자·밑줄·하이픈만 사용해 sourceRevision과 targetCardId를 포함하는 형식을 권장(예: v623-card-1-proto). 콜론은 서브 머신 Runner가 거부함"
         },
         "retryOfRequestId": {
           "type": "string",
@@ -3245,8 +3245,8 @@
         },
         "idempotencyKey": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_:-]{0,95}$",
-          "description": "같은 지시의 중복 전달을 막는 안정적인 키. sourceRevision과 targetMapId를 포함하는 형식을 권장"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$",
+          "description": "같은 지시의 중복 전달을 막는 안정적인 키. 영문·숫자로 시작하고 영문·숫자·밑줄·하이픈만 사용해 sourceRevision과 targetMapId를 포함하는 형식을 권장. 콜론은 서브 머신 Runner가 거부함"
         },
         "workType": {
           "type": "string",
@@ -3370,7 +3370,7 @@
   },
   {
     "name": "mindnprogress_set_document_archive",
-    "description": "사용자가 승인한 문서만 보관하거나 복원합니다. 원본 버전과 현재 lifecycleVersion을 전달하세요. AI 작업이 미종료이거나 상태를 확인할 수 없으면 보관하지 않습니다. 그룹 총괄 문서는 기준점으로 유지합니다. 응답 유실은 unknown이며 같은 requestId로 재전송하거나 확인합니다.",
+    "description": "사용자가 승인한 문서만 보관하거나 복원합니다. 원본 버전과 현재 lifecycleVersion을 전달하세요. AI 작업이 미종료이거나 상태를 확인할 수 없으면 보관하지 않습니다. 그룹 총괄 문서는 다른 활성 문서와 진행 중인 위임·복구·문서 지시가 없을 때만 개별 보관할 수 있으며 그룹 기획·승인 기록은 보존됩니다. 응답 유실은 unknown이며 같은 requestId로 재전송하거나 확인합니다.",
     "inputSchema": {
       "type": "object",
       "properties": {

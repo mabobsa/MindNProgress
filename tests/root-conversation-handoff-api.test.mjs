@@ -180,7 +180,7 @@ for (const nextBackend of ['codex', 'claude']) test(`루트 CLI 인계 ${nextBac
     () => `인계 완료 뒤 보관된 업무가 전달되지 않았습니다. ${JSON.stringify(lastInstruction)}`)
   assert.equal(sends.filter(s => s.operationId.startsWith('rhp:')).length, 1)
   assert.equal(sends.filter(s => s.create).length, 1)
-  const work = sends.filter(s => s.operationId === `gdi:${request.idempotencyKey}`)
+  const work = sends.filter(s => s.operationId === `gdi-${request.idempotencyKey}`)
   assert.equal(work.length, 1); assert.equal(work[0].targetConversationId, 'successor')
   assert.ok(work[0].instruction.includes(request.instruction))
   assert.ok((await currentMap()).nodes[0].data.aiConversations.some(link => link.conversationId === 'previous'))

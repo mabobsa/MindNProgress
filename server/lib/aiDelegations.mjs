@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { aiConversationTitle } from '../../src/utils/aiConversationLaunch.mjs'
 import { integrationRecoveryPending } from './aiIntegrationRecovery.mjs'
 import { aiDelegationResultCaptureMetadata } from './aiDelegationResultCapture.mjs'
+import { aiDelegationRunnerRejectedClosable, RUNNER_REJECTED_CLOSURE_REASON } from './runnerSafeIds.mjs'
 
 export const AI_DELEGATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$/
 export const AI_DELEGATION_WAIT_POLL_DELAYS_MS = Object.freeze([3_000, 5_000, 10_000, 30_000])
@@ -782,6 +783,8 @@ export function aiDelegationClosureAvailability(delegation) {
   }
   if (!delegation || aiDelegationIsTerminal(delegation) || delegation.pendingRecovery || integrationRecoveryPending(delegation)) return null
   if (delegation.groupId) return { closeAvailable: false, reason: 'group-managed' }
+  // 종료 직전에 대상 대화가 쉬는 상태인지 다시 확인한다(ensureAiDelegationTerminalResolutionIdle).
+  if (aiDelegationRunnerRejectedClosable(delegation)) return { closeAvailable: true, reason: RUNNER_REJECTED_CLOSURE_REASON }
   if (delegation.state === 'parent-wake-failed' && aiDelegationSucceeded(delegation)) {
     return { closeAvailable: true, reason: 'completed-child-report-abandonment' }
   }

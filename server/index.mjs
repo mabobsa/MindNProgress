@@ -97,6 +97,10 @@ import { summarizeAiConversationMessages } from './lib/aiConversationMessageStat
 import { AiDelegationStatusLookupError, readAiDelegationDispatchStatus } from './lib/aiDelegationStatusLookup.mjs'
 import { reconcileLostIntegrationWaits } from './lib/aiIntegrationWaitRecovery.mjs'
 import { workspaceCheckpointInstruction, rejectedOversizedCheckpointRecoveryPatch } from './lib/aiWorkspaceCheckpointInstruction.mjs'
+import {
+  aiDelegationReadsChildOperation, aiDelegationRunnerRejectionPatch, isNewAiDelegationIdAllowed,
+  isNewGroupDocumentInstructionIdAllowed, isRunnerOperationRejected, RUNNER_SAFE_ID_RULE,
+} from './lib/runnerSafeIds.mjs'
 import { aiDelegationReportArchived, aiDelegationReportArchivePending, createAiDelegationReportArchiver } from './lib/aiDelegationReportArchive.mjs'
 import { AI_DELEGATION_RESULT_HASH_BASIS, aiDelegationFullResult, buildAiDelegationResultCapture } from './lib/aiDelegationResultCapture.mjs'
 import { createAiParentWakeProcessor, recoverableLegacyParentWake } from './lib/aiParentWake.mjs'
@@ -4682,6 +4686,9 @@ async function ensureAiDelegationTerminalResolutionIdle(delegation, { completedI
   } catch (error) {
     throwIfRuntimeStopping(error, runtimeLifecycle.signal)
     if (error?.status === 404) return
+    if (isRunnerOperationRejected(error) && !completedIntegration && delegation.state !== 'parent-wake-failed') {
+      return ensureRunnerRejectedTargetConversationIdle(delegation, machineId)
+    }
     throw Object.assign(new Error('실행 상태를 확인할 수 없어 위임을 종료하지 않았습니다. 연결을 확인한 뒤 다시 시도하세요.'), { status: 409, groupProjectError: true })
   }
   if (['starting', 'running', 'waiting_resource', 'waiting_resume'].includes(dispatch?.state)) {
@@ -4696,6 +4703,24 @@ async function ensureAiDelegationTerminalResolutionIdle(delegation, { completedI
   if (completedIntegration) throw Object.assign(new Error('기존 통합 대상 실행의 완료 상태를 확인할 수 없어 반환하지 않았습니다.'), { status: 409, groupProjectError: true })
   if (dispatch?.state === 'completed') {
     throw Object.assign(new Error('저장된 기록보다 실행 상태가 앞서 있습니다. 상태 다시 확인 후 처리하세요.'), { status: 409, groupProjectError: true })
+  }
+}
+
+// Runner가 실행 ID 조회를 거부하면 같은 머신에서 허용되는 대화 상태 조회로 대신 확인한다.
+// 대상 대화가 쉬는 상태(idle)로 확인될 때만 종료를 진행한다. 삭제된 대화는 실행될 수 없으므로 통과한다.
+async function ensureRunnerRejectedTargetConversationIdle(delegation, machineId) {
+  let runtime
+  try {
+    const conversation = await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(delegation.targetConversationId)}`,
+      { timeoutMs: 2_500, strictJson: true, singleTarget: true })
+    runtime = normalizeAiConversationRuntime(delegation.targetConversationId, conversation)
+  } catch (error) {
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    if (error?.status === 404) return
+    throw Object.assign(new Error('서브 머신 Runner가 실행 ID 조회를 거부했고 대상 AI 대화 상태도 확인하지 못해 위임을 종료하지 않았습니다. 연결을 확인한 뒤 다시 시도하세요.'), { status: 409, groupProjectError: true })
+  }
+  if (runtime.state !== 'idle') {
+    throw Object.assign(new Error('대상 AI 대화가 아직 실행 중이거나 상태를 확인할 수 없어 위임을 종료하지 않았습니다. 대화가 끝난 뒤 다시 시도하세요.'), { status: 409, groupProjectError: true })
   }
 }
 
@@ -5817,6 +5842,7 @@ async function pollAiDelegations() {
               ...(status.state === 'waiting_resume' && !delegation.childInterruptedAt
                 ? { childInterruptedAt: new Date().toISOString() }
                 : {}),
+              ...(delegation.runnerRejection ? { runnerRejection: null } : {}),
             })
             continue
           }
@@ -5876,6 +5902,11 @@ async function pollAiDelegations() {
           })
         } catch (error) {
           throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+          // Runner 거부는 재시도해도 풀리지 않으므로 위임에 남겨 목록·사용자 종료 판단에 쓴다.
+          const runnerRejection = aiDelegationRunnerRejectionPatch(delegation, error, {
+            operationId: delegation.childOperationId ?? delegation.id, machineId: delegationTargetMachineId(delegation),
+          })
+          if (runnerRejection) await updateAiDelegation(delegation.id, runnerRejection)
           if (error?.status !== 404) continue
           if (delegation.coordinationOnly && delegation.state === 'waiting-document-work') {
             // 이 상태는 같은 child operation의 completed 응답을 이미 관측한 내구 증거다.
@@ -9485,7 +9516,26 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
             const archived = await archiveAiDelegationReport(acknowledged)
             return sendJson(response, 200, { delegation: delegationPublicView(archived), executionRequested: false, resultAcknowledged: true, cardChanged: false })
           }
-          return sendJson(response, 200, { delegation: delegationPublicView(await refreshSuspendedAiDelegation(delegation)), executionRequested: false })
+          let refreshed
+          try {
+            refreshed = await refreshSuspendedAiDelegation(delegation)
+          } catch (error) {
+            if (!isRunnerOperationRejected(error)) throw error
+            const runnerRejection = aiDelegationReadsChildOperation(delegation)
+              ? aiDelegationRunnerRejectionPatch(delegation, error, {
+                operationId: delegation.childOperationId ?? delegation.id, machineId: delegationTargetMachineId(delegation),
+              })
+              : null
+            const current = runnerRejection ? await updateAiDelegation(id, runnerRejection) : aiDelegations.get(id) ?? delegation
+            return sendJson(response, 409, {
+              error: '서브 머신 Runner가 이 위임의 실행 ID 조회를 거부해 실행 상태를 확인할 수 없습니다. 저장된 상태와 결과는 그대로 두었고 AI를 다시 실행하지 않았습니다. 대상 AI 대화가 끝났다면 카드의 AI 위임 영역에서 사용자 종료로 정리하세요.',
+              code: 'AI_DELEGATION_RUNNER_REJECTED',
+              delegation: delegationPublicView(current),
+              executionRequested: false,
+              storedStatePreserved: true,
+            })
+          }
+          return sendJson(response, 200, { delegation: delegationPublicView(refreshed), executionRequested: false })
         }
         if (close) {
           if (body.confirmClosedWithoutCompletion !== true || body.confirmResultReportDiscarded !== true) {
@@ -11775,6 +11825,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           response, 400, 'GROUP_DOCUMENT_INSTRUCTION_REQUEST_INVALID', '그룹 문서 지시 값이 올바르지 않습니다.',
         )
       }
+      if (!isNewGroupDocumentInstructionIdAllowed(id) && !groupDocumentInstructions.has(id)) {
+        return sendGroupDocumentInstructionResponse(response, 400, 'GROUP_DOCUMENT_INSTRUCTION_ID_UNSUPPORTED',
+          `새 그룹 문서 지시 idempotencyKey는 ${RUNNER_SAFE_ID_RULE}해야 합니다. 콜론 등 다른 문자가 있으면 서브 머신 Runner가 실행 상태 조회를 거부합니다.`)
+      }
       if (containsApprovalEvidenceDuplicate({ approvalEvidence, instruction: instructionText })) {
         return sendGroupDocumentInstructionResponse(
           response,
@@ -12201,6 +12255,11 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         return sendAiDelegationResponse(
           response, 400, 'AI_DELEGATION_REQUEST_INVALID', 'AI 작업 위임 값이 올바르지 않습니다.',
         )
+      }
+      // 기존 ID의 재요청은 그대로 받고, 새 ID만 서브 머신 Runner가 허용하는 문자로 제한한다.
+      if (!isNewAiDelegationIdAllowed(id) && !aiDelegations.has(id) && !aiRequestReceipts.has(id)) {
+        return sendAiDelegationResponse(response, 400, 'AI_DELEGATION_ID_UNSUPPORTED',
+          `새 위임 idempotencyKey는 ${RUNNER_SAFE_ID_RULE}해야 합니다. 콜론 등 다른 문자가 있으면 서브 머신 Runner가 실행 상태 조회와 완료 처리를 거부합니다.`)
       }
       let aiPolicyRequest = null
       try {

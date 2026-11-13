@@ -9,8 +9,8 @@ import { MNP_CONTEXT_LIFECYCLE, MNP_MCP_SERVER_INSTRUCTIONS } from '../src/utils
 import { AI_DELEGATION_ID_PATTERN } from '../server/lib/aiDelegations.mjs'
 import { AI_DELEGATION_ANALYSIS_DEPTHS, AI_DELEGATION_WORK_TYPES } from '../server/lib/aiDelegationPolicy.mjs'
 import { compactToolListMessage } from './toolListSurface.mjs'
-import { GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN } from '../server/lib/groupDocumentInstructions.mjs'
 import { CARD_CONVERSATION_START_REQUEST_ID } from '../server/lib/cardConversationStarts.mjs'
+import { NEW_AI_DELEGATION_ID_PATTERN, NEW_GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN } from '../server/lib/runnerSafeIds.mjs'
 import { AI_CONVERSATION_SELECTION_INSTRUCTION, aiConversationSelectionRules } from './aiConversationSelectionPolicy.mjs'
 import {
   AI_CONVERSATION_CONTEXT_OVERRIDE_REASON_CODES,
@@ -1940,7 +1940,7 @@ async function main() {
     ]).optional().describe('완료 보고 대상. 생략하거나 origin이면 이번 지시를 보낸 총괄 대화가 기본 대상입니다. 사용자가 이번 지시에 대해 다른 대화를 정확히 지정한 경우에만 explicit과 conversationId, 요청 근거 evidence를 사용합니다. 과거 대화 이력에서 추정하지 않습니다.'),
     decisionReason: z.string().min(1).max(1000).describe('기존 대화를 이어가거나 새 대화가 필요하다고 판단한 근거'),
     sourceRevision: z.number().int().positive().describe('get_context 또는 get_document에서 확인한 총괄 문서의 최신 version'),
-    idempotencyKey: z.string().regex(GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN).describe('같은 지시의 중복 전달을 막는 안정적인 키. sourceRevision과 targetMapId를 포함하는 형식을 권장'),
+    idempotencyKey: z.string().regex(NEW_GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN).describe('같은 지시의 중복 전달을 막는 안정적인 키. 영문·숫자로 시작하고 영문·숫자·밑줄·하이픈만 사용해 sourceRevision과 targetMapId를 포함하는 형식을 권장. 콜론은 서브 머신 Runner가 거부함'),
     ...aiDelegationPolicyArguments,
     newConversation: z.object({
       agentId: z.string().min(1).max(512).optional(),
@@ -1997,7 +1997,7 @@ async function main() {
     instruction: z.string().min(1).max(100000).describe('같은 문서의 하위 AI가 제안에 그치지 않고 실제로 수행할 작업 범위·허용 작업·제외 범위·완료 조건. 분석·제안만 맡기는 경우 구현·추가 위임 금지를 명시합니다.'),
     decisionReason: z.string().min(1).max(1000).describe('이 기존 대화를 선택했거나 새 대화가 필요하다고 판단한 근거'),
     sourceRevision: z.number().int().positive().describe('get_context 또는 get_document에서 확인한 현재 문서 version'),
-    idempotencyKey: z.string().regex(AI_DELEGATION_ID_PATTERN).describe('같은 위임의 중복 실행을 막는 안정적인 키. 영문·숫자로 시작하고 영문·숫자·밑줄·하이픈·콜론을 사용해 sourceRevision과 targetCardId를 포함하는 형식을 권장'),
+    idempotencyKey: z.string().regex(NEW_AI_DELEGATION_ID_PATTERN).describe('같은 위임의 중복 실행을 막는 안정적인 키. 영문·숫자로 시작하고 영문·숫자·밑줄·하이픈만 사용해 sourceRevision과 targetCardId를 포함하는 형식을 권장(예: v623-card-1-proto). 콜론은 서브 머신 Runner가 거부함'),
     retryOfRequestId: z.string().min(1).max(120).optional().describe('접수 실패 응답의 requestFailure.retryReference.requestId. 같은 업무를 재접수할 때 전달하고 원 instruction은 유지한 채 sourceRevision 등 메타데이터만 갱신하세요. 다른 업무에 사용하지 마세요. 성공 접수 시 기존 실패 경고가 자동 해제됩니다.'),
     taskSummary: z.string().min(1).max(240).optional().describe('사용자에게 표시할 이번 업무의 짧은 요약. 카드 제목만으로 여러 위임을 구분하기 어려울 때 제공합니다. 비밀·인증 정보나 지시 전문을 넣지 마세요.'),
     ...aiDelegationPolicyArguments,

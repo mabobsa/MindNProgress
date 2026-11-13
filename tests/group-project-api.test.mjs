@@ -562,7 +562,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.equal(duplicateApprovalEvidence.status, 400)
     assert.equal(duplicateApprovalEvidence.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_DUPLICATE_APPROVAL_EVIDENCE')
     assert.match(duplicateApprovalEvidence.body.message, /approvalEvidence에는 승인 발언·출처·승인 범위만/)
-    assert.equal(calls.some((call) => call.operationId === 'gdi:group-instruction-duplicate-evidence'), false)
+    assert.equal(calls.some((call) => call.operationId === 'gdi-group-instruction-duplicate-evidence'), false)
     const invalidReplyTarget = await api(instructionUrl, 'POST', {
       ...instructionArgs,
       idempotencyKey: 'group-instruction-invalid-reply-target',
@@ -570,13 +570,13 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     }, sourceHeaders)
     assert.equal(invalidReplyTarget.status, 400)
     assert.equal(invalidReplyTarget.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_REQUEST_INVALID')
-    assert.equal(calls.some((call) => call.operationId === 'gdi:group-instruction-invalid-reply-target'), false)
+    assert.equal(calls.some((call) => call.operationId === 'gdi-group-instruction-invalid-reply-target'), false)
     const publishing = await storage.barrier('_group-document-instructions.json.', 'writeFile', { prefix: true })
     const instructing = api(instructionUrl, 'POST', instructionArgs, sourceHeaders)
     await publishing.reached
     await storage.tick(100)
     assert.equal((await api(`/api/maps/${outsideMap}`)).status, 200, '지시 저장 대기 중 무관한 문서를 읽는다.')
-    assert.equal(calls.some((call) => call.operationId === 'gdi:group-instruction-first'), false)
+    assert.equal(calls.some((call) => call.operationId === 'gdi-group-instruction-first'), false)
     publishing.release()
     const instructed = await instructing
     assert.equal(instructed.status, 202, JSON.stringify(instructed.body))
@@ -592,7 +592,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     })
     assert.equal(instructed.body.instruction.workspaceLease, undefined)
     assert.equal(instructed.body.instruction.coordinationOnly, undefined)
-    const instructionCall = calls.find((call) => call.operationId === 'gdi:group-instruction-first')
+    const instructionCall = calls.find((call) => call.operationId === 'gdi-group-instruction-first')
     assert.ok(instructionCall)
     assert.equal(instructionCall.create.title, `[상위] ${instructionDocument.title}: ${instructionDocument.nodes[0].data.label}`)
     assert.match(instructionCall.instruction, /^# MindNProgress 그룹 문서 지시/m)
@@ -607,8 +607,8 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.equal(repeatedInstruction.status, 200)
     assert.equal(repeatedInstruction.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_REPEATED')
     assert.equal(repeatedInstruction.body.repeated, true)
-    assert.equal(calls.filter((call) => call.operationId === 'gdi:group-instruction-first').length, 1)
-    Object.assign(dispatches.get('gdi:group-instruction-first'), { state: 'completed' })
+    assert.equal(calls.filter((call) => call.operationId === 'gdi-group-instruction-first').length, 1)
+    Object.assign(dispatches.get('gdi-group-instruction-first'), { state: 'completed' })
     await until(async () => (await api(`/api/groups/${groupId}`)).body.documentInstructions
       .some((item) => item.id === 'group-instruction-first' && item.state === 'replied'), '문서 AI 응답 상태를 지시 기록에 반영하지 못했습니다.')
     const instructionList = await api(`${instructionUrl}?includeContent=true`)
@@ -686,7 +686,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
       }, sourceHeaders)
       assert.equal(blockedGroupResume.status, 409)
       assert.equal(blockedGroupResume.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_CONVERSATION_MODEL_BLOCKED')
-      assert.equal(calls.some((call) => call.operationId === `gdi:${blockedGroupResumeId}`), false)
+      assert.equal(calls.some((call) => call.operationId === `gdi-${blockedGroupResumeId}`), false)
     }
     conversations.get(instructedConversationId).extra.current_model_id = 'opus'
     busyGroupInstructionConversationReads = 3
@@ -696,7 +696,7 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.match(queuedInstruction.body.message, /대기열에 보관/)
     await until(async () => (await api(instructionUrl)).body.instructions
       .some((item) => item.id === 'group-instruction-queued' && item.state === 'delivered'), '대기 중 지시가 대상 대화의 유휴 상태에서 자동 전달되지 않았습니다.')
-    assert.equal(calls.filter((call) => call.operationId === 'gdi:group-instruction-queued').length, 1)
+    assert.equal(calls.filter((call) => call.operationId === 'gdi-group-instruction-queued').length, 1)
 
     const versionConflict = await api(instructionUrl, 'POST', {
       ...instructionArgs,

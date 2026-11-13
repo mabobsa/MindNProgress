@@ -43,7 +43,9 @@ test('그룹 문서 지시 키와 요청 서명은 안정적이며 다른 지시
   assert.notEqual(accountSignature({ claudeAccountNumber: 1 }), accountSignature({ claudeAccountNumber: 2 }))
   assert.equal(isValidGroupDocumentInstructionId('group:3-map-lobby-v7'), true)
   assert.equal(isValidGroupDocumentInstructionId('bad key'), false)
-  assert.equal(groupDocumentInstructionOperationId('group:3-map-lobby-v7'), 'gdi:group:3-map-lobby-v7')
+  // 서브 머신 Runner는 실행 ID 경로에 콜론을 허용하지 않는다. 기존 콜론 ID도 해시를 붙여 구분한다.
+  assert.equal(groupDocumentInstructionOperationId('group-3-map-lobby-v7'), 'gdi-group-3-map-lobby-v7')
+  assert.equal(groupDocumentInstructionOperationId('group:3-map-lobby-v7'), 'gdi-group-3-map-lobby-v7-f9d449029fbd')
   assert.equal(
     createGroupDocumentInstructionSignature(request),
     createGroupDocumentInstructionSignature({

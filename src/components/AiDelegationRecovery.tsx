@@ -437,6 +437,7 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
           {item.closure?.closeAvailable && <button type="button" {...actionAccessibility(item.closure.workspaceReleaseRequired ? '결과 보존 후 반환' : '보고하지 않고 종료', item.closure.workspaceReleaseRequired ? '보존 반환 사유 입력 창을 엽니다. 마지막 확인 전에는 작업공간을 변경하지 않습니다.' : actionHints.openClose)} className="danger" disabled={busy} onClick={() => setCloseDraft({ id: item.id, reason: item.workCompleted ? 'result-invalidated' : 'no-longer-needed', note: '' })}>{item.closure.workspaceReleaseRequired ? '결과 보존 후 반환' : '보고하지 않고 종료'}</button>}
         </div>}
         {!history && !cardAttention && item.closure?.reason === 'workspace-changes-preserved' && <p className="ai-delegation-recovery-guidance">보존할 작업공간 변경이 있어 종료할 수 없습니다. 기존 변경을 보존한 채 작업공간을 먼저 복구하세요.</p>}
+        {!history && !cardAttention && item.closure?.reason === 'runner-rejected-operation' && <p className="ai-delegation-recovery-guidance">서브 머신 Runner가 이 위임의 실행 ID를 거부해 진행 상태를 확인할 수 없습니다. 대상 AI 대화가 끝났다면 보고하지 않고 종료로 정리하세요.</p>}
       </div>
   }
   return <section ref={sectionRef} className="ai-delegation-recovery" aria-label={sectionTitle} tabIndex={-1}>

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { MNP_CONTEXT_BOOTSTRAP_INSTRUCTION } from '../../src/utils/aiContextInstructions.mjs'
 import { prependAiConversationSource } from './aiConversationDisplay.mjs'
+import { runnerSafeOperationIdPart } from './runnerSafeIds.mjs'
 
 export const GROUP_DOCUMENT_INSTRUCTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,95}$/
 export const GROUP_DOCUMENT_INSTRUCTION_TYPES = Object.freeze([
@@ -51,8 +52,10 @@ export function containsApprovalEvidenceDuplicate({ approvalEvidence, instructio
   return Boolean(evidence) && body.includes(evidence)
 }
 
+// 서브 머신 Runner가 상태 조회를 거부하지 않도록 콜론 없는 실행 ID를 만든다.
+// 이미 전달된 지시는 저장된 dispatchOperationId(이전 gdi: 형식)로 계속 조회한다.
 export function groupDocumentInstructionOperationId(id) {
-  return `gdi:${id}`
+  return `gdi-${runnerSafeOperationIdPart(id)}`
 }
 
 export function createGroupDocumentInstructionDispatchCoordinator() {

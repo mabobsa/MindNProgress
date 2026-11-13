@@ -66,7 +66,7 @@ test('실제 위임 도구는 명시 계정을 정책보다 우선하고 생략�
   const origin = { 'X-MNP-AI-Conversation-Id': 'parent', 'X-MNP-AI-Map-Id': mapId, 'X-MNP-AI-Card-Id': 'card-0' }
   const request = async (card, account = {}) => ({ targetCardId: `card-${card}`, strategy: 'new',
     instruction: '계정 선택을 검증하는 조사만 수행하세요.', decisionReason: '사용자가 지정한 계정으로 조사 요청',
-    sourceRevision: (await currentMap(mapId)).version, idempotencyKey: `account:card-${card}`,
+    sourceRevision: (await currentMap(mapId)).version, idempotencyKey: `account-card-${card}`,
     newConversation: { agentId: 'claude', modelId: 'opus', ...account } })
   const client = new Client({ name: 'delegation-claude-account-test', version: '1' })
   const transport = new StdioClientTransport({ command: process.execPath, args: ['mcp/server.mjs'],
@@ -113,7 +113,7 @@ test('실제 위임 도구는 명시 계정을 정책보다 우선하고 생략�
       assert.equal(invalid.body.reasonCode, 'AI_DELEGATION_SELECTION_INVALID')
     }
     const resumed = await api.call(endpoint, 'POST', { ...await request(1, { claudeAccountNumber: 1 }),
-      idempotencyKey: 'account:resume', strategy: 'resume', conversationId: 'child-1' }, origin)
+      idempotencyKey: 'account-resume', strategy: 'resume', conversationId: 'child-1' }, origin)
     assert.equal(resumed.body.reasonCode, 'AI_DELEGATION_CLAUDE_ACCOUNT_REQUIRES_NEW')
     assert.equal(creates.length, countBeforeInvalid)
     accounts = undefined
@@ -126,13 +126,13 @@ test('실제 위임 도구는 명시 계정을 정책보다 우선하고 생략�
       groupProjectVersion: 1, sourceRevision: (await currentMap(mapId)).version, strategy: 'new',
       instructionType: 'planning', approvalScope: 'analysis-only', approvalEvidence: '사용자가 회사 계정으로 조사를 요청했습니다.',
       instruction: '분석 결과를 정리하세요. 구현은 하지 마세요.', decisionReason: '문서 담당 대화 생성',
-      idempotencyKey: 'account:group', newConversation: { agentId: 'claude', modelId: 'opus', claudeAccountNumber: 2 } }
+      idempotencyKey: 'account-group', newConversation: { agentId: 'claude', modelId: 'opus', claudeAccountNumber: 2 } }
     const groupResult = await invoke('send_group_document_instruction', { ...groupRequest, workType: 'other' })
     assert.equal(groupResult.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_DELIVERED', JSON.stringify(groupResult))
-    assert.equal(creates.at(-1).operationId, 'gdi:account:group')
+    assert.equal(creates.at(-1).operationId, 'gdi-account-group')
     assert.equal(creates.at(-1).create.claudeAccountId, undefined)
     const groupResume = await api.call(`/api/maps/${mapId}/group-document-instructions`, 'POST', {
-      ...groupRequest, idempotencyKey: 'account:group-resume', strategy: 'resume', conversationId: 'child-6',
+      ...groupRequest, idempotencyKey: 'account-group-resume', strategy: 'resume', conversationId: 'child-6',
     }, origin)
     assert.equal(groupResume.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_CLAUDE_ACCOUNT_REQUIRES_NEW')
     assert.deepEqual(await api.read('_ai-claude-account-policy.json'), policy)

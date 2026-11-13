@@ -135,7 +135,7 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
   const origin = { 'X-MNP-AI-Conversation-Id': 'parent', 'X-MNP-AI-Map-Id': mapId, 'X-MNP-AI-Card-Id': 'card-0' }
   const request = async (card, extra = {}) => ({ targetCardId: `card-${card}`, strategy: 'new',
     instruction: '위임 규칙 검증용 조사만 수행하세요.', decisionReason: '위임 규칙 검증',
-    sourceRevision: (await currentMap(mapId)).version, idempotencyKey: `policy:card-${card}`, ...extra })
+    sourceRevision: (await currentMap(mapId)).version, idempotencyKey: `policy-card-${card}`, ...extra })
   const created = () => creates.at(-1).create
   const client = new Client({ name: 'delegation-policy-test', version: '1' })
   const transport = new StdioClientTransport({ command: process.execPath, args: ['mcp/server.mjs'],
@@ -284,19 +284,19 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
     // 규칙 값이 없는 이전 도구 정의의 요청은 기존처럼 상위 대화 설정을 상속한다.
     // 전환 기록과 운영 사례: 이어가기 요청이 문서 버전 충돌로 실패한 뒤 같은 지시로 재접수돼 새 대화로 바뀌어도 접수 실패 경고가 해제된다.
     const storedDelegations = async () => { const stored = await api.read('_ai-delegations.json'); return Array.isArray(stored) ? stored : stored.delegations ?? Object.values(stored) }
-    assert.deepEqual((await storedDelegations()).find((item) => item.id === 'policy:card-5').aiPolicyResumeConversion,
+    assert.deepEqual((await storedDelegations()).find((item) => item.id === 'policy-card-5').aiPolicyResumeConversion,
       { conversationId: 'old-claude', currentModelId: 'opus', expectedModelId: 'gpt-6.1-sol' })
     const retryBase = await request(11, { workType: 'other', strategy: 'resume', conversationId: 'old-claude-retry' })
-    const staleRetry = await api.call(endpoint, 'POST', { ...retryBase, idempotencyKey: 'policy:retry-first', sourceRevision: retryBase.sourceRevision + 100 }, origin)
+    const staleRetry = await api.call(endpoint, 'POST', { ...retryBase, idempotencyKey: 'policy-retry-first', sourceRevision: retryBase.sourceRevision + 100 }, origin)
     assert.equal(staleRetry.body.reasonCode, 'AI_DELEGATION_VERSION_CONFLICT', JSON.stringify(staleRetry.body))
     const failureId = staleRetry.body.requestFailure.retryReference.requestId
-    const retried = await api.call(endpoint, 'POST', { ...retryBase, idempotencyKey: 'policy:retry-second', retryOfRequestId: failureId }, origin)
+    const retried = await api.call(endpoint, 'POST', { ...retryBase, idempotencyKey: 'policy-retry-second', retryOfRequestId: failureId }, origin)
     assert.equal(retried.body.reasonCode, 'AI_DELEGATION_ACCEPTED', JSON.stringify(retried.body))
     assert.equal(retried.body.delegation.strategy, 'new')
     assert.equal(retried.body.aiPolicy.resumeConversion.conversationId, 'old-claude-retry')
     const listed = await api.call(`/api/maps/${mapId}/ai-delegations?parentCardId=card-0`, 'GET', undefined, origin)
     const retriedFailure = listed.body.requestFailures.find((item) => item.id === failureId)
-    assert.equal(retriedFailure.resolvedByDelegationId, 'policy:retry-second', JSON.stringify(retriedFailure.retryVerification))
+    assert.equal(retriedFailure.resolvedByDelegationId, 'policy-retry-second', JSON.stringify(retriedFailure.retryVerification))
     assert.equal(retriedFailure.retryVerification.method, 'retry-reference')
 
     const legacy = await api.call(endpoint, 'POST', await request(9), origin)
@@ -309,7 +309,7 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
       groupProjectVersion: 1, sourceRevision: (await currentMap(mapId)).version, strategy: 'resume', conversationId: 'root-sonnet',
       instructionType: 'planning', approvalScope: 'analysis-only', approvalEvidence: '사용자가 위임 규칙 검증용 분석을 요청했습니다.',
       instruction: '분석 결과를 정리하세요. 구현은 하지 마세요.', decisionReason: '문서 담당 대화 이어가기',
-      idempotencyKey: 'policy:group', workType: 'other', analysisDepth: 'deep' }
+      idempotencyKey: 'policy-group', workType: 'other', analysisDepth: 'deep' }
     const beforeGroup = creates.length
     const group = await invoke('send_group_document_instruction', groupRequest)
     assert.equal(group.instruction.strategy, 'resume', JSON.stringify(group))
@@ -326,7 +326,7 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
     // 규칙 인자가 없는 구형 HTTP 호출도 일치 모델이 없으면 규칙대로 만들고 담당을 저장한다.
     const aloneId = api.ids[2]
     const legacyRequest = { ...groupRequest, targetMapId: aloneId, targetRevision: (await currentMap(aloneId)).version,
-      conversationId: 'root-sonnet-alone', idempotencyKey: 'policy:legacy-group' }
+      conversationId: 'root-sonnet-alone', idempotencyKey: 'policy-legacy-group' }
     delete legacyRequest.workType
     delete legacyRequest.analysisDepth
     const legacyGroup = await api.call(`/api/maps/${mapId}/group-document-instructions`, 'POST', legacyRequest, origin)
@@ -348,7 +348,7 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
     await choose('root-sonnet')
     unavailableConversationIds.add('root-opus-new')
     const lookup = await api.call(`/api/maps/${mapId}/group-document-instructions`, 'POST', {
-      ...groupRequest, sourceRevision: (await currentMap(mapId)).version, targetRevision: (await currentMap(targetMapId)).version, idempotencyKey: 'policy:lookup-failed',
+      ...groupRequest, sourceRevision: (await currentMap(mapId)).version, targetRevision: (await currentMap(targetMapId)).version, idempotencyKey: 'policy-lookup-failed',
     }, origin)
     assert.equal(lookup.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_PRIMARY_LOOKUP_UNAVAILABLE')
     assert.equal((await currentMap(targetMapId)).nodes[0].data.aiPrimaryConversationId, 'root-sonnet')
@@ -356,7 +356,7 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
     unavailableConversationIds.clear()
     busy.add('root-opus-new')
     const queued = await api.call(`/api/maps/${mapId}/group-document-instructions`, 'POST', {
-      ...groupRequest, sourceRevision: (await currentMap(mapId)).version, targetRevision: (await currentMap(targetMapId)).version, idempotencyKey: 'policy:busy-primary',
+      ...groupRequest, sourceRevision: (await currentMap(mapId)).version, targetRevision: (await currentMap(targetMapId)).version, idempotencyKey: 'policy-busy-primary',
     }, origin)
     assert.equal(queued.body.instruction.state, 'queued', JSON.stringify(queued.body))
     assert.equal((await currentMap(targetMapId)).nodes[0].data.aiPrimaryConversationId, 'root-opus-new')
@@ -366,7 +366,7 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
     await api.tick(600000)
     let queuedResult
     for (let attempt = 0; attempt < 100; attempt++) {
-      queuedResult = (await api.call(`/api/maps/${mapId}/group-document-instructions?instructionId=policy:busy-primary`)).body.instructions?.[0]
+      queuedResult = (await api.call(`/api/maps/${mapId}/group-document-instructions?instructionId=policy-busy-primary`)).body.instructions?.[0]
       if (queuedResult?.state === 'expired') break
       await new Promise((resolve) => setTimeout(resolve, 30))
     }

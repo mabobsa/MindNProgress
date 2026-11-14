@@ -400,9 +400,39 @@ export function aiDelegationWorkspaceLeaseMatches(expected, actual) {
     && (!expected.ownership || ['coordinatorId', 'machineId', 'poolId', 'generation'].every((key) => expected.ownership[key] === actual.ownership?.[key]))
 }
 
+const WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/
+
+// AionUi는 대화의 작업공간 문자열을 그대로 묶음 키로 쓴다. 같은 폴더를 'C:/…'처럼 다른 표기로 넘기면
+// 사이드바에서 같은 이름의 다른 프로젝트로 갈라지므로, Windows 경로는 AionUi 폴더 선택과 같은 백슬래시 표기로 맞춘다.
+export function normalizeAiWorkspacePath(value) {
+  const text = String(value ?? '').trim()
+  if (!text) return ''
+  if (WINDOWS_PATH.test(text)) {
+    const unc = /^[\\/]{2}/.test(text)
+    let normalized = text.replace(/[\\/]+/g, '\\')
+    if (unc) normalized = `\\${normalized}`
+    normalized = normalized.replace(/^([a-z]):/, (_match, drive) => `${drive.toUpperCase()}:`)
+    return /^[A-Z]:\\$/.test(normalized) ? normalized : normalized.replace(/\\+$/, '')
+  }
+  const posix = text.replace(/\/{2,}/g, '/')
+  return posix.length > 1 ? posix.replace(/\/+$/, '') : posix
+}
+
+// 같은 폴더인지 비교하는 키. Windows 경로는 대소문자를 구분하지 않는다.
+export function aiWorkspacePathKey(value) {
+  const normalized = normalizeAiWorkspacePath(value)
+  return WINDOWS_PATH.test(normalized) ? normalized.toLowerCase() : normalized
+}
+
 export function aiDelegationNewWorkspace(requested, parent, target) {
-  return [requested?.workspace, parent?.selection?.workspace, parent?.workspace, target?.workspace]
-    .map((value) => String(value ?? '').trim()).find(Boolean) ?? null
+  const candidates = [requested?.workspace, parent?.selection?.workspace, parent?.workspace, target?.workspace]
+    .map((value) => String(value ?? '').trim())
+  const chosen = candidates.find(Boolean)
+  if (!chosen) return null
+  // 요청한 폴더가 상속 후보와 같은 폴더면 기존 대화의 표기(대소문자)를 따른다.
+  const key = aiWorkspacePathKey(chosen)
+  const inherited = candidates.slice(1).find((value) => value && aiWorkspacePathKey(value) === key)
+  return normalizeAiWorkspacePath(inherited ?? chosen)
 }
 
 export function failedAiIntegrationRecoveryRuntime(dispatch, recoveredAt = new Date().toISOString()) {

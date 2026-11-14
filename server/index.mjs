@@ -9138,7 +9138,8 @@ const launchCallbackReservations = new Map()
 async function withStorageRequest(request, response, operation) {
   const pathname = new URL(request.url ?? '/', 'http://localhost').pathname
   // 위임 종료의 결과 보존 반환은 작업공간 Git 검증 때문에 오래 걸릴 수 있어 다중 자원 요청과 같은 저장 기한을 준다.
-  const multi = /\/document-reconstructions(?:\/|$)|\/cards\/[^/]+\/move$|\/ai-delegations\/[^/]+\/close$/.test(pathname)
+  // 기존 작업 재개도 새 작업공간 배정(Git 준비) 뒤에 위임 기록을 저장하므로 같은 저장 기한을 준다.
+  const multi = /\/document-reconstructions(?:\/|$)|\/cards\/[^/]+\/move$|\/ai-delegations\/[^/]+\/(?:close|recover)$/.test(pathname)
   const lifecycle = multi || /\/archive$|\/trash$|\/restore$|^\/api\/groups(?:\/|$)/.test(pathname)
   const id = String(request.headers['idempotency-key'] ?? '')
   const resultOnly = request.headers['x-mnp-result-only'] === '1'

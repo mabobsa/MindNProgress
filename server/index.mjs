@@ -16,6 +16,7 @@ import { normalizeTrackedEolRecovery } from './lib/workspaceEolRecovery.mjs'
 import { createAiDelegationRequestFailures, safeDelegationFailureMessage, withDelegationTaskCompletion } from './lib/aiDelegationRequestFailures.mjs'
 import { aiRecordReferencesMaps, createAiDocumentRecordMap, removeAiDocumentRecords, aiDocumentDeletionBusy } from './lib/aiDocumentCleanup.mjs'
 import { buildCardConversationStartPrompt, cardConversationStartError, createCardConversationStarts, isCardConversationWorkerWorkspace } from './lib/cardConversationStarts.mjs'
+import { cardConversationHandoffBlockers, cardConversationHandoffBlockersSummary } from './lib/cardConversationHandoffBlockers.mjs'
 import { createRuntimeLifecycle, installRuntimeShutdown } from './lib/runtimeLifecycle.mjs'
 import { createStartupTiming } from './lib/startupTiming.mjs'
 import { retryDispatchStatus, throwIfRuntimeStopping } from './lib/runtimeStopping.mjs'
@@ -6173,17 +6174,19 @@ function fetchAiConversationRuntimeSnapshot(machineId = machineRegistry.mainMach
   return request
 }
 
+function cardConversationHandoffBlockersFor(conversationId, excludedInstructionId = null) {
+  return cardConversationHandoffBlockers(conversationId, {
+    delegations: aiDelegations.values(),
+    instructions: groupDocumentInstructions.values(),
+    leases: [...Object.values(localWorkspacePoolManager.state?.leases ?? {}), ...Object.values(remoteWorkspacePool.state?.leases ?? {})],
+    excludedInstructionId,
+    delegationActive: (id) => aiDelegationActions.has(id) || integrationRecoveryQueue.running.has(id),
+    instructionActive: (id) => groupDocumentInstructionActions.has(id),
+  })
+}
+
 function cardConversationHandoffBusy(conversationId, excludedInstructionId = null) {
-  const references = (item) => ['conversationId', 'parentConversationId', 'targetConversationId', 'requestedConversationId', 'sourceConversationId', 'replyConversationId']
-      .some((key) => item?.[key] === conversationId)
-  return [...aiDelegations.values()].some((item) => references(item)
-      && (!['completed', 'cancelled', 'closed'].includes(item.state) || item.reportPending || item.pendingRecovery
-        || aiDelegationActions.has(item.id) || integrationRecoveryQueue.running.has(item.id)))
-      // failed 그룹 지시는 폴링·재전송으로 다시 처리되지 않는 종료 상태라 인계를 막지 않는다.
-      || [...groupDocumentInstructions.values()].some((item) => item.id !== excludedInstructionId && references(item)
-        && (!['replied', 'failed', 'cancelled', 'closed', 'expired'].includes(item.state) || groupDocumentInstructionActions.has(item.id)))
-      || [...Object.values(localWorkspacePoolManager.state?.leases ?? {}), ...Object.values(remoteWorkspacePool.state?.leases ?? {})]
-        .some((item) => references(item) && !['completed', 'cancelled'].includes(item.status))
+  return cardConversationHandoffBlockersFor(conversationId, excludedInstructionId).length > 0
 }
 
 const persistCardConversationStarts = () => persistSharedState(cardConversationStartsFile, () => [...cardConversationStartRecords.values()])
@@ -6244,8 +6247,12 @@ const cardConversationStarts = createCardConversationStarts({
       throw cardConversationStartError('CARD_CONVERSATION_START_REPRESENTATIVE_CHANGED', '현재 카드의 대표 대화가 이전 대화와 다릅니다.')
     }
     if (record.linkedAt) return
-    const busy = cardConversationHandoffBusy(record.predecessorConversationId, record.policyInstructionId)
-    if (busy) throw cardConversationStartError('CARD_CONVERSATION_START_WORK_BUSY', '진행 중인 위임·그룹 지시 또는 작업공간 복구·보고를 마친 뒤 인계하세요.')
+    const blockers = cardConversationHandoffBlockersFor(record.predecessorConversationId, record.policyInstructionId)
+    if (blockers.length) {
+      throw Object.assign(cardConversationStartError('CARD_CONVERSATION_START_WORK_BUSY',
+        `진행 중인 위임·그룹 지시 또는 작업공간 복구·보고를 마친 뒤 인계하세요. 막고 있는 항목: ${cardConversationHandoffBlockersSummary(blockers)}`),
+      { blockers: blockers.slice(0, 20) })
+    }
     if (aiConversationRemoval.isRemoving(record.predecessorConversationId)) {
       throw cardConversationStartError('CARD_CONVERSATION_START_REMOVAL_PENDING', '이전 대화의 삭제 처리가 진행 중입니다.')
     }
@@ -13201,6 +13208,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         return sendJson(response, error.cardConversationStartError ? error.status : 503, {
           code: error.cardConversationStartError ? error.code : 'CARD_CONVERSATION_START_RETRY_REQUIRED',
           error: error.cardConversationStartError ? error.message : '인계 요청을 저장하지 못했습니다. 같은 requestId로 다시 확인하세요.',
+          ...(error.cardConversationStartError && Array.isArray(error.blockers) ? { blockers: error.blockers } : {}),
         })
       }
     }

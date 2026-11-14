@@ -33,7 +33,7 @@ const link = (conversationId) => ({ conversationId, homeMachineId: 'isolated-sto
   model: { id: conversationModels[conversationId][1], label: conversationModels[conversationId][1] },
   skills: [], mcpServers: [], startedBy: { id: 'user-editor', label: '김용민' } })
 
-test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사용하고 후보가 없을 때만 새 담당을 생성한다', { timeout: 90_000 }, async (t) => {
+test('하위 위임과 그룹 지시는 동일 CLI 담당의 모델을 변경하고 CLI가 다른 경우 기존 선택·인계 규칙을 따른다', { timeout: 90_000 }, async (t) => {
   const creates = []
   const unavailableConversationIds = new Set()
   const busy = new Set()
@@ -49,7 +49,8 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
       const chunks = []; for await (const chunk of request) chunks.push(chunk)
       const body = JSON.parse(Buffer.concat(chunks).toString())
       if (body.strategy === 'resume' && switched.includes(body.targetConversationId)) {
-        assert.ok(['xhigh', 'max'].includes(effort.get(body.targetConversationId)), '실행 전달 이전에 실제 사고 강도를 맞춘다')
+        if (body.targetConversationId === 'old-sol') assert.equal(effort.get(body.targetConversationId), 'high', '변경한 서버 규칙을 적용한다')
+        else assert.ok(['xhigh', 'max'].includes(effort.get(body.targetConversationId)), '실행 전달 이전에 실제 사고 강도를 맞춘다')
       }
       creates.push(body)
       const dispatch = { operationId: body.operationId, conversationId: body.targetConversationId ?? `child-${creates.length}`, state: 'running', turnId: `turn-${creates.length}` }
@@ -66,12 +67,15 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
       if (unavailableConversationIds.has(id)) return send({}, 503)
       const [agentId, modelId] = conversationModels[id] ?? ['codex', 'gpt-6.1-sol']
       if (url.endsWith('/runtime/ensure')) return send({ runtime: { state: busy.has(id) ? 'running' : 'idle' },
-        config_options: [{ id: 'effort', category: 'thought_level', options: options('high', 'xhigh', 'max') }] })
+        config_options: [{ id: 'model', category: 'model', options: options(...(agentId === 'claude' ? ['opus', 'sonnet'] : ['gpt-6.1-sol', 'gpt-6-astra'])) },
+          { id: 'effort', category: 'thought_level', options: options('high', 'xhigh', 'max') }] })
       if (url.endsWith('/runtime-config')) return send({ model: { value: modelId, source: 'runtime' },
         thought_level: { value: effort.get(id) ?? 'high', source: 'runtime' } })
       if (request.method === 'PUT' && url.includes('/config-options/')) {
         const chunks = []; for await (const chunk of request) chunks.push(chunk)
-        effort.set(id, JSON.parse(Buffer.concat(chunks).toString()).value); switched.push(id)
+        const value = JSON.parse(Buffer.concat(chunks).toString()).value
+        if (url.endsWith('/model')) conversationModels[id] = [agentId, value]
+        else { effort.set(id, value); switched.push(id) }
         return send({ confirmation: 'observed' })
       }
       return send({ id, type: 'acp', extra: { agent_id: agentId, current_model_id: modelId, backend: agentId },
@@ -304,7 +308,7 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
     assert.equal(legacy.body.aiPolicy, undefined)
     assert.deepEqual([created().agentId, created().modelId], ['claude', 'opus'])
 
-    // 같은 CLI의 기존 최신 담당 Sonnet과 규칙 Opus가 다르면 연결된 Opus 중 최신을 담당으로 선택한다.
+    // 같은 CLI의 담당 Sonnet을 Opus로 바꾸며 다른 Opus 대화로 담당을 옮기지 않는다.
     const groupRequest = { mapId, targetMapId, targetRevision: (await currentMap(targetMapId)).version,
       groupProjectVersion: 1, sourceRevision: (await currentMap(mapId)).version, strategy: 'resume', conversationId: 'root-sonnet',
       instructionType: 'planning', approvalScope: 'analysis-only', approvalEvidence: '사용자가 위임 규칙 검증용 분석을 요청했습니다.',
@@ -313,11 +317,11 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
     const beforeGroup = creates.length
     const group = await invoke('send_group_document_instruction', groupRequest)
     assert.equal(group.instruction.strategy, 'resume', JSON.stringify(group))
-    assert.equal(group.instruction.requestedConversationId, 'root-opus-new')
+    assert.equal(group.instruction.requestedConversationId, 'root-sonnet')
     assert.equal(group.aiPolicy.primaryResolution.previousConversationId, 'root-sonnet')
-    assert.equal((await currentMap(targetMapId)).nodes[0].data.aiPrimaryConversationId, 'root-opus-new')
+    assert.equal((await currentMap(targetMapId)).nodes[0].data.aiPrimaryConversationId, 'root-sonnet')
     assert.equal(creates.length, beforeGroup + 1)
-    assert.equal(creates.at(-1).targetConversationId, 'root-opus-new')
+    assert.equal(creates.at(-1).targetConversationId, 'root-sonnet')
     assert.equal(creates.at(-1).create, undefined, '기존 일치 대화가 있으면 새 대화를 만들지 않는다')
     const repeated = await invoke('send_group_document_instruction', groupRequest)
     assert.equal(repeated.repeated, true)
@@ -331,8 +335,9 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
     delete legacyRequest.analysisDepth
     const legacyGroup = await api.call(`/api/maps/${mapId}/group-document-instructions`, 'POST', legacyRequest, origin)
     assert.equal(legacyGroup.status, 202, JSON.stringify(legacyGroup.body))
-    assert.equal(legacyGroup.body.instruction.strategy, 'new')
-    assert.equal(creates.at(-1).create.modelId, 'opus')
+    assert.equal(legacyGroup.body.instruction.strategy, 'resume')
+    assert.equal(creates.at(-1).create, undefined)
+    assert.equal(conversationModels['root-sonnet-alone'][1], 'opus')
     const newPrimary = legacyGroup.body.instruction.targetConversationId
     assert.ok(newPrimary)
     assert.equal((await currentMap(aloneId)).nodes[0].data.aiPrimaryConversationId, newPrimary)
@@ -346,7 +351,8 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
       assert.equal(saved.status, 200, JSON.stringify(saved.body))
     }
     await choose('root-sonnet')
-    unavailableConversationIds.add('root-opus-new')
+    conversationModels['root-sonnet'][1] = 'sonnet'
+    unavailableConversationIds.add('root-sonnet')
     const lookup = await api.call(`/api/maps/${mapId}/group-document-instructions`, 'POST', {
       ...groupRequest, sourceRevision: (await currentMap(mapId)).version, targetRevision: (await currentMap(targetMapId)).version, idempotencyKey: 'policy-lookup-failed',
     }, origin)
@@ -354,14 +360,14 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
     assert.equal((await currentMap(targetMapId)).nodes[0].data.aiPrimaryConversationId, 'root-sonnet')
     assert.equal(creates.length, beforeGroup + 2)
     unavailableConversationIds.clear()
-    busy.add('root-opus-new')
+    busy.add('root-sonnet')
     const queued = await api.call(`/api/maps/${mapId}/group-document-instructions`, 'POST', {
       ...groupRequest, sourceRevision: (await currentMap(mapId)).version, targetRevision: (await currentMap(targetMapId)).version, idempotencyKey: 'policy-busy-primary',
     }, origin)
     assert.equal(queued.body.instruction.state, 'queued', JSON.stringify(queued.body))
-    assert.equal((await currentMap(targetMapId)).nodes[0].data.aiPrimaryConversationId, 'root-opus-new')
+    assert.equal((await currentMap(targetMapId)).nodes[0].data.aiPrimaryConversationId, 'root-sonnet')
     assert.equal(creates.length, beforeGroup + 2, '실행 중인 일치 대화가 있으면 추가 대화를 만들지 않는다')
-    await choose('root-sonnet')
+    await choose('root-opus-new')
     busy.clear()
     await api.tick(600000)
     let queuedResult
@@ -402,6 +408,22 @@ test('하위 위임과 그룹 지시가 규칙에 맞는 최신 담당을 재사
     const afterSave = await invoke('delegate_ai_work', { mapId, ...await request(10, { workType: 'other' }) })
     assert.deepEqual([created().agentId, created().modelId, created().thoughtLevel], ['codex', 'gpt-6-astra', 'high'])
     assert.equal(afterSave.aiPolicy.revision, saved.body.revision)
+
+    // 동일 CLI의 Sol → Astra는 현재 담당과 연결 이력을 유지하며 다음 위임부터 모델을 바꾼다.
+    const beforeModelSwitch = (await currentMap(mapId)).nodes[6].data
+    const modelSwitched = await invoke('delegate_ai_work', { mapId, ...await request(6, { workType: 'other', idempotencyKey: 'same-cli-model-switch' }) })
+    assert.equal(modelSwitched.delegation.strategy, 'resume')
+    assert.equal(modelSwitched.delegation.targetConversationId, 'old-sol')
+    assert.equal(modelSwitched.delegation.runtimePolicyVerification.previousModelId, 'gpt-6.1-sol')
+    assert.equal(modelSwitched.delegation.runtimePolicyVerification.modelId, 'gpt-6-astra')
+    assert.equal(creates.at(-1).create, undefined)
+    assert.deepEqual(conversationModels['old-sol'], ['codex', 'gpt-6-astra'])
+    const afterModelSwitch = (await currentMap(mapId)).nodes[6].data
+    assert.equal(afterModelSwitch.aiPrimaryConversationId, 'old-sol')
+    assert.equal(afterModelSwitch.aiConversations.length, beforeModelSwitch.aiConversations.length)
+    assert.equal(afterModelSwitch.aiConversations[0].model.id, 'gpt-6-astra')
+    assert.equal(afterModelSwitch.aiConversations[0].thoughtLevel.id, 'high')
+
     const staleSave = await settings('PUT', { ...initial.body.policy, baseRevision: initial.body.revision })
     assert.equal(staleSave.status, 409, JSON.stringify(staleSave.body))
     assert.equal(staleSave.body.reasonCode, 'AI_DELEGATION_POLICY_CONFLICT')

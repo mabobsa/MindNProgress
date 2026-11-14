@@ -5,6 +5,23 @@ import { createGroupDocumentInstructionSignature as signature } from '../server/
 
 const data = { aiPrimaryConversationId: 'opus', aiConversationId: 'codex', aiConversations: [{ conversationId: 'opus' }, { conversationId: 'codex' }] }
 
+test('같은 CLI의 모델 변경은 최신 일치 보조 대화가 있어도 기존 담당을 유지한다', async () => {
+  for (const [backend, from, to] of [['codex', 'gpt-6.1-sol', 'gpt-6-astra'], ['claude', 'sonnet', 'opus']]) {
+    for (const handoffOnBackendChange of [false, true]) {
+      const reads = []
+      const result = await resolvePrimaryConversationPolicy(data, { agent: { backend }, modelId: to }, async link => {
+        reads.push(link.conversationId)
+        return { backend, modelId: link.conversationId === 'opus' ? from : to }
+      }, { handoffOnBackendChange })
+      assert.equal(result.conversationId, 'opus')
+      assert.equal(result.strategy, 'resume')
+      assert.equal(result.modelChange, true)
+      assert.equal(result.requiresHandoff, undefined)
+      assert.deepEqual(reads, ['opus'])
+    }
+  }
+})
+
 test('루트 CLI 전환은 일치하는 보조 대화가 있어도 담당 인계를 우선한다', async () => {
   const read = async (link) => link.conversationId === 'opus' ? { modelId: 'opus', backend: 'claude' }
     : { modelId: 'gpt-6-astra', backend: 'codex' }

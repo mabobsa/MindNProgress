@@ -82,7 +82,6 @@ import {
   aiDelegationPolicyAdjustments,
   aiDelegationPolicySignature,
   aiDelegationPolicyView,
-  aiDelegationResumeModelMatches,
   applyAiDelegationPolicyRule,
   createAiDelegationPolicyStore,
   aiDelegationPolicy as defaultAiDelegationPolicy,
@@ -90,7 +89,7 @@ import {
   parseAiDelegationPolicyRequest,
   resolveAiDelegationPolicyRule,
 } from './lib/aiDelegationPolicy.mjs'
-import { delegationResumeRuntimePolicy, ensureDelegationRuntimePolicy } from './lib/aiDelegationRuntimePolicy.mjs'
+import { applyDelegationRuntimeSelection, delegationResumeRuntimePolicy, delegationRuntimeCandidateMatches, ensureDelegationRuntimePolicy } from './lib/aiDelegationRuntimePolicy.mjs'
 import { aiDelegationStartupFailureInstruction, isAiDelegationStartupFailure, queuedDelegationFailureReportPatch } from './lib/aiDelegationStartupFailure.mjs'
 import { createRootHandoffPlan, buildRootHandoffRequest, rootHandoffDocumentMatches, upgradeRootHandoffHash } from './lib/rootConversationHandoff.mjs'
 import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
@@ -3077,7 +3076,8 @@ async function runGroupDocumentInstructionDispatch(instruction, user) {
           aiConversationLinksFromData(targetCard.data).find((link) => link.conversationId === instruction.requestedConversationId))
         const modelId = conversation?.extra?.current_model_id || aiConversationLinkFromAionUiConversation(conversation)?.model?.id
           || aiConversationLinksFromData(targetCard.data).find((link) => link.conversationId === instruction.requestedConversationId)?.model?.id
-        if (instruction.primaryPolicyModelId && aiDelegationResumeModelMatches({ modelId: instruction.primaryPolicyModelId }, modelId) !== true) {
+        if (instruction.primaryPolicyModelId && !delegationRuntimeCandidateMatches(
+          instruction.resumeRuntimePolicy ?? { modelId: instruction.primaryPolicyModelId }, modelId, conversation?.extra?.backend)) {
           return updateGroupDocumentInstruction(instruction.id, { state: 'expired', reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_PRIMARY_MODEL_CHANGED',
             message: '대기 중 담당 대화의 모델이 변경되었습니다. 최신 모델과 위임 규칙으로 다시 요청해 주세요.' })
         }
@@ -3129,7 +3129,7 @@ async function runGroupDocumentInstructionDispatch(instruction, user) {
     try {
       runtimePolicyVerification = await ensureDelegationRuntimePolicy({ conversationId: instruction.requestedConversationId,
         policy: instruction.resumeRuntimePolicy, fetchOn: fetchAionUiOn, machineId: instruction.targetHomeMachineId, signal: runtimeLifecycle.signal })
-      if (runtimePolicyVerification) selection.thoughtLevel = { id: runtimePolicyVerification.thoughtLevelId, label: runtimePolicyVerification.thoughtLevelId }
+      applyDelegationRuntimeSelection(selection, runtimePolicyVerification)
     } catch (error) {
       throwIfRuntimeStopping(error, runtimeLifecycle.signal)
       return updateGroupDocumentInstruction(instruction.id, { state: 'failed', reasonCode: error.code, message: error.message })
@@ -3670,7 +3670,7 @@ async function linkAiDelegationConversation({ map, targetCard, targetConversatio
       const changed = primarySelection && ![primarySelection.expectedConversationId, targetConversationId].includes(currentPrimary)
       const previous = aiConversationLinksFromData(card.data).find((link) => link.conversationId === targetConversationId)
       if (strategy === 'resume' && !previous) throw new Error('담당 후보와 카드의 연결이 사라졌습니다.')
-      const link = strategy === 'resume' ? { ...previous, ...(runtimePolicyVerification ? { thoughtLevel: selection.thoughtLevel } : {}) } : normalizeAiConversationLink({
+      const link = strategy === 'resume' ? { ...previous, ...(runtimePolicyVerification ? { model: selection.model, thoughtLevel: selection.thoughtLevel } : {}) } : normalizeAiConversationLink({
         conversationId: targetConversationId, homeMachineId: targetHomeMachineId,
         agent: selection.agent, model: selection.model, providerId: selection.providerId,
         mode: selection.mode, thoughtLevel: selection.thoughtLevel,
@@ -3681,7 +3681,8 @@ async function linkAiDelegationConversation({ map, targetCard, targetConversatio
       })
       const linkError = changed ? '위임 전송 중 담당이 변경되어 기존 선택을 유지했습니다. 실행 대화와 담당을 확인해 주세요.' : null
       if (strategy === 'resume' && (changed || currentPrimary === targetConversationId)
-        && (!runtimePolicyVerification || previous.thoughtLevel?.id === selection.thoughtLevel?.id)) return { updatedMap: current, linkError }
+        && (!runtimePolicyVerification || (previous.model?.id === selection.model?.id
+          && previous.thoughtLevel?.id === selection.thoughtLevel?.id))) return { updatedMap: current, linkError }
       const updatedMap = await saveMap(map.id, {
         nodes: current.nodes.map((node) => node.id === card.id ? { ...node,
           data: withAiConversationLink(node.data, link, { makePrimary: Boolean(primarySelection && !changed), makeCurrent: strategy === 'new' }),
@@ -3753,7 +3754,7 @@ async function dispatchPreparedAiDelegation({
     runtimePolicyVerification = await ensureDelegationRuntimePolicy({ conversationId: requestedConversationId,
       policy: strategy === 'resume' && !resumedDelegation ? queuedDelegation?.resumeRuntimePolicy : null,
       fetchOn: fetchAionUiOn, machineId: targetHomeMachineId, signal: runtimeLifecycle.signal })
-    if (runtimePolicyVerification) selection.thoughtLevel = { id: runtimePolicyVerification.thoughtLevelId, label: runtimePolicyVerification.thoughtLevelId }
+    applyDelegationRuntimeSelection(selection, runtimePolicyVerification)
   } catch (error) {
     if (workspaceLease && !resumedDelegation) await workspacePoolManager.cancel(workspaceLease.leaseId, error.message)
     throw error
@@ -5482,7 +5483,8 @@ async function drainWaitingWorkspaceDelegations() {
         const conversation = await fetchAiConversationRuntime(queued.targetConversationId, linked)
         const currentModelId = conversation?.extra?.current_model_id || aiConversationLinkFromAionUiConversation(conversation)?.model?.id
           || linked?.model?.id
-        if (queued.primarySelection && aiDelegationResumeModelMatches(queued.primarySelection, currentModelId) !== true) {
+        if (queued.primarySelection && !delegationRuntimeCandidateMatches(
+          queued.resumeRuntimePolicy?.backend ? queued.resumeRuntimePolicy : queued.primarySelection, currentModelId, conversation?.extra?.backend)) {
           await updateQueuedAiDelegation(queued.id, { state: 'failed', childStatus: 'rejected', resource: null,
             failureReasonCode: 'AI_DELEGATION_PRIMARY_MODEL_CHANGED', childError: '대기 중 담당 후보 모델이 변경되었습니다. 최신 후보와 규칙으로 다시 요청해 주세요.' })
           clearAiDelegationWaitPoll(queued.id)
@@ -12051,7 +12053,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           '대상 문서 루트 AI의 종류와 모델 정보를 확인하지 못했습니다.',
         )
         const resumeRuntimePolicy = delegationResumeRuntimePolicy(strategy, aiPolicyRule)
-        if (resumeRuntimePolicy) selection.thoughtLevel = { id: resumeRuntimePolicy.thoughtLevelId, label: resumeRuntimePolicy.thoughtLevelId }
+        applyDelegationRuntimeSelection(selection, resumeRuntimePolicy)
         const aiPolicyView = aiPolicyRequest ? aiDelegationPolicyView({
           request: aiPolicyRequest, cardLevel: aiPolicyCardLevel, rule: aiPolicyRule, selection, policy: aiPolicySnapshot,
           adjustments: strategy === 'new' && aiPolicyRule ? aiDelegationPolicyAdjustments(body.newConversation, selection) : [],
@@ -12514,7 +12516,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
             const modelId = String(conversation?.extra?.current_model_id ?? '').trim()
               || aiConversationLinkFromAionUiConversation(conversation)?.model?.id || link.model?.id
             if (!modelId) throw new Error('후보 대화의 모델을 확인하지 못했습니다.')
-            return modelId
+            return { modelId, backend: conversation?.extra?.backend }
           }, { strategy, conversationId })
         } catch (error) {
           throwIfRuntimeStopping(error, runtimeLifecycle.signal)
@@ -12561,7 +12563,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           }
           if (!resumesInterruptedDelegation) {
             const currentModelId = conversation?.extra?.current_model_id || aiConversationLinkFromAionUiConversation(conversation)?.model?.id || linked?.model?.id
-            if (primarySelection && aiDelegationResumeModelMatches(aiPolicyRule, currentModelId) !== true) return sendAiDelegationResponse(
+            if (primarySelection && !delegationRuntimeCandidateMatches(
+              delegationResumeRuntimePolicy('resume', aiPolicyRule), currentModelId, conversation?.extra?.backend)) return sendAiDelegationResponse(
               response, 409, 'AI_DELEGATION_PRIMARY_MODEL_CHANGED', '담당 후보의 모델이 변경되었습니다. 최신 후보를 확인해 다시 요청하세요.')
             const contextHealth = await inspectAiConversationContextHealth(targetConversationId, conversation, targetHomeMachineId, {}, linked?.model?.id)
             if (primaryTargetChanged) conversationAssessmentId = contextHealth.assessmentId
@@ -12615,7 +12618,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!selection) return sendAiDelegationResponse(response, 409, 'AI_DELEGATION_SELECTION_UNRESOLVED',
         '위임 대화의 AI 종류와 모델 정보를 확인하지 못했습니다.')
       const resumeRuntimePolicy = delegationResumeRuntimePolicy(strategy, aiPolicyRule, interruptedResume)
-      if (resumeRuntimePolicy) selection.thoughtLevel = { id: resumeRuntimePolicy.thoughtLevelId, label: resumeRuntimePolicy.thoughtLevelId }
+      applyDelegationRuntimeSelection(selection, resumeRuntimePolicy)
       if (aiPolicyRequest) requestContext.aiPolicy = aiDelegationPolicyView({
         request: aiPolicyRequest, cardLevel: aiPolicyCardLevel, rule: aiPolicyRule, selection, policy: aiPolicySnapshot,
         adjustments: strategy === 'new' && aiPolicyRule ? aiDelegationPolicyAdjustments(body.newConversation, selection) : [],
@@ -12901,7 +12904,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       try {
         runtimePolicyVerification = await ensureDelegationRuntimePolicy({ conversationId: targetConversationId,
           policy: resumedDelegation ? null : resumeRuntimePolicy, fetchOn: fetchAionUiOn, machineId: targetHomeMachineId, signal: runtimeLifecycle.signal })
-        if (runtimePolicyVerification) selection.thoughtLevel = { id: runtimePolicyVerification.thoughtLevelId, label: runtimePolicyVerification.thoughtLevelId }
+        applyDelegationRuntimeSelection(selection, runtimePolicyVerification)
       } catch (error) {
         if (workspaceLease && !resumedDelegation) await workspacePoolManager.cancel(workspaceLease.leaseId, error.message)
         throw error

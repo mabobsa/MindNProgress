@@ -1,7 +1,7 @@
 import { aiConversationLinksFromData, primaryAiConversationIdFromData } from '../../src/utils/aiConversations.mjs'
 import { aiDelegationResumeModelMatches } from './aiDelegationPolicy.mjs'
 
-// 모델이 다를 때만 후보를 최신순으로 확인한다. 실행 중인 일치 대화도 유지하며 전달은 대기열이 맡는다.
+// 같은 CLI는 담당 대화를 유지하고 실행 직전에 모델을 바꾼다. 다른 CLI 후보만 최신순으로 확인한다.
 // 조회 실패를 일치 모델 없음으로 취급하면 중복 대화가 생기므로 실패는 호출자에게 그대로 전달한다.
 export async function resolvePrimaryConversationPolicy(data, rule, readModel, { handoffOnBackendChange = false } = {}) {
   const primaryConversationId = primaryAiConversationIdFromData(data)
@@ -17,6 +17,11 @@ export async function resolvePrimaryConversationPolicy(data, rule, readModel, { 
       currentModelId, expectedModelId: rule.modelId, strategy: 'new', requiresHandoff: true,
       previousBackend: current.backend, nextBackend: rule.agent.backend,
     }
+  }
+  if (rule.agent?.backend && current?.backend === rule.agent.backend
+    && aiDelegationResumeModelMatches(rule, currentModelId) !== true) return {
+    previousConversationId: primaryConversationId, conversationId: primaryConversationId,
+    currentModelId, expectedModelId: rule.modelId, strategy: 'resume', modelChange: true,
   }
   if (aiDelegationResumeModelMatches(rule, currentModelId) === true) return null
   for (const candidate of [...links].reverse()) {

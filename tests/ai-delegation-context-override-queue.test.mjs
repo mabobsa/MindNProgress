@@ -45,6 +45,7 @@ async function startAionUi(t, worker) {
   const posted = []
   const receipts = new Map()
   const effort = new Map()
+  const models = new Map()
   const upstream = createServer(async (request, response) => {
     const chunks = []
     for await (const chunk of request) chunks.push(chunk)
@@ -67,12 +68,15 @@ async function startAionUi(t, worker) {
     if (operation) return receipts.has(decodeURIComponent(operation[1])) ? send(receipts.get(decodeURIComponent(operation[1]))) : send({}, 404)
     const configId = url.pathname.split('/')[3]
     if (url.pathname.endsWith('/runtime/ensure')) return send({ runtime: { state: 'idle' },
-      config_options: [{ id: 'effort', category: 'thought_level',
+      config_options: [{ id: 'model', category: 'model', options: ['test-model', 'test-model-new'].map(value => ({ value })) },
+        { id: 'effort', category: 'thought_level',
         options: (configId === 'target-runtime-failed' ? ['high'] : ['xhigh', 'high']).map(value => ({ value })) }] })
-    if (url.pathname.endsWith('/runtime-config')) return send({ model: { value: 'test-model', source: 'runtime' },
+    if (url.pathname.endsWith('/runtime-config')) return send({ model: { value: models.get(configId) ?? 'test-model', source: 'runtime' },
       thought_level: { value: effort.get(configId) ?? 'high', source: 'runtime' } })
     if (request.method === 'PUT' && url.pathname.includes('/config-options/')) {
-      effort.set(configId, body.value); return send({ confirmation: 'observed' })
+      if (url.pathname.endsWith('/model')) models.set(configId, body.value)
+      else effort.set(configId, body.value)
+      return send({ confirmation: 'observed' })
     }
     if (/^\/api\/conversations\/[^/]+\/usage$/.test(url.pathname)) return send({ used: 170_000, size: 200_000 })
     if (/^\/api\/conversations\/[^/]+\/messages$/.test(url.pathname)) {
@@ -82,7 +86,7 @@ async function startAionUi(t, worker) {
     if (conversation) {
       return send({ id: decodeURIComponent(conversation[1]), name: '포화 예외 검증 대화', modified_at: '2026-10-30T00:00:00.000Z',
         runtime: { state: 'idle', is_processing: false, pending_confirmations: 0 },
-        extra: { agent_id: 'test-agent', current_model_id: 'test-model', workspace: worker } })
+        extra: { agent_id: 'test-agent', backend: 'codex', current_model_id: models.get(configId) ?? 'test-model', workspace: worker } })
     }
     return send({}, 404)
   })
@@ -249,7 +253,7 @@ for (const strategy of ['resume', 'new']) test(`재시작한 하위 위임 대�
     state: 'waiting-workspace', resource: { kind: 'workspace_pool', key: 'test', projectRoot: integration }, startedBy: 'user-admin',
     pendingInstruction: instruction,
     pendingSelection: aiDelegationSelectionFromSource({ agent: { id: 'test-agent', label: '검증 AI' }, model: { id: 'test-model', label: '검증 모델' }, workspace: worker }),
-    ...(strategy === 'resume' ? { resumeRuntimePolicy: { modelId: 'test-model', thoughtLevelId: 'xhigh' } } : {}),
+    ...(strategy === 'resume' ? { resumeRuntimePolicy: { modelId: name === 'stable' ? 'test-model-new' : 'test-model', thoughtLevelId: 'xhigh', ...(name === 'stable' ? { backend: 'codex' } : {}) } } : {}),
     pendingWorkspaceHint: integration, workspaceWaitStartedAt: '2026-11-11T00:00:00.000Z',
     workspaceWaitReasonCode: 'AI_WORKSPACE_ALLOCATION_PENDING',
     createdAt: `2026-11-11T00:00:0${index}.000Z`, updatedAt: '2026-11-11T00:00:00.000Z',
@@ -296,9 +300,12 @@ for (const strategy of ['resume', 'new']) test(`재시작한 하위 위임 대�
       assert.equal(aion.effort.has('target-runtime-failed'), false)
       assert.equal(aion.effort.get('target-stable'), 'xhigh')
       assert.equal(stable.runtimePolicyVerification.thoughtLevelId, 'xhigh')
+      assert.equal(stable.runtimePolicyVerification.previousModelId, 'test-model')
+      assert.equal(stable.runtimePolicyVerification.modelId, 'test-model-new')
     }
     const updated = (await second.get('/api/maps/map-primary')).map
     assert.equal(updated.nodes.find(node => node.id === 'stable').data.aiPrimaryConversationId, strategy === 'resume' ? 'target-stable' : 'new-primary')
+    if (strategy === 'resume') assert.equal(updated.nodes.find(node => node.id === 'stable').data.aiConversations.find(link => link.conversationId === 'target-stable').model.id, 'test-model-new')
     assert.equal(updated.nodes.find(node => node.id === 'changed').data.aiPrimaryConversationId, 'target-changed')
     assert.equal(updated.nodes.find(node => node.id === 'stable').data.aiConversations.length, strategy === 'resume' ? 2 : 3)
   } finally { await second.stop() }

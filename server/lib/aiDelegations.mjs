@@ -462,7 +462,7 @@ export function aiDelegationReportResult(delegation) {
 export function retryableExternalLimitCategory(error) {
   const message = String(error ?? '').trim()
   if (!message) return null
-  if (/usage[_ -]?(limit|cap)|credit[_ -]?limit|insufficient[_ -]?(credits?|quota)|quota.{0,24}(exceed|exhaust)|exceeded.{0,24}quota|(?:hit|reached|exceeded) your (?:weekly |daily |session )?limit|out of (?:extra )?usage|사용량.{0,12}(제한|한도|초과|소진)|크레딧.{0,12}(부족|소진)/iu.test(message)) {
+  if (/usage[_ -]?(limit|cap)|credit[_ -]?limit|insufficient[_ -]?(credits?|quota)|quota.{0,24}(exceed|exhaust)|exceeded.{0,24}quota|(?:hit|reached|exceeded) your (?:(?:\d+[- ]?(?:hour|hr|day|week)s?|weekly|daily|session|monthly|opus|sonnet) ){0,2}limit|out of (?:extra )?usage|사용량.{0,12}(제한|한도|초과|소진)|크레딧.{0,12}(부족|소진)/iu.test(message)) {
     return 'usage-limit'
   }
   if (/rate.?limit|too many requests|요청.{0,12}(제한|한도|초과)/iu.test(message)) return 'rate-limit'

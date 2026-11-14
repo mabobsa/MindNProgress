@@ -148,6 +148,20 @@ test('CLI 한도 오류 문구와 변경 없이 반납된 과거 위임도 복�
   assert.equal(retryableExternalLimitCategory('Selected model is at capacity. Please try a different model.'), 'model-capacity')
   assert.equal(retryableExternalLimitCategory('선택한 모델의 실행 용량이 부족합니다.'), 'model-capacity')
   assert.equal(retryableExternalLimitCategory('컴파일러의 배열 인덱스 초과'), null)
+  // Claude Code의 시간 단위·모델별 한도 문구(2026-11-13 JP-로비 위임이 재개 불가 실패로 분류된 문구 포함)
+  for (const message of ["You've hit your 5-hour limit · resets 9:10pm (Asia/Seoul)", 'You have reached your 5 hour limit',
+    "You've hit your weekly limit", "You've hit your weekly Opus limit", "You've reached your monthly limit"]) {
+    assert.equal(retryableExternalLimitCategory(message), 'usage-limit', message)
+  }
+  // 문맥·토큰 한도는 사용량 한도가 아니므로 재개 대상으로 분류하지 않는다.
+  for (const message of ["You've reached your token limit for this conversation", 'You hit your context limit']) {
+    assert.equal(retryableExternalLimitCategory(message), null, message)
+  }
+  const hourLimitFailure = { state: 'failed', childStatus: 'failed', childError: '하위 AI 작업이 완료되지 않았습니다.',
+    workspaceLease: { leaseId: 'released' },
+    workspaceResult: { status: 'failed-clean', childStatus: 'failed', childError: "You've hit your 5-hour limit · resets 9:10pm (Asia/Seoul)" } }
+  assert.equal(aiDelegationRecoveryAvailability(hourLimitFailure)?.recoveryAvailable, true, '변경 없이 반납된 5시간 한도 실패는 기존 작업 재개 대상이다.')
+  assert.equal(aiDelegationRecoveryAvailability(hourLimitFailure)?.recommendedAction, 'resume-existing')
   assert.equal(aiDelegationRecoveryAvailability({
     state: 'waiting-usage-limit', childStatus: 'failed', childError: 'usage limit exceeded',
     workspaceLease: { leaseId: 'released' },

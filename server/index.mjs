@@ -90,7 +90,7 @@ import {
   parseAiDelegationPolicyRequest,
   resolveAiDelegationPolicyRule,
 } from './lib/aiDelegationPolicy.mjs'
-import { applyDelegationRuntimeSelection, delegationResumeRuntimePolicy, delegationRuntimeCandidateMatches, ensureDelegationRuntimePolicy } from './lib/aiDelegationRuntimePolicy.mjs'
+import { AI_DELEGATION_RUNTIME_READY_TIMEOUT_MS, applyDelegationRuntimeSelection, delegationResumeRuntimePolicy, delegationRuntimeCandidateMatches, ensureDelegationRuntimePolicy } from './lib/aiDelegationRuntimePolicy.mjs'
 import { aiDelegationStartupFailureInstruction, isAiDelegationStartupFailure, queuedDelegationFailureReportPatch } from './lib/aiDelegationStartupFailure.mjs'
 import { createRootHandoffPlan, buildRootHandoffRequest, rootHandoffDocumentMatches, upgradeRootHandoffHash } from './lib/rootConversationHandoff.mjs'
 import { summarizeAiConversationMessages } from './lib/aiConversationMessageStatistics.mjs'
@@ -12910,8 +12910,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
 
       let runtimePolicyVerification
       try {
+        // 위임 접수 HTTP 요청 안의 경로다. 저장 기한·잠금을 오래 잡지 않도록 실행 환경 준비도 30초로 제한한다.
         runtimePolicyVerification = await ensureDelegationRuntimePolicy({ conversationId: targetConversationId,
-          policy: resumedDelegation ? null : resumeRuntimePolicy, fetchOn: fetchAionUiOn, machineId: targetHomeMachineId, signal: runtimeLifecycle.signal })
+          policy: resumedDelegation ? null : resumeRuntimePolicy, fetchOn: fetchAionUiOn, machineId: targetHomeMachineId, signal: runtimeLifecycle.signal,
+          startTimeoutMs: AI_DELEGATION_RUNTIME_READY_TIMEOUT_MS })
         applyDelegationRuntimeSelection(selection, runtimePolicyVerification)
       } catch (error) {
         if (workspaceLease && !resumedDelegation) await workspacePoolManager.cancel(workspaceLease.leaseId, error.message)

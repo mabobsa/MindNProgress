@@ -3,6 +3,10 @@ import { isAiModelBlocked } from './aiModelPolicy.mjs'
 import { setTimeout as pause } from 'node:timers/promises'
 
 export const AI_DELEGATION_RUNTIME_READY_TIMEOUT_MS = 30_000
+// 쉬고 있던 대화의 실행 환경을 메시지 없이 다시 띄우는 단계(대화 확인 + 첫 runtime/ensure)의 제한.
+// 문맥이 큰 Claude 대화는 세션 복원에 30초 넘게 걸릴 수 있다(2026-11-15 문맥 94% 검수 대화 9a68850f).
+// 실행 환경이 준비된 뒤의 모델·사고 레벨 확인·적용은 별도로 30초 제한을 쓴다.
+export const AI_DELEGATION_RUNTIME_START_TIMEOUT_MS = 90_000
 
 const failure = (suffix, message, status = 409) => Object.assign(new Error(message), {
   status, code: `AI_DELEGATION_POLICY_RUNTIME_${suffix}`, reasonCode: `AI_DELEGATION_POLICY_RUNTIME_${suffix}`,
@@ -24,13 +28,22 @@ export function applyDelegationRuntimeSelection(selection, policy) {
   selection.thoughtLevel = { id: policy.thoughtLevelId, label: policy.thoughtLevelId }
 }
 
-/** 실제 실행 직전에 같은 CLI의 모델과 사고 강도를 순서대로 맞춘다. 확인 실패 시 지시를 전송하지 않는다. */
+/**
+ * 실제 실행 직전에 같은 CLI의 모델과 사고 강도를 순서대로 맞춘다. 확인 실패 시 지시를 전송하지 않는다.
+ * startTimeoutMs는 실행 환경 준비 단계의 제한이다. HTTP 요청 안에서 부르는 경로는 요청 저장 기한을 넘기지 않도록 짧게 준다.
+ */
 export async function ensureDelegationRuntimePolicy({ conversationId, policy, fetchOn, machineId,
-  signal, now = () => performance.now(), wait = (ms) => pause(ms, undefined, { signal }) }) {
+  signal, now = () => performance.now(), wait = (ms) => pause(ms, undefined, { signal }),
+  startTimeoutMs = AI_DELEGATION_RUNTIME_START_TIMEOUT_MS }) {
   if (!policy) return null
   const base = `/api/conversations/${encodeURIComponent(conversationId)}`
-  const deadline = now() + AI_DELEGATION_RUNTIME_READY_TIMEOUT_MS
-  const timeout = () => failure('READINESS_TIMEOUT', '대상 대화의 실행 설정·사고 레벨 목록 준비 또는 적용 확인이 30초를 초과해 작업을 시작하지 않았습니다.', 504)
+  // 실행 환경 준비 단계와 실행 설정 확인 단계는 제한을 따로 쓴다. 단계마다 늦게 온 응답으로 지시를 전송하지 않는다.
+  let deadline = now() + startTimeoutMs
+  let timeout = () => failure('READINESS_TIMEOUT', `대상 대화의 실행 환경 준비가 ${Math.round(startTimeoutMs / 1000)}초를 초과해 작업을 시작하지 않았습니다.`, 504)
+  const startConfigPhase = () => {
+    deadline = now() + AI_DELEGATION_RUNTIME_READY_TIMEOUT_MS
+    timeout = () => failure('READINESS_TIMEOUT', '대상 대화의 실행 설정·사고 레벨 목록 준비 또는 적용 확인이 30초를 초과해 작업을 시작하지 않았습니다.', 504)
+  }
   const remaining = () => {
     signal?.throwIfAborted()
     const ms = Math.ceil(deadline - now())
@@ -78,6 +91,8 @@ export async function ensureDelegationRuntimePolicy({ conversationId, policy, fe
     // 종료된 런타임도 메시지를 보내지 않고 준비하여 실제 옵션 ID와 허용 값을 확인한다.
     let ensured = await call('/runtime/ensure', { method: 'POST' })
     assertIdle(ensured.runtime)
+    // 실행 환경이 준비됐다. 이후 모델·사고 레벨 카탈로그 확인과 적용은 새 30초 제한을 공유한다.
+    startConfigPhase()
     let before
     let option
     let previousModelId

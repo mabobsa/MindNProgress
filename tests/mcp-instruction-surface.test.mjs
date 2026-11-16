@@ -74,16 +74,20 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     //   저장 도구 23개의 설명 꼬리말에서 resultOnly 속성 설명과 같은 문장을 뺐다(B1). 83,542자 → 79,258자.
     // 2026-11-10: 그룹 지시에 담당·보조 역할과 규칙 모델별 담당 자동 선택을 추가한다.
     // 2026-11-11: 중단된 통합 충돌 복구에 원본 해시를 지정하는 선택적 줄바꿈 보존·정리를 추가한다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '95d8ad72e99d6eb4472b96d96f2d0cf5311ab97a127e8ed19d5556c1cfd335f0')
+    // 2026-11-16: 사용자 승인으로 start_card_conversation에 기존 대화 인계(targetConversationId)를 추가한다. 다른 도구 계약은 유지한다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '26c814a3bc093ce57cfed3ae198329a108cce8bc8899dd3a525a34b028e1d6db')
     // 2026-11-11: 자동 루트 인계의 후속 대화가 보내는 acceptHandoff 인수 확인을 추가한다.
     const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
     assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'cbbadb1bcdcd52704b0f93110816a129134d4a5b133c34c84fe7cb62601e7d5a')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 238)
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 239)
     const handoff = tools.find((tool) => tool.name === 'mindnprogress_start_card_conversation')
     assert.deepEqual(handoff.inputSchema.required, ['mapId', 'cardId', 'requestId'])
     assert.equal(handoff.inputSchema.properties.resultOnly.type, 'boolean')
     assert.equal(handoff.inputSchema.properties.acceptHandoff.type, 'boolean')
     assert.equal(handoff.inputSchema.properties.newConversation.properties.claudeAccountId.maxLength, 120)
+    assert.equal(handoff.inputSchema.properties.targetConversationId.maxLength, 120)
+    assert.match(handoff.inputSchema.properties.targetConversationId.description, /사용자가 최신 메시지에 직접 적은 ID만 허용.*AI가 후보를 골라 채우지 않으며 newConversation과 함께 보내지 않음/s)
+    assert.match(handoff.description, /newConversation\(새 대화\) 또는 targetConversationId\(기존 대화\).*사용자가 최신 메시지에 그 대화 ID를 직접 적은 경우에만/s)
     assert.match(handoff.description, /자기 원본 카드.*첫 메시지.*현재 대화는 중지하지.*같은 requestId/s)
     for (const tool of tools.filter((tool) => storageWriteTools.has(tool.name))) {
       assert.ok(tool.inputSchema.properties.requestId.pattern || tool.inputSchema.properties.proposalRequestId)

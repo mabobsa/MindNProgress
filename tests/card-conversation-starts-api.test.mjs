@@ -251,6 +251,148 @@ test('자기 카드 대화 인계는 원문·권한·중복 방지·원격 호�
   assert.ok(!calls.some(({ url }) => /stop|cancel|interrupt|archive/.test(url)), '이전 대화를 중지하거나 보관하지 않는다')
 })
 
+test('기존 대화 인계는 사용자가 최신 메시지에 대상 대화 ID를 직접 적었을 때만 접수하고 대상 대화 설정을 바꾸지 않는다', { timeout: 90_000 }, async (t) => {
+  const previous = 'a1b2c3d4', target = '5cc9748d', otherCard = '9d176fd2', workTarget = '19cccf84'
+  const posts = [], dispatches = new Map()
+  let messages = [], targetRuntime = { state: 'idle', is_processing: false, pending_confirmations: 0 }
+  const remote = createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://localhost').pathname
+    const chunks = []; for await (const chunk of req) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString() || '{}')
+    const send = (data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: status < 400, data })) }
+    if (url === `/api/conversations/${previous}/messages`) return send({ items: messages, has_more_before: false })
+    if (url === `/api/conversations/${target}`) return send({ id: target, runtime: targetRuntime,
+      extra: { agent_id: 'claude', current_model_id: 'opus', workspace: 'C:/Git/Example' } })
+    if (url === '/api/internal/external-conversation-dispatches' && req.method === 'POST') {
+      posts.push(body)
+      const dispatch = { operationId: body.operationId, conversationId: body.targetConversationId, state: 'running', turnId: `turn-${posts.length}` }
+      dispatches.set(body.operationId, dispatch)
+      return send(dispatch, 202)
+    }
+    const match = url.match(/^\/api\/internal\/external-conversation-dispatches\/([^/]+)$/)
+    if (match) { const record = dispatches.get(decodeURIComponent(match[1])); return send(record ?? {}, record ? 200 : 404) }
+    // 대상 대화의 실제 설정은 확인값(runtime)이 아니어도 인계를 막지 않는다. 기록만 한다.
+    if (url.endsWith('/runtime-config')) return send({ model: { value: 'opus', source: 'snapshot' } })
+    if (url === '/api/internal/conversation-runtimes/active') return send({ conversations: [] })
+    return send([])
+  })
+  await new Promise((resolve) => remote.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise((resolve) => remote.close(resolve)))
+  const link = (conversationId, agent, model) => ({ conversationId, homeMachineId: 'isolated-storage', agent, model,
+    workspace: 'C:/Git/Example', startedBy: { id: 'user-editor', label: '김용민' } })
+  const codex = { id: 'codex', label: 'Codex' }, claude = { id: 'claude', label: 'Claude' }
+  const api = await storageApi(t, { documents: 1,
+    env: { MNP_AIONUI_URL: `http://127.0.0.1:${remote.address().port}`, MNP_AI_DELEGATION_POLL_INTERVAL_MS: '600000' },
+    seed: async ({ data, ids }) => {
+      const map = fixture(ids[0])
+      map.nodes[0].data.aiConversationId = previous
+      map.nodes[0].data.aiPrimaryConversationId = previous
+      map.nodes[0].data.aiConversations = [link(previous, codex, { id: 'gpt-5', label: 'GPT-5' }),
+        link(target, claude, { id: 'opus', label: '대상 대화 모델 표시' }), link(workTarget, claude, { id: 'opus', label: 'Opus' })]
+      map.nodes[1].data.aiConversationId = otherCard
+      map.nodes[1].data.aiConversations = [link(otherCard, claude, { id: 'opus', label: 'Opus' })]
+      await writeFile(path.join(data, `${ids[0]}.json`), JSON.stringify(map))
+      await writeFile(path.join(data, '_ai-conversation-origins.json'), JSON.stringify([
+        ...[previous, target, workTarget].map((conversationId) => ({ mapId: ids[0], cardId: 'card-0', conversationId,
+          homeMachineId: 'isolated-storage', startedBy: 'user-editor' })),
+        { mapId: ids[0], cardId: 'card-1', conversationId: otherCard, homeMachineId: 'isolated-storage', startedBy: 'user-editor' },
+      ]))
+      // 대상 대화가 진행 중인 그룹 지시를 받고 있으면 인계하지 않는다.
+      await writeFile(path.join(data, '_group-document-instructions.json'), JSON.stringify([{
+        id: 'instruction-target', parentMapId: ids[0], parentCardId: 'card-0', parentConversationId: 'parent-elsewhere',
+        targetMapId: ids[0], targetCardId: 'card-0', state: 'delivered', targetConversationId: workTarget,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }]))
+    },
+  })
+  const [mapId] = api.ids
+  const endpoint = `/api/maps/${mapId}/cards/card-0/ai-conversation-starts`
+  const headers = { 'X-MNP-AI-Conversation-Id': previous, 'X-MNP-AI-Map-Id': mapId, 'X-MNP-AI-Card-Id': 'card-0' }
+  const request = (requestId, targetConversationId = target) => ({ requestId, predecessorConversationId: previous, targetConversationId,
+    initialMessage: 'Codex가 진행한 내용 인계 원문', decisionReason: '사용자가 기존 Claude 대화로 인계를 요청', approvalEvidence: `사용자: ${targetConversationId} 대화로 인계해줘` })
+  const start = (input) => api.call(endpoint, 'POST', input, headers)
+  const result = (requestId) => api.call(endpoint, 'POST', { requestId, resultOnly: true }, headers)
+  const currentMap = async () => (await api.call(`/api/maps/${mapId}`)).body.map
+  let clock = 1_000
+  const message = (position, text) => ({ id: `m-${clock}`, conversation_id: previous, type: 'text', position,
+    status: 'finish', hidden: false, content: { content: text }, created_at: clock++ })
+
+  // 사용자가 대상 ID를 직접 적지 않은 경우는 모두 생성·전송 없이 거절한다.
+  for (const [index, [label, rows]] of [
+    ['메시지 없음', []],
+    ['최신 사용자 메시지에 ID 없음', [message('right', `${target} 대화 상태를 알려줘`), message('left', '확인했습니다.'), message('right', '그 대화로 인계해줘')]],
+    ['AI 답변에만 ID', [message('right', '기존 Claude 대화로 인계할까?'), message('left', `${target} 대화로 인계할까요?`)]],
+    ['MnP 지시문의 ID', [message('right', `# MindNProgress 하위 AI 작업 결과\n\n대상 대화 ${target}로 인계하세요.`)]],
+    ['더 긴 낱말의 일부', [message('right', `${target}0 대화로 인계해줘`)]],
+    ['숨긴 사용자 메시지', [{ ...message('right', `${target} 대화로 인계해줘`), hidden: true }]],
+  ].entries()) {
+    messages = rows
+    const response = await start(request(`existing:case-${index}`))
+    assert.equal(response.status, 409, `${label}: ${JSON.stringify(response.body)}`)
+    assert.equal(response.body.code, 'CARD_CONVERSATION_START_TARGET_NOT_EXPLICIT', label)
+  }
+  for (const [label, input] of [
+    ['이전 대화와 같은 대상', request('existing:self', previous)],
+    ['새 대화 설정과 함께 지정', { ...request('existing:mixed'), newConversation: { agentId: 'claude', modelId: 'opus' } }],
+  ]) assert.equal((await start(input)).body.code, 'CARD_CONVERSATION_START_INVALID', label)
+  messages = [message('right', `${otherCard} 대화로 인계해줘`)]
+  assert.equal((await start(request('existing:other-card', otherCard))).body.code, 'CARD_CONVERSATION_START_TARGET_INVALID')
+  messages = [message('right', `${workTarget} 대화로 인계해줘`)]
+  const busy = await start(request('existing:busy-work', workTarget))
+  assert.equal(busy.body.code, 'CARD_CONVERSATION_START_TARGET_BUSY', JSON.stringify(busy.body))
+  assert.deepEqual(busy.body.blockers.map((item) => item.id), ['instruction-target'])
+  // 실행 중인 대상 대화에는 전송하지 않는다.
+  messages = [message('right', `${target} 대화로 인계해줘`)]
+  targetRuntime = { state: 'running', is_processing: true, pending_confirmations: 0 }
+  assert.equal((await start(request('existing:running'))).status, 202)
+  const running = await until(async () => {
+    const response = (await result('existing:running')).body
+    return response.state === 'failed' && response
+  }, '실행 중인 대상 대화를 거절하지 못했습니다.')
+  assert.equal(running.reasonCode, 'CARD_CONVERSATION_START_TARGET_BUSY')
+  assert.equal(posts.length, 0)
+
+  // 사용자가 최신 메시지에 대상 ID를 적으면(대소문자 무관) 기존 대화로 인계문을 보내고 대표 연결만 바꾼다.
+  targetRuntime = { state: 'idle', is_processing: false, pending_confirmations: 0 }
+  messages = [message('right', '인계 준비해줘'), message('left', '어느 대화로 인계할까요?'),
+    message('right', `${target.toUpperCase()} 대화로 인계해줘`)]
+  const linksBefore = (await currentMap()).nodes[0].data.aiConversations
+  const accepted = await start(request('existing:ok'))
+  assert.equal(accepted.status, 202, JSON.stringify(accepted.body))
+  assert.equal(accepted.body.handoffTarget, 'existing')
+  assert.equal(accepted.body.targetConversationId, target)
+  const ready = await until(async () => {
+    const response = (await result('existing:ok')).body
+    assert.notEqual(response.state, 'failed', JSON.stringify(response))
+    return response.state === 'ready' && response
+  }, '기존 대화 인계를 완료하지 못했습니다.')
+  assert.equal(ready.conversationId, target)
+  assert.equal(ready.requestedConfig.source, 'existing-conversation')
+  assert.equal(ready.requestedConfig.agentId, 'claude')
+  assert.equal(ready.runtimeConfig.model.source, 'snapshot')
+  assert.equal(posts.length, 1)
+  assert.equal(posts[0].strategy, 'resume')
+  assert.equal(posts[0].targetConversationId, target)
+  assert.equal(posts[0].actorConversationId, previous)
+  assert.equal(posts[0].create, undefined)
+  assert.match(posts[0].instruction, /^# MindNProgress 카드 대화 인계/)
+  assert.match(posts[0].instruction, /## 기존 대화 인계/)
+  assert.match(posts[0].instruction, /attributionToken: `/)
+  assert.ok(posts[0].instruction.endsWith('Codex가 진행한 내용 인계 원문'))
+  const map = await currentMap()
+  assert.equal(map.nodes[0].data.aiPrimaryConversationId ?? map.nodes[0].data.aiConversationId, target)
+  const linksAfter = map.nodes[0].data.aiConversations
+  assert.deepEqual(linksAfter.map((item) => item.conversationId).sort(), linksBefore.map((item) => item.conversationId).sort(), '연결을 새로 만들지 않는다')
+  assert.equal(linksAfter.find((item) => item.conversationId === target).model.label, '대상 대화 모델 표시', '대상 연결 설정을 덮어쓰지 않는다')
+  const stored = (await api.read('_card-conversation-starts.json')).find((item) => item.requestId === 'existing:ok')
+  assert.equal(stored.targetEvidence.messageId, messages.at(-1).id)
+  // 같은 요청의 재시도는 최신 메시지가 바뀌어도 다시 판정하지 않고 같은 결과를 돌려준다.
+  messages = [message('right', '고마워')]
+  const repeated = await start(request('existing:ok'))
+  assert.equal(repeated.body.repeated, true, JSON.stringify(repeated.body))
+  assert.equal(posts.length, 1)
+})
+
 test('단일 Claude 계정에서 default를 명시해도 유효한 인계로 접수한다', { timeout: 30_000 }, async (t) => {
   const requestId = 'single-default'
   const api = await storageApi(t, { documents: 1, seed: async ({ data, ids }) => {

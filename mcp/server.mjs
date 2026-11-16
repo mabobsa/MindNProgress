@@ -1835,16 +1835,17 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_start_card_conversation', '사용자 요청 또는 서버 위임 규칙 전환 안내에 따른 대화 인계를 위해 현재 대화가 연결된 자기 원본 카드에 후속 AionUi 대화를 생성하고 첫 메시지를 전달합니다. 같은 실행 머신만 지원하며 하위 카드 위임이나 worker 배정이 아닙니다. 현재 대화는 중지하지 않고, 새 대화의 실행 설정 일치와 필요한 인수 확인 후 대표 연결을 전환하며 이전 대화는 이력에 남깁니다. 진행 중인 위임·그룹 지시·복구가 있으면 먼저 마치세요. 최초 호출에는 predecessorConversationId, newConversation, initialMessage, decisionReason, approvalEvidence가 필요합니다. 재시도에는 같은 requestId를 유지하고 resultOnly=true로 처리 결과만 확인할 수 있습니다. starting·observing은 완료가 아니며 runtimeConfig의 source=snapshot은 실제 실행값 확인이 아닙니다. 외부 총괄의 회신 주소는 자동으로 바뀌지 않습니다.', {
+  registerTool(server, 'mindnprogress_start_card_conversation', '사용자 요청 또는 서버 위임 규칙 전환 안내에 따른 대화 인계를 위해 현재 대화가 연결된 자기 원본 카드에 후속 AionUi 대화를 생성하거나 사용자가 지정한 같은 카드의 기존 대화로 첫 메시지를 전달합니다. 같은 실행 머신만 지원하며 하위 카드 위임이나 worker 배정이 아닙니다. 현재 대화는 중지하지 않고, 후속 대화의 실행 확인(새 대화는 실행 설정 일치와 필요한 인수 확인) 후 대표 연결을 전환하며 이전 대화는 이력에 남깁니다. 진행 중인 위임·그룹 지시·복구가 있으면 먼저 마치세요. 최초 호출에는 predecessorConversationId, initialMessage, decisionReason, approvalEvidence와 newConversation(새 대화) 또는 targetConversationId(기존 대화) 중 하나가 필요합니다. 기존 대화 인계는 사용자가 최신 메시지에 그 대화 ID를 직접 적은 경우에만 접수됩니다. 재시도에는 같은 requestId를 유지하고 resultOnly=true로 처리 결과만 확인할 수 있습니다. starting·observing은 완료가 아니며 runtimeConfig의 source=snapshot은 실제 실행값 확인이 아닙니다. 외부 총괄의 회신 주소는 자동으로 바뀌지 않습니다.', {
     mapId: z.string().min(1).describe('현재 대화가 연결된 문서 ID'),
     cardId: z.string().min(1).max(120).describe('현재 대화가 연결된 자기 원본 카드 ID'),
     requestId: z.string().regex(CARD_CONVERSATION_START_REQUEST_ID).describe('인계 요청마다 새로 정하는 안정적인 멱등 키. 재시도와 결과 조회에는 같은 키를 유지'),
     resultOnly: z.boolean().optional().describe('true이면 mapId, cardId, requestId만으로 기존 요청 결과를 확인하고 미완료 단계를 복구'),
     acceptHandoff: z.boolean().optional().describe('서버가 요청한 루트 인계의 후속 대화에서 인계문·최신 카드 문맥을 확인한 뒤 resultOnly=true와 함께 보내는 인수 확인. 이전 대화는 사용할 수 없음'),
     predecessorConversationId: z.string().min(1).max(120).optional().describe('최초 호출 필수. 이 도구를 호출한 현재 대화 ID이며 카드 대표 대화와 일치해야 함'),
+    targetConversationId: z.string().min(1).max(120).optional().describe('기존 대화로 인계할 때만 지정. 같은 카드·실행 머신에 연결된 다른 대화 ID이며 사용자가 최신 메시지에 직접 적은 ID만 허용. AI가 후보를 골라 채우지 않으며 newConversation과 함께 보내지 않음'),
     machineId: z.string().max(64).optional().describe('생략하면 현재 대화의 실행 머신. 다른 머신으로 이전하지 않음'),
-    initialMessage: z.string().min(1).max(100000).optional().describe('최초 호출 필수. 새 대화에 전달할 첫 메시지 원문. 파일 경로 대신 읽은 원문을 그대로 전달'),
-    decisionReason: z.string().min(1).max(1000).optional().describe('최초 호출 필수. 새 대화로 인계하는 이유'),
+    initialMessage: z.string().min(1).max(100000).optional().describe('최초 호출 필수. 후속 대화에 전달할 첫 메시지 원문. 파일 경로 대신 읽은 원문을 그대로 전달'),
+    decisionReason: z.string().min(1).max(1000).optional().describe('최초 호출 필수. 인계하는 이유'),
     approvalEvidence: z.string().min(1).max(10000).optional().describe('최초 호출 필수. 사용자의 실제 인계 요청 또는 서버가 지정한 규칙 전환 안내와 확인 가능한 출처. 새 작업 범위의 승인을 만들어내지 않음'),
     newConversation: z.object({
       agentId: z.string().min(1).max(512), modelId: z.string().min(1).max(512),
@@ -1854,7 +1855,7 @@ async function main() {
       mcpIds: z.array(z.string().min(1).max(512)).max(128).optional(),
       workspace: z.string().min(1).max(4096).optional(),
       claudeAccountId: z.string().min(1).max(120).optional().describe('Claude 새 대화의 계정 ID(list_ai_conversations의 claudeAccount.id). 수동 인계에서 생략하면 호출한 현재 대화와 같은 계정. 서버가 요청한 루트 CLI 전환은 서버가 지정한 계정을 사용'),
-    }).optional().describe('최초 호출 필수. 수동 인계는 생략한 선택 항목을 이전 대화에서 상속하고 Claude 계정은 claudeAccountId로 지정 가능. 서버가 요청한 루트 인계는 안내받은 설정을 사용'),
+    }).optional().describe('새 대화 인계의 최초 호출 필수(targetConversationId와 함께 쓰지 않음). 수동 인계는 생략한 선택 항목을 이전 대화에서 상속하고 Claude 계정은 claudeAccountId로 지정 가능. 서버가 요청한 루트 인계는 안내받은 설정을 사용'),
   }, async ({ mapId, cardId, ...body }) => {
     const origin = delegationOriginForMap(mapId)
     return apiRequest(`/api/maps/${encodeURIComponent(mapId)}/cards/${encodeURIComponent(cardId)}/ai-conversation-starts`, {

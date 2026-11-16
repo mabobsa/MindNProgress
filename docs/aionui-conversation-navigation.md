@@ -14,7 +14,7 @@ AionUi 백엔드는 현재 대화가 MindNProgress 카드에 연결되어 있는
 
 ## 자기 카드의 후속 대화 시작
 
-`mindnprogress_start_card_conversation`은 사용자가 요청한 인계를 위해 현재 대화의 원본 카드에 후속 대화를 만든다. 그룹 총괄 루트도 사용할 수 있으며, 하위 카드 위임이나 worker 배정을 수행하지 않는다. 현재 대화와 같은 실행 머신만 지원한다.
+`mindnprogress_start_card_conversation`은 사용자가 요청한 인계를 위해 현재 대화의 원본 카드에 후속 대화를 만들거나, 사용자가 지정한 같은 카드의 기존 대화로 인계한다. 그룹 총괄 루트도 사용할 수 있으며, 하위 카드 위임이나 worker 배정을 수행하지 않는다. 현재 대화와 같은 실행 머신만 지원한다.
 
 서버 경로는 `POST /api/maps/{mapId}/cards/{cardId}/ai-conversation-starts`다. 호출 대화의 원본 카드·시작 편집자·머신 접근 권한을 확인한다. 보관·휴지통 문서, Ref·이미지 카드, 진행 중인 위임·그룹 지시·작업공간 복구가 있는 경우에는 새 인계를 시작하지 않는다. 호출하는 현재 대화의 실행 중 상태 자체는 차단 조건이 아니다.
 
@@ -23,6 +23,23 @@ AionUi 백엔드는 현재 대화가 MindNProgress 카드에 연결되어 있는
 Claude는 선택적인 `claudeAccountId`로 새 대화의 계정을 고를 수 있다. 값은 `list_ai_conversations`가 반환하는 `claudeAccount.id`와 같다. 생략하면 이 도구를 호출한 현재 대화와 같은 계정을 쓴다. AionUi가 반환한 현재 대화의 실제 계정을 우선하며, 값이 없으면 기본 계정이다. AionUi에서 그 대화를 확인하지 못하면 MnP 연결 기록, 그다음 기본 계정을 쓴다. 수동 인계에는 위임용 계정 정책을 적용하지 않는다. 서버 규칙에 따른 루트 CLI 전환은 서버가 확정한 후속 계정을 사용한다. 새 대화의 AI 종류에서 고를 수 없는 계정을 지정하면 `CARD_CONVERSATION_START_CLAUDE_ACCOUNT_INVALID`로 생성 전에 거절한다. 확정한 계정은 `requestedConfig.claudeAccountId`·`claudeAccount`로 반환한다.
 
 상속할 기본 외 계정이 목록에 없거나 목록 조회가 불완전하면 기본 계정으로 바꾸지 않고 같은 코드로 거절한다. 단일 계정 환경에서도 `claudeAccountId: "default"`는 허용한다. 기존 대화의 MCP 서버가 이전 스키마를 사용 중이면 새 계정 인자가 누락될 수 있으므로, 적용 시 MnP 서버 재시작과 함께 해당 대화의 MnP MCP도 재연결해야 한다.
+
+### 기존 대화로 인계
+
+`newConversation` 대신 `targetConversationId`를 보내면 새 대화를 만들지 않고 같은 카드에 이미 연결된 다른 대화로 인계문을 전달한다(2026-11-16). 둘은 함께 보낼 수 없고, 대상은 이전 대화와 달라야 한다.
+
+- 사용자가 대상 대화 ID를 직접 적은 경우에만 접수한다. 서버는 이전 대화의 가장 최근 사용자 메시지를 AionUi에서 읽어 다음을 모두 확인한다.
+  - 숨김이 아닌 텍스트 메시지다.
+  - MnP가 보낸 지시문(`# MindNProgress …`로 시작)이 아니다.
+  - 대상 대화 ID가 하나의 낱말로 들어 있다(대소문자 무관, 더 긴 낱말의 일부는 인정하지 않음).
+- 따라서 다음은 근거가 되지 않는다. AI가 적은 `approvalEvidence`, AI 답변에만 있는 ID, 더 이전 사용자 메시지의 ID. AI가 "이 대화로 인계할까요?"라고 묻고 사용자가 "응"이라고만 답한 경우도 근거가 아니다. 이때는 `CARD_CONVERSATION_START_TARGET_NOT_EXPLICIT`로 거절한다. 메시지를 읽지 못하면 `CARD_CONVERSATION_START_TARGET_UNVERIFIED`(503)이며, 같은 `requestId`로 다시 요청할 수 있다.
+- 확인한 메시지의 ID와 시각은 요청 기록의 `targetEvidence`에 남긴다. 같은 `requestId`의 재시도는 다시 판정하지 않는다.
+- 대상은 같은 카드에 연결되어 있고 같은 실행 머신이어야 한다. 아니면 `CARD_CONVERSATION_START_TARGET_INVALID`다.
+- 대상 대화에 진행 중인 위임·그룹 지시·작업공간이 있거나, 대상이 실행 중·확인 대기·상태 미확인이면 `CARD_CONVERSATION_START_TARGET_BUSY`다. worker 작업공간 대화는 `CARD_CONVERSATION_START_WORKER_FORBIDDEN`, 공통 정책에서 제한된 모델은 `CARD_CONVERSATION_START_MODEL_BLOCKED`로 거절한다.
+- 서버 규칙이 요청한 루트 인계에는 쓸 수 없다.
+- 전달은 위임 재개와 같은 `strategy: "resume"` 경로다. 인계문에는 「기존 대화 인계」 안내가 붙는다. 그 대화의 예전 기억보다 인계문과 최신 카드 문맥을 우선하라는 내용이다.
+- 대상 대화의 실행 설정은 바꾸거나 요구하지 않는다. 실제 값은 `runtimeConfig`에 기록만 한다. `requestedConfig.source`는 `existing-conversation`이고, 응답의 `handoffTarget`은 `existing`이다.
+- 첫 실행(`running`·`completed`와 `turnId`)을 확인하면 대표 연결을 대상 대화로 바꾼다. 카드의 연결 목록과 대상 연결의 기존 설정은 바꾸지 않는다.
 
 `initialMessage`에는 파일 경로 대신 파일에서 읽은 원문을 전달한다. 원문 앞에 작성자 귀속과 `get_context` 안내를 붙이며, 원문의 공백·줄바꿈은 보존한다. 입력 10만 자 또는 안내 포함 256 KiB를 넘으면 원문을 자르지 않고 거절한다. 응답에는 원문의 길이와 SHA-256만 반환하고 본문·귀속 토큰은 노출하지 않는다.
 

@@ -15,7 +15,7 @@ import { createIntegrationRecoveryQueue, integrationRecoveryPending, integration
 import { normalizeTrackedEolRecovery } from './lib/workspaceEolRecovery.mjs'
 import { createAiDelegationRequestFailures, safeDelegationFailureMessage, withDelegationTaskCompletion } from './lib/aiDelegationRequestFailures.mjs'
 import { aiRecordReferencesMaps, createAiDocumentRecordMap, removeAiDocumentRecords, aiDocumentDeletionBusy } from './lib/aiDocumentCleanup.mjs'
-import { buildCardConversationStartPrompt, cardConversationStartError, createCardConversationStarts, isCardConversationWorkerWorkspace } from './lib/cardConversationStarts.mjs'
+import { buildCardConversationStartPrompt, cardConversationStartError, createCardConversationStarts, explicitTargetConversationEvidence, isCardConversationWorkerWorkspace } from './lib/cardConversationStarts.mjs'
 import { cardConversationHandoffBlockers, cardConversationHandoffBlockersSummary } from './lib/cardConversationHandoffBlockers.mjs'
 import { createRuntimeLifecycle, installRuntimeShutdown } from './lib/runtimeLifecycle.mjs'
 import { createStartupTiming } from './lib/startupTiming.mjs'
@@ -6189,12 +6189,89 @@ function cardConversationHandoffBusy(conversationId, excludedInstructionId = nul
   return cardConversationHandoffBlockersFor(conversationId, excludedInstructionId).length > 0
 }
 
+function cardConversationWorkerRoots(machineId) {
+  return machineId === machineRegistry.mainMachineId
+    ? (localWorkspacePoolManager.registry?.workspaces ?? []).filter((item) => item.role === 'worker').map((item) => item.root)
+    : [
+      ...[...Object.values(remoteWorkspacePool.state?.reports ?? {}), ...Object.values(remoteWorkspacePool.state?.pools ?? {})]
+        .filter((item) => item.machineId === machineId).flatMap((item) => item.workspaces.map((worker) => worker.projectRoot)),
+      ...Object.values(remoteWorkspacePool.state?.leases ?? {}).filter((item) => item.ownership?.machineId === machineId).map((item) => item.projectRoot),
+    ]
+}
+
+// 사용자가 이전 대화의 최신 메시지에 대상 대화 ID를 직접 적었는지 AionUi 기록으로 확인한다.
+async function verifyExplicitCardConversationTarget({ machineId, predecessorConversationId, targetConversationId }) {
+  let page
+  try {
+    page = await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(predecessorConversationId)}/messages?limit=50&content_mode=full`,
+      { timeoutMs: 10_000, singleTarget: true, strictJson: true })
+  } catch (error) {
+    throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+    throw cardConversationStartError('CARD_CONVERSATION_START_TARGET_UNVERIFIED', '이전 대화의 사용자 메시지를 확인하지 못해 기존 대화 인계를 접수하지 않았습니다. 잠시 뒤 같은 requestId로 다시 요청하세요.', 503)
+  }
+  if (!Array.isArray(page?.items)) {
+    throw cardConversationStartError('CARD_CONVERSATION_START_TARGET_UNVERIFIED', '이전 대화의 사용자 메시지를 확인하지 못해 기존 대화 인계를 접수하지 않았습니다. 잠시 뒤 같은 requestId로 다시 요청하세요.', 503)
+  }
+  return explicitTargetConversationEvidence(page.items, { predecessorConversationId, targetConversationId })
+}
+
+// 기존 대화 인계는 대상 대화의 실제 설정을 그대로 쓴다. 실행 중이거나 worker 작업공간이면 전송하지 않는다.
+async function prepareExistingCardConversationStart(record, map, card) {
+  const targetConversationId = record.input.targetConversationId
+  const invalid = (message) => cardConversationStartError('CARD_CONVERSATION_START_TARGET_INVALID', message)
+  const link = aiConversationLinksFromData(card?.data).find((item) => item.conversationId === targetConversationId)
+  if (!link) throw invalid('대상 대화가 이 카드에 연결되어 있지 않습니다.')
+  let conversation
+  try {
+    conversation = await fetchAionUiOn(record.machineId, `/api/conversations/${encodeURIComponent(targetConversationId)}`, { timeoutMs: 5_000 })
+  } catch (error) {
+    if (error?.status === 404) throw invalid('대상 대화를 AionUi에서 찾을 수 없습니다.')
+    throw error
+  }
+  if (!conversation || Array.isArray(conversation) || String(conversation.id ?? '') !== targetConversationId) {
+    throw invalid('대상 대화를 AionUi에서 확인하지 못했습니다.')
+  }
+  const runtimeState = normalizeAiConversationRuntime(targetConversationId, conversation).state
+  if (runtimeState !== 'idle') {
+    throw cardConversationStartError('CARD_CONVERSATION_START_TARGET_BUSY', runtimeState === 'unknown'
+      ? '대상 대화의 실행 상태를 확인하지 못했습니다. AionUi 연결을 확인한 뒤 새 requestId로 요청하세요.'
+      : '대상 대화가 실행 중이거나 확인을 기다리고 있습니다. 대화가 끝난 뒤 새 requestId로 요청하세요.')
+  }
+  const actualModelId = String(conversation.extra?.current_model_id ?? '').trim()
+  const actualWorkspace = String(conversation.extra?.workspace ?? '').trim()
+  const actualAccountId = String(conversation.extra?.claude_account_id ?? '').trim()
+  const selection = aiDelegationSelectionFromSource({ ...link,
+    ...(actualModelId && actualModelId !== link.model?.id ? { model: { id: actualModelId, label: actualModelId } } : {}),
+    ...(actualWorkspace ? { workspace: actualWorkspace } : {}),
+    ...(actualAccountId ? { claudeAccountId: actualAccountId } : {}) })
+  if (!selection) throw invalid('대상 대화의 AI 종류와 모델을 확인하지 못했습니다.')
+  if (isAiDelegationModelBlocked(selection.model.id)) throw cardConversationStartError('CARD_CONVERSATION_START_MODEL_BLOCKED', '대상 대화의 모델이 공통 모델 정책에서 제한되어 있습니다.')
+  if (isCardConversationWorkerWorkspace(selection.workspace, cardConversationWorkerRoots(record.machineId))) {
+    throw cardConversationStartError('CARD_CONVERSATION_START_WORKER_FORBIDDEN', 'worker 작업공간의 대화는 위임으로만 사용합니다. 이 도구로 인계하지 마세요.')
+  }
+  return { async materialize() {
+    const { token, attribution } = issueDelegatedAttribution({ mapId: record.mapId, cardId: record.cardId, conversationId: targetConversationId,
+      selection, startedBy: record.startedBy, homeMachineId: record.machineId })
+    await persistAiAttributions()
+    return { attributionKey: sessionTokenKey(token), selection: attribution.selection,
+      requestedConfig: { agentId: selection.agent.id, modelId: selection.model.id, modeId: selection.mode?.id ?? null,
+        thoughtLevelId: selection.thoughtLevel?.id ?? null, enabledSkillIds: selection.enabledSkillIds,
+        disabledBuiltinSkillIds: selection.disabledBuiltinSkillIds, mcpIds: selection.mcpIds, workspace: selection.workspace,
+        claudeAccountId: selection.claudeAccountId ?? null, claudeAccount: null, source: 'existing-conversation' },
+      payload: { operationId: record.id, actorConversationId: record.predecessorConversationId, strategy: 'resume',
+        targetConversationId, instruction: buildCardConversationStartPrompt(record, token) } }
+  } }
+}
+
 const persistCardConversationStarts = () => persistSharedState(cardConversationStartsFile, () => [...cardConversationStartRecords.values()])
 const cardConversationStarts = createCardConversationStarts({
   records: cardConversationStartRecords,
   enrich(record) {
     const owner = [...groupDocumentInstructions.values()].find((item) => item.rootHandoff?.requestId === record.requestId)
     if (!owner) return record
+    if (record.input.targetConversationId) {
+      throw cardConversationStartError('CARD_CONVERSATION_START_POLICY_CHANGED', '서버가 요청한 루트 인계는 안내받은 설정의 새 대화로만 진행합니다. 기존 대화를 지정하지 마세요.')
+    }
     if (owner.state !== 'queued' || owner.targetMapId !== record.mapId || owner.targetCardId !== record.cardId
       || owner.startedBy !== record.startedBy || owner.rootHandoff.predecessorConversationId !== record.predecessorConversationId
       || owner.targetHomeMachineId !== record.machineId) {
@@ -6243,6 +6320,16 @@ const cardConversationStarts = createCardConversationStarts({
     if (record.machineId !== conversationHomeMachineId(record.predecessorConversationId, origin)) {
       throw cardConversationStartError('CARD_CONVERSATION_START_MACHINE_MISMATCH', '현재 대화와 같은 실행 머신에서 인계하세요. 머신 간 대화 이전은 지원하지 않습니다.')
     }
+    // 기존 대화 인계 대상은 같은 카드에 연결된 같은 실행 머신의 대화로 한정한다.
+    const targetConversationId = record.input.targetConversationId
+    if (targetConversationId) {
+      const targetOrigin = aiConversationOrigins.get(targetConversationId)
+      if (!targetOrigin || targetOrigin.mapId !== record.mapId || targetOrigin.cardId !== record.cardId
+        || !aiConversationLinksFromData(card.data).some((item) => item.conversationId === targetConversationId)
+        || conversationHomeMachineId(targetConversationId, targetOrigin) !== record.machineId) {
+        throw cardConversationStartError('CARD_CONVERSATION_START_TARGET_INVALID', '대상 대화가 이 카드에 연결된 같은 실행 머신의 대화가 아닙니다. 다른 카드나 머신의 대화로는 인계하지 않습니다.')
+      }
+    }
     if (initial && primaryAiConversationIdFromData(card.data) !== record.predecessorConversationId) {
       throw cardConversationStartError('CARD_CONVERSATION_START_REPRESENTATIVE_CHANGED', '현재 카드의 대표 대화가 이전 대화와 다릅니다.')
     }
@@ -6256,10 +6343,23 @@ const cardConversationStarts = createCardConversationStarts({
     if (aiConversationRemoval.isRemoving(record.predecessorConversationId)) {
       throw cardConversationStartError('CARD_CONVERSATION_START_REMOVAL_PENDING', '이전 대화의 삭제 처리가 진행 중입니다.')
     }
+    if (targetConversationId) {
+      // 전달 전에만 확인한다. 전달 뒤 인계를 받은 대화가 바로 시작한 작업이 대표 전환을 막지 않게 한다.
+      const targetBlockers = initial ? cardConversationHandoffBlockersFor(targetConversationId) : []
+      if (targetBlockers.length) {
+        throw Object.assign(cardConversationStartError('CARD_CONVERSATION_START_TARGET_BUSY',
+          `대상 대화의 진행 중인 위임·그룹 지시 또는 작업공간 복구·보고를 마친 뒤 인계하세요. 막고 있는 항목: ${cardConversationHandoffBlockersSummary(targetBlockers)}`),
+        { blockers: targetBlockers.slice(0, 20) })
+      }
+      if (aiConversationRemoval.isRemoving(targetConversationId)) {
+        throw cardConversationStartError('CARD_CONVERSATION_START_REMOVAL_PENDING', '대상 대화의 삭제 처리가 진행 중입니다.')
+      }
+    }
   },
   async prepare(record) {
     const map = await readMap(record.mapId)
     const card = map?.nodes.find((node) => node.id === record.cardId)
+    if (record.input.targetConversationId) return prepareExistingCardConversationStart(record, map, card)
     const previous = aiConversationLinksFromData(card?.data).find((item) => item.conversationId === record.predecessorConversationId)
     // Claude 계정은 요청값을 쓰고, 없으면 이 도구를 호출한 현재 대화와 같은 계정을 쓴다.
     // AionUi가 반환한 현재 대화의 실제 계정(값이 없으면 기본 계정)을 우선하고, 대화를 확인하지 못하면 연결 기록을 쓴다.
@@ -6282,14 +6382,7 @@ const cardConversationStarts = createCardConversationStarts({
         '새 대화의 AI 종류에서 선택할 수 없는 Claude 계정입니다. 계정 목록을 확인한 뒤 새 requestId로 요청하세요.', 400)
     }
     if (isAiDelegationModelBlocked(selection.model.id)) throw cardConversationStartError('CARD_CONVERSATION_START_MODEL_BLOCKED', '공통 모델 정책에서 허용된 모델로 인계하세요.')
-    const workerRoots = record.machineId === machineRegistry.mainMachineId
-      ? (localWorkspacePoolManager.registry?.workspaces ?? []).filter((item) => item.role === 'worker').map((item) => item.root)
-      : [
-        ...[...Object.values(remoteWorkspacePool.state?.reports ?? {}), ...Object.values(remoteWorkspacePool.state?.pools ?? {})]
-          .filter((item) => item.machineId === record.machineId).flatMap((item) => item.workspaces.map((worker) => worker.projectRoot)),
-        ...Object.values(remoteWorkspacePool.state?.leases ?? {}).filter((item) => item.ownership?.machineId === record.machineId).map((item) => item.projectRoot),
-      ]
-    if (isCardConversationWorkerWorkspace(selection.workspace, workerRoots)) {
+    if (isCardConversationWorkerWorkspace(selection.workspace, cardConversationWorkerRoots(record.machineId))) {
       throw cardConversationStartError('CARD_CONVERSATION_START_WORKER_FORBIDDEN', 'worker 작업공간은 위임으로만 배정할 수 있습니다. 이 도구로 점유하거나 인계하지 마세요.')
     }
     const title = await formatAiCardConversationTitle(map, card)
@@ -6311,6 +6404,17 @@ const cardConversationStarts = createCardConversationStarts({
     } }
   },
   async bind(record, conversationId) {
+    // 기존 대화는 카드 연결·원본 기록이 이미 있다. 연결 설정을 덮어쓰지 않고 이번 인계 귀속만 묶는다.
+    if (record.input.targetConversationId) {
+      if (conversationId !== record.input.targetConversationId) {
+        throw cardConversationStartError('CARD_CONVERSATION_START_BINDING_CONFLICT', '인계를 받은 대화가 지정한 대상 대화와 다릅니다.')
+      }
+      const attribution = aiAttributions.get(record.attributionKey)
+      if (!attribution) throw cardConversationStartError('CARD_CONVERSATION_START_ATTRIBUTION_MISSING', '대상 대화의 작성자 귀속 정보를 찾을 수 없습니다.')
+      aiAttributions.set(record.attributionKey, { ...attribution, conversationId })
+      await persistAiAttributions()
+      return
+    }
     const origin = aiConversationOrigins.get(conversationId)
     if (origin && (origin.mapId !== record.mapId || origin.cardId !== record.cardId || origin.homeMachineId !== record.machineId)) {
       throw cardConversationStartError('CARD_CONVERSATION_START_BINDING_CONFLICT', '생성된 대화가 다른 카드 또는 머신에 연결되어 있습니다.')
@@ -6347,6 +6451,7 @@ const cardConversationStarts = createCardConversationStarts({
     broadcastEvent({ type: 'ai-conversation-linked', mapId: map.id, nodeId: card.id, conversationId: record.conversationId,
       conversation: link, sourceClientId: null, updatedAt: updated.updatedAt, updatedBy: publicUser(user) })
   },
+  verifyExplicitTarget: verifyExplicitCardConversationTarget,
   call: fetchAionUiOn,
   background: (action) => trackStorageBackground(action, 'Card conversation start'),
   log: (record) => console.info('[Card conversation start]', JSON.stringify(record)),

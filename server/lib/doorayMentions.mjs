@@ -95,7 +95,8 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 export function createDoorayRequester(config, {
-  fetchImpl = fetch,
+  // 설정에 Dooray 연결 함수(외부 모듈 연결 지점, doorayTransport.mjs)가 있으면 그것을 쓴다.
+  fetchImpl = config?.fetch ?? fetch,
   sleep = defaultSleep,
   timeoutMs = 15_000,
   maxRetries = 4,
@@ -188,7 +189,7 @@ async function requestDoorayMentionProjects(request, onProgress = () => {}) {
 }
 
 export async function listDoorayMentionProjects(config, {
-  fetchImpl = fetch,
+  fetchImpl = config?.fetch ?? fetch,
   sleep = defaultSleep,
   timeoutMs = 15_000,
 } = {}) {
@@ -451,7 +452,7 @@ export async function collectDoorayMentions({
   webHostname = defaultWebHostname,
   cache = {},
 }, {
-  fetchImpl = fetch,
+  fetchImpl = config?.fetch ?? fetch,
   sleep = defaultSleep,
   now = () => new Date(),
   onProgress = () => {},

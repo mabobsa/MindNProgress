@@ -182,7 +182,8 @@ function throwForDoorayResponse(response, messages) {
 }
 
 export async function fetchDoorayTaskPreview(taskUrl, config, {
-  fetchImpl = fetch,
+  // 설정에 Dooray 연결 함수(외부 모듈 연결 지점, doorayTransport.mjs)가 있으면 그것을 쓴다.
+  fetchImpl = config?.fetch ?? fetch,
   timeoutMs = 8_000,
   now = () => new Date(),
 } = {}) {
@@ -238,7 +239,7 @@ export async function fetchDoorayTaskPreview(taskUrl, config, {
 }
 
 export async function fetchDoorayWikiPreview(wikiUrl, config, {
-  fetchImpl = fetch,
+  fetchImpl = config?.fetch ?? fetch,
   timeoutMs = 8_000,
   now = () => new Date(),
 } = {}) {
@@ -281,7 +282,7 @@ export async function fetchDoorayWikiPreview(wikiUrl, config, {
 }
 
 export async function fetchDoorayCommentAuthor(taskUrl, config, {
-  fetchImpl = fetch,
+  fetchImpl = config?.fetch ?? fetch,
   timeoutMs = 8_000,
 } = {}) {
   if (!config?.apiKey) {

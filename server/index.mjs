@@ -43,6 +43,7 @@ import {
 import { createGroupProjects, documentRoot, DOCUMENT_COORDINATOR_INSTRUCTION } from './lib/groupProjects.mjs'
 import { summarizeGroupContext } from './lib/groupContextSummary.mjs'
 import { createDocumentGroupMetadata, documentGroupFields } from './lib/documentGroupMetadata.mjs'
+import { createDoorayTransport } from './lib/doorayTransport.mjs'
 import {
   buildGroupDocumentInstruction,
   containsApprovalEvidenceDuplicate,
@@ -419,6 +420,8 @@ const workspacePoolRegistryFile = path.resolve(
 const imageAssetMaxBytes = Math.max(1_000_000, Number(process.env.MNP_IMAGE_MAX_BYTES) || 15_000_000)
 let activeAionUiBaseUrl = configuredAionUiBaseUrls[0] ?? fallbackAionUiBaseUrls[0]
 let doorayApiConfigPromise = null
+// 이 PC에서만 설정하는 Dooray 요청 외부 모듈 연결 지점(설정 파일은 데이터 폴더에 두며 저장소에 포함하지 않는다).
+const doorayTransport = createDoorayTransport({ settingsFile: path.join(dataDirectory, '_dooray-transport.json') })
 const doorayTaskPreviewCache = new Map()
 const doorayCommentAuthorCache = new Map()
 const doorayTaskTitleCacheDurationMs = 5 * 60 * 1000
@@ -1237,7 +1240,8 @@ async function readJsonBody(request) {
 }
 
 function getDoorayApiConfig() {
-  doorayApiConfigPromise ??= loadDoorayApiConfig()
+  // Dooray 요청은 연결 지점을 거친다. 데이터 폴더 설정이 없으면 원래 fetch와 같다(docs/dooray-transport.md).
+  doorayApiConfigPromise ??= loadDoorayApiConfig().then((config) => ({ ...config, fetch: doorayTransport }))
   return doorayApiConfigPromise
 }
 

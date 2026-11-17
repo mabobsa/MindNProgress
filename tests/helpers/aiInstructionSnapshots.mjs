@@ -1,3 +1,4 @@
+import { isAiDelegationStartupFailure, aiDelegationStartupFailureInstruction } from '../../server/lib/aiDelegationStartupFailure.mjs'
 import {
   AI_DELEGATION_FOLLOWUP_INSTRUCTION,
   AI_DELEGATION_REPORT_INSTRUCTION,
@@ -43,6 +44,7 @@ ${extract('function aiDelegationResultSection(', 'function aiDelegationRecoveryK
   readMap: async () => null, documentRoot: () => null,
   aiDelegationReportResult: () => ({ availability: 'captured', text: '구현과 검증을 완료했습니다.' }),
   aiDelegationSucceeded: () => true,
+  isAiDelegationStartupFailure, aiDelegationStartupFailureInstruction,
   prependAiConversationSource,
   resolveAiConversationSource: async (conversationId) => ({ conversationId, name: '하위 대화', displayLabel: '하위 대화' }),
   delegationTargetMachineId: () => 'machine-fixture',

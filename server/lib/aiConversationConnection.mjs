@@ -19,7 +19,7 @@ function identity(conversation) {
 }
 
 // 외부 조회 동안 문서 잠금을 잡지 않고, 최종 저장 시 카드와 소속을 다시 확인한다.
-export function createAiConversationConnection({ readContext, machinesForUser, findBinding, call,
+export function createAiConversationConnection({ readContext, machinesForUser, findBinding, call, assertOwner = () => {},
   isRemoving, withMutation, link, now = Date.now }) {
   const linking = new Set()
   const secret = randomBytes(32)
@@ -68,6 +68,7 @@ export function createAiConversationConnection({ readContext, machinesForUser, f
         throw conversationConnectionError('올바른 AionUi 대화 ID를 입력해 주세요.', 400)
       }
       const context = await readContext(user, mapId, cardId)
+      assertOwner(user, conversationId)
       const machines = machinesForUser(user)
       const results = await Promise.all(machines.map(async (machine) => {
         const { machineId, label, online } = machine
@@ -99,6 +100,7 @@ export function createAiConversationConnection({ readContext, machinesForUser, f
     async connect(user, mapId, cardId, previewToken) {
       const preview = verify(previewToken, user, mapId, cardId)
       const { conversationId, machineId } = preview
+      assertOwner(user, conversationId)
       if (linking.has(conversationId) || isRemoving(conversationId)) {
         throw conversationConnectionError('이 대화의 연결 또는 삭제를 처리 중입니다. 잠시 후 다시 조회해 주세요.')
       }
@@ -128,6 +130,7 @@ export function createAiConversationConnection({ readContext, machinesForUser, f
         }
         return await withMutation(mapId, async () => {
           const context = await readContext(user, mapId, cardId)
+          assertOwner(user, conversationId)
           if (!machinesForUser(user).some((item) => item.machineId === machineId)) {
             throw conversationConnectionError('대화가 속한 머신의 접근 권한이 변경되었습니다.', 403)
           }

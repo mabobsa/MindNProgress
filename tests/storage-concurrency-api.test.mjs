@@ -14,6 +14,18 @@ test('댓글·검토 1/10/20 동시 요청의 성공 효과와 권위 파일·�
       text: '검증 댓글입니다. '.repeat(100), createdAt: `2026-10-26T00:00:${String(i % 60).padStart(2, '0')}.000Z`, author: actor }))
     await writeFile(path.join(data, '_comments', `${ids[0]}.json`), JSON.stringify(comments))
   } })
+  // 이 검증은 처리량이 아니라 성공한 쓰기의 보존을 확인한다. 적용 전 잠금 거부만 계약에 따라 재시도한다.
+  let lockRetries = 0
+  async function callWithLockRetry(...args) {
+    for (let attempt = 0; ; attempt++) {
+      const result = await api.call(...args)
+      if (result.status !== 503 || result.body.code !== 'LOCK_WAIT_TIMEOUT' || attempt === 5) return result
+      assert.equal(result.body.outcome, 'not-applied')
+      assert.equal(result.body.retryable, true)
+      lockRetries++
+      await new Promise((resolve) => setTimeout(resolve, result.body.retryAfterMs))
+    }
+  }
   let fixtureIndex = 10
   for (const concurrency of [1, 10, 20]) for (let round = 0; round < 3; round++) {
     const id = api.ids[fixtureIndex++]
@@ -25,11 +37,11 @@ test('댓글·검토 1/10/20 동시 요청의 성공 효과와 권위 파일·�
       const before = (await api.call(`/api/maps/${id}`)).body.map
       const results = await Promise.all(wave.map(async (i) => {
         const text = `댓글 보존 ${concurrency}/${round}/${i}`
-        const comment = await api.call(`/api/maps/${id}/comments`, 'POST', { nodeId: `card-${i}`, text })
+        const comment = await callWithLockRetry(`/api/maps/${id}/comments`, 'POST', { nodeId: `card-${i}`, text })
         assert.equal(comment.status, 201, JSON.stringify(comment) + api.output())
         comments.push(comment.body.comment)
         const replacement = `검토 보존 ${concurrency}/${round}/${i}`
-        const review = await api.call(`/api/maps/${id}/shared-knowledge/reviews`, 'POST', { baseVersion: before.version,
+        const review = await callWithLockRetry(`/api/maps/${id}/shared-knowledge/reviews`, 'POST', { baseVersion: before.version,
           patches: [{ cardId: `card-${i}`, expectedSha256: createHash('sha256').update(knowledge).digest('hex'), reviewResult: 'cleaned', replacement }] })
         assert.ok([200, 409].includes(review.status), JSON.stringify(review) + api.output())
         if (review.status === 200) accepted.push({ i, replacement })
@@ -52,6 +64,7 @@ test('댓글·검토 1/10/20 동시 요청의 성공 효과와 권위 파일·�
     }
     t.diagnostic(JSON.stringify({ concurrency, round, comments: comments.length, reviewSuccess: accepted.length, explicitConflict: rejected.length }))
   }
+  t.diagnostic(JSON.stringify({ lockRetries }))
 })
 
 test('파일 교체 barrier 안에서 같은 문서 작성·조회는 대기하고 다른 문서는 처리된다', { timeout: 30_000 }, async (t) => {

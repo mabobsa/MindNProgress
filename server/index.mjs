@@ -1,3 +1,4 @@
+import { mainMachineAllowed, conversationOwners, conversationOwnedBy, integrationIdentityMatches, redactAttributionTokens } from './lib/aiAccessPolicy.mjs'
 import { createServer } from 'node:http'
 import { aiDelegationNotificationStatus, withAiDelegationNotificationStatus } from './lib/aiDelegationNotifications.mjs'
 import { createAiConversationRemoval, conversationRemovalError } from './lib/aiConversationRemoval.mjs'
@@ -651,6 +652,7 @@ function publicUser(user) {
 function accountUser(user) {
   return {
     ...publicUser(user),
+    mainMachineAllowed: mainMachineAllowed(user),
     active: user.active !== false,
     createdAt: user.createdAt ?? null,
     updatedAt: user.updatedAt ?? null,
@@ -998,8 +1000,51 @@ function machineLabel(machineId) {
 }
 
 function machineAccessibleByUser(user, machineId) {
+  const account = users.find((item) => item.id === user?.id)
+  if (!account || account.active === false || !canEdit(account)) return false
   const machine = findMachine(machineRegistry, machineId)
   return Boolean(machine && machineTargetableBy(machineRegistry, machine, machineViewer(user)))
+}
+
+function ownersOfConversation(conversationId, link) {
+  return conversationOwners(conversationId, { origins: aiConversationOrigins,
+    attributions: aiConversationAttributions.values(), transient: aiAttributions.values(), link })
+}
+
+function conversationAccessibleByUser(user, conversationId, link) {
+  user = users.find((item) => item.id === user?.id) ?? user
+  return conversationOwnedBy(user, ownersOfConversation(conversationId, link))
+    && machineAccessibleByUser(user, conversationHomeMachineId(conversationId, link))
+}
+
+function assertConversationOwner(user, conversationId, link) {
+  if (!conversationAccessibleByUser(user, conversationId, link)) {
+    throw Object.assign(conversationConnectionError('대화 시작자와 실행 머신 권한을 확인할 수 없습니다.', 403, 'AI_CONVERSATION_OWNER_DENIED'), { reasonCode: 'AI_CONVERSATION_OWNER_DENIED' })
+  }
+}
+
+// 일반 문서 저장으로 전용 대화 API의 소유권 검사를 우회하지 못하게 한다.
+function assertConversationContentAccess(user, before, after) {
+  const previous = new Map((before?.nodes ?? []).map((node) => [node.id, node]))
+  for (const node of after?.nodes ?? []) {
+    if (node.data?.reference) continue
+    const oldData = previous.get(node.id)?.data
+    const oldLinks = new Map(aiConversationLinksFromData(oldData).map((link) => [link.conversationId, link]))
+    for (const link of aiConversationLinksFromData(node.data)) {
+      const old = oldLinks.get(link.conversationId)
+      if (JSON.stringify(old) !== JSON.stringify(link)) assertConversationOwner(user, link.conversationId, old)
+    }
+    const primary = primaryAiConversationIdFromData(node.data)
+    if (primary && primary !== primaryAiConversationIdFromData(oldData)) {
+      assertConversationOwner(user, primary, oldLinks.get(primary))
+    }
+  }
+}
+
+function integrationIdentityAllowed(request) {
+  const scope = integrationRequestScope(request)
+  const attribution = aiAttributions.get(sessionTokenKey(String(request.headers['x-mnp-ai-attribution'] ?? '')))
+  return integrationIdentityMatches({ ...scope, attribution, owners: ownersOfConversation(scope.conversationId || attribution?.conversationId) })
 }
 
 function aionUiWebBaseUrlForMachine(machineId) {
@@ -1146,7 +1191,9 @@ function issueAttributionContinuation(request, attribution, scope, match) {
 }
 
 function attributedIntegrationUser(request) {
+  if (!integrationIdentityAllowed(request)) return null
   const editorId = String(request.headers['x-mnp-ai-editor-id'] ?? '').trim()
+    || ownersOfConversation(integrationRequestScope(request).conversationId)[0] || ''
   const editor = editorId
     ? users.find((candidate) => candidate.id === editorId && candidate.active !== false && canEdit(candidate))
     : null
@@ -2139,7 +2186,8 @@ const runnerApiLanReachable = (() => {
 })()
 
 function machineViewer(user) {
-  return { userId: user.id, isAdmin: user.role === 'admin' }
+  user = users.find((item) => item.id === user.id) ?? user
+  return { userId: user.id, isAdmin: user.role === 'admin', mainMachineAllowed: mainMachineAllowed(user) }
 }
 
 function userDistributedWork(user) {
@@ -3063,6 +3111,11 @@ async function advanceRootConversationHandoff(instruction) {
 }
 
 async function runGroupDocumentInstructionDispatch(instruction, user) {
+    if (!machineAccessibleByUser(user, instruction.targetHomeMachineId || machineRegistry.mainMachineId)
+      || instruction.strategy === 'resume' && !conversationAccessibleByUser(user, instruction.requestedConversationId)) {
+      return updateGroupDocumentInstruction(instruction.id, { state: 'expired', reasonCode: 'AI_CONVERSATION_OWNER_DENIED',
+        message: '대기 중 실행 머신 또는 대화 시작자 권한이 변경되어 지시를 전달하지 않았습니다.' })
+    }
     if (instruction.rootHandoff && !instruction.rootHandoff.completedAt) return advanceRootConversationHandoff(instruction)
     const validation = await validateQueuedGroupDocumentInstruction(instruction)
     if (!validation.valid) return updateGroupDocumentInstruction(instruction.id, {
@@ -3725,6 +3778,8 @@ async function dispatchPreparedAiDelegation({
   parentHomeMachineId = conversationHomeMachineId(parentAttribution?.conversationId),
   targetHomeMachineId = machineRegistry.mainMachineId,
 }) {
+  if (!machineAccessibleByUser(user, targetHomeMachineId)) throw conversationConnectionError('실행 머신 사용 권한이 해제되었습니다.', 403, 'AI_MACHINE_ACCESS_DENIED')
+  if (strategy === 'resume') assertConversationOwner(user, requestedConversationId)
   if (queuedDelegation?.primarySelection) {
     const current = await readMap(map.id)
     const card = current?.nodes.find((node) => node.id === targetCard.id)
@@ -6305,6 +6360,8 @@ const cardConversationStarts = createCardConversationStarts({
     const map = await readMap(record.mapId)
     const card = map?.nodes.find((node) => node.id === record.cardId)
     if (!map || map.trashedAt || !card) throw cardConversationStartError('CARD_CONVERSATION_START_CARD_NOT_FOUND', '인계할 카드를 찾을 수 없습니다.', 404)
+    assertConversationOwner(user, record.predecessorConversationId)
+    if (record.input.targetConversationId) assertConversationOwner(user, record.input.targetConversationId)
     if (resultOnly) return
     if (record.policyInstructionId) {
       const owner = groupDocumentInstructions.get(record.policyInstructionId)
@@ -6463,6 +6520,7 @@ const cardConversationStarts = createCardConversationStarts({
 })
 
 const aiConversationConnection = createAiConversationConnection({
+  assertOwner: assertConversationOwner,
   async readContext(_user, mapId, cardId) {
     documentReconstruction.assertWritable(mapId)
     const map = await readMap(mapId)
@@ -6665,7 +6723,7 @@ async function listCardAiConversations(user, mapId, card, { linkedOnly = false, 
       workspacePoolId: recordedWorkspacePoolId,
     }) ?? link
     const workspaceBinding = recordedWorkspacePool ? 'pool-rebindable' : 'fixed'
-    const accessible = machineAccessibleByUser(user, recordedLink.homeMachineId)
+    const accessible = conversationAccessibleByUser(user, recordedLink.conversationId, recordedLink)
     const homeMachine = findMachine(machineRegistry, recordedLink.homeMachineId)
     const machineOnline = recordedLink.homeMachineId === machineRegistry.mainMachineId
       || Boolean(homeMachine?.lastSeenAt
@@ -7413,6 +7471,7 @@ async function loadUsers() {
     .filter((user) => typeof user?.id === 'string' && typeof user?.email === 'string' && ['admin', 'editor', 'viewer'].includes(user.role))
     .map((user) => ({
       ...user,
+      mainMachineAllowed: typeof user.mainMachineAllowed === 'boolean' ? user.mainMachineAllowed : user.id === 'user-editor',
       active: user.active !== false,
       passwordHash: Buffer.from(String(user.passwordHash ?? ''), 'hex'),
     }))
@@ -9309,12 +9368,13 @@ async function executeStorageRequest(request, response, operation) {
     const resultOnly = request.headers['x-mnp-result-only'] === '1'
     if (requestId || resultOnly) {
       const runner = authorizeRunnerMcpRequest({ request, pathname: url.pathname, machineRegistry,
-        conversationOrigins: aiConversationOrigins, transientAttributions: aiAttributions.values(), users })
+        conversationOrigins: aiConversationOrigins, transientAttributions: aiAttributions.values(), attributionForToken: (key) => aiAttributions.get(key), users })
       if (runner.kind === 'rejected') throw storageRequestError(runner.code, runner.status)
       if (runner.kind === 'authorized') {
         request.headers.authorization = `Bearer ${integrationToken}`
         request.headers['x-mnp-ai-editor-id'] = runner.owner.id
       }
+      if (hasValidIntegrationBearer(request) && !integrationIdentityAllowed(request)) throw storageRequestError('AI_INTEGRATION_IDENTITY_MISMATCH', 403)
       const user = getCurrentUser(request)
       const declared = integrationRequestScope(request)
       const attribution = aiAttributions.get(sessionTokenKey(String(request.headers['x-mnp-ai-attribution'] ?? '')))
@@ -9416,6 +9476,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     machineRegistry,
     conversationOrigins: aiConversationOrigins,
     transientAttributions: aiAttributions.values(),
+    attributionForToken: (key) => aiAttributions.get(key),
     users,
   })
   if (runnerMcpAccess.kind === 'rejected') {
@@ -9429,6 +9490,9 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     // 이후 라우트는 기존 로컬 MCP와 같은 사용자 귀속·권한 검사를 그대로 사용한다.
     request.headers.authorization = `Bearer ${integrationToken}`
     request.headers['x-mnp-ai-editor-id'] = runnerMcpAccess.owner.id
+  }
+  if (hasValidIntegrationBearer(request) && !integrationIdentityAllowed(request)) {
+    return sendJson(response, 403, { code: 'AI_INTEGRATION_IDENTITY_MISMATCH', error: '요청 편집자와 대화 시작 기록이 일치하지 않습니다.' })
   }
   let delegationActionId = null
 
@@ -9858,11 +9922,21 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
       const normalized = normalizeSessionMessageRelayRequest(await readJsonBody(request))
       if (!normalized.ok) return sendJson(response, normalized.status, normalized.body)
+      const scope = integrationRequestScope(request)
+      const sender = getCurrentUser(request)
+      const fromOwners = ownersOfConversation(normalized.value.fromConversationId)
+      const toOwners = ownersOfConversation(normalized.value.to)
+      if (scope.conversationId !== normalized.value.fromConversationId || !sender
+        || fromOwners.length !== 1 || toOwners.length !== 1 || fromOwners[0] !== toOwners[0]
+        || fromOwners[0] !== sender.id) {
+        return sendJson(response, 403, { code: 'AI_SESSION_MESSAGE_OWNER_DENIED', error: '인증된 발신 대화와 같은 시작자의 대화에만 메시지를 전달할 수 있습니다.' })
+      }
       // 서브 머신 AionCore는 Runner 중계로 들어오므로 검증된 Runner 머신이 보낸 머신이다.
       const result = await relaySessionMessage({
         request: normalized.value,
         sourceMachineId: runnerMcpAccess.kind === 'authorized' ? runnerMcpAccess.machineId : machineRegistry.mainMachineId,
-        listMachines: sessionMessageRelayMachines,
+        listMachines: () => sessionMessageRelayMachines().filter((machine) => machineAccessibleByUser(sender, machine.machineId)
+          && [conversationHomeMachineId(scope.conversationId), conversationHomeMachineId(normalized.value.to)].includes(machine.machineId)),
         homeMachineIdOf: (conversationId) => aiConversationOrigins.get(conversationId)?.homeMachineId ?? null,
         callMachine: fetchAionUiOn,
       })
@@ -10820,12 +10894,18 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
 
       let reservation
-      const withLaunchResources = (action) => withResources([{ key: 'catalog', mode: 'read' }], () => withResources([
-        ...(launch.mapId ? [`doc:${launch.mapId}`] : []), ...sharedAiStateFiles.map(resourceForFile),
-        ...(launch.cardLayoutRequestId ? ['state:_card-layout-requests.json'] : []),
-        ...(launch.reconstructionRequestId ? ['state:_document-reconstruction-requests.json'] : []),
-        ...(launch.doorayApproval ? [`state:_dooray-responses/${launch.startedBy}.json`] : []),
-      ], action))
+      const withLaunchResources = (action) => withResources([{ key: 'catalog', mode: 'read' }], async () => {
+        // 배치 대화 연결도 원본과 Ref 표시를 함께 재검증하므로 Ref 문서를 먼저 보호한다.
+        const map = launch.cardLayoutRequestId && launch.mapId ? await readMap(launch.mapId) : null
+        const references = referenceTargets(map ?? { nodes: [] })
+        return withResources([
+          ...references.map((target) => ({ key: `doc:${target.mapId}`, mode: 'read' })),
+          ...(launch.mapId ? [`doc:${launch.mapId}`] : []), ...sharedAiStateFiles.map(resourceForFile),
+          ...(launch.cardLayoutRequestId ? ['state:_card-layout-requests.json'] : []),
+          ...(launch.reconstructionRequestId ? ['state:_document-reconstruction-requests.json'] : []),
+          ...(launch.doorayApproval ? [`state:_dooray-responses/${launch.startedBy}.json`] : []),
+        ], action)
+      })
       try {
         reservation = await withLaunchResources(async () => {
           if (launchCallbackReservations.has(tokenKey)) throw storageResourceError('LAUNCH_CONFIRMATION_PENDING', '같은 시작 요청을 확인 중입니다.')
@@ -10861,6 +10941,11 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         const actorNow = launch.startedBy === integrationUser.id ? integrationUser
           : users.find((candidate) => candidate.id === launch.startedBy && candidate.active !== false)
         if (!actorNow || !canEdit(actorNow)) throw storageRequestError('REQUEST_FORBIDDEN', 403)
+        const knownConversation = aiConversationOrigins.has(conversationId)
+          || [...aiConversationAttributions.values(), ...aiAttributions.values()].some((record) => record.conversationId === conversationId)
+        // 기존의 시작자 미상 기록에 새 시작 요청의 소유자를 덧씌우지 않는다.
+        assertConversationOwner(actorNow, conversationId, { conversationId,
+          startedBy: knownConversation ? undefined : launch.startedBy, homeMachineId: launch.homeMachineId })
         if (launchCallbackReservations.get(tokenKey)?.token !== reservation.token || aiConversationLaunches.get(tokenKey) !== launch
           || launch.expiresAt <= Date.now() || storageDigest(launch) !== reservation.launchHash
           || storageDigest(aiAttributions.get(launch.attributionKey) ?? null) !== reservation.attributionHash
@@ -11318,6 +11403,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!delegation || (delegation.parentMapId ?? delegation.mapId) !== parentMapId) {
         return sendJson(response, 404, { error: '복구할 AI 위임을 찾을 수 없습니다.' })
       }
+      assertConversationOwner(user, delegation.targetConversationId)
       const mapId = delegation.mapId
       const recoveryAvailability = aiDelegationRecoveryAvailability(delegation)
       const busyRecoveryOperation = aiDelegationBusyRecoveryOperation(delegation)
@@ -11480,6 +11566,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
 
       const linked = aiConversationLinksFromData(restoredTargetCard.data)
         .find((candidate) => candidate.conversationId === delegation.targetConversationId)
+      assertConversationOwner(user, delegation.targetConversationId, linked)
       let selection
       try {
         const conversation = await fetchAiConversationRuntime(delegation.targetConversationId)
@@ -11908,6 +11995,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           ? '현재 AionUi 대화가 시작된 그룹 총괄 루트 카드를 확인할 수 없습니다.'
           : '현재 그룹 총괄 루트 카드의 문서와 대화 범위가 필요합니다.',
       )
+      if (source.conversationId) assertConversationOwner(user, source.conversationId)
       const body = await readJsonBody(request)
       const id = String(body.idempotencyKey ?? '').trim()
       const targetMapId = String(body.targetMapId ?? '').trim()
@@ -12048,8 +12136,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         try {
           if (targetConversationRole === 'primary' && aiPolicyRule) {
             primaryResolution = await resolvePrimaryConversationPolicy(targetCard.data, aiPolicyRule, async (link) => {
-              const machineId = conversationHomeMachineId(link.conversationId, link)
-              if (!machineAccessibleByUser(user, machineId)) throw new Error('연결된 대화의 실행 머신에 접근할 수 없습니다.')
+              assertConversationOwner(user, link.conversationId, link)
               let conversation
               try { conversation = await fetchAiConversationRuntime(link.conversationId, link) }
               catch (error) { if (error.status === 404) return null; throw error }
@@ -12087,6 +12174,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
             ? conversationHomeMachineId(requestedConversationId, chosenLink)
             : resolveTargetMachineForUser(user, body.machineId || (primaryResolution ? conversationHomeMachineId(primaryBeforeRequest, previousLink) : undefined)).machineId
           if (strategy === 'resume') {
+            assertConversationOwner(user, requestedConversationId, chosenLink)
             const requestedMachineId = String(body.machineId ?? '').trim()
             const normalizedRequestedMachineId = normalizeMachineId(requestedMachineId)
             if (!primaryResolution && requestedMachineId && (!normalizedRequestedMachineId || normalizedRequestedMachineId !== targetHomeMachineId)) {
@@ -12335,6 +12423,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           response, 400, 'AI_DELEGATION_SCOPE_REQUIRED', '현재 상위 카드의 문서와 카드 범위가 필요합니다.',
         )
       }
+      if (source.conversationId) assertConversationOwner(user, source.conversationId)
       const body = await readJsonBody(request)
       const mapId = body.targetMapId === undefined ? parentMapId : String(body.targetMapId)
       if (!isValidMapId(mapId)) return sendAiDelegationResponse(
@@ -12405,6 +12494,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       let targetHomeMachineId
       try {
         if (strategy === 'resume' && conversationId) {
+          assertConversationOwner(user, conversationId)
           targetHomeMachineId = conversationHomeMachineId(conversationId)
           const requestedResumeMachineId = String(body.machineId ?? '').trim()
           const normalizedResumeMachineId = normalizeMachineId(requestedResumeMachineId)
@@ -12627,6 +12717,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (aiPolicyRule && !interruptedResume) {
         try {
           primarySelection = await resolveAiDelegationPrimary(targetCard.data, aiPolicyRule, async (link) => {
+            assertConversationOwner(user, link.conversationId, link)
             resolveTargetMachineForUser(user, conversationHomeMachineId(link.conversationId, link))
             let conversation
             try { conversation = await fetchAiConversationRuntime(link.conversationId, link) }
@@ -12651,6 +12742,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         if (primaryTargetChanged) conversationAssessmentId = ''
         if (strategy === 'resume') {
           const chosenLink = aiConversationLinksFromData(targetCard.data).find((link) => link.conversationId === targetConversationId)
+          assertConversationOwner(user, targetConversationId, chosenLink)
           targetHomeMachineId = resolveTargetMachineForUser(user, conversationHomeMachineId(targetConversationId, chosenLink)).machineId
           if (!await aionCoreSupportsExplicitCompletionAfterInterruption(targetHomeMachineId)) return sendAiDelegationResponse(
             response, 503, 'AIONCORE_EXPLICIT_COMPLETION_UNAVAILABLE', '담당 대화 머신의 AionCore를 최신 빌드로 재기동해 주세요.')
@@ -13280,8 +13372,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const linkedConversation = aiConversationLinksFromData(card.data)
         .find((link) => link.conversationId === conversationId)
       const homeMachineId = conversationHomeMachineId(conversationId, linkedConversation)
-      if (!machineAccessibleByUser(user, homeMachineId)) {
-        return sendJson(response, 403, { error: '이 대화가 저장된 서브 머신을 사용할 권한이 없습니다.' })
+      if (!conversationAccessibleByUser(user, conversationId, linkedConversation)) {
+        return sendJson(response, 403, { error: '대화 시작자와 실행 머신 권한을 확인할 수 없습니다.' })
       }
       try {
         return sendJson(response, 200, {
@@ -13375,7 +13467,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         })
         const link = aiConversationLinksFromData(card.data).find((item) => item.conversationId === body.conversationId)
         if (!link) return sendJson(response, 409, { error: '카드에 연결된 대화만 담당으로 선택할 수 있습니다.' })
-        if (!machineAccessibleByUser(user, conversationHomeMachineId(link.conversationId, link))) {
+        if (!conversationAccessibleByUser(user, link.conversationId, link)) {
           return sendJson(response, 403, { error: '해당 대화의 실행 머신을 사용할 권한이 없습니다.' })
         }
         const updated = primary === link.conversationId ? map : await saveMap(mapId, {
@@ -13475,8 +13567,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const linkedConversation = aiConversationLinksFromData(card.data)
         .find((link) => link.conversationId === conversationId)
       const homeMachineId = conversationHomeMachineId(conversationId, linkedConversation)
-      if (!machineAccessibleByUser(user, homeMachineId)) {
-        return sendJson(response, 403, { error: '이 대화가 저장된 서브 머신을 사용할 권한이 없습니다.' })
+      if (!conversationAccessibleByUser(user, conversationId, linkedConversation)) {
+        return sendJson(response, 403, { error: '대화 시작자와 실행 머신 권한을 확인할 수 없습니다.' })
       }
       const requestedLimit = Number(url.searchParams.get('limit') ?? 50)
       const before = String(url.searchParams.get('before') ?? '').trim()
@@ -13495,7 +13587,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         }
         const messages = Array.isArray(messagePage?.items) ? messagePage.items : []
         const exportedAt = new Date().toISOString()
-        const exported = buildAionUiConversationTranscript(conversation, messages, exportedAt)
+        const exported = buildAionUiConversationTranscript(redactAttributionTokens(conversation), redactAttributionTokens(messages), exportedAt)
         return sendJson(response, 200, {
           conversation: {
             id: conversation.id,
@@ -13528,7 +13620,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
                 ? '이 페이지보다 최신 메시지가 있어 현재 응답은 전체 전문이 아닙니다.'
                 : '이 페이지에 대화의 전체 메시지 범위가 포함되었습니다.',
           },
-          transcript: exported.transcript,
+          transcript: redactAttributionTokens(exported.transcript),
         })
       } catch (error) {
         throwIfRuntimeStopping(error, runtimeLifecycle.signal)
@@ -13557,8 +13649,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
       const linkedConversation = aiConversationLinksFromData(card.data)
         .find((link) => link.conversationId === conversationId)
-      if (!machineAccessibleByUser(user, conversationHomeMachineId(conversationId, linkedConversation))) {
-        return sendJson(response, 403, { error: '이 대화가 저장된 서브 머신을 사용할 권한이 없습니다.' })
+      if (!conversationAccessibleByUser(user, conversationId, linkedConversation)) {
+        return sendJson(response, 403, { error: '대화 시작자와 실행 머신 권한을 확인할 수 없습니다.' })
       }
       try {
         const result = await refreshConversationAttribution(mapId, cardId, conversationId, user.id, linkedConversation, {
@@ -14241,6 +14333,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           name,
           email,
           role: 'editor',
+          mainMachineAllowed: false,
           active: true,
           createdAt: now,
           updatedAt: now,
@@ -14293,6 +14386,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         if (users.some((candidate) => candidate.id !== editor.id && candidate.email.toLowerCase() === email)) {
           return sendJson(response, 409, { error: '이미 사용 중인 이메일입니다.' })
         }
+        if (body.mainMachineAllowed !== undefined && typeof body.mainMachineAllowed !== 'boolean') return sendJson(response, 400, { error: '메인 머신 허용 값은 boolean이어야 합니다.' })
+        if (body.mainMachineAllowed !== undefined) editor.mainMachineAllowed = body.mainMachineAllowed
         const wasActive = editor.active !== false
         editor.name = name
         editor.email = email
@@ -14762,6 +14857,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const body = await readJsonBody(request)
       if (!isValidMap(body.map)) return sendJson(response, 400, { error: '올바르지 않은 마인드맵 데이터입니다.' })
       if (body.color !== undefined && !mapColors.includes(body.color)) return sendJson(response, 400, { error: '올바르지 않은 문서 색상입니다.' })
+      assertConversationContentAccess(user, null, body.map)
       const mapId = request.storageNewMapId
       const map = await saveMap(mapId, body.map, user, body.title, body.color)
       const maps = await listMaps()
@@ -15328,6 +15424,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       if (!isValidMap(patchedMap)) {
         return sendJson(response, 400, { error: '올바르지 않은 마인드맵 데이터입니다.' })
       }
+      assertConversationContentAccess(user, existing, patchedMap)
       const normalizedIncomingMap = reconcileSharedKnowledgeReviews(existing, normalizeMapForPersistence(patchedMap))
       const contentChanged = JSON.stringify({ nodes: existing.nodes, edges: existing.edges }) !== JSON.stringify(normalizedIncomingMap)
       if (!contentChanged) return sendJson(response, 200, { map: existing, summary: mapSummary(existing) })
@@ -15385,6 +15482,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         if (existing?.trashedAt) return sendJson(response, 409, { error: '휴지통에 있는 문서는 변경할 수 없습니다.' })
         const body = await readJsonBody(request)
         if (!isValidMap(body.map)) return sendJson(response, 400, { error: '올바르지 않은 마인드맵 데이터입니다.' })
+        assertConversationContentAccess(user, existing, body.map)
         const normalizedIncomingMap = reconcileSharedKnowledgeReviews(existing, normalizeMapForPersistence(body.map))
         if (existing && body.force !== true) assertReplacementConditions(existing, body)
         else if (existing && body.baseLifecycleVersion !== undefined) assertLifecycle(existing, body.baseLifecycleVersion)
@@ -15473,6 +15571,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
   } catch (error) {
     throwIfRuntimeStopping(error, runtimeLifecycle.signal)
     if (error.storageResourceError) throw error
+    if (error?.conversationConnectionError) return sendJson(response, error.status, { error: error.message, code: error.code })
     if (error instanceof ContentConditionError) return sendJson(response, error.status, { error: error.message, code: error.code, ...error.details })
     if (error instanceof DocumentTrashReviewError) return sendJson(response, error.status, {
       error: error.message, code: error.code, ...(error.preview ? { preview: error.preview } : {}),

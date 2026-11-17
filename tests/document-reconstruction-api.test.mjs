@@ -49,7 +49,7 @@ test('보관·전환 HTTP/MCP 경로는 임시 서버에서 원본·댓글·이�
     throw new Error('시험 서버 시작 실패: ' + stderr)
   }
   await start()
-  const headers = { Authorization: `Bearer ${(await readFile(path.join(directory, '_integration-token'), 'utf8')).trim()}`, 'X-MNP-Editor-Id': 'user-editor', 'Content-Type': 'application/json' }
+  const headers = { Authorization: `Bearer ${(await readFile(path.join(directory, '_integration-token'), 'utf8')).trim()}`, 'X-MNP-AI-Editor-Id': 'user-admin', 'Content-Type': 'application/json' }
   const api = async (url, method = 'GET', body, customHeaders = headers) => {
     const res = await fetch(base + url, { method, headers: customHeaders, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     return { status: res.status, body: await res.json() }
@@ -165,6 +165,8 @@ test('보관·전환 HTTP/MCP 경로는 임시 서버에서 원본·댓글·이�
   // 새 MCP 도구의 실제 stdio 등록·직렬화·호출 확인. 실제 대화 get_context는 반복하지 않는다.
   mcp = new Client({ name: 'lifecycle-test', version: '1' })
   await mcp.connect(new StdioClientTransport({ command: process.execPath, args: ['mcp/server.mjs'], cwd: root, env, stderr: 'pipe' }))
+  const binding = await mcp.callTool({ name: 'mindnprogress_get_context', arguments: { mapId: source.id, cardId: 'root', editorId: 'user-admin' } })
+  assert.equal(binding.isError, undefined, JSON.stringify(binding))
   const tools = await mcp.listTools()
   for (const name of ['get_reconstruction_context', 'preview_reconstruction', 'apply_reconstruction', 'set_document_archive', 'rollback_reconstruction', 'get_reconstructions', 'list_archived_documents']) assert.equal(tools.tools.some((tool) => tool.name === 'mindnprogress_' + name), true)
   const mcpContext = await mcp.callTool({ name: 'mindnprogress_get_reconstruction_context', arguments: { mapIds: [source.id] } })
@@ -197,11 +199,11 @@ test('보관·전환 HTTP/MCP 경로는 임시 서버에서 원본·댓글·이�
   assert.equal(mcpRequest.isError, undefined, JSON.stringify(mcpRequest))
   assert.equal(JSON.parse(mcpRequest.content[0].text).revision, 1, '재시작 후 제안함 보존')
   const { approval: _unusedApproval, ...proposalPlan } = nextPlan
-  const mcpSubmitted = await mcp.callTool({ name: 'mindnprogress_submit_reconstruction_proposal', arguments: { requestId, baseRevision: 1, plan: proposalPlan, editorId: 'user-editor' } })
+  const mcpSubmitted = await mcp.callTool({ name: 'mindnprogress_submit_reconstruction_proposal', arguments: { requestId, baseRevision: 1, plan: proposalPlan, editorId: 'user-admin' } })
   assert.equal(mcpSubmitted.isError, undefined, JSON.stringify(mcpSubmitted))
   assert.equal(JSON.parse(mcpSubmitted.content[0].text).revision, 2)
   const proposalFile = await writePlanFile('mcp-proposal-plan.json', proposalPlan)
-  const fileSubmitted = await callJson('mindnprogress_submit_reconstruction_proposal', { requestId, baseRevision: 2, planFile: proposalFile.file, editorId: 'user-editor' })
+  const fileSubmitted = await callJson('mindnprogress_submit_reconstruction_proposal', { requestId, baseRevision: 2, planFile: proposalFile.file, editorId: 'user-admin' })
   assert.equal(fileSubmitted.isError, false, JSON.stringify(fileSubmitted.body))
   assert.equal(fileSubmitted.body.revision, 3)
   assert.equal(fileSubmitted.body.planFile.sha256, proposalFile.sha256)

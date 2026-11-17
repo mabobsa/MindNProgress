@@ -125,7 +125,7 @@ test('휴지통 영구 삭제는 해당 문서의 AI 기록을 지우고 무관�
     return { status: response.status, body: await response.json() }
   }
   await start()
-  headers = { Authorization: `Bearer ${(await readFile(path.join(data, '_integration-token'), 'utf8')).trim()}`, 'Content-Type': 'application/json' }
+  headers = { Authorization: `Bearer ${(await readFile(path.join(data, '_integration-token'), 'utf8')).trim()}`, 'X-MNP-AI-Editor-Id': 'user-admin', 'Content-Type': 'application/json' }
   const baseline = Object.fromEntries(await Promise.all(stores.map(async (store) => [store, await readJson(store)])))
   for (const store of stores) assert.ok(baseline[store].some((record) => relatedTo(record, [mapIds[0]])), `${store}: 기동 시 삭제 대상이 실제 로드되어야 한다.`)
   const originalRetainedMap = await readFile(path.join(data, `${mapIds[2]}.json`), 'utf8')

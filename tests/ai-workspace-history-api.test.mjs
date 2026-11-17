@@ -119,8 +119,7 @@ test('최근 AI 작업공간을 로그인 계정별로 공유하고 서버 재�
     assert.equal(createEditor.status, 201)
     const editorCookie = await login(baseUrl, 'workspace-editor@mind.local', 'workspace-editor-password')
     const editorHistory = await workspaceRequest(baseUrl, editorCookie)
-    assert.equal(editorHistory.response.status, 200)
-    assert.deepEqual(editorHistory.body.workspaces, [])
+    assert.equal(editorHistory.response.status, 400, '새 편집자의 메인 머신은 기본 불허다')
 
     const removedOnPc = await workspaceRequest(baseUrl, adminCookieOnPc, 'DELETE', {
       workspace: 'C:\\Git\\MindNProgress',
@@ -225,7 +224,8 @@ test('최근 이력은 계정·머신별로 저장하고 구버전 서버 이력
     assert.equal(editor.status, 201)
     const editorCookie = await login(baseUrl, 'machine-editor@mind.local', 'machine-editor-password')
     assert.equal((await workspaceRequest(baseUrl, editorCookie, 'GET', undefined, 'remote-one')).response.status, 400, '다른 사람의 서브 머신 이력에 접근하지 않는다')
-    assert.deepEqual((await workspaceRequest(baseUrl, editorCookie)).body.workspaces, [])
+    assert.equal((await workspaceRequest(baseUrl, editorCookie)).response.status, 400)
+    assert.equal((await api(`/api/admin/editors/${editor.body.editor.id}`, 'PATCH', { mainMachineAllowed: true })).status, 200)
     assert.equal((await api('/api/account/distributed-work', 'PUT', { enabled: true }, editorCookie)).status, 200)
     assert.equal((await api('/api/machines', 'POST', { machineId: 'editor-machine', label: '편집자 머신' }, editorCookie)).status, 200)
     assert.equal((await workspaceRequest(baseUrl, editorCookie, 'POST', { workspace: '/editor/project' }, 'editor-machine')).response.status, 200)

@@ -309,7 +309,7 @@ export function normalizeDistributedWorkSettings(value) {
 // 남의 장비에서 그 사람의 AionUi와 자격 증명으로 작업이 돌아가면 안 된다.
 export function machineTargetableBy(registry, machine, viewer) {
   if (!machine?.enabled) return false
-  if (machine.machineId === registry?.mainMachineId) return true
+  if (machine.machineId === registry?.mainMachineId) return viewer?.isAdmin === true || viewer?.mainMachineAllowed === true
   const userId = cleanText(viewer?.userId, 120)
   return Boolean(userId) && machine.ownerUserId === userId
 }
@@ -345,7 +345,7 @@ export function distributedWorkTargets(registry, value, viewer) {
 
   return {
     enabled: settings.enabled,
-    defaultMachineId: settings.defaultMachineId ?? normalized.mainMachineId,
+    defaultMachineId: settings.defaultMachineId ?? machines[0]?.machineId ?? null,
     machines,
   }
 }

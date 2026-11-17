@@ -252,6 +252,9 @@ test('로그인 계정의 실제 서버 API에서 제안 접수·삭제 초기�
   const editorResponse = await fetch(`${baseUrl}/api/admin/editors`, { method: 'POST', headers,
     body: JSON.stringify({ name: '설정 분리 검증', email: 'response-settings@mind.local', password }) })
   assert.equal(editorResponse.status, 201)
+  const settingsEditor = (await editorResponse.json()).editor
+  assert.equal((await fetch(`${baseUrl}/api/admin/editors/${settingsEditor.id}`, { method: 'PATCH', headers,
+    body: JSON.stringify({ mainMachineAllowed: true }) })).status, 200)
   const editorLogin = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: 'response-settings@mind.local', password }) })
   assert.equal(editorLogin.status, 200)

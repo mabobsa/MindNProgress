@@ -1,3 +1,4 @@
+import { applyDelegationRuntimeSelection } from '../server/lib/aiDelegationRuntimePolicy.mjs'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -47,6 +48,8 @@ function deliveryHarness({ remote = false, unavailable = false } = {}) {
     'groupDocumentInstructionContextReasonCode',
   ]
   const functions = vm.runInNewContext(names.map(serverFunction).join('\n') + '\n({' + names.join(',') + '})', {
+    machineAccessibleByUser: () => true, conversationAccessibleByUser: () => true,
+    ensureDelegationRuntimePolicy: async () => null, applyDelegationRuntimeSelection,
     createHash, prependAiConversationSource, resolveConversationSource, resolveConversationDisplay, createAionUiConversationWebUrl,
     // 체크포인트 지시는 server/lib/aiWorkspaceCheckpointInstruction.mjs로 옮겨져 서버 소스에서 잘라 오지 않는다.
     workspaceCheckpointInstruction,
@@ -96,7 +99,7 @@ function deliveryHarness({ remote = false, unavailable = false } = {}) {
     validAiConversationId: value => Boolean(value),
     protectAionUiConversationTitle: async () => {},
     linkGroupDocumentInstructionConversation: async () => ({ mapVersion: 1, linkError: null }),
-    updateGroupDocumentInstruction: async (_id, patch) => patch,
+    updateGroupDocumentInstruction: async (_id, patch) => { if (patch.state === 'failed') throw new Error(patch.message); return patch },
   })
   return {
     requests, delegation,

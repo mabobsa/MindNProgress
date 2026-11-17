@@ -24,7 +24,7 @@ import {
 } from '../server/lib/subMachines.mjs'
 
 const mainDescriptor = { machineId: 'desk-win', label: '메인 데스크탑', platform: 'win32' }
-const owner = { userId: 'user-editor', isAdmin: false }
+const owner = { userId: 'user-editor', isAdmin: false, mainMachineAllowed: true }
 const otherUser = { userId: 'user-other', isAdmin: false }
 const admin = { userId: 'user-admin', isAdmin: true }
 
@@ -211,7 +211,7 @@ test('위임은 본인 소유 서브 머신과 메인 머신에만 보낼 수 �
   assert.equal(machineTargetableBy(registry, macbook, otherUser), false)
   // 관리자도 남의 장비를 위임 대상으로 쓰지 않는다. 그 사람의 AionUi와 자격 증명이 쓰이기 때문이다.
   assert.equal(machineTargetableBy(registry, macbook, admin), false)
-  assert.equal(machineTargetableBy(registry, main, otherUser), true)
+  assert.equal(machineTargetableBy(registry, main, otherUser), false)
 })
 
 test('Runner 토큰은 해시로만 보관하고 발급한 머신에서만 검증에 성공한다', () => {
@@ -323,7 +323,7 @@ test('다른 사용자 소유 서브 머신은 위임 대상에서 제외한다'
 test('머신이 없는 레지스트리와 잘못된 입력에서도 위임 대상 조회가 안전하다', () => {
   assert.deepEqual(distributedWorkTargets(null, { enabled: true }, owner), {
     enabled: true,
-    defaultMachineId: '',
+    defaultMachineId: null,
     machines: [],
   })
 })

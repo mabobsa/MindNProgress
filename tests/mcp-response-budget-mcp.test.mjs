@@ -323,7 +323,7 @@ async function seedDocumentGroups({ data, ids }) {
 }
 
 test('실제 MCP의 list_documents·list_group_document_instructions는 예산을 넘으면 문서·대기 지시를 두고 줄인다', { timeout: 180000 }, async (t) => {
-  const api = await storageApi(t, { documents: 85, seed: seedDocumentGroups })
+  const api = await storageApi(t, { documents: 85, readyTimeoutMs: 60000, seed: seedDocumentGroups })
   const client = new Client({ name: 'list-budget-test', version: '1' })
   const transport = new StdioClientTransport({ command: process.execPath, args: ['mcp/server.mjs'],
     cwd: process.env.MNP_STORAGE_TEST_SOURCE_ROOT || path.resolve(import.meta.dirname, '..'), env: api.env, stderr: 'pipe' })

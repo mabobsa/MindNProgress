@@ -138,7 +138,7 @@ test('삭제된 대화의 일반 문서 위임을 후속 성공 또는 사용자
       trackedEolRecovery: { expectedHead: 'a'.repeat(40), files: [{ path: 'test.json', expectedSha256: 'b'.repeat(64) }] },
     })
     assert.equal(invalidEol.status, 400)
-    assert.match(invalidEol.body.error, /결과 보존 반환/)
+    assert.match(invalidEol.body.error, /결과.*보존 반환/)
 
     const closed = await api(cookie, `/api/maps/${mapId}/ai-delegations/discard-report/close`, 'POST', {
       expectedUpdatedAt: discard.updatedAt, sourceRevision: beforeMap.version, targetRevision: beforeMap.version,

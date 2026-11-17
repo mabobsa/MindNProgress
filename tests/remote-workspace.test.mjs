@@ -35,7 +35,9 @@ async function fixture(t, { remoteCommitPrefix } = {}) {
   const local = new WorkspacePoolManager({ registryFile, stateFile: path.join(root, 'local-state.json') })
   await local.initialize()
   let agent, lostAction = null, active = false
-  const remote = new RemoteWorkspacePool({ local, stateFile: path.join(root, 'remote-state.json'), mainMachineId: () => 'main',
+  // 모의 Runner는 정기 보고를 보내지 않는다. 실제 Git 실행 속도가 보고 만료 검증에 섞이지 않게 한다.
+  const reportTime = Date.now()
+  const remote = new RemoteWorkspacePool({ local, now: () => reportTime, stateFile: path.join(root, 'remote-state.json'), mainMachineId: () => 'main',
     callRunner: async (machineId, pathname, { body }) => {
       assert.equal(machineId, 'macbook'); assert.equal(pathname, '/mnp/workspaces')
       const result = await agent.execute(body)

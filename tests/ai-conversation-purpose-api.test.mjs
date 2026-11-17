@@ -104,7 +104,7 @@ test('지식·문서 정리 대화는 카드 대화로 연결하지 않고 계�
     const token = (await readFile(path.join(dataDirectory, '_integration-token'), 'utf8')).trim()
     const headers = {
       Authorization: `Bearer ${token}`,
-      'X-MNP-Editor-Id': 'ai-conversation-purpose-editor',
+      'X-MNP-AI-Editor-Id': 'user-admin',
       'Content-Type': 'application/json',
     }
     const createResponse = await fetch(`${baseUrl}/api/maps`, {

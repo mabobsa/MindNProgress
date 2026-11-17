@@ -160,7 +160,6 @@ for (const pending of [false, true]) test(`복구 API의 ${pending ? '응답 유
       { id: 'card-a', position: { x: 300, y: 0 }, data: { kind: 'task', label: '기존 작업', status: 'planned', progress: 0, isWork: true,
         description: '사용자 요구사항 원문', sharedKnowledge: '기존 결과 보존', aiConversationId: scope.conversationId } },
     ], edges: [{ id: 'edge', source: 'parent-card', target: 'card-a' }] }))
-    const originalMap = await readFile(mapFile, 'utf8')
     let mismatch = !pending, busy = true
     const posted = [], receipts = new Map()
     const upstream = createServer(async (request, response) => {
@@ -202,6 +201,8 @@ for (const pending of [false, true]) test(`복구 API의 ${pending ? '응답 유
         await new Promise(resolve => setTimeout(resolve, 100))
       }
       assert.ok(ready, errors)
+      // 시작 시 구버전 문서 정규화가 끝난 이후의 원문을 복구 동작과 비교한다.
+      const originalMap = await readFile(mapFile, 'utf8')
       const login = await fetch(baseUrl + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: 'admin@mind.local', password: 'test-busy-password' }) })
       assert.equal(login.status, 200)
@@ -234,7 +235,7 @@ for (const pending of [false, true]) test(`복구 API의 ${pending ? '응답 유
       assert.equal(await readFile(path.join(worker, 'work.txt'), 'utf8'), '보존할 작업 변경\n')
       const beforeRefresh = await readFile(file, 'utf8')
       const refreshed = await fetch(`${baseUrl}/api/maps/map-a/ai-delegations/${seed.id}/refresh`, { method: 'POST', headers,
-        body: JSON.stringify({ expectedUpdatedAt: preserved.updatedAt }) })
+        body: JSON.stringify({ expectedUpdatedAt: preserved.updatedAt, sourceRevision: 1, targetRevision: 1 }) })
       assert.equal(refreshed.status, 200, JSON.stringify(await refreshed.json()))
       assert.equal(await readFile(file, 'utf8'), beforeRefresh, '상태 조회가 과거 오류·다른 수동 턴을 현재 실행으로 적용하지 않는다.')
       assert.equal(posted.length, pending ? 0 : 1)

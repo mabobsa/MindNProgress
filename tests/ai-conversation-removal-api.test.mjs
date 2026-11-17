@@ -98,7 +98,7 @@ test('실제 삭제 API는 보관 검증·실행 및 공용 연결 보호·재�
     }
     assert.ok(ready, output)
     const token = (await readFile(path.join(directory, '_integration-token'), 'utf8')).trim()
-    const headers = { Authorization: `Bearer ${token}`, 'X-MNP-Editor-Id': 'removal-test', 'Content-Type': 'application/json' }
+    const headers = { Authorization: `Bearer ${token}`, 'X-MNP-AI-Editor-Id': 'user-admin', 'Content-Type': 'application/json' }
     const request = async (pathname, options = {}) => {
       const res = await fetch(`${base}${pathname}`, { headers, ...options })
       return { status: res.status, body: await res.json() }

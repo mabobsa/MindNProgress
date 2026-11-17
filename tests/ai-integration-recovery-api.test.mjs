@@ -97,7 +97,7 @@ for (const scenario of cases) test(scenario.name, { timeout: 90000 }, async t =>
   const wrongOrigin = await fetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
     'X-MNP-AI-Map-Id': 'map-test', 'X-MNP-AI-Card-Id': 'target' }, body: JSON.stringify(input) })
   assert.equal(wrongOrigin.status, 403)
-  assert.equal((await wrongOrigin.json()).code, 'AI_DELEGATION_RECOVERY_ORIGIN_MISMATCH')
+  assert.equal((await wrongOrigin.json()).code, 'AI_CONVERSATION_OWNER_DENIED')
   assert.equal((await post({ ...input, confirmApprovedScope: false })).status, 400)
   assert.equal((await post({ ...input, expectedUpdatedAt: '오래된 상태' })).status, 409)
   assert.equal((await post({ ...input, targetRevision: 2 })).status, 409)

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { findMachine, normalizeMachineId, verifyMachineToken } from './subMachines.mjs'
 
 export const RUNNER_MCP_MACHINE_HEADER = 'x-mnp-runner-mcp-machine-id'
@@ -50,6 +51,7 @@ export function authorizeRunnerMcpRequest({
   machineRegistry,
   conversationOrigins,
   transientAttributions = [],
+  attributionForToken = () => null,
   users,
 }) {
   const declaredMachineId = String(request?.headers?.[RUNNER_MCP_MACHINE_HEADER] ?? '').trim()
@@ -99,7 +101,10 @@ export function authorizeRunnerMcpRequest({
   }
 
   const declaredEditorId = String(request.headers['x-mnp-ai-editor-id'] ?? '').trim()
-  if (declaredEditorId && declaredEditorId !== owner.id) {
+  const tokenValue = String(request.headers['x-mnp-ai-attribution'] ?? '').trim()
+  const tokenAttribution = tokenValue ? attributionForToken(createHash('sha256').update(tokenValue).digest('hex')) : null
+  if (declaredEditorId && declaredEditorId !== owner.id
+    || tokenAttribution?.startedBy && tokenAttribution.startedBy !== owner.id) {
     return {
       kind: 'rejected',
       status: 403,

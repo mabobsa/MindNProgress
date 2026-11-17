@@ -75,7 +75,7 @@ test('전체 검색 API가 활성 문서·댓글·Ref 최신값과 커서 카탈
     const token = (await readFile(path.join(dataDirectory, '_integration-token'), 'utf8')).trim()
     const headers = {
       Authorization: `Bearer ${token}`,
-      'X-MNP-Editor-Id': 'user-editor',
+      'X-MNP-AI-Editor-Id': 'user-admin',
       'Content-Type': 'application/json',
     }
     const sourceResponse = await fetch(`${baseUrl}/api/maps`, {

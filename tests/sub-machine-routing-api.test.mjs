@@ -155,7 +155,7 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
     conversationId: 'legacy-main-conversation',
     mapId: 'legacy-map',
     cardId: 'legacy-card',
-  }]))
+  }, { conversationId: 'main-sender', mapId: 'legacy-map', cardId: 'legacy-card', startedBy: 'user-admin', homeMachineId: 'desk-win' }]))
   const port = 31_000 + Math.floor(Math.random() * 5_000)
   const baseUrl = `http://127.0.0.1:${port}`
   const server = spawn(process.execPath, ['server/index.mjs'], {
@@ -309,6 +309,25 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
     assert.equal(compactList.body.conversations[0].name, '맥북 대화')
     assert.equal(compactList.body.conversations[0].homeMachineLabel, '개발 맥북')
     assert.equal(compactList.body.conversations[0].contextHealth, undefined)
+
+    const integrationToken = (await readFile(path.join(dataDirectory, '_integration-token'), 'utf8')).trim()
+    let deliveredMessages = 0
+    const relayed = await requestWithRunner(baseUrl, runnerToken,
+      request(baseUrl, '', '/api/integrations/aionui/session-messages', 'POST', {
+        fromConversationId: 'main-sender', to: conversationId, message: '같은 계정의 메인에서 맥북으로 전달',
+      }, { Authorization: `Bearer ${integrationToken}`, 'X-MNP-AI-Conversation-Id': 'main-sender' }),
+      operation => {
+        if (operation.pathname === '/api/internal/session-messages/remote') {
+          deliveredMessages++
+          assert.equal(operation.body.fromConversationId, 'main-sender')
+          assert.equal(operation.body.to, conversationId)
+          return { accepted: true }
+        }
+        return subMachineResponse(operation, conversationId)
+      })
+    assert.equal(relayed.response.status, 200, JSON.stringify(relayed.body))
+    assert.equal(deliveredMessages, 1)
+
 
     assert.equal((await request(baseUrl, cookie, '/api/machines', 'POST', {
       machineId: 'offline-mac', label: '오프라인 맥북', platform: 'darwin',

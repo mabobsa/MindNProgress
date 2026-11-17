@@ -111,7 +111,7 @@ for (const groupCoordinator of [false, true]) test(`재시작 후 ${groupCoordin
   try {
     await start()
     const token = (await readFile(path.join(directory, '_integration-token'), 'utf8')).trim()
-    headers = { Authorization: `Bearer ${token}`, 'X-MNP-Editor-Id': 'user-editor', 'Content-Type': 'application/json' }
+    headers = { Authorization: `Bearer ${token}`, 'X-MNP-AI-Editor-Id': 'user-admin', 'Content-Type': 'application/json' }
     const created = await api('/api/maps', 'POST', { title: '보고 수신 회귀', map: {
       nodes: [
         { id: 'parent-card', type: 'mind', position: { x: 0, y: 0 }, data: { label: '상위', kind: 'root', aiConversationId: 'parent-report', status: 'in-progress', progress: 50 } },
@@ -158,8 +158,8 @@ for (const groupCoordinator of [false, true]) test(`재시작 후 ${groupCoordin
         parentConversationId: base.parentConversationId, resultHash: base.childResultHash, childTurnId: base.childTurnId } },
     ]), 'utf8')
     await writeFile(path.join(directory, '_ai-conversation-origins.json'), JSON.stringify([
-      { conversationId: 'parent-report', mapId, cardId: 'parent-card', startedBy: 'user-editor', linkedAt: base.createdAt },
-      { conversationId: 'other-parent', mapId, cardId: 'parent-card', startedBy: 'user-editor', linkedAt: base.createdAt },
+      { conversationId: 'parent-report', mapId, cardId: 'parent-card', startedBy: 'user-admin', linkedAt: base.createdAt },
+      { conversationId: 'other-parent', mapId, cardId: 'parent-card', startedBy: 'user-admin', linkedAt: base.createdAt },
     ]), 'utf8')
     await start()
     headers['X-MNP-AI-Map-Id'] = mapId

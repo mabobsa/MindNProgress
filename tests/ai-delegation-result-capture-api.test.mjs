@@ -78,7 +78,7 @@ test('위임 목록은 절단 메타데이터와 보관 원문 경로를 노출�
   try {
     await start()
     const token = (await readFile(path.join(directory, '_integration-token'), 'utf8')).trim()
-    headers = { Authorization: `Bearer ${token}`, 'X-MNP-Editor-Id': 'user-editor', 'Content-Type': 'application/json' }
+    headers = { Authorization: `Bearer ${token}`, 'X-MNP-AI-Editor-Id': 'user-admin', 'Content-Type': 'application/json' }
     const created = await api('/api/maps', 'POST', { title: '결과 캡처 회귀', map: {
       nodes: [
         { id: 'parent-card', type: 'mind', position: { x: 0, y: 0 }, data: { label: '상위', kind: 'root', aiConversationId: 'parent-conversation' } },

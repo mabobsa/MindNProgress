@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:net'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -8,6 +9,14 @@ import test from 'node:test'
 const projectDirectory = path.resolve(import.meta.dirname, '..')
 const adminEmail = 'machine-admin@mind.local'
 const adminPassword = 'machine-admin-password'
+
+async function availablePort() {
+  const probe = createServer()
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve))
+  const port = probe.address().port
+  await new Promise((resolve) => probe.close(resolve))
+  return port
+}
 
 async function waitForServer(baseUrl, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
@@ -74,7 +83,7 @@ async function apiRequest(baseUrl, cookie, pathname, method = 'GET', body) {
 
 test('머신 레지스트리와 사용자별 분산 작업 설정을 관리한다', { timeout: 60_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-'))
-  const port = 4_960
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   let server = startServer(dataDirectory, port)
 
@@ -175,7 +184,7 @@ test('머신 레지스트리와 사용자별 분산 작업 설정을 관리한�
 
 test('Runner 실행 주소는 API 포트가 아니라 브라우저와 같은 공개 주소를 쓴다', { timeout: 45_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-address-'))
-  const port = 4_972
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   // API는 루프백에만 바인딩된 상태다. 그래도 공개 주소로 접속하면 Runner가 동작해야 한다.
   const server = startServer(dataDirectory, port, { MNP_API_HOST: '127.0.0.1' })
@@ -198,7 +207,7 @@ test('Runner 실행 주소는 API 포트가 아니라 브라우저와 같은 공
 
 test('공개 주소가 루프백이면 Runner가 접속할 수 없다고 알린다', { timeout: 45_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-loopback-'))
-  const port = 4_977
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const server = startServer(dataDirectory, port, { MNP_PUBLIC_URL: `http://127.0.0.1:${port}` })
 
@@ -218,7 +227,7 @@ test('공개 주소가 루프백이면 Runner가 접속할 수 없다고 알린�
 
 test('서브 머신 접속 상태는 하트비트 시각으로 판정하고 메인 머신에는 없다', { timeout: 45_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-online-'))
-  const port = 4_973
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const server = startServer(dataDirectory, port)
 
@@ -257,7 +266,7 @@ test('서브 머신 접속 상태는 하트비트 시각으로 판정하고 메�
 
 test('편집자는 본인 서브 머신만 등록·관리하고 위임 대상으로 쓸 수 있다', { timeout: 60_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-owner-'))
-  const port = 4_967
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const server = startServer(dataDirectory, port)
 
@@ -308,7 +317,7 @@ test('편집자는 본인 서브 머신만 등록·관리하고 위임 대상으
 
     // 남의 장비는 위임 대상에도 오르지 않고 기본 머신으로 저장되지도 않는다.
     const otherTargets = await apiRequest(baseUrl, secondCookie, '/api/account/distributed-work', 'PUT', { enabled: true })
-    assert.deepEqual(otherTargets.body.targets.machines.map((machine) => machine.machineId), ['desk-win'])
+    assert.deepEqual(otherTargets.body.targets.machines.map((machine) => machine.machineId), [], '새 편집자는 메인 머신도 기본 불허한다')
     assert.equal((await apiRequest(baseUrl, secondCookie, '/api/account/distributed-work', 'PUT', {
       enabled: true, defaultMachineId: 'first-mac',
     })).response.status, 400)
@@ -318,7 +327,7 @@ test('편집자는 본인 서브 머신만 등록·관리하고 위임 대상으
       enabled: true, defaultMachineId: 'first-mac',
     })
     assert.deepEqual(ownerTargets.body.settings, { enabled: true, defaultMachineId: 'first-mac' })
-    assert.deepEqual(ownerTargets.body.targets.machines.map((machine) => machine.machineId), ['desk-win', 'first-mac'])
+    assert.deepEqual(ownerTargets.body.targets.machines.map((machine) => machine.machineId), ['first-mac'])
 
     // 관리자가 소유자를 생략하고 머신 정보를 고쳐도 관리자 소유로 이전되지 않는다.
     const adminUpdated = await apiRequest(baseUrl, adminCookie, '/api/machines', 'POST', {
@@ -359,7 +368,7 @@ test('편집자는 본인 서브 머신만 등록·관리하고 위임 대상으
 
 test('로그인하지 않으면 머신 목록과 분산 작업 설정을 사용할 수 없다', { timeout: 45_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-machines-auth-'))
-  const port = 4_961
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const server = startServer(dataDirectory, port)
 

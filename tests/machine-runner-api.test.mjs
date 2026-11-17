@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:net'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -8,6 +9,14 @@ import test from 'node:test'
 const projectDirectory = path.resolve(import.meta.dirname, '..')
 const adminEmail = 'runner-admin@mind.local'
 const adminPassword = 'runner-admin-password'
+
+async function availablePort() {
+  const probe = createServer()
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve))
+  const port = probe.address().port
+  await new Promise((resolve) => probe.close(resolve))
+  return port
+}
 
 async function waitForServer(baseUrl, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
@@ -97,7 +106,8 @@ async function registerMacbook(baseUrl, cookie) {
 
 test('원격 workspace 보고·등록 승인은 인증·coordinator·digest를 검증하고 일반 heartbeat와 분리한다', { timeout: 30_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-remote-api-'))
-  const baseUrl = 'http://127.0.0.1:4989'
+  const port = await availablePort()
+  const baseUrl = `http://127.0.0.1:${port}`
   const registry = path.join(dataDirectory, '_test-registry.json')
   const originUrl = 'https://example.invalid/project.git'
   await mkdir(path.join(dataDirectory, 'main')); await mkdir(path.join(dataDirectory, 'worker'))
@@ -106,7 +116,7 @@ test('원격 workspace 보고·등록 승인은 인증·coordinator·digest를 �
       { id: 'main', root: path.join(dataDirectory, 'main'), role: 'integration' },
       { id: 'worker', root: path.join(dataDirectory, 'worker'), role: 'worker' },
     ] }))
-  const server = startServer(dataDirectory, 4989, { MNP_WORKSPACE_POOL_REGISTRY: registry, MNP_TEST_CAPTURE_LOG: '1' })
+  const server = startServer(dataDirectory, port, { MNP_WORKSPACE_POOL_REGISTRY: registry, MNP_TEST_CAPTURE_LOG: '1' })
   let output = ''
   server.stdout.on('data', (chunk) => { output += String(chunk) })
   server.stderr.on('data', (chunk) => { output += String(chunk) })
@@ -140,7 +150,7 @@ test('원격 workspace 보고·등록 승인은 인증·coordinator·digest를 �
 
 test('AionUi 페어링 링크는 일회용 코드로 Runner 토큰을 교환하고 즉시 연결된다', { timeout: 60_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-runner-pairing-'))
-  const port = 4_991
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const server = startServer(dataDirectory, port, { MNP_PUBLIC_URL: baseUrl })
 
@@ -200,7 +210,7 @@ test('AionUi 페어링 링크는 일회용 코드로 Runner 토큰을 교환하�
 
 test('Runner가 오퍼레이션을 가져가 결과를 올리면 요청자에게 응답이 전달된다', { timeout: 60_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-runner-'))
-  const port = 4_962
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const server = startServer(dataDirectory, port)
 
@@ -238,7 +248,7 @@ test('Runner가 오퍼레이션을 가져가 결과를 올리면 요청자에게
 
 test('Runner가 실패를 올리면 요청자에게 실패로 전달한다', { timeout: 60_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-runner-fail-'))
-  const port = 4_963
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const server = startServer(dataDirectory, port)
 
@@ -274,7 +284,7 @@ test('Runner가 실패를 올리면 요청자에게 실패로 전달한다', { t
 
 test('토큰 재발급은 구 long-poll을 끊되 이미 가져간 결과 토큰은 허용한다', { timeout: 60_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-runner-reissue-'))
-  const port = 4_987
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const server = startServer(dataDirectory, port)
 
@@ -320,7 +330,7 @@ test('토큰 재발급은 구 long-poll을 끊되 이미 가져간 결과 토큰
 
 test('Runner 토큰이 없거나 틀리면 오퍼레이션을 가져갈 수 없다', { timeout: 60_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-runner-auth-'))
-  const port = 4_964
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const server = startServer(dataDirectory, port)
 
@@ -349,7 +359,7 @@ test('Runner 토큰이 없거나 틀리면 오퍼레이션을 가져갈 수 없�
 
 test('Runner가 연결되지 않은 머신 요청은 전달 상한이 지나면 실패한다', { timeout: 60_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-runner-offline-'))
-  const port = 4_965
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const server = startServer(dataDirectory, port, { MNP_MACHINE_DISPATCH_TIMEOUT_MS: '5000' })
 
@@ -370,7 +380,7 @@ test('Runner가 연결되지 않은 머신 요청은 전달 상한이 지나면 
 
 test('토큰을 발급하지 않은 머신과 등록되지 않은 머신은 즉시 사유를 알려준다', { timeout: 60_000 }, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-runner-unconfigured-'))
-  const port = 4_966
+  const port = await availablePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const server = startServer(dataDirectory, port)
 

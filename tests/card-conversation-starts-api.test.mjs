@@ -110,7 +110,7 @@ test('자기 카드 대화 인계는 원문·권한·중복 방지·원격 호�
   assert.equal((await api.call(endpoint.replace('card-0', 'card-1'), 'POST', request, headers())).body.code, 'CARD_CONVERSATION_START_OWN_CARD_REQUIRED')
   assert.equal((await start({ ...request, predecessorConversationId: 'forged' })).body.code, 'CARD_CONVERSATION_START_PREDECESSOR_MISMATCH')
   assert.equal((await start({ ...request, machineId: 'other-machine' })).status, 403)
-  for (const [index, id, code] of [[1, 'other-owner', 'CARD_CONVERSATION_START_FORBIDDEN'],
+  for (const [index, id, code] of [[1, 'other-owner', 'AI_INTEGRATION_IDENTITY_MISMATCH'],
     [2, 'busy', 'CARD_CONVERSATION_START_WORK_BUSY'], [3, 'ref', 'CARD_CONVERSATION_START_ORIGINAL_CARD_REQUIRED']]) {
     const response = await api.call(endpoint.replace('card-0', `card-${index}`), 'POST',
       { ...request, predecessorConversationId: id }, { ...headers(id), 'X-MNP-AI-Card-Id': `card-${index}` })

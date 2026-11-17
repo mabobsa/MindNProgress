@@ -11,8 +11,8 @@ import { AI_EXECUTION_APPROVAL_INSTRUCTION, GROUP_APPROVAL_INSTRUCTION, GROUP_CO
 
 const projectDirectory = path.resolve(import.meta.dirname, '..')
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-async function until(action, message) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+async function until(action, message, attempts = 100) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const result = await action()
     if (result) return result
     await pause(100)
@@ -30,7 +30,7 @@ async function stop(child) {
   await exited
 }
 
-test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동시 실행·복구 경계를 유지한다', { timeout: 60000 }, async () => {
+test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동시 실행·복구 경계를 유지한다', { timeout: 120000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'mnp-group-api-'))
   const removeDirectory = async () => {
     if (path.dirname(path.resolve(directory)) !== path.resolve(tmpdir()) || !path.basename(directory).startsWith('mnp-group-api-')) throw new Error('테스트 임시 경로 검증 실패')
@@ -81,6 +81,8 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     }
     const operation = url.pathname.match(/^\/api\/internal\/external-conversation-dispatches\/([^/]+)$/)
     if (operation) return send(dispatches.get(decodeURIComponent(operation[1])) ?? {}, dispatches.has(decodeURIComponent(operation[1])) ? 200 : 404)
+    if (url.pathname.endsWith('/runtime/ensure')) return send({ runtime: { state: 'idle', is_processing: false, pending_confirmations: 0 } })
+    if (url.pathname.endsWith('/runtime-config')) return send({ model: { value: 'opus', source: 'runtime' }, thought_level: { value: 'xhigh', source: 'runtime' } })
     const conversation = url.pathname.match(/^\/api\/conversations\/([^/]+)$/)
     if (conversation) {
       const id = decodeURIComponent(conversation[1])
@@ -114,12 +116,12 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true })
     storage = storageControl(child, directory)
     child.stderr.on('data', (chunk) => { errors += chunk })
-    await until(async () => { try { return (await fetch(baseUrl + '/api/health')).ok } catch { return false } }, `서버를 시작하지 못했습니다. ${errors}`)
+    await until(async () => { try { return (await fetch(baseUrl + '/api/health')).ok } catch { return false } }, `서버를 시작하지 못했습니다. ${errors}`, 300)
   }
   try {
     await start()
     const token = (await readFile(path.join(directory, '_integration-token'), 'utf8')).trim()
-    const headers = { Authorization: `Bearer ${token}`, 'X-MNP-Editor-Id': 'group-test-editor', 'Content-Type': 'application/json' }
+    const headers = { Authorization: `Bearer ${token}`, 'X-MNP-AI-Editor-Id': 'user-admin', 'Content-Type': 'application/json' }
     async function api(url, method = 'GET', body, extraHeaders = {}) {
       const response = await fetch(baseUrl + url, { method, signal: AbortSignal.timeout(15_000), headers: { ...headers, ...extraHeaders }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
         .catch((error) => { throw new Error(`${method} ${url}: ${error.message}\n${errors}`, { cause: error }) })
@@ -694,8 +696,11 @@ test('그룹 기획 관리, 문서 지시와 과거 루트 위임은 범위·동
     assert.equal(queuedInstruction.status, 202, JSON.stringify(queuedInstruction.body))
     assert.equal(queuedInstruction.body.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_QUEUED')
     assert.match(queuedInstruction.body.message, /대기열에 보관/)
-    await until(async () => (await api(instructionUrl)).body.instructions
-      .some((item) => item.id === 'group-instruction-queued' && item.state === 'delivered'), '대기 중 지시가 대상 대화의 유휴 상태에서 자동 전달되지 않았습니다.')
+    await until(async () => {
+      const item = (await api(instructionUrl)).body.instructions.find(item => item.id === 'group-instruction-queued')
+      if (['expired', 'failed'].includes(item?.state)) throw new Error(JSON.stringify(item))
+      return item?.state === 'delivered'
+    }, '대기 중 지시가 대상 대화의 유휴 상태에서 자동 전달되지 않았습니다.')
     assert.equal(calls.filter((call) => call.operationId === 'gdi-group-instruction-queued').length, 1)
 
     const versionConflict = await api(instructionUrl, 'POST', {

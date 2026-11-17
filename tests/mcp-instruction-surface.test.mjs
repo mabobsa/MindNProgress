@@ -147,7 +147,9 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
       // 과거 기준선은 보존하고 사용자가 변경한 화면 명칭만 현재 이름으로 대조한다.
       const expectedDescription = tool.name === 'mindnprogress_get_dooray_response_approval'
         ? original.slice(1, -1).replace(/^Dooray 참조에서/, 'Dooray 업무 대응에서')
-        : original.slice(1, -1)
+        : tool.name === 'mindnprogress_set_document_archive'
+          ? original.slice(1, -1).replace('그룹 총괄 문서는 기준점으로 유지합니다.', '그룹 총괄 문서는 다른 활성 문서와 진행 중인 위임·복구·문서 지시가 없을 때만 개별 보관할 수 있으며 그룹 기획·승인 기록은 보존됩니다.')
+          : original.slice(1, -1)
       assert.equal(currentDescription, expectedDescription, `${tool.name}의 기준선 상세 설명이 달라졌습니다.`)
     }
 

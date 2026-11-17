@@ -1291,7 +1291,11 @@ async function main() {
     assert.equal(conversationCandidates.conversations[0].contextHealth.contextReuseGuardEnabled, false)
     assert.match(conversationCandidates.selectionRule.preferResume, /컨텍스트 기준 새 대화 전환은 임시로 OFF/)
     assert.match(conversationCandidates.selectionRule.chooseNew, /같은 workspacePoolId 안의 Fork 경로 차이만으로 새 대화를 만들지 마세요/)
-    assert.deepEqual(conversationCandidates.selectionRule, aiConversationSelectionRules())
+    // 472d125(2026-11-09): 위임 규칙의 모델 기준 선택 안내 delegation·groupInstruction을 MCP 응답에서 덧붙인다. 나머지 규칙은 공통 원문 그대로다.
+    const { delegation: delegationSelectionRule, groupInstruction: groupInstructionSelectionRule, ...commonSelectionRule } = conversationCandidates.selectionRule
+    assert.deepEqual(commonSelectionRule, aiConversationSelectionRules())
+    assert.match(delegationSelectionRule, /하위 카드 위임도 담당과 규칙 모델을 먼저 확인.*모델이 다르면 일치 모델의 최신 연결 대화/s)
+    assert.match(groupInstructionSelectionRule, /그룹 문서 지시는 primaryConversationId의 담당이 우선/)
     assert.match(conversationCandidates.selectionRule.candidateSelection, /선택한 conversationId의 contextHealth와 assessmentId/)
     assert.match(conversationCandidates.selectionRule.preferResume, /입력 파일·구현 담당자·검수 단계가 바뀌었다는 사실만으로 새 대화를 선택하지/)
     assert.match(conversationCandidates.selectionRule.reviewIndependence, /독립 검수는 구현자와 검수자의 분리이며 매번 새 대화를 뜻하지 않습니다/)
@@ -1432,7 +1436,8 @@ async function main() {
       taskSummary: '하위 카드 구현 및 검증',
       decisionReason: '기존 대화가 없어 상위 대화와 같은 실행 환경으로 새 대화를 시작합니다.',
       sourceRevision: delegationSourceDocument.map.version,
-      idempotencyKey: `mcp-regression:${delegatedChild.id}:${delegationSourceDocument.map.version}`,
+      // 새 위임 ID는 콜론을 받지 않는다(서브 머신 Runner 실행 ID 경로 제약, NEW_AI_DELEGATION_ID_PATTERN).
+      idempotencyKey: `mcp-regression-${delegatedChild.id}-${delegationSourceDocument.map.version}`,
       // 시험 AionUi에는 위임 규칙 모델이 없으므로 상위 대화와 같은 시험 모델을 예외로 지정한다. 규칙 적용은 ai-delegation-policy-api 시험이 확인한다.
       workType: 'other',
       aiPolicyOverride: { evidence: 'MCP 회귀 시험: 상위 대화와 같은 시험 모델로 위임' },

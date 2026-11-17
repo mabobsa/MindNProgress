@@ -28,10 +28,6 @@ function allowed(method, pathname) {
   return false
 }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
-async function until(action, message) {
-  for (let i = 0; i < 150; i++) { const value = await action(); if (value) return value; await pause(30) }
-  assert.fail(message)
-}
 const input = (requestId, previous) => ({ requestId, predecessorConversationId: previous,
   newConversation: { agentId: 'claude', modelId: 'opus', modeId: 'acceptEdits', thoughtLevelId: 'max' },
   initialMessage: '검증된 인계 원문', decisionReason: '사용자 요청', approvalEvidence: '사용자가 인계를 요청했습니다.' })
@@ -122,7 +118,18 @@ test('Runner 허용 경로로 새 인계·기존 콜론 복구·수동 대표 �
   t.after(async () => { stopped = true; await loop })
   const submit = (i, body, caller = `previous-${i}`) => api.call(`/api/maps/${mapId}/cards/card-${i}/ai-conversation-starts`, 'POST', body,
     { 'X-MNP-AI-Conversation-Id': caller, 'X-MNP-AI-Map-Id': mapId, 'X-MNP-AI-Card-Id': `card-${i}` })
-  const query = (i, requestId, patch = {}, caller) => submit(i, { requestId, resultOnly: true, ...patch }, caller)
+  let lastResponse
+  const query = async (i, requestId, patch = {}, caller) => {
+    lastResponse = await submit(i, { requestId, resultOnly: true, ...patch }, caller)
+    return lastResponse
+  }
+  async function until(action, message) {
+    // 디스패치 확인(최대 10초) 뒤 설정 확인(최대 5초)이 이어질 수 있다.
+    // 고정 150회·30ms는 정상 응답을 기다리는 중에도 먼저 실패한다.
+    const deadline = performance.now() + 20_000
+    do { const value = await action(); if (value) return value; await pause(30) } while (performance.now() < deadline)
+    assert.fail(`${message}\n마지막 인계 응답: ${JSON.stringify(lastResponse)}`)
+  }
   const ready = (i, id) => until(async () => { const r = await query(i, id); assert.ok([200, 202].includes(r.status), JSON.stringify(r.body)); return r.body.state === 'ready' && r.body }, `${id} 인계 미완료`)
   assert.equal((await submit(0, input('fresh', 'previous-0'))).status, 202)
   await until(async () => (await query(0, 'fresh')).body.reasonCode === 'CARD_CONVERSATION_START_RUNTIME_UNCONFIRMED', '설정 불일치를 잡지 못했습니다.')

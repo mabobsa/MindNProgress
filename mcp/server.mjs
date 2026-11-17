@@ -1834,12 +1834,13 @@ async function main() {
     })
   })
 
-  registerTool(server, 'mindnprogress_start_card_conversation', '사용자 요청 또는 서버 위임 규칙 전환 안내에 따른 대화 인계를 위해 현재 대화가 연결된 자기 원본 카드에 후속 AionUi 대화를 생성하거나 사용자가 지정한 같은 카드의 기존 대화로 첫 메시지를 전달합니다. 같은 실행 머신만 지원하며 하위 카드 위임이나 worker 배정이 아닙니다. 현재 대화는 중지하지 않고, 후속 대화의 실행 확인(새 대화는 실행 설정 일치와 필요한 인수 확인) 후 대표 연결을 전환하며 이전 대화는 이력에 남깁니다. 진행 중인 위임·그룹 지시·복구가 있으면 먼저 마치세요. 최초 호출에는 predecessorConversationId, initialMessage, decisionReason, approvalEvidence와 newConversation(새 대화) 또는 targetConversationId(기존 대화) 중 하나가 필요합니다. 기존 대화 인계는 사용자가 최신 메시지에 그 대화 ID를 직접 적은 경우에만 접수됩니다. 재시도에는 같은 requestId를 유지하고 resultOnly=true로 처리 결과만 확인할 수 있습니다. starting·observing은 완료가 아니며 runtimeConfig의 source=snapshot은 실제 실행값 확인이 아닙니다. 외부 총괄의 회신 주소는 자동으로 바뀌지 않습니다.', {
+  registerTool(server, 'mindnprogress_start_card_conversation', '사용자 요청 또는 서버 위임 규칙 전환 안내에 따른 대화 인계를 위해 현재 대화가 연결된 자기 원본 카드에 후속 AionUi 대화를 생성하거나 사용자가 지정한 같은 카드의 기존 대화로 첫 메시지를 전달합니다. 같은 실행 머신만 지원하며 하위 카드 위임이나 worker 배정이 아닙니다. 현재 대화는 중지하지 않고, 후속 대화의 실행 확인(새 대화는 실행 설정 일치와 필요한 인수 확인) 후 대표 연결을 전환하며 이전 대화는 이력에 남깁니다. 진행 중인 위임·그룹 지시·복구가 있으면 먼저 마치세요. 최초 호출에는 predecessorConversationId, initialMessage, decisionReason, approvalEvidence와 newConversation(새 대화) 또는 targetConversationId(기존 대화) 중 하나가 필요합니다. 기존 대화 인계는 사용자가 최신 메시지에 그 대화 ID를 직접 적은 경우에만 접수됩니다. 재시도에는 같은 requestId를 유지하고 resultOnly=true로 처리 결과만 확인할 수 있습니다. starting·observing은 완료가 아닙니다. 서브 머신은 Runner 허용 경로로 전달·실행 근거와 대화의 저장 설정을 확인하며 runtimeConfig의 source=snapshot을 유지합니다(실시간 실행 설정 조회가 아님). 미완료 기록을 포기하려면 resultOnly=true와 closeReason으로 닫을 수 있으며 대화 실행과 대표 연결은 변경하지 않습니다. 외부 총괄의 회신 주소는 자동으로 바뀌지 않습니다.', {
     mapId: z.string().min(1).describe('현재 대화가 연결된 문서 ID'),
     cardId: z.string().min(1).max(120).describe('현재 대화가 연결된 자기 원본 카드 ID'),
     requestId: z.string().regex(CARD_CONVERSATION_START_REQUEST_ID).describe('인계 요청마다 새로 정하는 안정적인 멱등 키. 재시도와 결과 조회에는 같은 키를 유지'),
     resultOnly: z.boolean().optional().describe('true이면 mapId, cardId, requestId만으로 기존 요청 결과를 확인하고 미완료 단계를 복구'),
     acceptHandoff: z.boolean().optional().describe('서버가 요청한 루트 인계의 후속 대화에서 인계문·최신 카드 문맥을 확인한 뒤 resultOnly=true와 함께 보내는 인수 확인. 이전 대화는 사용할 수 없음'),
+    closeReason: z.string().trim().min(1).max(1000).optional().describe('resultOnly=true와 함께 미완료 인계 기록을 닫는 사유. 이전 또는 후속 대화에서 호출하며 대화 실행·대표 연결은 바꾸지 않음. 닫은 뒤 새 requestId로 인계 가능'),
     predecessorConversationId: z.string().min(1).max(120).optional().describe('최초 호출 필수. 이 도구를 호출한 현재 대화 ID이며 카드 대표 대화와 일치해야 함'),
     targetConversationId: z.string().min(1).max(120).optional().describe('기존 대화로 인계할 때만 지정. 같은 카드·실행 머신에 연결된 다른 대화 ID이며 사용자가 최신 메시지에 직접 적은 ID만 허용. AI가 후보를 골라 채우지 않으며 newConversation과 함께 보내지 않음'),
     machineId: z.string().max(64).optional().describe('생략하면 현재 대화의 실행 머신. 다른 머신으로 이전하지 않음'),

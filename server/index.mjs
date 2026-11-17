@@ -2998,7 +2998,7 @@ async function advanceRootConversationHandoff(instruction) {
       return fail('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_PRIMARY_CHANGED', '인계 중 사용자가 담당 대화를 변경하여 자동 전환을 중단했습니다.')
     }
     if (start) {
-      if (start.state === 'failed') return fail('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_FAILED', `후속 대화 인계가 거절되었습니다: ${start.reasonCode}`)
+      if (['failed', 'closed'].includes(start.state)) return fail('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_FAILED', `후속 대화 인계가 종료되었습니다: ${start.reasonCode}`)
       if (start.state !== 'ready') {
         cardConversationStarts.continue(start.id)
         return wait('GROUP_DOCUMENT_INSTRUCTION_HANDOFF_ACCEPTANCE_PENDING', '후속 대화의 인수 확인과 실제 실행 설정 확인을 기다리고 있습니다.', {
@@ -6207,7 +6207,7 @@ function cardConversationWorkerRoots(machineId) {
 async function verifyExplicitCardConversationTarget({ machineId, predecessorConversationId, targetConversationId }) {
   let page
   try {
-    page = await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(predecessorConversationId)}/messages?limit=50&content_mode=full`,
+    page = await fetchAionUiOn(machineId, `/api/conversations/${encodeURIComponent(predecessorConversationId)}/messages?limit=100&content_mode=full`,
       { timeoutMs: 10_000, singleTarget: true, strictJson: true })
   } catch (error) {
     throwIfRuntimeStopping(error, runtimeLifecycle.signal)
@@ -6457,6 +6457,7 @@ const cardConversationStarts = createCardConversationStarts({
   },
   verifyExplicitTarget: verifyExplicitCardConversationTarget,
   call: fetchAionUiOn,
+  isRemote: (machineId) => machineId !== machineRegistry.mainMachineId,
   background: (action) => trackStorageBackground(action, 'Card conversation start'),
   log: (record) => console.info('[Card conversation start]', JSON.stringify(record)),
 })
@@ -8429,7 +8430,7 @@ async function moveCardAcrossDocuments({
 
   const pendingConversationCardIds = new Set([
     ...[...cardConversationStartRecords.values()].filter((record) => record.mapId === sourceMapId
-      && movedCardIds.has(record.cardId) && !['ready', 'failed'].includes(record.state)).map((record) => record.cardId),
+      && movedCardIds.has(record.cardId) && !['ready', 'failed', 'closed'].includes(record.state)).map((record) => record.cardId),
     ...[...aiConversationLaunches.values()].filter((launch) => {
       if (launch.mapId !== sourceMapId || !movedCardIds.has(launch.cardId) || launch.expiresAt <= Date.now()) return false
       const conversationId = aiAttributions.get(launch.attributionKey)?.conversationId
@@ -8882,7 +8883,7 @@ aiDelegationRequestFailures = await createAiDelegationRequestFailures({
 await loadGroupDocumentInstructions()
 startupTiming.mark('loadGroupInstructions')
 for (const record of await readStoredArray(cardConversationStartsFile)) {
-  if (/^ccs:[a-f0-9]{64}$/.test(record?.id ?? '') && isValidMapId(record.mapId)
+  if (/^ccs[:-][a-f0-9]{64}$/.test(record?.id ?? '') && isValidMapId(record.mapId)
     && typeof record.cardId === 'string' && typeof record.input?.initialMessage === 'string') {
     cardConversationStartRecords.set(record.id, record)
   }
@@ -13313,7 +13314,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       response.setHeader('Cache-Control', 'no-store')
       try {
         const result = await cardConversationStarts.submit({ userId: user.id, mapId, cardId, source }, await readJsonBody(request))
-        return sendJson(response, ['ready', 'linked', 'failed', 'recovery-required'].includes(result.state) ? 200 : 202, result)
+        return sendJson(response, ['ready', 'linked', 'failed', 'closed', 'recovery-required'].includes(result.state) ? 200 : 202, result)
       } catch (error) {
         console.warn('[Card conversation start request]', { mapId, cardId, code: error.code ?? 'CARD_CONVERSATION_START_FAILED' })
         return sendJson(response, error.cardConversationStartError ? error.status : 503, {

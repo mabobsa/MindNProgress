@@ -79,3 +79,66 @@ test('인수 확인과 겹친 이전 실행 설정 조회로 담당을 전환하
   assert.equal(promotions, 1)
   assert.equal(records.get(id).state, 'ready')
 })
+
+test('기존 콜론 기록은 전달된 인계문과 실행 근거를 함께 요구하며 ID를 바꾸거나 재전송하지 않는다', async () => {
+  for (const evidence of ['active', 'reply', 'missing', 'wrong-prompt', 'other-conversation', 'other-turn', 'old-message']) {
+    const id = cardConversationStartId('editor', 'map', 'card', input.requestId).replace('ccs-', 'ccs:')
+    const attemptedAt = new Date(1000).toISOString()
+    const records = new Map([[id, { id, requestId: input.requestId, mapId: 'map', cardId: 'card', machineId: 'macbook',
+      startedBy: 'editor', input, signature: cardConversationStartHash(JSON.stringify(normalizeCardConversationStart(input))),
+      predecessorConversationId: 'previous', conversationId: evidence === 'missing' ? null : 'successor', state: 'recovery-required',
+      attemptedAt, createdAt: attemptedAt, requestedConfig: { modelId: 'opus' }, payload: { instruction: '고유 인계문' } }]])
+    const pending = [], calls = []
+    let promotions = 0
+    const starts = createCardConversationStarts({ records, mutate: async (_map, action) => action(), persist: async () => {},
+      validate: async () => {}, promote: async () => { promotions++ }, isRemote: () => true,
+      background: action => { const promise = Promise.resolve().then(action); pending.push(promise); return promise },
+      call: async (_machine, url, options) => {
+        calls.push(url); assert.notEqual(options.method, 'POST'); assert.doesNotMatch(url, /runtime-config|dispatches/)
+        if (!url.includes('/messages?')) return { id: 'successor', extra: { current_model_id: 'opus' },
+          runtime: { state: evidence === 'reply' ? 'idle' : 'running', turn_id: 'turn' } }
+        const item = { id: 'prompt', conversation_id: evidence === 'other-conversation' ? 'other' : 'successor', type: 'text',
+          position: 'right', created_at: evidence === 'old-message' ? 999 : 1001,
+          content: evidence === 'wrong-prompt' ? '다른 인계문' : '고유 인계문' }
+        return { items: [item, ...(evidence === 'reply' ? [{ ...item, id: 'reply', created_at: 1002, position: 'left', content: '인수 확인' }] : []),
+          ...(evidence === 'other-turn' ? [{ ...item, id: 'other', created_at: 1002, content: '다른 사용자 요청' }] : [])] }
+      } })
+    await starts.submit({ userId: 'editor', mapId: 'map', cardId: 'card', source: { mapId: 'map', cardId: 'card', conversationId: 'previous' } }, input)
+    await pending.at(-1)
+    assert.equal(records.size, 1)
+    assert.equal(promotions, ['active', 'reply'].includes(evidence) ? 1 : 0, evidence)
+    assert.equal(records.get(id).state, promotions ? 'ready' : 'recovery-required', evidence)
+    if (evidence === 'missing') assert.deepEqual(calls, [])
+  }
+})
+
+test('기록 종료는 조회 요청에서만 가능하고 다른 대화·진행 중 처리·완료된 인계를 보호한다', async () => {
+  for (const body of [{ ...input, closeReason: '종료' }, { requestId: input.requestId, resultOnly: true, closeReason: '' },
+    { requestId: input.requestId, resultOnly: true, closeReason: '종료', acceptHandoff: true }]) {
+    assert.throws(() => normalizeCardConversationStart(body), { code: 'CARD_CONVERSATION_START_INVALID' })
+  }
+  const id = cardConversationStartId('editor', 'map', 'card', input.requestId)
+  const record = { id, requestId: input.requestId, mapId: 'map', cardId: 'card', input,
+    predecessorConversationId: 'previous', conversationId: 'successor', state: 'recovery-required', attemptedAt: new Date().toISOString() }
+  const records = new Map([[id, record]])
+  let release, started
+  const entered = new Promise(resolve => { started = resolve }), pending = []
+  const blocked = new Promise(resolve => { release = resolve })
+  const starts = createCardConversationStarts({ records, mutate: async (_map, action) => action(), persist: async () => {}, validate: async () => {},
+    background: action => { const promise = Promise.resolve().then(action); pending.push(promise); return promise },
+    call: async () => { started(); await blocked; throw new Error('통신 실패') } })
+  const query = (caller, closeReason) => starts.submit({ userId: 'editor', mapId: 'map', cardId: 'card',
+    source: { mapId: 'map', cardId: 'card', conversationId: caller } }, { requestId: input.requestId, resultOnly: true, ...(closeReason ? { closeReason } : {}) })
+  await assert.rejects(query('unrelated', '종료'), { code: 'CARD_CONVERSATION_START_CLOSER_MISMATCH' })
+  await query('previous'); await entered
+  await assert.rejects(query('previous', '종료'), { code: 'CARD_CONVERSATION_START_CLOSE_BUSY' })
+  release(); await pending.at(-1); await new Promise(resolve => setImmediate(resolve))
+  records.set(id, { ...record, state: 'ready', linkedAt: new Date().toISOString() })
+  await assert.rejects(query('previous', '종료'), { code: 'CARD_CONVERSATION_START_CLOSE_BUSY' })
+  records.set(id, record)
+  const closed = await query('successor', '복구를 포기합니다.')
+  assert.equal(closed.state, 'closed'); assert.equal(closed.closeReason, '복구를 포기합니다.')
+  assert.equal(starts.isPending(records.get(id)), false)
+  assert.equal((await query('previous', '다시 종료')).closeReason, '복구를 포기합니다.')
+  starts.poll(); assert.equal(pending.length, 1, '닫힌 기록을 다시 실행하지 않는다')
+})

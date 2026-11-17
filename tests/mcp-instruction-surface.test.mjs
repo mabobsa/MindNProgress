@@ -77,11 +77,12 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     // 2026-11-16: 사용자 승인으로 start_card_conversation에 기존 대화 인계(targetConversationId)를 추가한다. 다른 도구 계약은 유지한다.
     // 2026-11-17: 사용자 승인으로 preview·submit·apply_reconstruction에 plan 대신 쓰는 planFile을 추가하고 plan을 선택 항목으로 바꾼다.
     //   도구 호출 하나에 정리안 전체를 다시 생성하다 출력 한도에 걸려 설계를 줄여 제출한 사례의 개선이다. 도구 설명은 유지한다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'c9c9f30e361adc981ceb5603407225b80cd88b414cf3d4cf0ec1b6b8f8a1a0bd')
+    // 2026-11-17: 미완료 인계 기록의 명시 종료(closeReason)를 추가한다. 다른 도구의 계약은 유지한다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'd5b1a4ec9104506815996d290810e1dfb83454ab9bfcc05d2240a1418a9759ab')
     // 2026-11-11: 자동 루트 인계의 후속 대화가 보내는 acceptHandoff 인수 확인을 추가한다.
     const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
     assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'd46abd9564e76ebca7d0baf09fcee0a579736e413d3554799c52f5f9d0ac8532')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 242)
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 243)
     for (const name of ['mindnprogress_preview_reconstruction', 'mindnprogress_submit_reconstruction_proposal', 'mindnprogress_apply_reconstruction']) {
       const properties = tools.find((tool) => tool.name === name).inputSchema.properties
       assert.equal(properties.planFile.type, 'string')

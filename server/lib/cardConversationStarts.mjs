@@ -6,11 +6,11 @@ import { aiDelegationResumeModelMatches } from './aiDelegationPolicy.mjs'
 
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/
 export const CARD_CONVERSATION_START_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,95}$/
-const terminal = new Set(['ready', 'failed'])
+const terminal = new Set(['ready', 'failed', 'closed'])
 const rejectedBeforeCreation = new Set(['EXTERNAL_DISPATCH_INVALID', 'EXTERNAL_DISPATCH_ACTOR_NOT_FOUND', 'EXTERNAL_DISPATCH_CAPACITY_EXHAUSTED'])
 export const cardConversationStartHash = (value) => createHash('sha256').update(value).digest('hex')
 export const cardConversationStartId = (userId, mapId, cardId, requestId) =>
-  `ccs:${cardConversationStartHash(JSON.stringify([userId, mapId, cardId, requestId]))}`
+  `ccs-${cardConversationStartHash(JSON.stringify([userId, mapId, cardId, requestId]))}`
 
 export function isCardConversationWorkerWorkspace(workspace, roots) {
   const identity = (value) => {
@@ -40,7 +40,10 @@ export function normalizeCardConversationStart(body) {
   const requestId = text(body?.requestId, 96, true)
   if (!CARD_CONVERSATION_START_REQUEST_ID.test(requestId)) fail()
   if (body.acceptHandoff !== undefined && typeof body.acceptHandoff !== 'boolean') fail()
-  if (body.resultOnly === true) return { requestId, resultOnly: true, ...(body.acceptHandoff ? { acceptHandoff: true } : {}) }
+  const closeReason = text(body.closeReason, 1000)
+  if (closeReason && (body.resultOnly !== true || body.acceptHandoff)) fail()
+  if (body.resultOnly === true) return { requestId, resultOnly: true, ...(body.acceptHandoff ? { acceptHandoff: true } : {}),
+    ...(closeReason ? { closeReason } : {}) }
   if (body.acceptHandoff) fail()
   if (body.resultOnly !== undefined && body.resultOnly !== false) fail()
   const predecessorConversationId = text(body.predecessorConversationId, 120, true)
@@ -116,18 +119,21 @@ export function cardConversationStartView(record, repeated = false) {
     message: ready ? `${existing ? '기존 대화' : '새 대화'}의 실행 시작과 카드 대표 연결을 확인했습니다. 업무 완료를 의미하지 않습니다.`
       : record.state === 'linked' ? '첫 메시지 실행과 대표 연결은 확인했으며 실제 실행 설정을 확인 중입니다.'
         : record.state === 'awaiting-acceptance' ? '후속 대화의 인수 확인을 기다리고 있습니다. 기존 담당은 유지합니다.'
+        : record.state === 'closed' ? '인계 기록을 닫았습니다. 대화 실행과 대표 연결은 변경하지 않았으며 새 인계를 요청할 수 있습니다.'
         : record.state === 'failed' ? '대화 생성 전 요청이 거절됐습니다. 사유를 해결한 뒤 새 requestId로 요청하세요.'
         : record.state === 'recovery-required'
           ? '인계 처리가 완료되지 않았습니다. 같은 requestId로 결과를 확인하세요. 이전 대화는 중지하지 않았습니다.'
           : '대화 인계 요청을 처리 중입니다. 접수 상태는 대화 생성이나 메시지 전달 완료가 아닙니다.',
     delivery: { state: record.deliveryState ?? 'not-started', turnId: record.turnId ?? null, operationId: record.id },
     linked: Boolean(record.linkedAt), linkedAt: record.linkedAt ?? null,
+    ...(record.closedAt ? { closedAt: record.closedAt, closeReason: record.closeReason } : {}),
+    ...(record.deliveryEvidence ? { deliveryEvidence: record.deliveryEvidence } : {}),
     ...(record.acceptanceRequired ? { acceptanceRequired: true, acceptedAt: record.acceptedAt ?? null } : {}),
     requestedConfig: record.requestedConfig ?? null, runtimeConfig: record.runtimeConfig ?? null,
     initialMessage: { length: record.input.initialMessage.length, sha256: cardConversationStartHash(record.input.initialMessage) },
     createdAt: record.createdAt, updatedAt: record.updatedAt,
-    ...(!ready ? { nextStep: record.state === 'failed' ? 'reasonCode의 거절 사유를 해결한 뒤 새 requestId로 요청하세요.'
-      : '같은 도구에 mapId, cardId, requestId, resultOnly=true를 전달해 확인·복구하세요. 새 requestId로 중복 생성하지 마세요.' } : {}),
+    ...(!ready ? { nextStep: terminal.has(record.state) ? '필요하면 새 requestId로 인계를 요청하세요.'
+      : '같은 도구에 mapId, cardId, requestId, resultOnly=true를 전달해 확인·복구하세요. 인계를 포기하려면 closeReason을 함께 보내 기록만 닫으세요. 대화는 중지되지 않습니다.' } : {}),
   }
 }
 
@@ -136,10 +142,46 @@ export function cardConversationStartView(record, repeated = false) {
 export function createCardConversationStarts({ records, mutate, persist, validate, prepare, bind, promote, enrich = (record) => record,
   verifyExplicitTarget = async () => {
     throw cardConversationStartError('CARD_CONVERSATION_START_TARGET_UNVERIFIED', '사용자가 지정한 대상 대화인지 확인할 수 없습니다.')
-  }, call, background, now = Date.now, log = () => {} }) {
+  }, call, isRemote = () => false, background, now = Date.now, log = () => {} }) {
   const active = new Map()
   const logged = new Map()
   const timestamp = () => new Date(now()).toISOString()
+  // ID를 바꿔 저장하면 Core의 멱등 키가 달라진다. 기존 기록을 우선해 원래 ID 그대로 이어간다.
+  const resolveId = (userId, mapId, cardId, requestId) => {
+    const id = cardConversationStartId(userId, mapId, cardId, requestId)
+    const legacy = id.replace(/^ccs-/, 'ccs:')
+    return records.has(legacy) ? legacy : id
+  }
+  async function conversation(record) {
+    const value = await call(record.machineId, `/api/conversations/${encodeURIComponent(record.conversationId)}`,
+      { timeoutMs: 5_000, singleTarget: true, strictJson: true })
+    if (value?.id !== record.conversationId) throw new Error('인계 대상 대화를 확인하지 못했습니다.')
+    return value
+  }
+  async function legacyDelivery(record) {
+    if (!identifier.test(record.conversationId ?? '') || !record.payload?.instruction) return null
+    const current = await conversation(record)
+    const page = await call(record.machineId,
+      `/api/conversations/${encodeURIComponent(record.conversationId)}/messages?limit=10000&content_mode=full`,
+      { timeoutMs: 10_000, singleTarget: true, strictJson: true })
+    const rows = (Array.isArray(page?.items) ? page.items : [])
+      .filter((item) => item.conversation_id === record.conversationId && item.hidden !== true)
+      .sort((a, b) => Number(a.created_at) - Number(b.created_at))
+    const index = rows.findIndex((item) => item.position === 'right' && item.type === 'text'
+      && messageText(item) === record.payload.instruction && Number(item.created_at) >= Date.parse(record.attemptedAt))
+    if (index < 0) return null
+    const following = rows.slice(index + 1)
+    const nextUser = following.findIndex((item) => item.position === 'right')
+    const replies = nextUser < 0 ? following : following.slice(0, nextUser)
+    const replied = replies.some((item) => item.position === 'left' && item.type === 'text' && messageText(item).trim())
+    const running = nextUser < 0 && ['running', 'waiting-confirmation'].includes(current.runtime?.state)
+      && typeof current.runtime?.turn_id === 'string' && current.runtime.turn_id
+    if (!replied && !running) return null
+    return { operationId: record.id, conversationId: record.conversationId, state: 'confirmed',
+      turnId: running ? current.runtime.turn_id : record.turnId ?? null,
+      deliveryEvidence: { source: 'conversation-messages', messageId: rows[index].id ?? rows[index].msg_id,
+        execution: replied ? 'assistant-reply' : 'active-turn', observedAt: timestamp() } }
+  }
   const save = async (record, patch) => {
     const next = { ...record, ...patch, updatedAt: timestamp() }
     records.set(record.id, next)
@@ -189,8 +231,10 @@ export function createCardConversationStarts({ records, mutate, persist, validat
     }
     if (!dispatch && !record.linkedAt) {
       try {
-        dispatch = await call(record.machineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`,
-          { timeoutMs: 10_000, singleTarget: true, strictJson: true })
+        dispatch = isRemote(record.machineId) && id.startsWith('ccs:') ? await legacyDelivery(record)
+          : await call(record.machineId, `/api/internal/external-conversation-dispatches/${encodeURIComponent(id)}`,
+            { timeoutMs: 10_000, singleTarget: true, strictJson: true })
+        if (!dispatch) throw new Error('인계 전달 근거를 확인하지 못했습니다.')
       } catch {
         await update(id, { state: 'recovery-required', reasonCode: 'CARD_CONVERSATION_START_DELIVERY_UNCONFIRMED' })
         return
@@ -208,9 +252,10 @@ export function createCardConversationStarts({ records, mutate, persist, validat
         await validate(current, { initial: false })
         if (!current.conversationId) await bind(current, dispatch.conversationId)
         return save(current, { conversationId: dispatch.conversationId, deliveryState: dispatch.state,
+          ...(dispatch.deliveryEvidence ? { deliveryEvidence: dispatch.deliveryEvidence } : {}),
           turnId: dispatch.turnId ?? current.turnId ?? null, state: 'observing', reasonCode: null })
       })
-      if (!['running', 'completed'].includes(dispatch.state) || !dispatch.turnId) {
+      if (!dispatch.deliveryEvidence && (!['running', 'completed'].includes(dispatch.state) || !dispatch.turnId)) {
         if (['failed', 'recovery_required', 'waiting_resume'].includes(dispatch.state)) {
           await update(id, { state: 'recovery-required', reasonCode: 'CARD_CONVERSATION_START_EXECUTION_UNCONFIRMED' })
         }
@@ -221,8 +266,15 @@ export function createCardConversationStarts({ records, mutate, persist, validat
     const acceptedBeforeVerification = !record.acceptanceRequired || Boolean(record.acceptedAt)
     let runtimeConfig
     try {
-      const raw = await call(record.machineId, `/api/conversations/${encodeURIComponent(record.conversationId)}/runtime-config`,
-        { timeoutMs: 5_000, singleTarget: true, strictJson: true })
+      const remote = isRemote(record.machineId)
+      const extra = remote ? (await conversation(record)).extra : null
+      const snapshot = (value) => ({ value: typeof value === 'string' && value.trim() ? value : null,
+        source: typeof value === 'string' && value.trim() ? 'snapshot' : 'unavailable' })
+      // Runner는 runtime-config를 허용하지 않는다. 대화 조회의 저장 설정임을 숨기지 않는다.
+      const raw = remote ? { model: snapshot(extra?.current_model_id), mode: snapshot(extra?.current_mode_id ?? extra?.session_mode),
+        thought_level: snapshot(extra?.thought_level) }
+        : await call(record.machineId, `/api/conversations/${encodeURIComponent(record.conversationId)}/runtime-config`,
+          { timeoutMs: 5_000, singleTarget: true, strictJson: true })
       const field = (value) => value && ['runtime', 'snapshot', 'unavailable'].includes(value.source)
         && (value.value === null || typeof value.value === 'string') ? { value: value.value, source: value.source }
         : { value: null, source: 'unavailable' }
@@ -232,7 +284,7 @@ export function createCardConversationStarts({ records, mutate, persist, validat
       ...(record.requestedConfig.thoughtLevelId ? ['thoughtLevel'] : [])]
     const expected = { model: record.requestedConfig.modelId, mode: record.requestedConfig.modeId, thoughtLevel: record.requestedConfig.thoughtLevelId }
     // 기존 대화 인계는 사용자가 고른 대화의 실행 설정을 바꾸거나 요구하지 않는다. 실제 값은 기록만 한다.
-    const verified = Boolean(record.input.targetConversationId) || required.every((key) => runtimeConfig[key].source === 'runtime'
+    const verified = Boolean(record.input.targetConversationId) || required.every((key) => runtimeConfig[key].source === (isRemote(record.machineId) ? 'snapshot' : 'runtime')
       && (key === 'model' ? aiDelegationResumeModelMatches({ modelId: expected.model }, runtimeConfig.model.value) === true
         : runtimeConfig[key].value === expected[key]))
     record = await update(id, { runtimeConfig })
@@ -286,7 +338,7 @@ export function createCardConversationStarts({ records, mutate, persist, validat
       if (source.startedBy && source.startedBy !== userId) {
         throw cardConversationStartError('CARD_CONVERSATION_START_FORBIDDEN', '이 대화를 시작한 편집자 계정으로만 인계할 수 있습니다.', 403)
       }
-      const id = cardConversationStartId(userId, mapId, cardId, input.requestId)
+      const id = resolveId(userId, mapId, cardId, input.requestId)
       const signature = input.resultOnly ? null : cardConversationStartHash(JSON.stringify(input))
       let repeated = false
       // 원격 메시지 조회는 잠금 밖에서 한다. 이미 접수된 같은 요청의 재시도는 다시 확인하지 않는다.
@@ -302,6 +354,18 @@ export function createCardConversationStarts({ records, mutate, persist, validat
           if (signature && existing.signature !== signature) throw cardConversationStartError('CARD_CONVERSATION_START_IDEMPOTENCY_CONFLICT', '같은 requestId가 다른 인계 내용에 사용되었습니다.')
           repeated = true
           await validate(existing, { initial: false, resultOnly: true })
+          if (input.closeReason) {
+            if (![existing.predecessorConversationId, existing.conversationId].includes(source.conversationId)) {
+              throw cardConversationStartError('CARD_CONVERSATION_START_CLOSER_MISMATCH', '이전 대화 또는 인계 대상 대화에서만 기록을 닫을 수 있습니다.', 403)
+            }
+            if (existing.state === 'closed') return
+            if (terminal.has(existing.state) || existing.linkedAt || active.has(id)) {
+              throw cardConversationStartError('CARD_CONVERSATION_START_CLOSE_BUSY', '완료되었거나 현재 확인 중인 인계는 닫을 수 없습니다. 확인이 끝난 뒤 다시 요청하세요.')
+            }
+            await save(existing, { state: 'closed', closedAt: timestamp(), closeReason: input.closeReason,
+              closedByConversationId: source.conversationId, reasonCode: 'CARD_CONVERSATION_START_CLOSED' })
+            return
+          }
           if (input.acceptHandoff) {
             if (!existing.acceptanceRequired || source.conversationId !== existing.conversationId) {
               throw cardConversationStartError('CARD_CONVERSATION_START_ACCEPTOR_MISMATCH', '인수 확인은 새 후속 대화에서만 할 수 있습니다.', 403)

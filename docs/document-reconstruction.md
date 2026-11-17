@@ -51,6 +51,24 @@ AI 결과는 별도 제안함으로 수신한다. 사용자가 JSON을 옮길 �
 - 적용(`apply_reconstruction`)에서는 `approval`을 파일 안의 정리안에 넣는다.
 - 제출·적용의 저장 재전송 기록은 파일 경로가 아니라 읽은 정리안 내용으로 비교한다. 같은 requestId로 다시 보낼 때 파일을 바꾸면 인자 제출과 같은 규칙으로 처리된다. `resultOnly` 조회는 파일을 읽지 않는다.
 
+## MCP 응답 크기(detail·outputFile)
+
+정리 도구의 MCP 응답은 AI 도구 출력 한도를 넘지 않도록 기본으로 큰 본문만 요약한다. 2026-11-17 실측에서 미리보기 183,071자, 요청 조회 51,120자, 전환 이력 목록 643,401자가 한도를 넘었다. 서버 API와 MnP 화면의 응답은 바꾸지 않았다.
+
+| 도구 | 기본 응답에서 요약하는 것 | 남기는 것 |
+|---|---|---|
+| `preview_reconstruction` | 생성될 문서 전체(`targets[].map`)와 렌더 투영(`renderMap`)을 `mapSummary`(카드·관계·업무·미완료·대기·Ref 수)로, 그룹 스냅샷을 개수로 | `previewHash`, `layoutPhase`, 배치, 경고, 처리 수, 영향 검사 결과, 원본 카드 목록 |
+| `get_reconstruction_request` | 저장된 정리안 본문(`plan`)을 `planSummary`(구성·결정 수·글자 수·SHA-256)로 | 요청 목적·기준·승인 기록·revision·Ref 기준 |
+| `get_reconstructions`(목록) | 각 전환을 식별·상태·원본/새 문서 ID·전후 수·대응표 개수로 | 최신순. 예산을 넘으면 오래된 것부터 빼고 `operationsTotal`·`operationsReturned`를 밝힌다 |
+| `get_reconstructions`(한 건) | 그룹 스냅샷·검증 배치를 개수로 | 카드 대응표(`decisions`). 예산을 넘으면 Ref 영향 그래프, 그다음 대응표를 개수로 줄인다 |
+| `apply_reconstruction`, `rollback_reconstruction` | 전체 문서 목록·배치를 개수로, 전환 기록은 목록과 같은 기준으로 | 전환 상태·문서 ID·작성자. 그룹 정보는 이 전환의 문서만 |
+
+- 생략한 내용은 응답 맨 앞 `omitted`(생략 필드·회수 방법)에 적는다. 생략한 것이 없으면 원래 응답 그대로다.
+- `detail:'full'`은 서버 응답 전체를 반환한다(한도를 넘을 수 있다).
+- `outputFile`(이 PC의 `.json` 절대 경로)을 주면 전체를 파일로 저장하고 응답에는 요약과 저장 파일의 SHA-256·바이트·글자 수만 담는다. 스크립트 대조에 쓴다. 폴더가 있어야 하고, 미리보기에서 `planFile`과 같은 경로는 거절한다(`RECONSTRUCTION_OUTPUT_FILE_INVALID`).
+- `planSummary.sha256`은 저장본을 공백 없이 `JSON.stringify`한 문자열 기준이다. 로컬 정리안 파일의 원본 바이트 해시(`planFile.sha256`)와는 다를 수 있으니, 내용 대조는 `outputFile`로 받은 저장본으로 한다.
+- 적용·되돌리기 뒤 전체 기록은 `get_reconstructions({id, outputFile})`, 문서 목록은 `list_documents`로 다시 조회한다.
+
 ## plan 형식
 
 ```js

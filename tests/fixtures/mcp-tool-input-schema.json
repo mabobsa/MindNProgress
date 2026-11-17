@@ -1578,6 +1578,20 @@
         "requestId": {
           "type": "string",
           "minLength": 1
+        },
+        "detail": {
+          "type": "string",
+          "enum": [
+            "summary",
+            "full"
+          ],
+          "description": "기본 summary는 큰 본문을 요약하고 omitted에 생략 내용과 회수 방법을 적습니다. full은 서버 응답 전체를 반환하며 AI 도구 출력 한도를 넘을 수 있습니다."
+        },
+        "outputFile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "서버 응답 전체를 저장할 이 PC의 .json 파일 절대 경로. 응답에는 요약과 저장 파일의 SHA-256만 담습니다. 전체를 스크립트로 대조할 때 씁니다."
         }
       },
       "required": [
@@ -1594,6 +1608,20 @@
       "properties": {
         "id": {
           "type": "string"
+        },
+        "detail": {
+          "type": "string",
+          "enum": [
+            "summary",
+            "full"
+          ],
+          "description": "기본 summary는 큰 본문을 요약하고 omitted에 생략 내용과 회수 방법을 적습니다. full은 서버 응답 전체를 반환하며 AI 도구 출력 한도를 넘을 수 있습니다."
+        },
+        "outputFile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "서버 응답 전체를 저장할 이 PC의 .json 파일 절대 경로. 응답에는 요약과 저장 파일의 SHA-256만 담습니다. 전체를 스크립트로 대조할 때 씁니다."
         }
       },
       "additionalProperties": false
@@ -2614,6 +2642,20 @@
           "minLength": 1,
           "maxLength": 1000,
           "description": "plan 대신 보낼 이 PC의 UTF-8 JSON 파일 절대 경로(2MB 이하). 도구 호출 크기 때문에 카드를 합치거나 내용을 줄이지 말고 큰 정리안은 파일로 보냅니다. plan과 함께 보내지 않습니다."
+        },
+        "detail": {
+          "type": "string",
+          "enum": [
+            "summary",
+            "full"
+          ],
+          "description": "기본 summary는 큰 본문을 요약하고 omitted에 생략 내용과 회수 방법을 적습니다. full은 서버 응답 전체를 반환하며 AI 도구 출력 한도를 넘을 수 있습니다."
+        },
+        "outputFile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "서버 응답 전체를 저장할 이 PC의 .json 파일 절대 경로. 응답에는 요약과 저장 파일의 SHA-256만 담습니다. 전체를 스크립트로 대조할 때 씁니다."
         }
       },
       "additionalProperties": false

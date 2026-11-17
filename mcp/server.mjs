@@ -52,6 +52,7 @@ import { AI_USAGE_GUIDE, buildAiUsageResult } from './aiUsage.mjs'
 import { createMcpStorageRequests, storageWriteTools } from './storageRequests.mjs'
 import { retryStorageRequest, requestDeadlineError } from './requestRetry.mjs'
 import { reconstructionPlanFileSchema, reconstructionPlanSchema, requireReconstructionPlan, resolveReconstructionPlanInput } from './reconstructionPlanFile.mjs'
+import { assertOutputFileDiffersFromPlanFile, reconstructionDetailSchema, reconstructionOutputFileSchema, shapeReconstructionResponse, summarizeLifecycleResult, summarizePreview, summarizeReconstructions, summarizeRequest } from './reconstructionResponses.mjs'
 
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dataDirectory = path.resolve(String(process.env.MNP_DATA_DIR ?? '').trim() || path.join(projectDirectory, 'server', 'data'))
@@ -1260,8 +1261,12 @@ async function main() {
   }, async ({ mapIds }) => apiRequest(`/api/document-reconstructions/context?${new URLSearchParams(mapIds.map((id) => ['mapId', id]))}`))
 
   registerTool(server, 'mindnprogress_get_reconstruction_request', '사용자가 문서·그룹 우클릭에서 요청한 정리 목적·대상·기준·요청사항·분석 승인 기록과 제안함 revision을 읽습니다. 문서 적용 승인이 아닙니다.', {
-    requestId: z.string().min(1),
-  }, async ({ requestId }) => apiRequest(`/api/document-reconstructions/requests/${encodeURIComponent(requestId)}`))
+    requestId: z.string().min(1), detail: reconstructionDetailSchema, outputFile: reconstructionOutputFileSchema,
+  }, async ({ requestId, detail, outputFile }) => shapeReconstructionResponse(await apiRequest(`/api/document-reconstructions/requests/${encodeURIComponent(requestId)}`), {
+    detail, outputFile, summarize: summarizeRequest,
+    retrieval: { full: { tool: 'mindnprogress_get_reconstruction_request', arguments: { requestId, detail: 'full' } },
+      file: { tool: 'mindnprogress_get_reconstruction_request', arguments: { requestId, outputFile: '<이 PC의 .json 절대 경로>' } } },
+  }))
 
   registerTool(server, 'mindnprogress_get_card_layout_request', '사용자가 요청한 현재 문서의 AI 배치 제안 범위·승인·원본 및 Ref 표시 스냅샷·실측 크기·revision·stale을 조회합니다. stale이면 새 요청이 필요하며 원본을 수정하지 마세요.', {
     requestId: z.string().min(1),
@@ -1276,22 +1281,32 @@ async function main() {
   }, async ({ requestId, baseRevision, plan }) => apiRequest(`/api/document-reconstructions/requests/${encodeURIComponent(requestId)}/proposal`, { method: 'POST', body: JSON.stringify({ baseRevision, plan: requireReconstructionPlan(plan) }), timeoutMs: 60_000 }),
   { prepareInput: resolveReconstructionPlanInput })
   registerTool(server, 'mindnprogress_preview_reconstruction', '재구성안을 저장하지 않고 검증합니다. 모든 원본 카드 대응·계층·참조·미완료 조건을 검사하고 previewHash와 layoutPhase를 반환합니다. nodes 배열은 형제 순서이며 AI 좌표는 무시하고 공통 배치기가 계산합니다. MnP 실제 마인드맵 미리보기에서 렌더 크기·배지·겹침 검증을 마쳐 layoutPhase=verified가 되어야 적용할 수 있습니다. 측정값을 추측해 제출하지 마세요. 의미 보존은 별도로 검토합니다.', {
-    plan: reconstructionPlanSchema.optional(), planFile: reconstructionPlanFileSchema,
-  }, async ({ plan }) => apiRequest('/api/document-reconstructions/preview', { method: 'POST', body: JSON.stringify({ plan: requireReconstructionPlan(plan) }), timeoutMs: 60_000 }),
-  { prepareInput: resolveReconstructionPlanInput })
+    plan: reconstructionPlanSchema.optional(), planFile: reconstructionPlanFileSchema, detail: reconstructionDetailSchema, outputFile: reconstructionOutputFileSchema,
+  }, async ({ plan, detail, outputFile }) => shapeReconstructionResponse(
+    await apiRequest('/api/document-reconstructions/preview', { method: 'POST', body: JSON.stringify({ plan: requireReconstructionPlan(plan) }), timeoutMs: 60_000 }), {
+      detail, outputFile, summarize: summarizePreview,
+      retrieval: { full: { tool: 'mindnprogress_preview_reconstruction', arguments: { planFile: '<같은 정리안 파일>', detail: 'full' } },
+        file: { tool: 'mindnprogress_preview_reconstruction', arguments: { planFile: '<같은 정리안 파일>', outputFile: '<이 PC의 .json 절대 경로>' } } },
+    }),
+  { prepareInput: async (input) => { assertOutputFileDiffersFromPlanFile(input); return resolveReconstructionPlanInput(input) } })
 
   registerTool(server, 'mindnprogress_apply_reconstruction', '사용자가 승인한 전환안만 적용합니다. approval에 실제 승인 발언·확인 가능한 대화 출처가 필수입니다. MnP 실제 렌더 미리보기 검증 완료 후 preview를 다시 조회하여 layoutPhase=verified와 최신 previewHash를 확인하세요. 미검증·만료·서버 재시작이면 UI에서 다시 검증해야 하며 MCP도 우회할 수 없습니다. 검증된 좌표로 새 문서를 저장한 뒤 원본을 보관합니다. 버전 충돌·AI 작업 중에는 중단합니다. 같은 ID·같은 계획은 멱등이며 적용 후 문서와 이력을 재조회하세요.', {
     plan: reconstructionPlanSchema.optional(), planFile: reconstructionPlanFileSchema, previewHash: z.string().min(1),
   }, async ({ plan, previewHash }) => apiRequest('/api/document-reconstructions/apply', { method: 'POST', body: JSON.stringify({ plan: requireReconstructionPlan(plan), previewHash }), timeoutMs: 60_000 }),
-  { prepareInput: resolveReconstructionPlanInput })
+  { prepareInput: resolveReconstructionPlanInput, finalizeResult: summarizeLifecycleResult })
 
   registerTool(server, 'mindnprogress_get_reconstructions', '문서 전환의 상태, 카드 대응표, 원본·후속 문서와 승인 근거를 읽습니다. ID 생략 시 전체 이력을 조회합니다.', {
-    id: z.string().optional(),
-  }, async ({ id }) => apiRequest(`/api/document-reconstructions${id ? `/${encodeURIComponent(id)}` : ''}`))
+    id: z.string().optional(), detail: reconstructionDetailSchema, outputFile: reconstructionOutputFileSchema,
+  }, async ({ id, detail, outputFile }) => shapeReconstructionResponse(await apiRequest(`/api/document-reconstructions${id ? `/${encodeURIComponent(id)}` : ''}`), {
+    detail, outputFile, summarize: summarizeReconstructions,
+    retrieval: { full: { tool: 'mindnprogress_get_reconstructions', arguments: { ...(id ? { id } : {}), detail: 'full' } },
+      file: { tool: 'mindnprogress_get_reconstructions', arguments: { ...(id ? { id } : {}), outputFile: '<이 PC의 .json 절대 경로>' } } },
+  }))
 
   registerTool(server, 'mindnprogress_rollback_reconstruction', '사용자가 승인한 전환 되돌리기를 실행합니다. 후속 문서나 댓글이 변경됐으면 거부합니다. 원본을 복원하고 후속 문서는 삭제하지 않고 보관합니다.', {
     id: z.string().min(1),
-  }, async ({ id }) => apiRequest(`/api/document-reconstructions/${encodeURIComponent(id)}/rollback`, { method: 'POST', body: '{}', timeoutMs: 60_000 }))
+  }, async ({ id }) => apiRequest(`/api/document-reconstructions/${encodeURIComponent(id)}/rollback`, { method: 'POST', body: '{}', timeoutMs: 60_000 }),
+  { finalizeResult: summarizeLifecycleResult })
 
   registerTool(server, 'mindnprogress_list_shared_knowledge_candidates', '전체 문서 또는 한 문서에서 정리가 필요한 sharedKnowledge 후보를 원문 없이 조회합니다. 우선순위, 길이, SHA-256, 반복 문장 수, 검토 상태와 지식선 소비자 수를 반환하며 accepted-long 승인도 30일이 지나면 다시 후보로 포함합니다. 문서 버전은 변경하지 않습니다.', {
     mapId: z.string().min(1).optional().describe('한 문서만 조회할 때 지정하는 문서 ID'),

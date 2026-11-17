@@ -78,11 +78,19 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     // 2026-11-17: 사용자 승인으로 preview·submit·apply_reconstruction에 plan 대신 쓰는 planFile을 추가하고 plan을 선택 항목으로 바꾼다.
     //   도구 호출 하나에 정리안 전체를 다시 생성하다 출력 한도에 걸려 설계를 줄여 제출한 사례의 개선이다. 도구 설명은 유지한다.
     // 2026-11-17: 미완료 인계 기록의 명시 종료(closeReason)를 추가한다. 다른 도구의 계약은 유지한다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'd5b1a4ec9104506815996d290810e1dfb83454ab9bfcc05d2240a1418a9759ab')
+    // 2026-11-17: 사용자 승인으로 preview_reconstruction·get_reconstruction_request·get_reconstructions에 detail·outputFile을 추가한다.
+    //   응답이 AI 도구 출력 한도를 넘어(미리보기 183,071자 등) 기본은 큰 본문만 요약하고 전체는 full·파일로 받는다. 도구 설명은 유지한다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'ad29a2ed9ff893d0bdfef3ea44224c2bd98f7d2b45f539f27f8bed4392bcf67d')
     // 2026-11-11: 자동 루트 인계의 후속 대화가 보내는 acceptHandoff 인수 확인을 추가한다.
     const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
-    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'd46abd9564e76ebca7d0baf09fcee0a579736e413d3554799c52f5f9d0ac8532')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 243)
+    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'e1e9e129ec497d1bf2f4ee9e6ca3cce5ab2d98d1cb9ac1f7a085645c21ae38ea')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 249)
+    for (const name of ['mindnprogress_preview_reconstruction', 'mindnprogress_get_reconstruction_request', 'mindnprogress_get_reconstructions']) {
+      const properties = tools.find((tool) => tool.name === name).inputSchema.properties
+      assert.deepEqual(properties.detail.enum, ['summary', 'full'])
+      assert.match(properties.detail.description, /기본 summary는 큰 본문을 요약.*omitted.*full은 서버 응답 전체/s)
+      assert.match(properties.outputFile.description, /서버 응답 전체를 저장할 이 PC의 .json 파일 절대 경로.*SHA-256/s)
+    }
     for (const name of ['mindnprogress_preview_reconstruction', 'mindnprogress_submit_reconstruction_proposal', 'mindnprogress_apply_reconstruction']) {
       const properties = tools.find((tool) => tool.name === name).inputSchema.properties
       assert.equal(properties.planFile.type, 'string')

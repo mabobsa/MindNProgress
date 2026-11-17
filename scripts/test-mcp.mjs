@@ -3050,7 +3050,8 @@ async function main() {
       decisions: [{ mapId: lifecycleSource.id, cardId: lifecycleSource.nodes[0].id, disposition: 'carry', reason: '기준 유지', targets: [{ key: 'next', cardId: 'next-root' }] }],
       approval: { statement: '시험 데이터의 전환안을 적용합니다.', source: 'MCP 전체 회귀 시험의 승인 입력' },
     }
-    let lifecyclePreview = await invoke('mindnprogress_preview_reconstruction', { plan: lifecyclePlan })
+    // 렌더 측정 fixture는 생성될 문서 전체(targets[].map)가 필요하다. 실제 측정은 MnP 화면이 하므로 AI 기본 응답은 요약이다.
+    let lifecyclePreview = await invoke('mindnprogress_preview_reconstruction', { plan: lifecyclePlan, detail: 'full' })
     // 2026-11-17: 큰 정리안은 도구 인자 대신 로컬 JSON 파일(planFile)로 보낸다. 같은 정리안이면 인자와 같은 검증 결과를 낸다.
     // 데이터 폴더의 JSON은 문서로 읽히므로 정리안 파일은 데이터 폴더 밖 임시 폴더에 둔다.
     const planFileDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-test-plan-files-'))

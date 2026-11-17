@@ -27,17 +27,29 @@ AI 결과는 별도 제안함으로 수신한다. 사용자가 JSON을 옮길 �
 
 ## AI 절차
 
-우클릭 요청으로 시작한 AI는 `mindnprogress_get_reconstruction_request({requestId})`를 먼저 읽고 요청 범위를 확인한다. 아래 1~5단계로 정리안을 만든 뒤 `mindnprogress_submit_reconstruction_proposal({requestId,baseRevision,plan})`로 제안함에만 제출한다. `baseRevision`은 조회한 요청의 revision이며, plan에 approval을 넣으면 거부한다. 요청의 목적·기준·새 기획 출처·대상이 다른 안, 누락이나 오래된 원본을 가진 안도 거부한다. UI로 요청한 분석 작업에서는 6단계를 수행하지 않고 사용자의 별도 화면 승인을 기다린다.
+우클릭 요청으로 시작한 AI는 `mindnprogress_get_reconstruction_request({requestId})`를 먼저 읽고 요청 범위를 확인한다. 아래 1~5단계로 정리안을 만든 뒤 `mindnprogress_submit_reconstruction_proposal({requestId,baseRevision,planFile})`로 제안함에만 제출한다(「정리안 파일 제출」 참고). `baseRevision`은 조회한 요청의 revision이며, plan에 approval을 넣으면 거부한다. 요청의 목적·기준·새 기획 출처·대상이 다른 안, 누락이나 오래된 원본을 가진 안도 거부한다. UI로 요청한 분석 작업에서는 6단계를 수행하지 않고 사용자의 별도 화면 승인을 기다린다.
 
 1. `mindnprogress_get_reconstruction_context({mapIds})`로 지침, `sources`, `groupBaselines`, 전수 카드 목록을 읽는다. 일반 `get_context`의 대화당 1회 성공 규칙은 그대로 유지한다.
 2. 원본 문서·카드·댓글·이미지와 그룹 기준을 읽는다. context 목록만으로 의미를 판단하지 않는다. 새 기획이 있으면 원본과 현재 구현의 차이를 별도 조사한다.
 3. 모든 원본 카드를 `carry`, `merge`, `knowledge`, `history`, `drop` 중 하나로 분류한다. 원본은 어떤 분류에서도 삭제하지 않는다. `drop`은 새 기획에서 제외된 근거가 있을 때만 가능하다.
 4. 새 문서를 현재 기준·계속할 업무·대기·현재 지식 중심으로 구성한다. 완료 이력은 원본에 남기고 유효 결론만 승계한다. 새 업무의 진행률과 전체 제품 요구사항 충족률을 구분한다.
-5. `mindnprogress_preview_reconstruction({plan})`으로 구조·조건 보존을 검증한다. 사용자가 MnP 실제 마인드맵 미리보기를 열면 렌더 측정과 최종 배치 검증이 수행된다. MCP만으로 미검증 안을 적용할 수 없으며 AI가 렌더 측정값을 추측해 제출해서도 안 된다. 미리보기는 문서를 저장하지 않는다.
+5. `mindnprogress_preview_reconstruction({planFile})`으로 구조·조건 보존을 검증한다. 사용자가 MnP 실제 마인드맵 미리보기를 열면 렌더 측정과 최종 배치 검증이 수행된다. MCP만으로 미검증 안을 적용할 수 없으며 AI가 렌더 측정값을 추측해 제출해서도 안 된다. 미리보기는 문서를 저장하지 않는다.
 6. 카드 대응표와 의미 보존을 설명하고 적용 승인을 받는다. UI에서 적용하거나, 실제 렌더 검증 후 preview를 다시 조회해 `layoutPhase:'verified'`와 최신 `previewHash`를 확인하고 `plan.approval`에 실제 승인 발언과 출처를 기입하여 `mindnprogress_apply_reconstruction({plan,previewHash})`을 호출한다. 원본·참조 변경, 30분 검증 캐시 만료·퇴출 또는 서버 재시작 후에는 실제 미리보기부터 다시 검증한다.
 7. 원본 보관·후속 문서·그룹 소속·미완료 조건·지식·참조와 전환 이력을 재조회한다. 후속 작업이나 실제 그룹 시험은 해당 단계의 별도 승인 범위를 따른다.
 
 정리 기준의 실행 원본은 `src/utils/documentReconstructionGuide.mjs`다. MCP context와 UI가 같은 지침을 사용한다.
+
+## 정리안 파일 제출(planFile)
+
+미리보기·제출·적용 도구는 `plan` 대신 `planFile`(이 PC의 UTF-8 JSON 파일 절대 경로)을 받는다. 둘 중 하나만 보낸다. 우클릭 정리 요청의 시작 안내는 파일 제출을 기본으로 안내한다.
+
+- 정리안 전체를 도구 호출 인자로 다시 생성하면 AI 출력 한도에 걸린다. 2026-11-17 약 9만 자·22장 설계를 한 호출에 담지 못해 4만 8천 자·18장으로 줄여 제출한 사례가 있었다. 호출 크기 때문에 카드를 합치거나 내용을 줄이지 않는다.
+- AI는 정리안을 스크립트나 여러 번의 파일 편집으로 만들고, 미리보기·제출·적용에 같은 파일을 쓴다. 정리안의 한국어가 도구 인자에서 유니코드 이스케이프로 직렬화되는 문제도 생기지 않는다.
+- MnP MCP가 파일을 읽어 인자 `plan`과 같은 형식 검사를 거친 뒤 같은 API로 보낸다. 같은 정리안이면 인자 제출과 `previewHash`·저장 결과가 같다. MCP는 AI와 같은 PC에서 실행되므로 AI가 이미 읽을 수 있는 파일 외의 접근은 생기지 않는다.
+- 응답의 `planFile`에 경로·원본 바이트 SHA-256·바이트 수·글자 수(코드 포인트)가 있다. AI는 자기 파일의 해시와 대조한다.
+- 제한: 절대 경로, `.json` 확장자, 서버 요청 한도인 2,000,000바이트 이하, 엄격한 UTF-8(앞의 BOM은 허용). 어기면 서버로 보내지 않고 `RECONSTRUCTION_PLAN_FILE_INVALID`로 거절한다. `plan`과 `planFile`이 모두 없으면 `RECONSTRUCTION_PLAN_REQUIRED`다.
+- 적용(`apply_reconstruction`)에서는 `approval`을 파일 안의 정리안에 넣는다.
+- 제출·적용의 저장 재전송 기록은 파일 경로가 아니라 읽은 정리안 내용으로 비교한다. 같은 requestId로 다시 보낼 때 파일을 바꾸면 인자 제출과 같은 규칙으로 처리된다. `resultOnly` 조회는 파일을 읽지 않는다.
 
 ## plan 형식
 

@@ -386,6 +386,12 @@
           ],
           "additionalProperties": false
         },
+        "planFile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "plan 대신 보낼 이 PC의 UTF-8 JSON 파일 절대 경로(2MB 이하). 도구 호출 크기 때문에 카드를 합치거나 내용을 줄이지 말고 큰 정리안은 파일로 보냅니다. plan과 함께 보내지 않습니다."
+        },
         "previewHash": {
           "type": "string",
           "minLength": 1
@@ -2602,11 +2608,14 @@
             "decisions"
           ],
           "additionalProperties": false
+        },
+        "planFile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "plan 대신 보낼 이 PC의 UTF-8 JSON 파일 절대 경로(2MB 이하). 도구 호출 크기 때문에 카드를 합치거나 내용을 줄이지 말고 큰 정리안은 파일로 보냅니다. plan과 함께 보내지 않습니다."
         }
       },
-      "required": [
-        "plan"
-      ],
       "additionalProperties": false
     }
   },
@@ -3841,6 +3850,12 @@
             "decisions"
           ],
           "additionalProperties": false
+        },
+        "planFile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "plan 대신 보낼 이 PC의 UTF-8 JSON 파일 절대 경로(2MB 이하). 도구 호출 크기 때문에 카드를 합치거나 내용을 줄이지 말고 큰 정리안은 파일로 보냅니다. plan과 함께 보내지 않습니다."
         },
         "proposalRequestId": {
           "type": "string",

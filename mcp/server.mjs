@@ -51,6 +51,7 @@ import { createMnpApiConnectionResolver } from './apiConnection.mjs'
 import { AI_USAGE_GUIDE, buildAiUsageResult } from './aiUsage.mjs'
 import { createMcpStorageRequests, storageWriteTools } from './storageRequests.mjs'
 import { retryStorageRequest, requestDeadlineError } from './requestRetry.mjs'
+import { reconstructionPlanFileSchema, reconstructionPlanSchema, requireReconstructionPlan, resolveReconstructionPlanInput } from './reconstructionPlanFile.mjs'
 
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dataDirectory = path.resolve(String(process.env.MNP_DATA_DIR ?? '').trim() || path.join(projectDirectory, 'server', 'data'))
@@ -592,9 +593,13 @@ function registerTool(server, name, description, schema, handler, options = {}) 
       return legacyProposalId && value.requestId ? { ...value, storageRequestId: value.requestId, requestId: legacyProposalId } : value
     }
   }
-  server.tool(name, description, schema, async (input) => {
+  server.tool(name, description, schema, async (rawInput) => {
     try {
-      const value = await handler(input)
+      // 저장 도구는 handler 안에서 재전송 기록을 남기므로, 입력 변환(planFile 읽기 등)은 그보다 먼저 한다.
+      const prepared = options.prepareInput ? await options.prepareInput(rawInput) : { input: rawInput }
+      const input = prepared.input
+      const handled = await handler(input)
+      const value = prepared.planFile && handled && typeof handled === 'object' && !Array.isArray(handled) ? { ...handled, planFile: prepared.planFile } : handled
       const enriched = await withDocumentGroupMetadata(name, input, value, async (mapIds) => {
         const query = new URLSearchParams(mapIds.map((id) => ['mapId', id]))
         return (await apiRequest(`/api/document-groups?${query}`)).documentGroups
@@ -1266,25 +1271,19 @@ async function main() {
     plan: z.object({ order: z.array(z.string().min(1)).min(1).max(2000), reason: z.string().min(1).max(8000) }).strict(),
   }, async ({ requestId, ...body }) => apiRequest(`/api/card-layouts/${encodeURIComponent(requestId)}/proposal`, { method: 'POST', body: JSON.stringify(body), timeoutMs: 60_000 }))
 
-  const reconstructionPlanSchema = z.object({
-    id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), mode: z.enum(['compact', 'spec-update']), baseline: z.string().min(1), reason: z.string().min(1),
-    newSource: z.string().optional(), changeSummary: z.string().optional(),
-    groupBaselines: z.array(z.record(z.unknown())).optional().describe('get_reconstruction_context의 groupBaselines를 그대로 전달합니다. 그룹 기준·소속 변경 시 재검토합니다.'),
-    sources: z.array(z.object({ mapId: z.string(), version: z.number().int(), sha256: z.string(), commentsSha256: z.string(), lifecycleVersion: z.number().int() }).passthrough()).min(1).max(30),
-    targets: z.array(z.object({ key: z.string(), title: z.string(), color: z.string().optional(), nodes: z.array(z.record(z.unknown())), edges: z.array(z.record(z.unknown())) })).min(1).max(30),
-    decisions: z.array(z.object({ mapId: z.string(), cardId: z.string(), disposition: z.enum(['carry', 'merge', 'knowledge', 'history', 'drop']), reason: z.string().min(1), evidence: z.string().optional(), targets: z.array(z.object({ key: z.string(), cardId: z.string() })).optional() })),
-    approval: z.object({ statement: z.string().min(1), source: z.string().min(1) }).optional(),
-  })
   registerTool(server, 'mindnprogress_submit_reconstruction_proposal', '사용자가 요청한 정리안을 해당 제안함에만 저장합니다. 원본·후속 문서·카드·보관 상태는 변경하지 않습니다. 요청의 mode/baseline/newSource/mapIds를 지키고 최신 context와 전수 대응표를 사용하세요. approval은 금지입니다. 화면에서 별도 검토·승인 후 적용합니다.', {
-    requestId: z.string().min(1), baseRevision: z.number().int().nonnegative(), plan: reconstructionPlanSchema,
-  }, async ({ requestId, baseRevision, plan }) => apiRequest(`/api/document-reconstructions/requests/${encodeURIComponent(requestId)}/proposal`, { method: 'POST', body: JSON.stringify({ baseRevision, plan }), timeoutMs: 60_000 }))
+    requestId: z.string().min(1), baseRevision: z.number().int().nonnegative(), plan: reconstructionPlanSchema.optional(), planFile: reconstructionPlanFileSchema,
+  }, async ({ requestId, baseRevision, plan }) => apiRequest(`/api/document-reconstructions/requests/${encodeURIComponent(requestId)}/proposal`, { method: 'POST', body: JSON.stringify({ baseRevision, plan: requireReconstructionPlan(plan) }), timeoutMs: 60_000 }),
+  { prepareInput: resolveReconstructionPlanInput })
   registerTool(server, 'mindnprogress_preview_reconstruction', '재구성안을 저장하지 않고 검증합니다. 모든 원본 카드 대응·계층·참조·미완료 조건을 검사하고 previewHash와 layoutPhase를 반환합니다. nodes 배열은 형제 순서이며 AI 좌표는 무시하고 공통 배치기가 계산합니다. MnP 실제 마인드맵 미리보기에서 렌더 크기·배지·겹침 검증을 마쳐 layoutPhase=verified가 되어야 적용할 수 있습니다. 측정값을 추측해 제출하지 마세요. 의미 보존은 별도로 검토합니다.', {
-    plan: reconstructionPlanSchema,
-  }, async ({ plan }) => apiRequest('/api/document-reconstructions/preview', { method: 'POST', body: JSON.stringify({ plan }), timeoutMs: 60_000 }))
+    plan: reconstructionPlanSchema.optional(), planFile: reconstructionPlanFileSchema,
+  }, async ({ plan }) => apiRequest('/api/document-reconstructions/preview', { method: 'POST', body: JSON.stringify({ plan: requireReconstructionPlan(plan) }), timeoutMs: 60_000 }),
+  { prepareInput: resolveReconstructionPlanInput })
 
   registerTool(server, 'mindnprogress_apply_reconstruction', '사용자가 승인한 전환안만 적용합니다. approval에 실제 승인 발언·확인 가능한 대화 출처가 필수입니다. MnP 실제 렌더 미리보기 검증 완료 후 preview를 다시 조회하여 layoutPhase=verified와 최신 previewHash를 확인하세요. 미검증·만료·서버 재시작이면 UI에서 다시 검증해야 하며 MCP도 우회할 수 없습니다. 검증된 좌표로 새 문서를 저장한 뒤 원본을 보관합니다. 버전 충돌·AI 작업 중에는 중단합니다. 같은 ID·같은 계획은 멱등이며 적용 후 문서와 이력을 재조회하세요.', {
-    plan: reconstructionPlanSchema, previewHash: z.string().min(1),
-  }, async ({ plan, previewHash }) => apiRequest('/api/document-reconstructions/apply', { method: 'POST', body: JSON.stringify({ plan, previewHash }), timeoutMs: 60_000 }))
+    plan: reconstructionPlanSchema.optional(), planFile: reconstructionPlanFileSchema, previewHash: z.string().min(1),
+  }, async ({ plan, previewHash }) => apiRequest('/api/document-reconstructions/apply', { method: 'POST', body: JSON.stringify({ plan: requireReconstructionPlan(plan), previewHash }), timeoutMs: 60_000 }),
+  { prepareInput: resolveReconstructionPlanInput })
 
   registerTool(server, 'mindnprogress_get_reconstructions', '문서 전환의 상태, 카드 대응표, 원본·후속 문서와 승인 근거를 읽습니다. ID 생략 시 전체 이력을 조회합니다.', {
     id: z.string().optional(),

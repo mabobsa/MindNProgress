@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import { createServer as createHttpServer } from 'node:http'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -166,6 +167,25 @@ test('보관·전환 HTTP/MCP 경로는 임시 서버에서 원본·댓글·이�
   const mcpPreview = await mcp.callTool({ name: 'mindnprogress_preview_reconstruction', arguments: { plan: nextPlan } })
   assert.equal(mcpPreview.isError, undefined, JSON.stringify(mcpPreview))
   assert.equal(typeof JSON.parse(mcpPreview.content[0].text).previewHash, 'string')
+  // 2026-11-17: 큰 정리안은 도구 인자 대신 로컬 JSON 파일(planFile)로 보낸다. 같은 정리안이면 인자와 같은 검증·저장 결과를 낸다.
+  // 정리안 파일은 데이터 폴더 밖에 둔다. 데이터 폴더의 최상위 JSON은 문서로 읽힌다.
+  const planDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-plan-files-'))
+  t.after(() => rm(planDirectory, { recursive: true, force: true }))
+  const writePlanFile = async (name, value) => {
+    const file = path.join(planDirectory, name)
+    const text = `${JSON.stringify(value, null, 2)}\n`
+    await writeFile(file, text, 'utf8')
+    return { file, sha256: createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex') }
+  }
+  const callJson = async (name, args) => {
+    const result = await mcp.callTool({ name, arguments: args })
+    return { isError: result.isError === true, body: JSON.parse(result.content[0].text) }
+  }
+  const previewFile = await writePlanFile('mcp-preview-plan.json', nextPlan)
+  const filePreview = await callJson('mindnprogress_preview_reconstruction', { planFile: previewFile.file })
+  assert.equal(filePreview.isError, false, JSON.stringify(filePreview.body))
+  assert.equal(filePreview.body.previewHash, JSON.parse(mcpPreview.content[0].text).previewHash, '파일 미리보기와 인자 미리보기의 previewHash가 같다')
+  assert.deepEqual(filePreview.body.planFile, { path: previewFile.file, sha256: previewFile.sha256, bytes: Buffer.byteLength(`${JSON.stringify(nextPlan, null, 2)}\n`), chars: [...`${JSON.stringify(nextPlan, null, 2)}\n`].length })
   const mcpRequest = await mcp.callTool({ name: 'mindnprogress_get_reconstruction_request', arguments: { requestId } })
   assert.equal(mcpRequest.isError, undefined, JSON.stringify(mcpRequest))
   assert.equal(JSON.parse(mcpRequest.content[0].text).revision, 1, '재시작 후 제안함 보존')
@@ -173,6 +193,24 @@ test('보관·전환 HTTP/MCP 경로는 임시 서버에서 원본·댓글·이�
   const mcpSubmitted = await mcp.callTool({ name: 'mindnprogress_submit_reconstruction_proposal', arguments: { requestId, baseRevision: 1, plan: proposalPlan, editorId: 'user-editor' } })
   assert.equal(mcpSubmitted.isError, undefined, JSON.stringify(mcpSubmitted))
   assert.equal(JSON.parse(mcpSubmitted.content[0].text).revision, 2)
+  const proposalFile = await writePlanFile('mcp-proposal-plan.json', proposalPlan)
+  const fileSubmitted = await callJson('mindnprogress_submit_reconstruction_proposal', { requestId, baseRevision: 2, planFile: proposalFile.file, editorId: 'user-editor' })
+  assert.equal(fileSubmitted.isError, false, JSON.stringify(fileSubmitted.body))
+  assert.equal(fileSubmitted.body.revision, 3)
+  assert.equal(fileSubmitted.body.planFile.sha256, proposalFile.sha256)
+  const storedRequests = JSON.parse(await readFile(path.join(directory, '_document-reconstruction-requests.json'), 'utf8'))
+  const storedRequest = (Array.isArray(storedRequests) ? storedRequests : storedRequests.requests ?? Object.values(storedRequests)).find((item) => item?.id === requestId)
+  assert.deepEqual(storedRequest.plan, proposalPlan, '파일로 제출한 정리안이 줄거나 바뀌지 않고 그대로 저장된다')
+  for (const [args, reasonCode, pattern] of [
+    [{ plan: nextPlan, planFile: previewFile.file }, 'RECONSTRUCTION_PLAN_FILE_INVALID', /하나만 보내세요/],
+    [{ planFile: 'mcp-preview-plan.json' }, 'RECONSTRUCTION_PLAN_FILE_INVALID', /절대 경로/],
+    [{}, 'RECONSTRUCTION_PLAN_REQUIRED', /plan 또는 planFile/],
+  ]) {
+    const rejected = await callJson('mindnprogress_preview_reconstruction', args)
+    assert.equal(rejected.isError, true)
+    assert.equal(rejected.body.reasonCode, reasonCode)
+    assert.match(rejected.body.message, pattern)
+  }
   // 총괄은 유지하고, 연결된 AI 상태를 확인할 수 없으면 보관하지 않는다.
   const group = await api(`/api/groups/${groupId}`, 'PATCH', { baseVersion: 0, createCoordinator: true })
   assert.equal(group.status, 200, JSON.stringify(group.body))

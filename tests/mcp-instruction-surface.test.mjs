@@ -75,11 +75,19 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     // 2026-11-10: 그룹 지시에 담당·보조 역할과 규칙 모델별 담당 자동 선택을 추가한다.
     // 2026-11-11: 중단된 통합 충돌 복구에 원본 해시를 지정하는 선택적 줄바꿈 보존·정리를 추가한다.
     // 2026-11-16: 사용자 승인으로 start_card_conversation에 기존 대화 인계(targetConversationId)를 추가한다. 다른 도구 계약은 유지한다.
-    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), '26c814a3bc093ce57cfed3ae198329a108cce8bc8899dd3a525a34b028e1d6db')
+    // 2026-11-17: 사용자 승인으로 preview·submit·apply_reconstruction에 plan 대신 쓰는 planFile을 추가하고 plan을 선택 항목으로 바꾼다.
+    //   도구 호출 하나에 정리안 전체를 다시 생성하다 출력 한도에 걸려 설계를 줄여 제출한 사례의 개선이다. 도구 설명은 유지한다.
+    assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'c9c9f30e361adc981ceb5603407225b80cd88b414cf3d4cf0ec1b6b8f8a1a0bd')
     // 2026-11-11: 자동 루트 인계의 후속 대화가 보내는 acceptHandoff 인수 확인을 추가한다.
     const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
-    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'cbbadb1bcdcd52704b0f93110816a129134d4a5b133c34c84fe7cb62601e7d5a')
-    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 239)
+    assert.equal(createHash('sha256').update(JSON.stringify(legacyTools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'd46abd9564e76ebca7d0baf09fcee0a579736e413d3554799c52f5f9d0ac8532')
+    assert.equal(tools.reduce((sum, tool) => sum + countSchemaDescriptions(tool.inputSchema), 0), 242)
+    for (const name of ['mindnprogress_preview_reconstruction', 'mindnprogress_submit_reconstruction_proposal', 'mindnprogress_apply_reconstruction']) {
+      const properties = tools.find((tool) => tool.name === name).inputSchema.properties
+      assert.equal(properties.planFile.type, 'string')
+      assert.match(properties.planFile.description, /plan 대신.*UTF-8 JSON 파일 절대 경로.*카드를 합치거나 내용을 줄이지 말고.*plan과 함께 보내지 않습니다/s)
+      assert.equal(tools.find((tool) => tool.name === name).inputSchema.required?.includes('plan') ?? false, false, `${name}은 plan과 planFile 중 하나를 받는다`)
+    }
     const handoff = tools.find((tool) => tool.name === 'mindnprogress_start_card_conversation')
     assert.deepEqual(handoff.inputSchema.required, ['mapId', 'cardId', 'requestId'])
     assert.equal(handoff.inputSchema.properties.resultOnly.type, 'boolean')

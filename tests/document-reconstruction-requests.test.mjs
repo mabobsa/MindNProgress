@@ -53,6 +53,8 @@ test('문서 정리 전문은 별도 제안함과 제한된 분석 승인만 전
   const prompt = buildReconstructionRequestPrompt({ id: 'reorg-request-test' })
   assert.ok(prompt.length < AI_EDITOR_REQUEST_MAX_LENGTH)
   for (const text of ['mindnprogress_get_reconstruction_request', 'groupBaselines', 'mindnprogress_submit_reconstruction_proposal', '추가 AI 위임', 'plan.approval은 넣지 마세요', '별도로 검토하고 승인']) assert.ok(prompt.includes(text))
+  // 2026-11-17: 정리안을 도구 호출 하나에 다시 생성하다 출력 한도에 걸려 설계를 줄여 제출한 사례가 있어 파일 제출을 안내한다.
+  assert.match(prompt, /UTF-8 JSON 파일로 저장.*preview_reconstruction\(\{planFile\}\).*submit_reconstruction_proposal\(\{requestId,baseRevision,planFile\}\).*카드를 합치거나 내용을 줄이지 마세요/s)
   assert.equal(isAiConversationPurpose('document-reconstruction'), true)
   assert.match(aiConversationTitle({ purpose: 'document-reconstruction', documentTitle: '문서', cardTitle: '카드' }), /^\[문서 정리\]/)
   assert.throws(() => buildReconstructionRequestPrompt({ id: '잘못된 ID' }))

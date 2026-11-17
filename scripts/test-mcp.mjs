@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createServer as createHttpServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -3050,6 +3051,23 @@ async function main() {
       approval: { statement: '시험 데이터의 전환안을 적용합니다.', source: 'MCP 전체 회귀 시험의 승인 입력' },
     }
     let lifecyclePreview = await invoke('mindnprogress_preview_reconstruction', { plan: lifecyclePlan })
+    // 2026-11-17: 큰 정리안은 도구 인자 대신 로컬 JSON 파일(planFile)로 보낸다. 같은 정리안이면 인자와 같은 검증 결과를 낸다.
+    // 데이터 폴더의 JSON은 문서로 읽히므로 정리안 파일은 데이터 폴더 밖 임시 폴더에 둔다.
+    const planFileDirectory = await mkdtemp(path.join(tmpdir(), 'mnp-test-plan-files-'))
+    const writePlanFile = async (name, value) => {
+      const planFilePath = path.join(planFileDirectory, name)
+      const text = `${JSON.stringify(value, null, 2)}\n`
+      await writeFile(planFilePath, text, 'utf8')
+      return { planFilePath, sha256: createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex') }
+    }
+    const lifecyclePlanFile = await writePlanFile('lifecycle.json', lifecyclePlan)
+    const filePreview = await invoke('mindnprogress_preview_reconstruction', { planFile: lifecyclePlanFile.planFilePath })
+    assert.equal(filePreview.previewHash, lifecyclePreview.previewHash, 'planFile 미리보기는 같은 정리안의 인자 미리보기와 같은 previewHash를 낸다')
+    assert.equal(filePreview.planFile.sha256, lifecyclePlanFile.sha256)
+    assert.equal(filePreview.planFile.path, lifecyclePlanFile.planFilePath)
+    await invokeExpectError('mindnprogress_preview_reconstruction', { plan: lifecyclePlan, planFile: lifecyclePlanFile.planFilePath }, /하나만 보내세요/, 'RECONSTRUCTION_PLAN_FILE_INVALID')
+    await invokeExpectError('mindnprogress_preview_reconstruction', { planFile: 'relative-plan.json' }, /절대 경로/, 'RECONSTRUCTION_PLAN_FILE_INVALID')
+    await invokeExpectError('mindnprogress_preview_reconstruction', {}, /plan 또는 planFile/, 'RECONSTRUCTION_PLAN_REQUIRED')
     await invokeExpectError('mindnprogress_apply_reconstruction', { plan: lifecyclePlan, previewHash: lifecyclePreview.previewHash }, /실제 마인드맵/)
     for (const action of ['measure-layout', 'verify-layout']) {
       const result = await fetch(`${apiBaseUrl}/api/document-reconstructions/${action}`, { method: 'POST', headers: { Cookie: editorSessionCookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ plan: lifecyclePlan, previewHash: lifecyclePreview.previewHash, measurements: reconstructionLayoutFixture(lifecyclePreview) }) })
@@ -3063,8 +3081,13 @@ async function main() {
     const proposalRequest = await proposalRequestResponse.json()
     assert.equal((await invoke('mindnprogress_get_reconstruction_request', { requestId: proposalRequest.id })).revision, 0)
     const { approval: _proposalApproval, ...submittedPlan } = lifecyclePlan
-    assert.equal((await invoke('mindnprogress_submit_reconstruction_proposal', { requestId: proposalRequest.id, baseRevision: 0, plan: submittedPlan })).hasProposal, true)
-    const lifecycleApplied = await invoke('mindnprogress_apply_reconstruction', { plan: lifecyclePlan, previewHash: lifecyclePreview.previewHash })
+    const submittedPlanFile = await writePlanFile('submitted.json', submittedPlan)
+    const fileSubmitted = await invoke('mindnprogress_submit_reconstruction_proposal', { requestId: proposalRequest.id, baseRevision: 0, planFile: submittedPlanFile.planFilePath })
+    assert.equal(fileSubmitted.hasProposal, true)
+    assert.equal(fileSubmitted.planFile.sha256, submittedPlanFile.sha256)
+    const lifecycleApplied = await invoke('mindnprogress_apply_reconstruction', { planFile: lifecyclePlanFile.planFilePath, previewHash: lifecyclePreview.previewHash })
+    assert.equal(lifecycleApplied.planFile.sha256, lifecyclePlanFile.sha256)
+    await rm(planFileDirectory, { recursive: true, force: true })
     assert.equal(lifecycleApplied.operation.state, 'applied')
     assert.equal(lifecycleApplied.operation.createdBy.id, lifecycleSource.createdBy.id)
     assert.equal(lifecycleApplied.operation.createdBy.name, lifecycleSource.createdBy.name)

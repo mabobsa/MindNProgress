@@ -6,6 +6,7 @@ import type { MindNodeData, TeamMember } from '../types/mindMap'
 import { computeProgressRollups } from '../utils/progressRollup.mjs'
 import { isSameDoorayKnowledgeUrl, normalizedDoorayKnowledgeUrl } from '../utils/externalLinks'
 import type { LayoutMeasurement } from '../utils/mindMapLayout.mjs'
+import { MINDMAP_GRID_SIZE } from '../utils/mindMapGrid.mjs'
 import './ReconstructionMap.css'
 
 export type ReconstructionPreviewMap = { id: string; title: string; nodes: Node<MindNodeData>[]; edges: Edge[] }
@@ -120,7 +121,7 @@ function MeasuredMap({ map, members, onMeasured, onError, onZoomChange, layoutPr
   }, [flow, initialized, map, onError, onMeasured, layoutProposal])
   return <div className="reconstruction-map" ref={container} data-map-id={map.id} aria-label={`${map.title} 배치 미리보기`}>
     <ReactFlow nodes={nodes} onNodesChange={onNodesChange} edges={preparedEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} deleteKeyCode={null} onlyRenderVisibleElements={false} fitView fitViewOptions={{ padding: 0.15 }} minZoom={layoutProposal ? 0.000001 : 0.02} maxZoom={2} preventScrolling={false} onInit={(instance) => onZoomChange?.(instance.getZoom())} onMove={(_event, viewport) => onZoomChange?.(viewport.zoom)}>
-      <Background /><Controls showInteractive={false} />
+      <Background gap={MINDMAP_GRID_SIZE} /><Controls showInteractive={false} />
     </ReactFlow>
   </div>
 }

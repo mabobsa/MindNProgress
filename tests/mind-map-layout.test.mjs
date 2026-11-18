@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { assertLayoutClear, layoutMindMap, validateLayoutMeasurements, verifyRenderedLayout, MIND_MAP_LAYOUT_VERSION } from '../src/utils/mindMapLayout.mjs'
+import { MINDMAP_GRID_SIZE } from '../src/utils/mindMapGrid.mjs'
 
 const node = (id, data = {}) => ({ id, type: 'mind', hidden: true, parentId: '임의 부모', style: { transform: 'translate(-900px)' }, position: { x: 0, y: 0 }, data: { label: id, ...data } })
 const edge = (source, target) => ({ id: `${source}-${target}`, source, target })
@@ -38,6 +39,27 @@ test('측정 누락·중복·잘못된 크기와 최종 렌더 좌표·돌출 �
     assert.throws(() => verifyRenderedLayout(map, layout, [{ ...good[0], ...bad }, ...good.slice(1)]), /좌표|배치 영역/)
   }
   assert.throws(() => assertLayoutClear([{ cardId: 'a', x: 0, y: 0, width: 200, height: 100 }, { cardId: 'b', x: 210, y: 0, width: 200, height: 100 }]), /최소 여백/)
+})
+
+test('초안과 실측 배치는 Alt 격자와 여백을 지키고 격자 밖 저장 좌표와 구버전은 거부한다', () => {
+  const input = example()
+  const sizes = measure(input).map((item, i) => ({ ...item, height: item.height + 0.5,
+    outsets: { left: 8 + i, top: 40 - i, right: 22, bottom: 9 } }))
+  const measured = layoutMindMap(input, sizes)
+  for (const { map, layout } of [layoutMindMap(input), measured]) {
+    for (const { position } of map.nodes) {
+      assert.equal(position.x % MINDMAP_GRID_SIZE, 0)
+      assert.equal(position.y % MINDMAP_GRID_SIZE, 0)
+    }
+    assertLayoutClear(layout.boxes)
+  }
+  const { map, layout } = measured
+  const rendered = positioned(map, sizes)
+  assert.equal(verifyRenderedLayout(map, layout, rendered.map(item => ({ ...item, x: item.x + 0.25 }))), true)
+  assert.throws(() => verifyRenderedLayout(map, { ...layout, version: 'subtree-bounds-v1' }, rendered), /배치 방식/)
+  const shifted = structuredClone(map)
+  shifted.nodes[0].position.x += 0.25
+  assert.throws(() => verifyRenderedLayout(shifted, layout, positioned(shifted, sizes)), /24px 격자/)
 })
 
 test('깊거나 넓은 트리도 겹치지 않으며 다중 루트·순환·미연결 계층을 거부한다', () => {

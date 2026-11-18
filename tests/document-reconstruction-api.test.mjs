@@ -11,6 +11,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { documentLifecycleBrowser } from './helpers/documentLifecycleBrowser.mjs'
 import { reconstructionLayoutFixture } from './helpers/reconstructionLayoutFixture.mjs'
+import { MINDMAP_GRID_SIZE } from '../src/utils/mindMapGrid.mjs'
 
 const root = path.resolve(import.meta.dirname, '..')
 const node = (id, data = {}) => ({ id, type: 'mind', position: { x: 0, y: 0 }, data: { label: id, description: '한국어 요구사항을 보존합니다.', sharedKnowledge: '', kind: 'task', isWork: true, status: 'planned', progress: 0, ...data } })
@@ -116,6 +117,12 @@ test('보관·전환 HTTP/MCP 경로는 임시 서버에서 원본·댓글·이�
   assert.equal(applied.status, 200, JSON.stringify(applied.body))
   const nextId = applied.body.operation.targetMapIds[0]
   const guideId = applied.body.operation.targetMapIds[1]
+  for (const target of preview.body.targets) {
+    const positions = target.renderMap.nodes.map(node => node.position)
+    assert.ok(positions.every(({ x, y }) => x % MINDMAP_GRID_SIZE === 0 && y % MINDMAP_GRID_SIZE === 0))
+    const saved = await api(`/api/maps/${target.map.id}`)
+    assert.deepEqual(saved.body.map.nodes.map(node => node.position), positions, '후속 문서는 승인한 미리보기의 격자 좌표로 저장한다')
+  }
   assert.deepEqual(await readFile(sourcePath), originalBytes)
   assert.deepEqual(await readFile(commentsPath), originalComments)
   assert.equal(applied.body.maps.some((m) => m.id === source.id), false)

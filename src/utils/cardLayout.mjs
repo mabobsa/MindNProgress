@@ -1,5 +1,5 @@
-import { assertLayoutClear, validateLayoutMeasurements, verifyRenderedLayout } from './mindMapLayout.mjs'
-import { MINDMAP_GRID_SIZE, snapMindMapPosition } from './mindMapGrid.mjs'
+import { assertLayoutClear, reservedCardSize, snapCardBox, validateLayoutMeasurements, verifyRenderedLayout } from './mindMapLayout.mjs'
+import { MINDMAP_GRID_SIZE } from './mindMapGrid.mjs'
 
 export const CARD_LAYOUT_VERSION = 'card-layout-v4'
 export const CARD_LAYOUT_GAP = 32
@@ -9,12 +9,6 @@ const fail = (message) => { throw Object.assign(new Error(message), { status: 40
 const knowledge = (edge) => edge.data?.relation === 'knowledge'
 const finite = (value) => Number.isFinite(value)
 const snapPadding = MINDMAP_GRID_SIZE / 2
-// 반올림으로 각 축 최대 반 칸 이동해도 원래 점유 영역과 최소 여백을 지킨다.
-// 실측값 자체는 바꾸지 않아 돌출 영역의 검증 한도와 표시 크기를 보존한다.
-const reservedCardSize = (body) => ({ body,
-  width: body.width + body.outsets.left + body.outsets.right + MINDMAP_GRID_SIZE,
-  height: body.height + body.outsets.top + body.outsets.bottom + MINDMAP_GRID_SIZE,
-})
 
 export function cardLayoutGraph(map) {
   if (!Array.isArray(map?.nodes) || !map.nodes.length || map.nodes.length > 2000) fail('배치 제안은 문서당 1~2000개 카드를 지원합니다.')
@@ -192,15 +186,7 @@ function finalizeCardBoxes(reserved, root, origin) {
     x: origin.x - root.x - root.body.outsets.left - snapPadding,
     y: origin.y - root.y - root.body.outsets.top - snapPadding,
   }
-  const boxes = reserved.map(({ cardId, x, y, body }) => {
-    const position = snapMindMapPosition({
-      x: x + delta.x + body.outsets.left + snapPadding,
-      y: y + delta.y + body.outsets.top + snapPadding,
-    })
-    return { cardId, x: position.x - body.outsets.left, y: position.y - body.outsets.top,
-      width: body.width + body.outsets.left + body.outsets.right,
-      height: body.height + body.outsets.top + body.outsets.bottom, body }
-  })
+  const boxes = reserved.map(({ cardId, x, y, body }) => snapCardBox(cardId, x + delta.x, y + delta.y, body))
   assertLayoutClear(boxes)
   return { boxes, ...extent(boxes) }
 }
@@ -344,11 +330,7 @@ export function layoutCards(map, measurements, plan, options = {}) {
 }
 
 export function verifyCardLayout(map, layout, measurements) {
-  if (layout.version !== CARD_LAYOUT_VERSION) fail('배치 방식이 변경되었습니다. 화면을 새로고침하고 미리보기를 다시 열어 주세요.')
-  for (const node of map.nodes) {
-    if (!finite(node.position?.x) || !finite(node.position?.y) || node.position.x % MINDMAP_GRID_SIZE !== 0 || node.position.y % MINDMAP_GRID_SIZE !== 0) fail(`카드 좌표가 ${MINDMAP_GRID_SIZE}px 격자에 맞지 않습니다. 미리보기를 다시 열어 주세요: ${node.id}`)
-  }
-  verifyRenderedLayout(map, layout, measurements)
+  verifyRenderedLayout(map, layout, measurements, { version: CARD_LAYOUT_VERSION, reject: fail })
   const bodies = new Map(layout.boxes.map((box) => [box.cardId, box.body]))
   for (const item of measurements) {
     const body = bodies.get(item.cardId)

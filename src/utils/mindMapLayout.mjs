@@ -1,5 +1,7 @@
+import { MINDMAP_GRID_SIZE, snapMindMapPosition } from './mindMapGrid.mjs'
+
 // 좌표가 아닌 계층·형제 순서와 카드의 실제 점유 영역으로 배치한다.
-export const MIND_MAP_LAYOUT_VERSION = 'subtree-bounds-v1'
+export const MIND_MAP_LAYOUT_VERSION = 'subtree-bounds-v2'
 export const MIND_MAP_LAYOUT_GAP = 32
 const columnGap = 96
 const siblingGap = 48
@@ -40,6 +42,22 @@ export function assertLayoutClear(rects, gap = MIND_MAP_LAYOUT_GAP) {
   }
 }
 
+// 각 방향에 반 칸씩 예약하면 본체를 격자로 옮겨도 돌출 영역이 예약 범위를 벗어나지 않는다.
+export const reservedCardSize = (body) => ({ body,
+  width: body.width + body.outsets.left + body.outsets.right + MINDMAP_GRID_SIZE,
+  height: body.height + body.outsets.top + body.outsets.bottom + MINDMAP_GRID_SIZE,
+})
+
+export function snapCardBox(cardId, x, y, body) {
+  const position = snapMindMapPosition({
+    x: x + body.outsets.left + MINDMAP_GRID_SIZE / 2,
+    y: y + body.outsets.top + MINDMAP_GRID_SIZE / 2,
+  })
+  return { cardId, x: position.x - body.outsets.left, y: position.y - body.outsets.top,
+    width: body.width + body.outsets.left + body.outsets.right,
+    height: body.height + body.outsets.top + body.outsets.bottom, body }
+}
+
 export function layoutMindMap(map, measurements) {
   if (!Array.isArray(map?.nodes) || !map.nodes.length || map.nodes.length > 2000) fail('자동 배치는 문서당 1~2000개 카드를 지원합니다.')
   const byId = new Map(map.nodes.map((node) => [node.id, node]))
@@ -61,7 +79,7 @@ export function layoutMindMap(map, measurements) {
     if (external && (!positive(external.displayWidth) || !positive(external.displayHeight))) fail('외부 링크 카드의 표시 크기가 확정되지 않았습니다.')
     const size = supplied?.get(node.id) ?? { width: external?.displayWidth ?? 218, height: external?.displayHeight ?? 180,
       outsets: { left: 12, top: node.data?.waitingItems?.length ? 40 : 12, right: children.get(node.id).length ? 24 : 12, bottom: 12 } }
-    return [node.id, { width: pixelCeil(size.width), height: pixelCeil(size.height), outsets: size.outsets }]
+    return [node.id, reservedCardSize({ width: pixelCeil(size.width), height: pixelCeil(size.height), outsets: size.outsets })]
   }))
   const sequence = []; const depths = new Map([[roots[0].id, 0]]); const stack = [roots[0].id]
   while (stack.length) {
@@ -75,18 +93,18 @@ export function layoutMindMap(map, measurements) {
   const columnWidths = []; const heights = new Map()
   for (const id of [...sequence].reverse()) {
     const size = sizes.get(id); const depth = depths.get(id)
-    columnWidths[depth] = Math.max(columnWidths[depth] ?? 0, size.width + size.outsets.left + size.outsets.right)
+    columnWidths[depth] = Math.max(columnWidths[depth] ?? 0, size.width)
     const kids = children.get(id)
-    heights.set(id, Math.max(size.height + size.outsets.top + size.outsets.bottom, kids.reduce((sum, child) => sum + heights.get(child), 0) + Math.max(0, kids.length - 1) * siblingGap))
+    heights.set(id, Math.max(size.height, kids.reduce((sum, child) => sum + heights.get(child), 0) + Math.max(0, kids.length - 1) * siblingGap))
   }
   const columns = [0]
   for (let depth = 1; depth < columnWidths.length; depth++) columns[depth] = columns[depth - 1] + columnWidths[depth - 1] + columnGap
   const tops = new Map([[roots[0].id, 0]]); const positions = new Map(); const boxes = []
   for (const id of sequence) {
     const size = sizes.get(id); const height = heights.get(id); const top = tops.get(id)
-    const envelopeHeight = size.height + size.outsets.top + size.outsets.bottom
-    const box = { cardId: id, x: columns[depths.get(id)], y: top + Math.floor((height - envelopeHeight) / 2), width: size.width + size.outsets.left + size.outsets.right, height: envelopeHeight, body: size }
-    boxes.push(box); positions.set(id, { x: box.x + size.outsets.left, y: box.y + size.outsets.top })
+    const box = snapCardBox(id, columns[depths.get(id)], top + Math.floor((height - size.height) / 2), size.body)
+    boxes.push(box)
+    positions.set(id, { x: box.x + size.body.outsets.left, y: box.y + size.body.outsets.top })
     const kids = children.get(id)
     const childrenHeight = kids.reduce((sum, child) => sum + heights.get(child), 0) + Math.max(0, kids.length - 1) * siblingGap
     let childTop = top + Math.floor((height - childrenHeight) / 2)
@@ -98,12 +116,17 @@ export function layoutMindMap(map, measurements) {
     layout: { version: MIND_MAP_LAYOUT_VERSION, gap: MIND_MAP_LAYOUT_GAP, boxes, width: Math.max(...boxes.map((box) => box.x + box.width)), height: Math.max(...boxes.map((box) => box.y + box.height)) } }
 }
 
-export function verifyRenderedLayout(map, layout, measurements) {
+export function verifyRenderedLayout(map, layout, measurements, { version = MIND_MAP_LAYOUT_VERSION, reject = fail } = {}) {
+  if (layout.version !== version) reject('배치 방식이 변경되었습니다. 화면을 새로고침하고 미리보기를 다시 열어 주세요.')
   const measured = validateLayoutMeasurements(map.nodes, measurements)
   const nodeById = new Map(map.nodes.map((node) => [node.id, node]))
   const boxesById = new Map(layout.boxes.map((box) => [box.cardId, box]))
   const actualBoxes = measured.map((item) => {
     const node = nodeById.get(item.cardId); const box = boxesById.get(item.cardId)
+    if (!Number.isFinite(node.position?.x) || !Number.isFinite(node.position?.y)
+      || node.position.x % MINDMAP_GRID_SIZE !== 0 || node.position.y % MINDMAP_GRID_SIZE !== 0) {
+      reject(`카드 좌표가 ${MINDMAP_GRID_SIZE}px 격자에 맞지 않습니다. 미리보기를 다시 열어 주세요: ${item.cardId}`)
+    }
     if (Math.abs(item.x - node.position.x) > 1 || Math.abs(item.y - node.position.y) > 1) fail(`미리보기 카드 좌표가 달라졌습니다: ${item.cardId}`)
     const actual = { cardId: item.cardId, x: item.x - item.outsets.left, y: item.y - item.outsets.top,
       width: item.width + item.outsets.left + item.outsets.right, height: item.height + item.outsets.top + item.outsets.bottom }

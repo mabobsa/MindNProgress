@@ -108,7 +108,7 @@ test('다중 사용자 API는 메인 허용·소유권·귀속·중계 경계를
   const beforeRelay = calls.length
   assert.equal((await relay('other', 'remote-mine')).status, 403)
   assert.equal((await relay('mine', 'other')).status, 403)
-  assert.equal((await relay('mine', 'legacy')).status, 403)
+  assert.equal((await relay('mine', 'legacy')).status, 404, '메인 허용 계정은 시작자 미상 대화의 접근 검사도 통과한다')
   assert.equal(calls.length, beforeRelay)
   assert.equal((await relay('mine', 'remote-mine')).status, 404, '같은 시작자는 권한 검사를 통과하고 머신 탐색으로 진행한다')
   const pending = await as(mine, '/api/integrations/aionui/attributions', 'POST', {
@@ -135,5 +135,11 @@ test('Runner는 머신 소유자와 다른 귀속 토큰을 거부한다', () =>
       'x-mnp-ai-conversation-id': 'mine', 'x-mnp-ai-attribution': 'foreign-token' } } }
   assert.equal(authorizeRunnerMcpRequest({ ...args, attributionForToken: () => ({ startedBy: 'other' }) }).kind, 'rejected')
   assert.equal(authorizeRunnerMcpRequest({ ...args, attributionForToken: () => ({ startedBy: 'owner' }) }).kind, 'authorized')
+  const legacyToken = { conversationId: 'mine', startedBy: 'system-aionui-ai' }
+  assert.equal(authorizeRunnerMcpRequest({ ...args, attributionForToken: () => legacyToken }).kind, 'authorized')
+  assert.equal(authorizeRunnerMcpRequest({ ...args, attributionForToken: () => ({ ...legacyToken, conversationId: 'other' }) }).kind, 'rejected')
+  const legacyConversation = { ...args, users: [{ id: 'owner', role: 'editor', mainMachineAllowed: true }],
+    conversationOrigins: new Map([['mine', { ...legacyToken, homeMachineId: 'mac' }]]) }
+  assert.equal(authorizeRunnerMcpRequest({ ...legacyConversation, attributionForToken: () => legacyToken }).kind, 'rejected')
   assert.deepEqual(redactAttributionTokens({ nested: [{ attributionToken: 'secret' }] }), { nested: [{ attributionToken: '[비공개]' }] })
 })

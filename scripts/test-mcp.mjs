@@ -850,6 +850,12 @@ async function main() {
     assert.equal(editorCreateResponse.status, 201)
     const testEditor = (await editorCreateResponse.json()).editor
     assert.equal(testEditor.role, 'editor')
+    assert.equal(testEditor.mainMachineAllowed, false)
+    const mainPermission = await fetch(`${apiBaseUrl}/api/admin/editors/${testEditor.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: sessionCookie },
+      body: JSON.stringify({ mainMachineAllowed: true }),
+    })
+    assert.equal(mainPermission.status, 200, 'MCP 실행 검증용 편집자에게 관리자가 메인 사용을 허용한다')
     const editorLoginResponse = await fetch(`${apiBaseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2945,7 +2951,7 @@ async function main() {
       sourceRevision: managedGroup.coordinator.version,
       idempotencyKey: 'mcp-group-instruction-origin-check',
       newConversation: { agentId: 'claude-code', modelId: 'claude-test' },
-    }, /현재 그룹 총괄 루트 카드|현재 AionUi 대화|현재 AI 대화/)
+    }, /대화 시작자와 실행 머신 권한/, 'AI_CONVERSATION_OWNER_DENIED')
     const groupDocumentContext = await invoke('mindnprogress_get_context', { mapId: groupDocument.map.id, cardId: groupDocument.map.nodes.find((node) => node.data.kind === 'root').id })
     for (const value of [groupDocumentContext.groupProject.instruction, groupDocumentContext.nextStep, groupDocumentContext.selection.aiWorkCoordination.childDelegation.instruction]) {
       assert.doesNotMatch(value, /# 사용자 승인과 실행 범위|# 그룹의 두 단계 사용자 승인|미승인 분석·제안은|사용자 승인 근거와 허용 범위가 확인된/)

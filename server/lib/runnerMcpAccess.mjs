@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { conversationOwners, conversationOwnedBy, conversationStarterId } from './aiAccessPolicy.mjs'
 import { findMachine, normalizeMachineId, verifyMachineToken } from './subMachines.mjs'
 
 export const RUNNER_MCP_MACHINE_HEADER = 'x-mnp-runner-mcp-machine-id'
@@ -51,6 +52,7 @@ export function authorizeRunnerMcpRequest({
   machineRegistry,
   conversationOrigins,
   transientAttributions = [],
+  conversationAttributions = [],
   attributionForToken = () => null,
   users,
 }) {
@@ -81,17 +83,21 @@ export function authorizeRunnerMcpRequest({
   const origin = conversationOrigins.get(conversationId)
   const machine = findMachine(machineRegistry, machineId)
   const owner = users.find((candidate) => candidate.id === machine?.ownerUserId)
-  const transientAttribution = origin ? null : [...transientAttributions].find((candidate) => (
+  const transientRecords = [...transientAttributions]
+  const transientAttribution = origin ? null : transientRecords.find((candidate) => (
     candidate?.conversationId === conversationId
     && normalizeMachineId(candidate.homeMachineId) === machineId
-    && candidate.startedBy === owner?.id
+    && conversationStarterId(candidate.startedBy) === owner?.id
     && Number(candidate.expiresAt) > Date.now()
   ))
   const trustedConversation = origin ?? transientAttribution
+  const owners = conversationOwners(conversationId, {
+    origins: conversationOrigins, attributions: conversationAttributions, transient: transientRecords,
+  })
   if (!conversationId || (navigation && navigation[1] !== conversationId)
     || !trustedConversation || normalizeMachineId(trustedConversation.homeMachineId) !== machineId
     || !owner || owner.active === false || !['editor', 'admin'].includes(owner.role)
-    || trustedConversation.startedBy !== owner.id) {
+    || !conversationOwnedBy(owner, owners)) {
     return {
       kind: 'rejected',
       status: 403,
@@ -103,8 +109,10 @@ export function authorizeRunnerMcpRequest({
   const declaredEditorId = String(request.headers['x-mnp-ai-editor-id'] ?? '').trim()
   const tokenValue = String(request.headers['x-mnp-ai-attribution'] ?? '').trim()
   const tokenAttribution = tokenValue ? attributionForToken(createHash('sha256').update(tokenValue).digest('hex')) : null
+  const tokenOwner = conversationStarterId(tokenAttribution?.startedBy)
+    ?? (tokenAttribution?.conversationId === conversationId && owners.length === 1 ? owners[0] : null)
   if (declaredEditorId && declaredEditorId !== owner.id
-    || tokenAttribution?.startedBy && tokenAttribution.startedBy !== owner.id) {
+    || tokenAttribution && tokenOwner !== owner.id) {
     return {
       kind: 'rejected',
       status: 403,

@@ -4,12 +4,18 @@ export function mainMachineAllowed(user) {
     || user?.role === 'editor' && user?.mainMachineAllowed === true)
 }
 
+export function conversationStarterId(value) {
+  const id = typeof value === 'string' ? value : value?.id
+  // 편집자를 지정하지 않은 과거 연동 요청의 대체 신원은 실제 계정이 아니다.
+  return id && id !== 'system-aionui-ai' ? id : null
+}
+
 export function conversationOwners(conversationId, { origins, attributions = [], transient = [], link } = {}) {
+  if (!conversationId) return []
   const records = [origins?.get(conversationId), ...attributions, ...transient]
     .filter((record) => record && record.conversationId === conversationId)
   if (link && link.conversationId === conversationId) records.push(link)
-  return [...new Set(records.map((record) => typeof record.startedBy === 'string'
-    ? record.startedBy : record.startedBy?.id).filter(Boolean))]
+  return [...new Set(records.map((record) => conversationStarterId(record.startedBy)).filter(Boolean))]
 }
 
 export function conversationOwnedBy(user, owners) {
@@ -18,9 +24,10 @@ export function conversationOwnedBy(user, owners) {
 }
 
 export function integrationIdentityMatches({ editorId, conversationId, attribution, owners }) {
-  if (editorId && attribution?.startedBy && editorId !== attribution.startedBy) return false
+  const startedBy = conversationStarterId(attribution?.startedBy)
+  if (editorId && startedBy && editorId !== startedBy) return false
   if (conversationId && attribution?.conversationId && conversationId !== attribution.conversationId) return false
-  const actor = attribution?.startedBy || editorId
+  const actor = startedBy || editorId
   return actor ? owners.every((owner) => owner === actor) : owners.length <= 1
 }
 

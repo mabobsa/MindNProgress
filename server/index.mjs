@@ -1,4 +1,4 @@
-import { mainMachineAllowed, conversationOwners, conversationOwnedBy, integrationIdentityMatches, redactAttributionTokens } from './lib/aiAccessPolicy.mjs'
+import { mainMachineAllowed, conversationOwners, conversationOwnedBy, conversationStarterId, integrationIdentityMatches, redactAttributionTokens } from './lib/aiAccessPolicy.mjs'
 import { createServer } from 'node:http'
 import { aiDelegationNotificationStatus, withAiDelegationNotificationStatus } from './lib/aiDelegationNotifications.mjs'
 import { createAiConversationRemoval, conversationRemovalError } from './lib/aiConversationRemoval.mjs'
@@ -907,14 +907,8 @@ async function resolveAiConversationNavigation(conversationId) {
     : null
   const conversationLink = aiConversationLinksFromData(card.data)
     .find((link) => link.conversationId === normalizedConversationId)
-  const persistentAttribution = aiConversationAttributions.get(conversationAttributionKey(map.id, card.id))
-  const attributedStartedBy = persistentAttribution?.conversationId === normalizedConversationId
-    ? String(persistentAttribution.startedBy ?? '').trim().slice(0, 120) || null
-    : null
-  const recordedStartedBy = String(origin.startedBy ?? '').trim().slice(0, 120)
-    || String(conversationLink?.startedBy?.id ?? '').trim().slice(0, 120)
-    || attributedStartedBy
-    || null
+  const owners = ownersOfConversation(normalizedConversationId, conversationLink)
+  const recordedStartedBy = owners.length === 1 ? owners[0] : null
   const configuredPrimaryConversationId = primaryAiConversationIdFromData(card.data)
   const primaryConversationId = isAiConversationLinked(card.data, configuredPrimaryConversationId)
     ? configuredPrimaryConversationId : null
@@ -1117,7 +1111,8 @@ function scopedAttribution(request) {
 }
 
 function attributionUser(attribution) {
-  const editor = users.find((candidate) => candidate.id === attribution.startedBy
+  const startedBy = conversationStarterId(attribution.startedBy) || ownersOfConversation(attribution.conversationId)[0]
+  const editor = users.find((candidate) => candidate.id === startedBy
     && candidate.active !== false && canEdit(candidate))
   return editor
     ? { ...editor, name: attribution.authorName }
@@ -9368,7 +9363,7 @@ async function executeStorageRequest(request, response, operation) {
     const resultOnly = request.headers['x-mnp-result-only'] === '1'
     if (requestId || resultOnly) {
       const runner = authorizeRunnerMcpRequest({ request, pathname: url.pathname, machineRegistry,
-        conversationOrigins: aiConversationOrigins, transientAttributions: aiAttributions.values(), attributionForToken: (key) => aiAttributions.get(key), users })
+        conversationOrigins: aiConversationOrigins, transientAttributions: aiAttributions.values(), conversationAttributions: aiConversationAttributions.values(), attributionForToken: (key) => aiAttributions.get(key), users })
       if (runner.kind === 'rejected') throw storageRequestError(runner.code, runner.status)
       if (runner.kind === 'authorized') {
         request.headers.authorization = `Bearer ${integrationToken}`
@@ -9476,6 +9471,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     machineRegistry,
     conversationOrigins: aiConversationOrigins,
     transientAttributions: aiAttributions.values(),
+    conversationAttributions: aiConversationAttributions.values(),
     attributionForToken: (key) => aiAttributions.get(key),
     users,
   })
@@ -9923,20 +9919,25 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const normalized = normalizeSessionMessageRelayRequest(await readJsonBody(request))
       if (!normalized.ok) return sendJson(response, normalized.status, normalized.body)
       const scope = integrationRequestScope(request)
-      const sender = getCurrentUser(request)
-      const fromOwners = ownersOfConversation(normalized.value.fromConversationId)
+      const from = normalized.value.fromConversationId
+      const fromOwners = ownersOfConversation(from)
       const toOwners = ownersOfConversation(normalized.value.to)
-      if (scope.conversationId !== normalized.value.fromConversationId || !sender
-        || fromOwners.length !== 1 || toOwners.length !== 1 || fromOwners[0] !== toOwners[0]
-        || fromOwners[0] !== sender.id) {
+      const runner = runnerMcpAccess.kind === 'authorized'
+      // 파일 토큰 클라이언트는 대화·편집자 헤더를 보내지 않는다. 양쪽 미상은 초기 호환 계정에만 한정한다.
+      const sender = runner ? runnerMcpAccess.owner : users.find((user) => user.id === (fromOwners[0] || toOwners[0] || 'user-editor'))
+      const wrongConversationHeader = (runner || scope.conversationId) && scope.conversationId !== from
+      const wrongMainSource = !runner && (!aiConversationOrigins.has(from) || conversationHomeMachineId(from) !== machineRegistry.mainMachineId)
+      if (wrongConversationHeader || wrongMainSource
+        || scope.editorId && scope.editorId !== sender?.id
+        || !conversationAccessibleByUser(sender, from) || !conversationAccessibleByUser(sender, normalized.value.to)) {
         return sendJson(response, 403, { code: 'AI_SESSION_MESSAGE_OWNER_DENIED', error: '인증된 발신 대화와 같은 시작자의 대화에만 메시지를 전달할 수 있습니다.' })
       }
       // 서브 머신 AionCore는 Runner 중계로 들어오므로 검증된 Runner 머신이 보낸 머신이다.
       const result = await relaySessionMessage({
         request: normalized.value,
-        sourceMachineId: runnerMcpAccess.kind === 'authorized' ? runnerMcpAccess.machineId : machineRegistry.mainMachineId,
+        sourceMachineId: runner ? runnerMcpAccess.machineId : machineRegistry.mainMachineId,
         listMachines: () => sessionMessageRelayMachines().filter((machine) => machineAccessibleByUser(sender, machine.machineId)
-          && [conversationHomeMachineId(scope.conversationId), conversationHomeMachineId(normalized.value.to)].includes(machine.machineId)),
+          && [conversationHomeMachineId(from), conversationHomeMachineId(normalized.value.to)].includes(machine.machineId)),
         homeMachineIdOf: (conversationId) => aiConversationOrigins.get(conversationId)?.homeMachineId ?? null,
         callMachine: fetchAionUiOn,
       })

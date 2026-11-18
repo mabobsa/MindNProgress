@@ -268,7 +268,8 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
     assert.equal(relayedLaunchPayload.completionUrl, attribution.body.completionUrl)
 
     const conversationId = 'conversation-on-mac'
-    const completionRequest = request(baseUrl, '', new URL(attribution.body.completionUrl).pathname, 'POST', { conversationId })
+    const completionRequest = request(baseUrl, '', new URL(attribution.body.completionUrl).pathname, 'POST', { conversationId },
+      { Authorization: `Bearer ${runnerToken}` })
     const completion = await requestWithRunner(
       baseUrl,
       runnerToken,
@@ -315,7 +316,7 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
     const relayed = await requestWithRunner(baseUrl, runnerToken,
       request(baseUrl, '', '/api/integrations/aionui/session-messages', 'POST', {
         fromConversationId: 'main-sender', to: conversationId, message: '같은 계정의 메인에서 맥북으로 전달',
-      }, { Authorization: `Bearer ${integrationToken}`, 'X-MNP-AI-Conversation-Id': 'main-sender' }),
+      }, { Authorization: `Bearer ${integrationToken}` }),
       operation => {
         if (operation.pathname === '/api/internal/session-messages/remote') {
           deliveredMessages++
@@ -475,7 +476,8 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
       }), operation => subMachineResponse(operation, 'resume-on-mac'))
     assert.equal(resumeAttribution.response.status, 201)
     const resumeLink = await requestWithRunner(baseUrl, runnerToken,
-      request(baseUrl, '', new URL(resumeAttribution.body.completionUrl).pathname, 'POST', { conversationId: 'resume-on-mac' }),
+      request(baseUrl, '', new URL(resumeAttribution.body.completionUrl).pathname, 'POST', { conversationId: 'resume-on-mac' },
+        { Authorization: `Bearer ${runnerToken}` }),
       operation => subMachineResponse(operation, 'resume-on-mac'))
     assert.equal(resumeLink.response.status, 200)
     const candidates = await requestWithRunner(baseUrl, runnerToken,

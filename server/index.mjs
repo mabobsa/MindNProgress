@@ -3805,6 +3805,16 @@ async function dispatchPreparedAiDelegation({
     )
   }
 
+  // 재사용 대화의 중복 점유는 AionCore에 실행을 요청하기 전에 확인한다.
+  if (strategy === 'resume' && workspaceLease) {
+    try {
+      workspaceLease = await workspacePoolManager.bindConversation(workspaceLease.leaseId, requestedConversationId) ?? workspaceLease
+    } catch (error) {
+      await workspacePoolManager.quarantine(workspaceLease.leaseId, `실행 전 대화 연결 검증 실패: ${error.message}`)
+      throw aiDelegationDispatchError('기존 작업공간 점유가 충돌하여 위임을 실행하지 않았습니다.', 409, 'AI_WORKSPACE_CONVERSATION_CONFLICT')
+    }
+  }
+
   let runtimePolicyVerification
   try {
     runtimePolicyVerification = await ensureDelegationRuntimePolicy({ conversationId: requestedConversationId,
@@ -4659,6 +4669,7 @@ async function restoreConfirmedAiDelegationDispatch(delegation, map, parentMap, 
     throw aiDelegationDispatchError('기존 실행이 아직 진행·대기 중이거나 상태가 불명확하여 복구하지 않았습니다.', 409)
   }
   if (dispatch.operationId !== delegation.childOperationId || !validAiConversationId(conversationId)
+    || (delegation.targetConversationId && delegation.targetConversationId !== conversationId)
     || !aiDelegationWorkspaceLeaseMatches(delegation.workspaceLease, dispatch.workspaceLease)) {
     throw aiDelegationWorkspaceLeaseError('기존 실행의 대화·작업공간을 확증하지 못해 복구하지 않았습니다.', delegation.workspaceLease, dispatch.workspaceLease)
   }
@@ -4680,9 +4691,19 @@ async function restoreConfirmedAiDelegationDispatch(delegation, map, parentMap, 
   }
   const selection = aiDelegationSelectionFromSource(delegation.pendingSelection)
   if (!selection) throw aiDelegationDispatchError('기존 실행의 AI 설정을 확인할 수 없습니다.', 409)
+  let duplicateAllocationRecovery
+  if (delegation.strategy === 'resume' && delegation.failureReasonCode === 'AI_WORKSPACE_CONVERSATION_CONFLICT'
+    && !dispatch.recoveryProof && delegation.id === delegation.childOperationId) {
+    const leases = workspacePoolManager.state?.leases ?? {}
+    const referenced = referencedHistoryIds([...aiDelegations.values(), ...groupDocumentInstructions.values()], new Set(Object.keys(leases)))
+    duplicateAllocationRecovery = { requestId: delegation.id, createdAt: delegation.createdAt,
+      leaseIds: Object.values(leases).filter(lease => lease.conversationId === conversationId && lease.status === 'leased'
+        && lease.leaseId !== delegation.workspaceLease.leaseId && !referenced.has(lease.leaseId) && !lease.ownership).map(lease => lease.leaseId) }
+  }
   const workspaceLease = await workspacePoolManager.reactivateQuarantinedLease(delegation.workspaceLease.leaseId, {
     mapId: map.id, cardId: delegation.targetCardId, conversationId,
     failureCategory: 'confirmed-dispatch', confirmedDispatchLease: dispatch.workspaceLease,
+    ...(duplicateAllocationRecovery ? { duplicateAllocationRecovery } : {}),
   })
   const link = normalizeAiConversationLink({
     conversationId, homeMachineId: machineId, agent: selection.agent, model: selection.model,
@@ -4692,7 +4713,9 @@ async function restoreConfirmedAiDelegationDispatch(delegation, map, parentMap, 
     startedBy: { id: delegation.startedBy, label: user.name },
     startedAt: normalizedIsoDate(conversation.created_at) ?? delegation.createdAt, linkedAt: new Date().toISOString(),
   })
-  const linked = delegation.primarySelection
+  const linked = delegation.strategy === 'resume'
+    ? { updatedMap: map, linkError: delegation.linkError ?? null }
+    : delegation.primarySelection
     ? await linkAiDelegationConversation({ map, targetCard: map.nodes.find((node) => node.id === delegation.targetCardId),
         targetConversationId: conversationId, strategy: 'new', selection: { ...selection, workspace: workspaceLease.projectRoot }, targetHomeMachineId: machineId,
         workspaceLease, instruction: delegation.pendingInstruction ?? delegation.instructionPreview, user,
@@ -9044,7 +9067,8 @@ startupTiming.mark('cardLayoutRequests')
 let workspacePoolStartupRecoveryReady = false
 try {
   const unconfirmedLeaseIds = [...aiDelegations.values()].filter((delegation) => delegation.state === 'recovery-required'
-    && !delegation.targetConversationId && delegation.childOperationId && delegation.workspaceLease?.leaseId)
+    && (!delegation.targetConversationId || delegation.failureReasonCode === 'AI_WORKSPACE_CONVERSATION_CONFLICT')
+    && delegation.childOperationId && delegation.workspaceLease?.leaseId)
     .map((delegation) => delegation.workspaceLease.leaseId)
   if (await workspacePoolManager.initialize({ unconfirmedLeaseIds })) {
     startupTiming.mark('workspacePoolInitialize')
@@ -11488,6 +11512,9 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       }
       const missingDispatchLink = delegation.state === 'recovery-required' && !delegation.targetConversationId
         && delegation.strategy === 'new' && Boolean(delegation.workspaceLease && delegation.pendingSelection && delegation.childOperationId)
+      const conflictingResumeDispatch = delegation.state === 'recovery-required' && delegation.strategy === 'resume'
+        && delegation.failureReasonCode === 'AI_WORKSPACE_CONVERSATION_CONFLICT'
+        && Boolean(delegation.targetConversationId && delegation.workspaceLease && delegation.pendingSelection && delegation.childOperationId)
       await validateAiDelegationAction(request, delegation, body, true, { requireConversationLinks: !missingDispatchLink })
       if (resultCorrection && delegation.resultCorrection?.instructionHash
         && delegation.resultCorrection.instructionHash !== createHash('sha256').update(instruction).digest('hex')) {
@@ -11527,7 +11554,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           currentVersion: parentMap.version,
         })
       }
-      if (missingDispatchLink) {
+      if (missingDispatchLink || conflictingResumeDispatch) {
         try {
           const restored = await restoreConfirmedAiDelegationDispatch(delegation, map, parentMap, user)
           delegation = restored.delegation

@@ -1287,9 +1287,30 @@ export class WorkspacePoolManager {
     } catch (error) { await release(); throw error }
   }
 
-  async acquire({ workspaceHint, mapId, cardId, conversationId, cardLabel, replacesLeaseId } = {}) {
+  async acquire({ requestId, workspaceHint, mapId, cardId, conversationId, cardLabel, replacesLeaseId } = {}) {
     return this.runExclusive(async () => {
       if (!this.poolForWorkspace(workspaceHint)) return null
+      const allocationRequestId = String(requestId ?? '').trim()
+      const requestedConversationId = String(conversationId ?? '')
+      // 위임 기록 저장이 실패해도 풀에 저장된 배정은 다시 사용한다. 새 대화는 나중에
+      // bindConversation으로 연결되므로 최초 요청의 대화 ID도 별도로 보존한다.
+      const prior = allocationRequestId && Object.values(this.state.leases).find(item => item.requestId === allocationRequestId)
+      if (prior) {
+        if (prior.mapId !== String(mapId ?? '') || prior.cardId !== String(cardId ?? '')
+          || prior.acquisitionConversationId !== requestedConversationId
+          || (prior.replacesLeaseId ?? '') !== (replacesLeaseId ?? '')) {
+          throw new WorkspacePoolUnavailableError('같은 배정 요청 ID의 문서·카드·대화가 다릅니다.', [], 'WORKSPACE_REQUEST_SCOPE_MISMATCH')
+        }
+        const workspaceState = this.state.workspaces[prior.workspaceId]
+        const session = await readJson(path.join(prior.projectRoot, '.ai-session.json'), null)
+        if (prior.status !== 'leased' || workspaceState?.status !== 'leased' || workspaceState.leaseId !== prior.leaseId
+          || !session || ['workspaceId', 'jobId', 'leaseId', 'branch', 'baseCommit', 'conversationId'].some(key => session[key] !== prior[key])
+          || normalizedPath(session.projectRoot) !== normalizedPath(prior.projectRoot)
+          || await this.git(prior.projectRoot, ['branch', '--show-current']) !== prior.branch) {
+          throw new WorkspacePoolUnavailableError('기존 배정의 상태·세션이 달라 새 작업공간을 배정하지 않았습니다.', [], 'WORKSPACE_REQUEST_RECOVERY_REQUIRED')
+        }
+        return publicLease(prior)
+      }
       if (replacesLeaseId) {
         const previous = this.state.leases[replacesLeaseId]
         if (previous?.status !== 'cancelled' || previous.result?.status !== 'failed-clean'
@@ -1305,6 +1326,10 @@ export class WorkspacePoolManager {
         if (Object.values(this.state.leases).some((item) => item.conversationId === conversationId && !['completed', 'cancelled'].includes(item.status))) {
           throw new WorkspacePoolUnavailableError('같은 대화의 작업공간이 이미 점유되어 있습니다.', [], 'CONVERSATION_ALREADY_LEASED')
         }
+      }
+      if (requestedConversationId && Object.values(this.state.leases).some(item => item.conversationId === requestedConversationId
+        && !['completed', 'cancelled'].includes(item.status))) {
+        throw new WorkspacePoolUnavailableError('같은 대화의 작업공간이 이미 점유되어 있습니다.', [], 'CONVERSATION_ALREADY_LEASED')
       }
       const integration = this.registry.integration
       const integrationChanges = await this.integrationTrackedChanges(integration)
@@ -1419,6 +1444,7 @@ export class WorkspacePoolManager {
             conversationId: String(conversationId ?? ''),
             startedAt,
             status: 'leased',
+            ...(allocationRequestId ? { requestId: allocationRequestId, acquisitionConversationId: requestedConversationId } : {}),
             ...(replacesLeaseId ? { replacesLeaseId } : {}),
           }
           await atomicJson(sessionFile, {
@@ -1480,6 +1506,7 @@ export class WorkspacePoolManager {
     conversationId,
     failureCategory,
     confirmedDispatchLease,
+    duplicateAllocationRecovery,
     rejectedDispatch,
     interruptedProof,
   } = {}) {
@@ -1557,7 +1584,7 @@ export class WorkspacePoolManager {
         candidate?.leaseId !== normalizedLeaseId
         && candidate?.conversationId === normalizedConversationId
         && !['completed', 'cancelled', 'quarantined'].includes(candidate?.status))
-      if (conflictingLease) {
+      if (conflictingLease && !(dispatchRecovery && duplicateAllocationRecovery)) {
         throw new WorkspacePoolUnavailableError(
           '같은 AI 대화가 이미 다른 활성 작업공간 lease에 연결되어 있습니다.',
           [{
@@ -1634,6 +1661,13 @@ export class WorkspacePoolManager {
         }
       }
 
+      if (dispatchRecovery && duplicateAllocationRecovery) {
+        await this.releaseUndispatchedDuplicateAllocations(lease, duplicateAllocationRecovery)
+      }
+      if (Object.values(this.state.leases).some(candidate => candidate.leaseId !== normalizedLeaseId
+        && candidate.conversationId === normalizedConversationId && !['completed', 'cancelled', 'quarantined'].includes(candidate.status))) {
+        throw new WorkspacePoolUnavailableError('같은 대화의 다른 작업공간 점유를 해소하지 못했습니다.', [], 'CONVERSATION_ALREADY_LEASED')
+      }
       const recoveredAt = new Date().toISOString()
       lease.recoveryHistory ??= []
       lease.recoveryHistory.push({
@@ -1672,6 +1706,53 @@ export class WorkspacePoolManager {
       await this.persist()
       return publicLease(lease)
     })
+  }
+
+  // reactivateQuarantinedLease의 배타 구간에서만 호출한다. 서버가 원 dispatch와
+  // 대화의 idle·실제 경로를 검증하고 다른 기록에서 참조하지 않는 후보만 전달한다.
+  async releaseUndispatchedDuplicateAllocations(authoritative, { requestId, createdAt, leaseIds } = {}) {
+    const reject = () => { throw new WorkspacePoolUnavailableError('중복 배정의 미실행·무변경을 확증하지 못해 반환하지 않았습니다.', [], 'DUPLICATE_ALLOCATION_UNCONFIRMED') }
+    if (!requestId || !Number.isFinite(Date.parse(createdAt)) || !Array.isArray(leaseIds)) reject()
+    for (const leaseId of leaseIds) {
+      const lease = this.state.leases[leaseId]
+      if (lease?.status === 'cancelled' && lease.result?.duplicateOfLeaseId === authoritative.leaseId) continue
+      const workspace = this.registry.workers.find(item => item.id === lease?.workspaceId)
+      const current = this.state.workspaces[lease?.workspaceId]
+      if (!lease || !workspace || leaseId === authoritative.leaseId || lease.status !== 'leased'
+        || current?.status !== 'leased' || current.leaseId !== leaseId || current.jobId !== lease.jobId
+        || lease.mapId !== authoritative.mapId || lease.cardId !== authoritative.cardId
+        || !lease.conversationId || lease.conversationId !== authoritative.conversationId
+        || lease.baseCommit !== authoritative.baseCommit || (lease.requestId && lease.requestId !== requestId)
+        || !(Date.parse(lease.startedAt) >= Date.parse(createdAt) && Date.parse(lease.startedAt) <= Date.parse(authoritative.startedAt))
+        || lease.result || lease.checkpoints?.length || lease.headCommit || lease.integrationBranch || lease.resultCorrection
+        || this.state.integrationLeaseId === leaseId || normalizedPath(lease.projectRoot) !== normalizedPath(workspace.root)) reject()
+      const release = await this.claimLocalWorkspace(workspace)
+      if (!release) reject()
+      try {
+        const sessionFile = path.join(workspace.root, '.ai-session.json')
+        const session = await readJson(sessionFile, null)
+        if (!session || ['workspaceId', 'jobId', 'leaseId', 'branch', 'baseCommit', 'conversationId'].some(key => session[key] !== lease[key])
+          || normalizedPath(session.projectRoot) !== normalizedPath(workspace.root)) reject()
+        const [dirty, branch, head, unmerged, ...operations] = await Promise.all([
+          this.git(workspace.root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']),
+          this.git(workspace.root, ['branch', '--show-current']), this.git(workspace.root, ['rev-parse', 'HEAD']),
+          this.git(workspace.root, ['diff', '--name-only', '--diff-filter=U']),
+          ...['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'rebase-apply', 'rebase-merge', 'index.lock'].map(name => this.gitPathExists(workspace.root, name)),
+        ])
+        if (dirty || branch !== lease.branch || head !== lease.baseCommit || unmerged || operations.some(Boolean)) reject()
+        // 기존 job 브랜치는 남기고 동일 커밋의 idle 브랜치로만 이동한다.
+        const idleBranch = await this.switchWorkspaceToIdleCommit(workspace, lease.baseBranch, head)
+        const result = await this.writeResult(lease, { status: 'cancelled',
+          error: '원 실행 기록과 Git 무변경을 확인하여 미실행 중복 배정을 반환했습니다.',
+          duplicateOfLeaseId: authoritative.leaseId, allocationRequestId: requestId, completedAt: new Date().toISOString() })
+        await rm(sessionFile, { force: true })
+        lease.status = 'cancelled'
+        lease.result = result
+        this.state.workspaces[workspace.id] = { status: 'idle', idleCommit: head, idleBranch,
+          lastJobId: lease.jobId, lastLeaseId: leaseId, updatedAt: result.completedAt }
+        await this.persist()
+      } finally { await release() }
+    }
   }
 
   async reuseLease(leaseId, { mapId, cardId, conversationId } = {}) {

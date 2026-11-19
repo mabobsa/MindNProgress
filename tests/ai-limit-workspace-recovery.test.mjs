@@ -13,7 +13,7 @@ import { originalDelegationMessage } from './helpers/aiDelegationOriginalMessage
 const exec = promisify(execFile)
 const git = async (cwd, ...args) => (await exec('git', args, { cwd, windowsHide: true })).stdout.trim()
 
-async function fixture(t) {
+async function fixture(t, { duplicate = false } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'mnp-limit-recovery-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const integration = path.join(root, 'integration')
@@ -28,18 +28,27 @@ async function fixture(t) {
   await git(integration, 'add', '.')
   await git(integration, 'commit', '-m', '[김용민] 복구 검증 기준선', '-m', '[배경]\n격리된 테스트 저장소 구성\n[원인]\n복구 검증 기준선 필요\n[수정]\n초기 파일 생성')
   await git(root, 'clone', integration, worker)
+  const duplicateWorker = path.join(root, 'duplicate-worker')
+  if (duplicate) await git(root, 'clone', integration, duplicateWorker)
   const registryFile = path.join(shared, 'workspaces.json')
   const stateFile = path.join(shared, 'state.json')
   await writeFile(registryFile, JSON.stringify({ schemaVersion: 1, poolId: 'test', sharedRoot: shared, workspaces: [
     { id: 'integration', root: integration, role: 'integration', enabled: true },
+    ...(duplicate ? [{ id: 'duplicate-worker', root: duplicateWorker, role: 'worker', enabled: true }] : []),
     { id: 'worker', root: worker, role: 'worker', enabled: true },
   ] }))
   const createManager = () => new WorkspacePoolManager({ registryFile, stateFile })
   const manager = createManager()
   await manager.initialize()
   const scope = { workspaceHint: integration, mapId: 'map-a', cardId: 'card-a', conversationId: 'conversation-a', cardLabel: '중단 복구 검증' }
-  const lease = await manager.acquire(scope)
-  return { manager, createManager, scope, lease, worker, root, registryFile }
+  const orphan = duplicate ? await manager.acquire(scope) : null
+  const lease = await manager.acquire({ ...scope, ...(duplicate ? { conversationId: 'temporary-chat' } : {}) })
+  if (duplicate) {
+    manager.state.leases[lease.leaseId].conversationId = scope.conversationId
+    const file = path.join(worker, '.ai-session.json')
+    await writeFile(file, JSON.stringify({ ...JSON.parse(await readFile(file, 'utf8')), conversationId: scope.conversationId }))
+  }
+  return { manager, createManager, scope, lease, worker, root, registryFile, orphan }
 }
 
 for (const dirty of [false, true]) test(`한도 중단은 ${dirty ? '미커밋 변경' : '변경 없는 세션'}을 재시작 뒤에도 보존하고 같은 lease로 재개한다`, async (t) => {
@@ -255,14 +264,14 @@ for (const pending of [false, true]) test(`복구 API의 ${pending ? '응답 유
   })
 
 // Git 프로세스 실행이 느린 검증 환경에서만 예산을 늘린다. 기본 제한과 기능 검증은 유지한다.
-for (const expired of [false, true]) test(`복구 API는 ${expired ? '실행 기록 만료 뒤 최초 전문으로' : '원본 실행 기록으로'} 기존 대화·lease를 찾아 미완료 확인만 전달한다`, { timeout: Number(process.env.MNP_REAL_GIT_TEST_TIMEOUT_MS) || 80_000 }, async (t) => {
-  const { manager, scope, lease, worker, root, registryFile } = await fixture(t)
+for (const { expired, resume } of [{ expired: false }, { expired: true }, { expired: false, resume: true }]) test(`복구 API는 ${resume ? '재사용 대화의 중복 배정을 반환하고' : expired ? '실행 기록 만료 뒤 최초 전문으로' : '원본 실행 기록으로'} 기존 대화·lease를 찾아 미완료 확인만 전달한다`, { timeout: Number(process.env.MNP_REAL_GIT_TEST_TIMEOUT_MS) || 80_000 }, async (t) => {
+  const { manager, scope, lease, worker, root, registryFile, orphan } = await fixture(t, { duplicate: resume })
   const dataDirectory = path.join(root, 'server-data')
   await mkdir(dataDirectory)
-  manager.state.leases[lease.leaseId].conversationId = null
+  manager.state.leases[lease.leaseId].conversationId = resume ? scope.conversationId : null
   const sessionFile = path.join(worker, '.ai-session.json')
   const session = JSON.parse(await readFile(sessionFile, 'utf8'))
-  await writeFile(sessionFile, JSON.stringify({ ...session, conversationId: null }))
+  await writeFile(sessionFile, JSON.stringify({ ...session, conversationId: resume ? scope.conversationId : null }))
   await manager.quarantine(lease.leaseId, '실행 응답 검증 실패')
   // 구버전에는 보존 표식이 없었다. 서버가 미연결 위임 기록으로 복원해야 한다.
   delete manager.state.leases[lease.leaseId].executionUnconfirmed
@@ -270,9 +279,10 @@ for (const expired of [false, true]) test(`복구 API는 ${expired ? '실행 기
   const wireLease = { workspaceId: lease.workspaceId, jobId: lease.jobId, leaseId: lease.leaseId, projectRoot: lease.projectRoot }
   const now = new Date().toISOString()
   const delegation = { id: 'original-operation', mapId: 'map-a', parentCardId: 'parent-card', targetCardId: 'card-a',
-    parentConversationId: 'parent-conversation', targetConversationId: '', childOperationId: 'original-operation',
-    strategy: 'new', state: 'recovery-required', workspaceLease: lease, startedBy: 'user-admin',
-    createdAt: now, updatedAt: now, childError: 'AionCore 작업공간 lease 불일치', recoveryRequiredAt: now,
+    parentConversationId: 'parent-conversation', targetConversationId: resume ? scope.conversationId : '', childOperationId: 'original-operation',
+    strategy: resume ? 'resume' : 'new', state: 'recovery-required', workspaceLease: lease, startedBy: 'user-admin',
+    createdAt: resume ? new Date(Date.parse(orphan.startedAt) - 1000).toISOString() : now, updatedAt: now, childError: 'AionCore 작업공간 lease 불일치', recoveryRequiredAt: now,
+    ...(resume ? { failureReasonCode: 'AI_WORKSPACE_CONVERSATION_CONFLICT' } : {}),
     pendingSelection: { agent: { id: 'test-agent', label: '검증 AI' }, model: { id: 'test-model', label: '검증 모델' }, workspace: worker },
     pendingInstruction: '분석만 수행하고 구현은 하지 마세요.',
   }
@@ -284,7 +294,8 @@ for (const expired of [false, true]) test(`복구 API는 ${expired ? '실행 기
   await writeFile(path.join(dataDirectory, '_ai-delegations.json'), JSON.stringify([delegation]))
   await writeFile(path.join(dataDirectory, 'map-a.json'), JSON.stringify({ id: 'map-a', title: '복구 검증', version: 1,
     nodes: [{ id: 'parent-card', position: { x: 0, y: 0 }, data: { kind: 'root', label: '상위', status: 'planned', progress: 0, aiConversationId: 'parent-conversation' } },
-      { id: 'card-a', position: { x: 300, y: 0 }, data: { kind: 'task', label: '분석', status: 'done', progress: 100, isWork: true, sharedKnowledge: '완료된 분석 결과 보존' } }],
+      { id: 'card-a', position: { x: 300, y: 0 }, data: { kind: 'task', label: '분석', status: 'done', progress: 100, isWork: true, sharedKnowledge: '완료된 분석 결과 보존',
+        ...(resume ? { aiConversationId: scope.conversationId } : {}) } }],
     edges: [{ id: 'edge', source: 'parent-card', target: 'card-a' }] }))
   const posted = []
   let mismatch = true
@@ -362,7 +373,7 @@ for (const expired of [false, true]) test(`복구 API는 ${expired ? '실행 기
     assert.equal(posted.length, 0)
     const unchangedMap = JSON.parse(await readFile(path.join(dataDirectory, 'map-a.json'), 'utf8'))
     assert.equal(unchangedMap.version, 1)
-    assert.equal(unchangedMap.nodes.find((node) => node.id === 'card-a').data.aiConversationId, undefined)
+    assert.equal(unchangedMap.nodes.find((node) => node.id === 'card-a').data.aiConversationId, resume ? scope.conversationId : undefined)
     assert.equal(JSON.parse(await readFile(path.join(dataDirectory, '_workspace-pool.json'), 'utf8')).leases[lease.leaseId].status, 'quarantined')
     wrongDirectory = false
     const recovered = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(input) })
@@ -379,6 +390,15 @@ for (const expired of [false, true]) test(`복구 API는 ${expired ? '실행 기
     assert.equal([...posted[0].instruction.matchAll(/^# 할당된 작업공간$/gm)].length, 1)
     assert.match(posted[0].instruction, /이번 전문의 `# 할당된 작업공간`에 기재된 현재 배정만 사용.*이전 경로·브랜치·lease를 복구 후보로 사용하지 마세요/s)
     assert.equal(result.delegation.targetConversationId, scope.conversationId)
+    if (resume) {
+      const pool = JSON.parse(await readFile(path.join(dataDirectory, '_workspace-pool.json'), 'utf8'))
+      assert.equal(pool.leases[orphan.leaseId].status, 'cancelled')
+      assert.equal(pool.leases[orphan.leaseId].result.duplicateOfLeaseId, lease.leaseId)
+      assert.equal(pool.leases[lease.leaseId].status, 'leased')
+      assert.equal(pool.workspaces[orphan.workspaceId].status, 'idle')
+      assert.equal(result.delegation.childTurnId, 'recovery-turn')
+      assert.equal(JSON.parse(await readFile(path.join(dataDirectory, 'map-a.json'), 'utf8')).version, 1)
+    }
     assert.equal(result.delegation.dispatchRecoveryProof.kind, expired ? 'original-message-after-operation-expiry' : 'original-operation')
     if (expired) assert.equal(result.delegation.dispatchRecoveryProof.messageId, originalMessage.id)
     const savedMap = JSON.parse(await readFile(path.join(dataDirectory, 'map-a.json'), 'utf8'))

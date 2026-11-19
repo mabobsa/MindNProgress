@@ -151,7 +151,16 @@ test('작업공간 지침은 기존 대화에도 재배정 정보를 명확하�
   assert.match(instruction, /mindnprogress_checkpoint_ai_workspace.*operation\.action=confirm-no-changes/)
   assert.match(instruction, /MNP_WORKSPACE_ASSIGNMENT_MISMATCH/)
   assert.match(instruction, /파일 수정, 브랜치 전환, 새 작업공간 탐색 또는 기존 변경 정리를 하지 말고/)
-  assert.doesNotMatch(instruction, /ready_for_tools|mcpforunity:\/\/editor\/state|stale_status/)
+  // 747defb에서 Unity 상태 반복 조회가 무한 대기를 만들어 editor/state 언급을 금지했다.
+  // 배정 직후 1회 확인으로 다시 쓰므로, 무한 대기를 막는 대체 조건을 함께 검사한다.
+  assert.match(instruction, /배정\(`leaseId`\)마다 최초 1회.*기록을 찾지 못하면 1회 수행/s)
+  assert.match(instruction, /`refresh_unity\(.*\)`를 한 번 호출/s)
+  assert.match(instruction, /data\.unity\.instance_id/)
+  assert.match(instruction, /경로 가드를 넣은 읽기 전용 `execute_code`.*scriptCompilationFailed=false/s)
+  assert.match(instruction, /요청 후 10분 안에.*Unity 검증 미완료.*요청을 반복하지 않고/s)
+  assert.match(instruction, /가능한 소스 작업을 계속/)
+  assert.match(instruction, /## 검증 전 체크포인트\n/)
+  assert.doesNotMatch(instruction, /ready_for_tools|stale_status/)
 })
 
 test('체크포인트 상태에서 knowledge-inbox 추가·수정 경로만 거부 대상으로 고른다', () => {

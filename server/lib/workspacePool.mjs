@@ -456,6 +456,20 @@ ${sharedRoot ? `- sharedRoot: \`${sharedRoot}\`\n` : ''}- branch: \`${lease.bran
 
 이 작업에서는 위 \`projectRoot\`만 수정하세요. 다른 등록 작업공간으로 이동하거나 브랜치를 바꾸거나 lease를 직접 해제하지 마세요. \`.ai-session.json\`의 값이 위 정보와 일치하는지 먼저 확인하세요.${sharedRoot ? ' 공통 규칙과 지식은 `sharedRoot`에서 읽기 전용으로 사용하세요.' : ''}
 
+## Fork 배정 직후 Unity 코드 반영 확인
+
+배정(\`leaseId\`)마다 최초 1회 수행한다. 재개·지침 재전달 때는 이 배정의 확인 기록(5번)이 진행 보고에 있을 때만 생략하고, 기록을 찾지 못하면 1회 수행한다.
+
+1. \`unity-work\`의 대상 지정 절차로 인스턴스를 확정한다(\`mcpforunity://project/info\`의 \`projectRoot\`가 배정된 \`projectRoot\`와 같아야 한다). 대상 에디터가 없거나 MCP가 연결되지 않으면 4번으로 간다.
+2. \`git status\`와 \`mcpforunity://editor/state\`의 \`compilation.last_compile_finished_unix_ms\`·\`last_domain_reload_after_unix_ms\`를 요청 전 기준으로 기록하고, \`unity_instance\`를 지정해 \`refresh_unity(mode="force", scope="all", compile="request", wait_for_ready=false)\`를 한 번 호출한다.
+3. \`editor/state\`에서 기준보다 새로운 컴파일 시작·종료와 재로딩 완료(시작 ≤ 종료 ≤ 재로딩)를 확인한다. 응답의 \`data.unity.instance_id\`가 대상과 다르면 근거로 쓰지 않는다. 그다음 경로 가드를 넣은 읽기 전용 \`execute_code\`로 \`EditorUtility.scriptCompilationFailed=false\`와 \`EditorApplication.isCompiling\`·\`isUpdating\`이 모두 false인지 확인한다. 요청 성공·\`idle\`·요청 전 기록은 완료 근거가 아니다.
+4. 다음 경우에는 기다리지 않고 보고한 뒤 가능한 소스 작업을 계속한다.
+   - 컴파일 실패: 재로딩을 기다리지 않고 \`read_console\` 오류를 근거로 "배정 시점 컴파일 실패"를 보고한다. 담당 범위 밖 오류는 고치지 않는다.
+   - 요청 후 10분 안에 3번을 확인하지 못했거나 MCP가 연결되지 않음: **Unity 검증 미완료**로 보고한다. 연결이 끊기면 요청을 반복하지 않고 \`unity-work\`의 재연결 절차를 따른다.
+5. 결과(\`leaseId\`, 기준·완료 시각, 실패 여부)를 진행 보고에 남긴다. 갱신 뒤 \`git status\`에 새 tracked 변경이 생겼으면 구현 체크포인트에 넣지 말고 경로를 보고한다.
+
+## 검증 전 체크포인트
+
 Unity Play Mode, 재임포트, 동적 폰트·Atlas 생성 등의 검증은 어떤 tracked 파일이든 자동으로 바꿀 수 있습니다. 구현 수정을 마친 뒤 각 검증을 시작하기 전에 \`mindnprogress_checkpoint_ai_workspace\`를 호출하세요. 의도한 변경이 있으면 \`operation.action=commit-changes\`에 변경 경로와 실제 변경을 설명하는 \`commitMessage\`를 함께 전달합니다. 경로는 파일 또는 폴더의 상대 경로로 지정할 수 있고 폴더 아래의 추가·수정·삭제를 한 번의 커밋으로 고정합니다. 대량 정리는 파일을 수만 개 나열하지 말고 의도된 변경만 포함하는 폴더 범위를 지정하세요. 삭제만 있는 변경도 무변경 확인이 아닌 변경 체크포인트로 처리합니다. \`summary\`에는 커밋 제목 prefix(사용자 커밋 규칙의 이름 머리말 등)나 \`[MnP]\` 출처를 넣지 말고, \`background\`·\`cause\`·\`changes\`에는 이번 체크포인트의 실제 변경을 작성하며 \`scope\`는 필요한 경우에만 작성하세요. MindNProgress가 현재 문서·카드 제목과 안정적인 ID를 조회해 커밋 본문의 \`[MnP]\` 섹션을 자동으로 추가합니다. 파일 변경이 전혀 없는 조사·검증 작업은 같은 도구의 \`operation.action=confirm-no-changes\`로 확인하세요. 검증 후 보완했다면 새 변경에 맞는 메시지로 다시 체크포인트를 만들고 검증하세요. Git으로 직접 커밋하지 마세요. 완료 시 MindNProgress는 명시적 체크포인트만 main에 통합하고 그 이후의 자동 변경은 복구 자료로 보존한 뒤 worker에서 제거합니다.`
 }
 

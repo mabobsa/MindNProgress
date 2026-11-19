@@ -16,6 +16,18 @@ description: >
 
 Unity MCP 도구의 일반 사용법은 현재 연결된 도구 설명을 따르고, 이 문서는 이 환경에서 추가로 필요한 안전 규칙과 복구 절차를 정의한다.
 
+## Fork 배정 직후 Unity 코드 반영 확인
+
+배정(`leaseId`)마다 최초 1회 수행한다. 재개·지침 재전달 때는 이 배정의 확인 기록(5번)이 진행 보고에 있을 때만 생략하고, 기록을 찾지 못하면 1회 수행한다.
+
+1. `unity-work`의 대상 지정 절차로 인스턴스를 확정한다(`mcpforunity://project/info`의 `projectRoot`가 배정된 `projectRoot`와 같아야 한다). 대상 에디터가 없거나 MCP가 연결되지 않으면 4번으로 간다.
+2. `git status`와 `mcpforunity://editor/state`의 `compilation.last_compile_finished_unix_ms`·`last_domain_reload_after_unix_ms`를 요청 전 기준으로 기록하고, `unity_instance`를 지정해 `refresh_unity(mode="force", scope="all", compile="request", wait_for_ready=false)`를 한 번 호출한다.
+3. `editor/state`에서 기준보다 새로운 컴파일 시작·종료와 재로딩 완료(시작 ≤ 종료 ≤ 재로딩)를 확인한다. 응답의 `data.unity.instance_id`가 대상과 다르면 근거로 쓰지 않는다. 그다음 경로 가드를 넣은 읽기 전용 `execute_code`로 `EditorUtility.scriptCompilationFailed=false`와 `EditorApplication.isCompiling`·`isUpdating`이 모두 false인지 확인한다. 요청 성공·`idle`·요청 전 기록은 완료 근거가 아니다.
+4. 다음 경우에는 기다리지 않고 보고한 뒤 가능한 소스 작업을 계속한다.
+   - 컴파일 실패: 재로딩을 기다리지 않고 `read_console` 오류를 근거로 "배정 시점 컴파일 실패"를 보고한다. 담당 범위 밖 오류는 고치지 않는다.
+   - 요청 후 10분 안에 3번을 확인하지 못했거나 MCP가 연결되지 않음: **Unity 검증 미완료**로 보고한다. 연결이 끊기면 요청을 반복하지 않고 `unity-work`의 재연결 절차를 따른다.
+5. 결과(`leaseId`, 기준·완료 시각, 실패 여부)를 진행 보고에 남긴다. 갱신 뒤 `git status`에 새 tracked 변경이 생겼으면 구현 체크포인트에 넣지 말고 경로를 보고한다.
+
 ## 빌드·컴파일·도메인 재로딩 중 Unity MCP 연결 끊김
 
 Unity 빌드·스크립트 컴파일·도메인 재로딩 중에는 MCP 연결이 일시적으로 끊기거나 요청이 시간 초과될 수 있다. **연결 오류 한 번만으로 작업 실패·진행 불가를 판정하거나 상위 AI에 차단 보고하지 않는다.** 응답이 끊겼어도 요청한 작업은 계속 실행 중이거나 이미 완료됐을 수 있다.

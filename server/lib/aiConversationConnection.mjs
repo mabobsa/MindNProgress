@@ -59,6 +59,7 @@ export function createAiConversationConnection({ readContext, machinesForUser, f
   }
   const assertBinding = async (mapId, cardId, conversationId, machineId) => {
     const binding = await findBinding(conversationId, machineId, mapId, cardId)
+    if (binding?.kind === 'machine') throw conversationConnectionError(`이 대화의 실행 머신은 ${binding.homeMachineLabel}입니다. 해당 머신에서 조회해 주세요.`)
     if (binding) throw conversationConnectionError('다른 카드 또는 머신에 연결된 대화입니다. 조회한 연결 위치를 확인해 주세요.')
   }
   return {

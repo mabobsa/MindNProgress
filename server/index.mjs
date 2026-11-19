@@ -864,13 +864,14 @@ function normalizeAiConversationOrigin(value) {
   }
 }
 
-function rememberAiConversationOrigin(value) {
+function rememberAiConversationOrigin(value, { assignCard = false } = {}) {
   const origin = normalizeAiConversationOrigin(value)
   if (!origin) return null
   const existing = aiConversationOrigins.get(origin.conversationId)
   if (existing) {
     const enriched = {
       ...existing,
+      ...(assignCard ? { mapId: origin.mapId, cardId: origin.cardId } : {}),
       homeMachineId: existing.homeMachineId || origin.homeMachineId,
       startedBy: existing.startedBy || origin.startedBy,
       ...(origin.workspace ? { workspace: origin.workspace } : {}),
@@ -6532,15 +6533,11 @@ const aiConversationConnection = createAiConversationConnection({
         || Boolean(machine.lastSeenAt && Date.now() - Date.parse(machine.lastSeenAt) <= runnerOnlineWithinMs) })),
   async findBinding(conversationId, machineId, mapId, cardId) {
     const origin = aiConversationOrigins.get(conversationId)
-    if (origin && (origin.mapId !== mapId || origin.cardId !== cardId || origin.homeMachineId !== machineId)) {
-      const source = await readMap(origin.mapId)
-      return { mapId: origin.mapId, cardId: origin.cardId, documentTitle: source?.title ?? origin.mapId,
-        cardTitle: source?.nodes.find((node) => node.id === origin.cardId)?.data.label ?? origin.cardId,
-        homeMachineLabel: machineLabel(origin.homeMachineId) }
-    }
-    // 구형 연결에는 origin이 없을 수 있다. 문서 본문 대신 필요한 연결 정보만 읽는다.
+    // 대화가 카드를 조회한 것만으로도 출처가 기록된다. 연결 여부는 원본 카드에서 확인한다.
     const documents = await listMaps({ includeArchived: true, includeTrashed: true, includePending: true })
-    for (const { id } of documents) {
+    const mapIds = new Set(documents.map((document) => document.id))
+    if (origin) mapIds.add(origin.mapId)
+    for (const id of mapIds) {
       const other = await readMapProjection(id, {}, ({ map }) => ({ id: map.id, title: map.title,
         nodes: map.nodes.filter((node) => !node.data.reference && isAiConversationLinked(node.data, conversationId))
           .map((node) => ({ id: node.id, label: node.data.label, links: aiConversationLinksFromData(node.data) })) }))
@@ -6551,6 +6548,9 @@ const aiConversationConnection = createAiConversationConnection({
             homeMachineLabel: machineLabel(sourceMachineId) }
         }
       }
+    }
+    if (origin && origin.homeMachineId !== machineId) {
+      return { kind: 'machine', homeMachineLabel: machineLabel(origin.homeMachineId) }
     }
     return null
   },
@@ -6576,8 +6576,11 @@ const aiConversationConnection = createAiConversationConnection({
       edges: map.edges,
     }, user, map.title, map.color, 'content', { expectedVersion: map.version })
     rememberAiConversationOrigin({ ...conversationLink, mapId: map.id, cardId: card.id,
-      startedBy: conversationLink.startedBy?.id ?? user.id })
+      startedBy: conversationLink.startedBy?.id ?? user.id }, { assignCard: true })
     const key = conversationAttributionKey(map.id, card.id)
+    for (const [otherKey, attribution] of aiConversationAttributions) {
+      if (otherKey !== key && attribution.conversationId === conversationId) aiConversationAttributions.delete(otherKey)
+    }
     if (conversationLink.agent?.id && conversationLink.model?.id) {
       aiConversationAttributions.set(key, { mapId: map.id, cardId: card.id, conversationId, homeMachineId,
         agentId: conversationLink.agent.id, agentName: conversationLink.agent.label,

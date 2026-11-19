@@ -5,9 +5,10 @@ import { scryptSync } from 'node:crypto'
 import path from 'node:path'
 import { storageApi, fixture } from './helpers/storage-api-harness.mjs'
 import { createMapContentPatch } from '../src/utils/mapContentPatch.mjs'
+import { ensureMainMachine, normalizeMachineRegistry, upsertSubMachine } from '../server/lib/subMachines.mjs'
 
 test('대화 ID 조회 후 복원·연결은 원본 문서와 귀속을 함께 저장하고 최신 편집을 보존한다', { timeout: 60_000 }, async (t) => {
-  const states = new Map([['restore-me', 1793000000000], ['active', null], ['elsewhere', null]])
+  const states = new Map([['restore-me', 1793000000000], ['active', null], ['elsewhere', null], ['sub-only', null]])
   const calls = []
   let releaseRestore, enteredRestore
   const entered = new Promise((resolve) => { enteredRestore = resolve })
@@ -21,6 +22,18 @@ test('대화 ID 조회 후 복원·연결은 원본 문서와 귀속을 함께 �
       map.nodes[2].data.reference = { mapId: ids[1], nodeId: 'card-0' }
       const other = fixture(ids[1])
       other.nodes[0].data.aiConversationId = 'elsewhere'
+      const registry = upsertSubMachine(ensureMainMachine(normalizeMachineRegistry([]), { machineId: 'isolated-storage' }),
+        { machineId: 'sub', label: '서브 머신', ownerUserId: 'user-editor' })
+      await writeFile(path.join(data, '_machines.json'), JSON.stringify(registry.machines))
+      const origin = { mapId: ids[1], cardId: 'card-1', homeMachineId: 'isolated-storage', startedBy: 'user-editor' }
+      await writeFile(path.join(data, '_ai-conversation-origins.json'), JSON.stringify([
+        { ...origin, conversationId: 'active' }, { ...origin, conversationId: 'elsewhere' },
+        { ...origin, conversationId: 'sub-only', homeMachineId: 'sub' },
+        { ...origin, conversationId: 'browser-active' },
+      ]))
+      await writeFile(path.join(data, '_ai-conversation-attributions.json'), JSON.stringify([
+        { ...origin, conversationId: 'active', authorName: '검증 AI' },
+      ]))
       await writeFile(path.join(data, `${ids[0]}.json`), JSON.stringify(map))
       await writeFile(path.join(data, `${ids[1]}.json`), JSON.stringify(other))
     },
@@ -52,10 +65,16 @@ test('대화 ID 조회 후 복원·연결은 원본 문서와 귀속을 함께 �
     assert.equal((await api.call(`/api/maps/${mapId}/cards/${card}/ai-conversations/lookup?conversationId=active`)).status, 409)
   }
   const missing = await lookup('missing')
-  assert.deepEqual(missing.body, { conversations: [], warnings: [] })
+  assert.deepEqual(missing.body.conversations, [])
+  assert.match(missing.body.warnings[0], /서브 머신/)
   const bound = await lookup('elsewhere')
   assert.equal(bound.body.conversations[0].binding.mapId, api.ids[1])
+  assert.equal(bound.body.conversations[0].binding.cardId, 'card-0')
   assert.equal(bound.body.conversations[0].previewToken, null)
+  const wrongMachine = (await lookup('sub-only')).body.conversations[0]
+  assert.equal(wrongMachine.previewToken, null)
+  assert.equal(wrongMachine.binding.kind, 'machine')
+  assert.equal(wrongMachine.binding.homeMachineLabel, '서브 머신')
   const preview = await lookup('restore-me')
   assert.equal(preview.status, 200, JSON.stringify(preview.body))
   const token = preview.body.conversations[0].previewToken
@@ -93,7 +112,22 @@ test('대화 ID 조회 후 복원·연결은 원본 문서와 귀속을 함께 �
   const competing = await api.call(`/api/maps/${mapId}/cards/card-1/ai-conversations/lookup?conversationId=restore-me`)
   assert.equal(competing.body.conversations[0].binding.cardId, 'card-0')
   assert.equal(competing.body.conversations[0].previewToken, null)
-  assert.equal((await connect((await lookup('active')).body.conversations[0].previewToken)).status, 200)
+  const active = (await lookup('active')).body
+  assert.match(active.warnings[0], /서브 머신/)
+  assert.equal(active.conversations[0].binding, null)
+  assert.ok(active.conversations[0].previewToken)
+  assert.equal((await connect(active.conversations[0].previewToken)).status, 200)
+  const activeOrigin = (await api.read('_ai-conversation-origins.json')).find((item) => item.conversationId === 'active')
+  assert.equal(activeOrigin.mapId, mapId)
+  assert.equal(activeOrigin.cardId, 'card-0')
+  assert.equal(activeOrigin.homeMachineId, 'isolated-storage')
+  assert.equal(activeOrigin.startedBy, 'user-editor')
+  const activeAttributions = (await api.read('_ai-conversation-attributions.json')).filter((item) => item.conversationId === 'active')
+  assert.deepEqual(activeAttributions.map(({ mapId, cardId }) => [mapId, cardId]), [[mapId, 'card-0']])
+  const navigation = await api.call('/api/integrations/aionui/conversations/active/mindnprogress', 'GET', undefined,
+    { 'X-MNP-Selection-Device-Address': '127.0.0.1' })
+  assert.equal(navigation.body.target?.mapId, mapId, JSON.stringify(navigation.body))
+  assert.equal(navigation.body.target.cardId, 'card-0')
   assert.ok(!calls.some((url) => /messages|dispatch|\/archive$/.test(url)), '기존 대화 실행·메시지 전송·보관 요청을 만들지 않는다')
   // Aion 복원 후 확정 전 후보 파일 쓰기가 실패하면 문서·귀속을 함께 롤백하고 재시도한다.
   states.set('rollback', 1793000000000)
@@ -121,6 +155,7 @@ test('대화 ID 조회 후 복원·연결은 원본 문서와 귀속을 함께 �
   assert.ok((await api.read('_ai-conversation-attributions.json')).some((item) => item.conversationId === 'redo-recovery'))
   assert.equal(calls.filter((url) => url.endsWith('/redo-recovery/unarchive')).length, 1)
   if (process.env.MNP_BROWSER_TEST === '1') {
+    states.set('browser-active', null)
     states.set('browser-archived', 1793000000000)
     const { aiConversationLinkBrowser } = await import('./helpers/aiConversationLinkBrowser.mjs')
     await aiConversationLinkBrowser(api, t)

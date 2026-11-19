@@ -17,6 +17,7 @@ function fixture() {
     link: async (_context, conversation, machineId) => { state.links.push([conversation.id, machineId]); return { linked: true } },
     call: async (machine, path, options) => {
       state.calls.push({ machine, path, options })
+      if (machine === state.unreachableMachine) throw Error('머신 조회 실패')
       if (path.endsWith('/unarchive')) return state.unarchive()
       if (path.endsWith('/archive-state')) return { conversation_id: 'conversation', exists: state.exists, archived_at: state.archivedAt }
       return structuredClone(state.conversation)
@@ -122,4 +123,17 @@ test('부재·오프라인·조회 실패를 구분하고 여러 머신 후보�
   f.state.archivedAt = 'invalid'
   result = await f.preview()
   assert.equal(result.warnings.length, 3)
+})
+
+test('서브 머신 조회가 실패해도 메인에서 찾은 대화는 즉시 연결할 수 있다', async () => {
+  const f = fixture()
+  f.state.machines.push({ machineId: 'sub', label: '서브 머신', online: true })
+  f.state.unreachableMachine = 'sub'
+  const result = await f.preview()
+  assert.equal(result.conversations.length, 1)
+  assert.match(result.warnings[0], /서브 머신/)
+  const callsBeforeConnect = f.state.calls.length
+  await f.connect(result.conversations[0].previewToken)
+  assert.deepEqual(f.state.links, [['conversation', 'main']])
+  assert.ok(f.state.calls.slice(callsBeforeConnect).every((call) => call.machine === 'main'))
 })

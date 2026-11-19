@@ -15,7 +15,8 @@ type ConversationPreview = {
   archivedAt: number | null
   runtimeState: string
   alreadyLinked: boolean
-  binding: { mapId: string; cardId: string; documentTitle: string; cardTitle: string; homeMachineLabel: string } | null
+  binding: { kind: 'machine'; homeMachineLabel: string }
+    | { kind?: 'card'; mapId: string; cardId: string; documentTitle: string; cardTitle: string; homeMachineLabel: string } | null
   previewToken: string | null
 }
 
@@ -79,7 +80,8 @@ export function AiConversationLinkDialog({ cardTitle, onLookup, onConnect, onClo
       const found = await onLookup(id, abort.signal)
       if (sequence !== lookupSequence.current) return
       setResult(found)
-      if (found.conversations.length === 1) setSelectedMachine(found.conversations[0].homeMachineId)
+      const available = found.conversations.filter((item) => item.previewToken)
+      if (available.length === 1) setSelectedMachine(available[0].homeMachineId)
     } catch (reason) {
       if (sequence === lookupSequence.current && !abort.signal.aborted) setError(reason instanceof Error ? reason.message : '대화를 조회하지 못했습니다.')
     } finally { if (sequence === lookupSequence.current) setLoading(false) }
@@ -121,7 +123,7 @@ export function AiConversationLinkDialog({ cardTitle, onLookup, onConnect, onClo
           : '해당 대화를 찾지 못했습니다. 대화 ID를 확인해 주세요.'}</p>}
         {result?.conversations.map((item) => <div className="ai-conversation-link-preview" key={item.homeMachineId}>
           {result.conversations.length > 1 && <label className="ai-conversation-link-candidate">
-            <input type="radio" name="conversation-machine" value={item.homeMachineId} checked={selectedMachine === item.homeMachineId} disabled={connecting}
+            <input type="radio" name="conversation-machine" value={item.homeMachineId} checked={selectedMachine === item.homeMachineId} disabled={connecting || !item.previewToken}
               onChange={() => setSelectedMachine(item.homeMachineId)} />{item.homeMachineLabel}의 대화 선택
           </label>}
           <strong>{item.name}</strong>
@@ -135,7 +137,9 @@ export function AiConversationLinkDialog({ cardTitle, onLookup, onConnect, onClo
             <dt>현재 상태</dt><dd>{({ idle: '대화 대기', running: 'AI 작업 중', waiting_confirmation: '승인 대기', 'waiting-confirmation': '승인 대기' } as Record<string, string>)[item.runtimeState] ?? '상태 미확인'}</dd>
             <dt>보관 상태</dt><dd>{item.archivedAt === null ? '보관되지 않음' : `보관됨 · ${dateLabel(item.archivedAt)}`}</dd>
           </dl>
-          {item.binding && <p className="ai-conversation-link-warning">다른 카드 또는 머신에 연결되어 있습니다: {item.binding.documentTitle} / {item.binding.cardTitle} ({item.binding.homeMachineLabel})</p>}
+          {item.binding && <p className="ai-conversation-link-warning">{item.binding.kind === 'machine'
+            ? `이 대화의 실행 머신은 ${item.binding.homeMachineLabel}입니다. 해당 머신에서 조회해 주세요.`
+            : `다른 카드 또는 머신에 연결되어 있습니다. ${item.binding.documentTitle} / ${item.binding.cardTitle} (${item.binding.homeMachineLabel})`}</p>}
         </div>)}
         {selected?.previewToken && <p className="ai-conversation-link-note">
           {selected.archivedAt !== null && '보관함에서 복원한 것을 확인한 뒤 연결합니다. '}

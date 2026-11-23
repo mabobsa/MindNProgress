@@ -80,6 +80,7 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
     // 2026-11-17: 미완료 인계 기록의 명시 종료(closeReason)를 추가한다. 다른 도구의 계약은 유지한다.
     // 2026-11-17: 사용자 승인으로 preview_reconstruction·get_reconstruction_request·get_reconstructions에 detail·outputFile을 추가한다.
     //   응답이 AI 도구 출력 한도를 넘어(미리보기 183,071자 등) 기본은 큰 본문만 요약하고 전체는 full·파일로 받는다. 도구 설명은 유지한다.
+    // 2026-11-23: 사용자 요청으로 accepted-long 승인의 30일 재검토 만료를 없앴다. list_shared_knowledge_candidates 설명의 그 문장만 바꾸고 계약은 유지한다.
     assert.equal(createHash('sha256').update(JSON.stringify(tools.map(({ name, inputSchema }) => ({ name, inputSchema })))).digest('hex'), 'ad29a2ed9ff893d0bdfef3ea44224c2bd98f7d2b45f539f27f8bed4392bcf67d')
     // 2026-11-11: 자동 루트 인계의 후속 대화가 보내는 acceptHandoff 인수 확인을 추가한다.
     const legacyTools = tools.filter((tool) => tool.name !== 'mindnprogress_start_card_conversation')
@@ -145,9 +146,12 @@ test('최신 61개 이름·input schema와 복구한 도구 설명 전문을 검
         continue
       }
       // 과거 기준선은 보존하고 사용자가 변경한 화면 명칭만 현재 이름으로 대조한다.
+      // accepted-long 승인은 본문이 바뀔 때까지 유지하므로(2026-11-23) 30일 재검토 문장만 현재 동작으로 대조한다.
       const expectedDescription = tool.name === 'mindnprogress_get_dooray_response_approval'
         ? original.slice(1, -1).replace(/^Dooray 참조에서/, 'Dooray 업무 대응에서')
-        : original.slice(1, -1)
+        : tool.name === 'mindnprogress_list_shared_knowledge_candidates'
+          ? original.slice(1, -1).replace('accepted-long 승인도 30일이 지나면 다시 후보로 포함합니다.', '검토를 마친 카드는 본문이 바뀔 때만 다시 후보로 포함합니다.')
+          : original.slice(1, -1)
       assert.equal(currentDescription, expectedDescription, `${tool.name}의 기준선 상세 설명이 달라졌습니다.`)
     }
 

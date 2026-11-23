@@ -1864,7 +1864,7 @@
   },
   {
     "name": "mindnprogress_list_shared_knowledge_candidates",
-    "description": "전체 문서 또는 한 문서에서 정리가 필요한 sharedKnowledge 후보를 원문 없이 조회합니다. 우선순위, 길이, SHA-256, 반복 문장 수, 검토 상태와 지식선 소비자 수를 반환하며 accepted-long 승인도 30일이 지나면 다시 후보로 포함합니다. 문서 버전은 변경하지 않습니다.",
+    "description": "전체 문서 또는 한 문서에서 정리가 필요한 sharedKnowledge 후보를 원문 없이 조회합니다. 우선순위, 길이, SHA-256, 반복 문장 수, 검토 상태와 지식선 소비자 수를 반환하며 검토를 마친 카드는 본문이 바뀔 때만 다시 후보로 포함합니다. 문서 버전은 변경하지 않습니다.",
     "inputSchema": {
       "type": "object",
       "properties": {

@@ -1,8 +1,6 @@
 import { analyzeSharedKnowledgeText } from './sharedKnowledgeAudit.mjs'
 import {
-  acceptedLongReviewMaxAgeDays,
   sharedKnowledgeReviewResults,
-  sharedKnowledgeReviewDue,
   sharedKnowledgeReviewState,
   sharedKnowledgeSha256,
 } from './sharedKnowledgeReview.mjs'
@@ -57,7 +55,7 @@ function cardsForIds(ids, nodesById) {
   })
 }
 
-export function buildSharedKnowledgeReviewContext(map, cardId, { now = new Date() } = {}) {
+export function buildSharedKnowledgeReviewContext(map, cardId) {
   if (!map || !Array.isArray(map.nodes) || !Array.isArray(map.edges)) {
     fail('SHARED_KNOWLEDGE_REVIEW_MAP', '공유 지식 검토 문서가 올바르지 않습니다.')
   }
@@ -79,8 +77,7 @@ export function buildSharedKnowledgeReviewContext(map, cardId, { now = new Date(
     card.data?.sharedKnowledgeReview,
     analysis.sha256,
   )
-  const reviewDue = sharedKnowledgeReviewDue(reviewStatus.review, now)
-  const needsReview = analysis.needsReview && (reviewStatus.state !== 'current' || reviewDue.due)
+  const needsReview = analysis.needsReview && reviewStatus.state !== 'current'
   if (!needsReview) {
     const code = reviewStatus.state === 'current'
       ? 'SHARED_KNOWLEDGE_REVIEW_CURRENT'
@@ -124,12 +121,10 @@ export function buildSharedKnowledgeReviewContext(map, cardId, { now = new Date(
       },
       reviewState: reviewStatus.state,
       review: reviewStatus.review,
-      reviewDue: reviewDue.due,
-      reviewDueAt: reviewDue.dueAt,
     },
     candidate: {
       reviewLevel: analysis.reviewLevel,
-      reasons: reviewDue.due ? [...analysis.reasons, 'accepted-long-review-expired'] : analysis.reasons,
+      reasons: analysis.reasons,
       paragraphCount: analysis.paragraphCount,
       nonEmptyLineCount: analysis.nonEmptyLineCount,
       listItemCount: analysis.listItemCount,
@@ -158,7 +153,7 @@ export function buildSharedKnowledgeReviewContext(map, cardId, { now = new Date(
       history: sharedKnowledgeAuthoringPolicy.history,
       capacity: sharedKnowledgeAuthoringPolicy.capacity,
       length: sharedKnowledgeAuthoringPolicy.length,
-      resultChoice: `본문을 실제로 정리하면 cleaned, 길지만 모든 내용이 계속 필요하면 replacement 없이 accepted-long을 사용합니다. accepted-long은 ${acceptedLongReviewMaxAgeDays}일 뒤 다시 검토합니다.`,
+      resultChoice: `본문을 실제로 정리하면 cleaned, 길지만 모든 내용이 계속 필요하면 replacement 없이 accepted-long을 사용합니다. accepted-long 승인은 본문이 바뀔 때까지 유지됩니다.`,
     },
   }
 }
@@ -197,7 +192,7 @@ function validatePatchShape(patch, index) {
   return { ...patch, cardId }
 }
 
-export function prepareSharedKnowledgeReviewBatch(map, patches, { now = new Date() } = {}) {
+export function prepareSharedKnowledgeReviewBatch(map, patches) {
   if (!map || !Array.isArray(map.nodes) || !Array.isArray(map.edges)) {
     fail('SHARED_KNOWLEDGE_REVIEW_MAP', '공유 지식 검토 문서가 올바르지 않습니다.')
   }
@@ -239,8 +234,7 @@ export function prepareSharedKnowledgeReviewBatch(map, patches, { now = new Date
       node.data?.sharedKnowledgeReview,
       currentAnalysis.sha256,
     )
-    const reviewDue = sharedKnowledgeReviewDue(reviewStatus.review, now)
-    if (reviewStatus.state === 'current' && !reviewDue.due) {
+    if (reviewStatus.state === 'current') {
       fail('SHARED_KNOWLEDGE_REVIEW_CURRENT', '현재 본문은 이미 검토 완료 상태입니다.', 409, { cardId: patch.cardId })
     }
     if (!currentAnalysis.needsReview) {

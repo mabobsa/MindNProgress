@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  acceptedLongReviewMaxAgeDays,
   isValidSharedKnowledgeReview,
   normalizeMapSharedKnowledgeReviews,
   normalizeSharedKnowledgeReview,
   reconcileSharedKnowledgeReviews,
-  sharedKnowledgeReviewDue,
   sharedKnowledgeReviewState,
   sharedKnowledgeSha256,
 } from '../server/lib/sharedKnowledgeReview.mjs'
@@ -42,21 +40,11 @@ test('현재 공유 지식 해시와 검토 해시를 비교해 검토 상태를
   assert.equal(sharedKnowledgeReviewState(`${text} 변경`, review).state, 'stale')
 })
 
-test('장문 유지 승인은 30일 동안 유효하고 이후 다시 검토 대상이 된다', () => {
-  const review = reviewFor('장문 공유 지식', 'accepted-long')
-  assert.equal(acceptedLongReviewMaxAgeDays, 30)
-  assert.deepEqual(sharedKnowledgeReviewDue(review, '2026-09-17T01:02:02.999Z'), {
-    due: false,
-    dueAt: '2026-09-17T01:02:03.000Z',
-  })
-  assert.deepEqual(sharedKnowledgeReviewDue(review, '2026-09-17T01:02:03.000Z'), {
-    due: true,
-    dueAt: '2026-09-17T01:02:03.000Z',
-  })
-  assert.deepEqual(sharedKnowledgeReviewDue(reviewFor('정리된 지식'), '2027-01-01T00:00:00.000Z'), {
-    due: false,
-    dueAt: null,
-  })
+test('장문 유지 승인은 기간과 무관하게 본문이 바뀔 때까지 유지된다', () => {
+  const text = '장문 공유 지식'
+  const review = reviewFor(text, 'accepted-long')
+  assert.equal(sharedKnowledgeReviewState(text, review).state, 'current')
+  assert.equal(sharedKnowledgeReviewState(`${text} 변경`, review).state, 'stale')
 })
 
 test('일반 저장은 검토 메타데이터를 위조하지 못하고 기존 기록만 보존한다', () => {

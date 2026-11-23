@@ -274,7 +274,7 @@ const productGuide = {
     '기존 description 또는 sharedKnowledge 내부의 일부만 수정할 때는 조회 응답의 textIntegrity SHA-256을 expectedSha256으로 지정해 mindnprogress_patch_card_text를 사용하고 필드 전체를 다시 생성하지 않음',
     ...cardTextSafetyRules,
     '과도한 sharedKnowledge를 정리할 때는 mindnprogress_list_shared_knowledge_candidates에서 후보를 고르고 mindnprogress_get_shared_knowledge_review_context로 한 카드 원문과 관계를 확인한 뒤 mindnprogress_apply_shared_knowledge_review로 저장함. cleaned는 정리한 replacement를 보내고, 장문 전체가 계속 필요할 때만 replacement 없이 accepted-long을 사용함',
-    'sharedKnowledge 정리 후보가 있으면 주 1회와 주요 마일스톤 완료·인수인계 시점에 점검하되 자동으로 삭제하거나 축약하지 않고 우선 정리·정리 권장·관심 순으로 카드별 승인을 받음. accepted-long 승인은 30일 뒤 다시 검토함',
+    'sharedKnowledge 정리 후보가 있으면 주 1회와 주요 마일스톤 완료·인수인계 시점에 점검하되 자동으로 삭제하거나 축약하지 않고 우선 정리·정리 권장·관심 순으로 카드별 승인을 받음. accepted-long 승인은 본문이 바뀔 때까지 유지함',
     'mindnprogress_update_card의 responseMode는 full이 기본값이며 저장된 전체 카드 본문과 관계를 연속 작업용으로 반환하되 AI 대화 상세 목록과 렌더링 전용 필드는 제외함. 단일 카드와 서버가 함께 조정한 카드만 필요하면 affected를 명시함',
     '선택 카드 밖의 형제·하위·선행 카드를 함께 수정하기 전에는 mindnprogress_get_ai_work_states로 해당 카드의 AI 작업 상태를 확인하고, running 또는 waiting-confirmation인 카드는 사용자 지시 없이 동시에 수정하지 않음',
     '등록된 AI 작업공간의 최신 목록·경로·상태는 폴더명이나 과거 대화로 추측하지 않고 mindnprogress_get_ai_workspace_pool로 조회함. 작업공간 선택·점유·전환·해제는 MindNProgress만 수행하며 AI가 임의로 worker를 사용하지 않음',
@@ -1308,7 +1308,7 @@ async function main() {
   }, async ({ id }) => apiRequest(`/api/document-reconstructions/${encodeURIComponent(id)}/rollback`, { method: 'POST', body: '{}', timeoutMs: 60_000 }),
   { finalizeResult: summarizeLifecycleResult })
 
-  registerTool(server, 'mindnprogress_list_shared_knowledge_candidates', '전체 문서 또는 한 문서에서 정리가 필요한 sharedKnowledge 후보를 원문 없이 조회합니다. 우선순위, 길이, SHA-256, 반복 문장 수, 검토 상태와 지식선 소비자 수를 반환하며 accepted-long 승인도 30일이 지나면 다시 후보로 포함합니다. 문서 버전은 변경하지 않습니다.', {
+  registerTool(server, 'mindnprogress_list_shared_knowledge_candidates', '전체 문서 또는 한 문서에서 정리가 필요한 sharedKnowledge 후보를 원문 없이 조회합니다. 우선순위, 길이, SHA-256, 반복 문장 수, 검토 상태와 지식선 소비자 수를 반환하며 검토를 마친 카드는 본문이 바뀔 때만 다시 후보로 포함합니다. 문서 버전은 변경하지 않습니다.', {
     mapId: z.string().min(1).optional().describe('한 문서만 조회할 때 지정하는 문서 ID'),
     offset: z.number().int().nonnegative().default(0),
     limit: z.number().int().min(1).max(100).default(50),
@@ -1358,7 +1358,7 @@ async function main() {
       '업무로 추적할 task만 isWork=true로 설정',
       'description은 업무 요청과 완료 조건, sharedKnowledge는 다른 카드가 재사용할 안정적인 결론에 사용',
       // SHARED_KNOWLEDGE_WRITE_INSTRUCTION은 같은 응답의 guide.authoringRules와 guide.sharedKnowledgePolicy에 원문이 있어 여기서 반복하지 않는다.
-      '정리 후보가 있으면 주 1회와 주요 마일스톤·인수인계 시점에 점검하되 자동 변경 없이 카드별로 승인하고 accepted-long은 30일 뒤 다시 검토',
+      '정리 후보가 있으면 주 1회와 주요 마일스톤·인수인계 시점에 점검하되 자동 변경 없이 카드별로 승인하고 accepted-long 승인은 본문이 바뀔 때까지 유지',
       '외부 전달물이나 결정 대기는 waitingItems에 기록하고 카드 제목에는 대기 문구를 추가하지 않음',
       '카드 일부 필드만 변경할 때는 mindnprogress_update_card에 변경할 필드만 전달하고 현재 카드 전체 데이터를 재전송하지 않음',
       '기존 description 또는 sharedKnowledge 내부만 고칠 때는 조회 결과의 textIntegrity SHA-256과 mindnprogress_patch_card_text를 사용',

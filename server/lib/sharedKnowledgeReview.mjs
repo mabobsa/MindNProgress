@@ -5,9 +5,6 @@ export const sharedKnowledgeReviewResults = Object.freeze([
   'accepted-long',
 ])
 
-export const acceptedLongReviewMaxAgeDays = 30
-const dayMilliseconds = 24 * 60 * 60 * 1_000
-
 export function sharedKnowledgeSha256(value) {
   const text = typeof value === 'string' ? value : ''
   return createHash('sha256').update(text, 'utf8').digest('hex')
@@ -56,19 +53,6 @@ export function sharedKnowledgeReviewState(value, review, currentHash = sharedKn
   return {
     state: normalizedReview.reviewedHash === currentHash ? 'current' : 'stale',
     review: normalizedReview,
-  }
-}
-
-export function sharedKnowledgeReviewDue(review, now = new Date()) {
-  const normalizedReview = normalizeSharedKnowledgeReview(review)
-  if (!normalizedReview || normalizedReview.reviewResult !== 'accepted-long') {
-    return { due: false, dueAt: null }
-  }
-  const nowTimestamp = now instanceof Date ? now.getTime() : Date.parse(now)
-  const dueTimestamp = Date.parse(normalizedReview.reviewedAt) + acceptedLongReviewMaxAgeDays * dayMilliseconds
-  return {
-    due: Number.isFinite(nowTimestamp) && nowTimestamp >= dueTimestamp,
-    dueAt: new Date(dueTimestamp).toISOString(),
   }
 }
 

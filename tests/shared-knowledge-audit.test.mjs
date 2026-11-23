@@ -46,18 +46,18 @@ test('글자 수 임계값에 따라 관심·정리 권장·우선 정리 단계
   assert.equal(analyzeSharedKnowledgeText('가'.repeat(priorityCharacters)).limitUsagePercent, 80)
 })
 
-test('30일이 지난 장문 유지 승인을 본문 변경 없이 다시 후보로 분류한다', () => {
+test('오래된 장문 유지 승인도 본문이 같으면 다시 후보로 분류하지 않고 본문이 바뀌면 다시 분류한다', () => {
   const sharedKnowledge = '가'.repeat(5_100)
-  const audit = buildSharedKnowledgeAudit([{
-    id: 'map-expired-review',
-    title: '재검토 문서',
+  const acceptedMap = (text) => ({
+    id: 'map-accepted-long',
+    title: '장문 유지 문서',
     nodes: [{
       id: 'accepted-long',
       data: {
         label: '장문 유지 카드',
-        sharedKnowledge,
+        sharedKnowledge: text,
         sharedKnowledgeReview: {
-          reviewedAt: '2026-07-19T00:00:00.000Z',
+          reviewedAt: '2025-01-01T00:00:00.000Z',
           reviewedHash: sharedKnowledgeSha256(sharedKnowledge),
           reviewedBy: { id: 'editor', name: '편집자' },
           reviewResult: 'accepted-long',
@@ -65,14 +65,23 @@ test('30일이 지난 장문 유지 승인을 본문 변경 없이 다시 후보
       },
     }],
     edges: [],
-  }], { generatedAt: '2026-08-18T00:00:00.000Z' })
+  })
 
-  assert.equal(audit.summary.acceptedLongReviewDueCount, 1)
-  assert.equal(audit.summary.actionableCandidateCount, 1)
-  assert.equal(audit.candidates[0].reviewState, 'current')
-  assert.equal(audit.candidates[0].reviewDue, true)
-  assert.equal(audit.candidates[0].reviewDueAt, '2026-08-18T00:00:00.000Z')
-  assert.ok(audit.candidates[0].reasons.includes('accepted-long-review-expired'))
+  const unchanged = buildSharedKnowledgeAudit([acceptedMap(sharedKnowledge)], { generatedAt: '2026-11-23T00:00:00.000Z' })
+  assert.equal(unchanged.summary.actionableCandidateCount, 0)
+  assert.equal(unchanged.candidates.length, 0)
+  const unchangedCard = unchanged.documents[0].cards[0]
+  assert.equal(unchangedCard.reviewState, 'current')
+  assert.equal(unchangedCard.hasReviewSignals, true)
+  assert.equal(unchangedCard.needsReview, false)
+  assert.equal('reviewDue' in unchangedCard, false)
+  assert.equal('acceptedLongReviewDueCount' in unchanged.summary, false)
+  assert.equal('acceptedLongReviewMaxAgeDays' in unchanged.maintenance, false)
+
+  const changed = buildSharedKnowledgeAudit([acceptedMap(`${sharedKnowledge} 추가`)], { generatedAt: '2026-11-23T00:00:00.000Z' })
+  assert.equal(changed.summary.actionableCandidateCount, 1)
+  assert.equal(changed.candidates[0].reviewState, 'stale')
+  assert.equal(changed.candidates[0].reasons.includes('accepted-long-review-expired'), false)
 })
 
 test('활성 문서의 공유 지식 카드와 실제 지식선 소비자를 우선순위대로 집계한다', () => {

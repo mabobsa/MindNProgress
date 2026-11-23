@@ -222,18 +222,24 @@ test('중복 카드, Ref, 이미 검토한 카드와 결과별 잘못된 replace
     reviewedBy: { id: 'editor', name: '편집자' },
     reviewResult: 'accepted-long',
   }
+  // 장문 유지 승인은 기간이 지나도 본문이 같으면 검토 완료 상태로 유지된다.
   assert.throws(() => prepareSharedKnowledgeReviewBatch(reviewedMap, [{
     cardId: 'first', expectedSha256: firstHash, reviewResult: 'accepted-long',
-  }], { now: '2026-08-19T00:00:00.000Z' }), { code: 'SHARED_KNOWLEDGE_REVIEW_CURRENT' })
-
-  const expiredContext = buildSharedKnowledgeReviewContext(reviewedMap, 'first', {
-    now: '2026-09-17T00:00:00.000Z',
+  }]), { code: 'SHARED_KNOWLEDGE_REVIEW_CURRENT' })
+  assert.throws(() => buildSharedKnowledgeReviewContext(reviewedMap, 'first'), {
+    code: 'SHARED_KNOWLEDGE_REVIEW_CURRENT',
   })
-  assert.equal(expiredContext.card.reviewDue, true)
-  assert.ok(expiredContext.candidate.reasons.includes('accepted-long-review-expired'))
+
+  // 본문이 바뀌면 다시 후보가 되어 새로 승인할 수 있다.
+  const changedText = `${firstText} 추가`
+  reviewedMap.nodes[1].data.sharedKnowledge = changedText
+  const changedContext = buildSharedKnowledgeReviewContext(reviewedMap, 'first')
+  assert.equal(changedContext.card.reviewState, 'stale')
+  assert.equal('reviewDue' in changedContext.card, false)
+  assert.equal(changedContext.candidate.reasons.includes('accepted-long-review-expired'), false)
   const renewed = prepareSharedKnowledgeReviewBatch(reviewedMap, [{
-    cardId: 'first', expectedSha256: firstHash, reviewResult: 'accepted-long',
-  }], { now: '2026-09-17T00:00:00.000Z' })
+    cardId: 'first', expectedSha256: sharedKnowledgeSha256(changedText), reviewResult: 'accepted-long',
+  }])
   assert.deepEqual([...renewed.reviewRequests], [['first', { reviewResult: 'accepted-long' }]])
 
   assert.throws(() => prepareSharedKnowledgeReviewBatch(map, [{

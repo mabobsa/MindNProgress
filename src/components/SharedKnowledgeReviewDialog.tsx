@@ -177,7 +177,6 @@ const reasonLabels: Record<string, string> = {
   'length-recommended': `${sharedKnowledgeAuditThresholds.recommendedCharacters.toLocaleString('ko-KR')}자 이상`,
   'length-priority': `${sharedKnowledgeAuditThresholds.priorityCharacters.toLocaleString('ko-KR')}자 이상`,
   'exact-duplicate-statements': '동일 문장 반복',
-  'accepted-long-review-expired': '장문 유지 30일 재검토',
 }
 
 const relationLabels: Array<{

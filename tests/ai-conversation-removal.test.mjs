@@ -6,7 +6,7 @@ function fixture() {
   const f = { linked: true, archived: false, exists: true, events: [], locked: false, machineId: 'main' }
   const dependencies = {
     readContext: async () => ({ machineId: f.machineId, link: f.linked ? { conversationId: 'chat' } : undefined }),
-    assertSafe: async () => { if (f.busy) throw Error('위임 처리 중') },
+    assertSafe: async () => { f.safeCalls = (f.safeCalls ?? 0) + 1; if (f.busy) throw Error('위임 처리 중') },
     call: async (machine, pathname, options = {}) => {
       assert.equal(f.locked, false, 'Aion 대기 중에는 문서 변경 잠금을 잡지 않는다')
       assert.equal(machine, 'main')
@@ -139,4 +139,27 @@ test('외부 확인 중 새 위임 또는 머신 변경이 생기면 최신 연�
     assert.equal(f.linked, true)
     assert.equal(f.locked, false)
   }
+})
+
+// 2026-11-23: 대화가 지워진 뒤 실패한 위임·전달된 지시 기록이 남아 연결을 영원히 삭제할 수 없었다.
+// 존재 여부를 먼저 확인하고, 명시적으로 부재가 확인된 대화는 그런 기록과 무관하게 이 카드의 연결만 정리한다.
+test('명시적으로 부재가 확인된 대화는 남은 위임·지시 기록과 무관하게 연결을 삭제한다', async () => {
+  const f = fixture()
+  f.exists = false
+  f.busy = true
+  assert.equal((await f.remove()).archiveState, 'missing')
+  assert.equal(f.linked, false)
+  assert.equal(f.safeCalls ?? 0, 0, '부재 대화에는 위임·작업공간 안전 확인을 하지 않는다')
+  assert.deepEqual(f.events, ['read-state', 'unlink'])
+})
+
+test('존재하는 대화는 보관 상태를 읽은 뒤 실행 확인·보관 전에 위임 안전 확인을 한다', async () => {
+  const f = fixture()
+  f.busy = true
+  await assert.rejects(f.remove(), /위임 처리 중/)
+  assert.equal(f.linked, true)
+  assert.deepEqual(f.events, ['read-state'], '위임이 남아 있으면 실행 조회·보관 요청을 보내지 않는다')
+  const ok = fixture()
+  await ok.remove()
+  assert.equal(ok.safeCalls, 2, '보관 전과 최종 저장 직전에 두 번 확인한다')
 })

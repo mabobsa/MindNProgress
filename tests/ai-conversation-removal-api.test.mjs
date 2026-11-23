@@ -14,7 +14,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 test('실제 삭제 API는 보관 검증·실행 및 공용 연결 보호·재시도를 수행한다', { timeout: 60_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'mnp-conversation-removal-'))
-  const ids = ['active', 'archived', 'missing', 'running', 'waiting-confirmation', 'unknown', 'unsupported', 'lost', 'rejected', 'shared', 'delegated', 'expired-instruction', 'failed-instruction', 'queued-instruction', 'delivered-instruction', 'delayed']
+  const ids = ['active', 'archived', 'missing', 'running', 'waiting-confirmation', 'unknown', 'unsupported', 'lost', 'rejected', 'shared', 'delegated', 'expired-instruction', 'failed-instruction', 'queued-instruction', 'delivered-instruction', 'delayed', 'missing-failed-delegation', 'missing-delivered-instruction']
   const archived = new Set(['archived'])
   const archivedCalls = []
   const conversationQueries = []
@@ -28,7 +28,7 @@ test('실제 삭제 API는 보관 검증·실행 및 공용 연결 보호·재�
     if (route) {
       const [, id, action] = route
       if (id === 'unsupported') return json(res, 404, { error: '이 API를 지원하지 않습니다.' })
-      if (action === 'archive-state') return json(res, 200, { data: { conversation_id: id, exists: id !== 'missing', archived_at: archived.has(id) ? 123 : null } })
+      if (action === 'archive-state') return json(res, 200, { data: { conversation_id: id, exists: !id.startsWith('missing'), archived_at: archived.has(id) ? 123 : null } })
       archivedCalls.push(id)
       if (id === 'rejected') return json(res, 409, { error: '보관 거절' })
       if (id === 'delayed') { archiveEntered(); await new Promise((resolve) => { releaseArchive = resolve }) }
@@ -71,6 +71,11 @@ test('실제 삭제 API는 보관 검증·실행 및 공용 연결 보호·재�
       id: 'pending-integration', mapId, parentCardId: 'other', targetCardId: 'root',
       parentConversationId: 'parent', targetConversationId: 'delegated', state: 'integration-recovery-required',
       childStatus: 'completed', workspaceError: '통합 복구 필요', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    }, {
+      // 2026-11-23 실제 사례: 상위 대화가 지워진 뒤 실패로 남은 위임. 대화가 없으면 이 기록은 끝날 수 없다.
+      id: 'failed-after-parent-deleted', mapId, parentCardId: 'root', targetCardId: 'other',
+      parentConversationId: 'missing-failed-delegation', targetConversationId: 'child', state: 'failed',
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     }]))
     const instructions = ['expired', 'failed', 'queued', 'delivered'].map((state) => ({
       id: `instruction-${state}`, state, parentMapId: mapId, parentCardId: 'other', parentConversationId: 'parent',
@@ -82,6 +87,10 @@ test('실제 삭제 API는 보관 검증·실행 및 공용 연결 보호·재�
       deliveredAt: '2026-10-23T11:10:23.801Z',
       ...(state === 'expired' ? { reasonCode: 'GROUP_DOCUMENT_INSTRUCTION_REVISION_CONFLICT' } : {}),
     }))
+    // 2026-11-23 실제 사례: 전달된 뒤 대상 대화가 지워진 지시.
+    instructions.push({ ...instructions.find((item) => item.state === 'delivered'), id: 'instruction-delivered-to-missing',
+      targetConversationId: 'missing-delivered-instruction', requestedConversationId: 'missing-delivered-instruction',
+      dispatchOperationId: 'gdi:instruction-delivered-to-missing' })
     await writeFile(path.join(directory, '_group-document-instructions.json'), JSON.stringify(instructions))
     child = spawn(process.execPath, ['server/index.mjs'], {
       cwd: path.resolve(import.meta.dirname, '..'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
@@ -132,17 +141,21 @@ test('실제 삭제 API는 보관 검증·실행 및 공용 연결 보호·재�
     assert.deepEqual(compact.body.conversations.map((item) => item.conversationId), detailed.body.conversations.map((item) => item.conversationId),
       '상세 AI 대화 열기와 간략 목록의 대화 순서가 일치한다')
     assert.equal((await fetch(`${base}${endpoint}/active`, { method: 'DELETE' })).status, 401)
-    for (const id of ['active', 'archived', 'missing', 'lost', 'expired-instruction', 'failed-instruction']) {
+    const removedIds = ['active', 'archived', 'missing', 'lost', 'expired-instruction', 'failed-instruction', 'missing-failed-delegation', 'missing-delivered-instruction']
+    const delegationsBefore = await readFile(path.join(directory, '_ai-delegations.json'), 'utf8')
+    for (const id of removedIds) {
       const result = await remove(id)
-      assert.equal(result.status, 200, JSON.stringify(result.body))
-      assert.equal(result.body.archiveState, id === 'missing' ? 'missing' : 'archived')
+      assert.equal(result.status, 200, `${id}: ${JSON.stringify(result.body)}`)
+      assert.equal(result.body.archiveState, id.startsWith('missing') ? 'missing' : 'archived')
       assert.ok(!result.body.card.data.aiConversations.some((link) => link.conversationId === id))
     }
     assert.deepEqual(archivedCalls, ['active', 'lost', 'expired-instruction', 'failed-instruction'])
     const remainingDocument = (await request(documentEndpoint)).body
     assert.deepEqual(linkInfo(remainingDocument.cards[1].conversations), linkInfo(documentList.body.cards[1].conversations), '다른 카드의 연결은 변경하지 않는다')
-    assert.ok(remainingDocument.cards[0].conversations.every((item) => !['active', 'archived', 'missing', 'lost', 'expired-instruction', 'failed-instruction'].includes(item.conversationId)),
+    assert.ok(remainingDocument.cards[0].conversations.every((item) => !removedIds.includes(item.conversationId)),
       '삭제한 대화는 문서 전체 목록에서도 제외한다')
+    assert.equal(await readFile(path.join(directory, '_ai-delegations.json'), 'utf8'), delegationsBefore,
+      '부재 대화의 연결만 삭제하고 남은 위임 기록은 바꾸지 않는다')
     assert.deepEqual(JSON.parse(await readFile(path.join(directory, '_group-document-instructions.json'), 'utf8')), instructions,
       '만료 지시를 강제로 완료 처리하거나 지우지 않고 대화 연결만 삭제한다')
     assert.equal((await remove('active')).status, 200, '응답 재시도에서도 보관을 반복하지 않는다')

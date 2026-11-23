@@ -84,6 +84,47 @@ test('오래된 장문 유지 승인도 본문이 같으면 다시 후보로 분
   assert.equal(changed.candidates[0].reasons.includes('accepted-long-review-expired'), false)
 })
 
+test('검토를 마쳤고 본문이 그대로인 장문을 정리 후보와 별도 목록으로 길이순 집계한다', () => {
+  const review = (text, reviewResult) => ({
+    reviewedAt: '2026-11-23T00:00:00.000Z',
+    reviewedHash: sharedKnowledgeSha256(text),
+    reviewedBy: { id: 'editor', name: '편집자' },
+    reviewResult,
+  })
+  const cleanedLong = '가'.repeat(14_100)
+  const acceptedLong = '나'.repeat(8_100)
+  const reviewedShort = '다'.repeat(4_000)
+  const staleLong = '라'.repeat(9_000)
+  const unreviewedLong = '마'.repeat(6_000)
+  const card = (id, sharedKnowledge, extra = {}) => ({ id, data: { label: id, sharedKnowledge, ...extra } })
+  const audit = buildSharedKnowledgeAudit([{
+    id: 'map-reviewed-long',
+    title: '검토 완료 문서',
+    nodes: [
+      card('accepted-long', acceptedLong, { sharedKnowledgeReview: review(acceptedLong, 'accepted-long') }),
+      card('cleaned-long', cleanedLong, { sharedKnowledgeReview: review(cleanedLong, 'cleaned') }),
+      card('reviewed-short', reviewedShort, { sharedKnowledgeReview: review(reviewedShort, 'accepted-long') }),
+      card('stale-long', `${staleLong} 변경`, { sharedKnowledgeReview: review(staleLong, 'cleaned') }),
+      card('unreviewed-long', unreviewedLong),
+      card('reference-long', cleanedLong, {
+        reference: { mapId: 'map-source', nodeId: 'source' },
+        sharedKnowledgeReview: review(cleanedLong, 'cleaned'),
+      }),
+    ],
+    edges: [],
+  }], { generatedAt: '2026-11-23T00:00:00.000Z' })
+
+  // 길이순, 검토 기록 포함. 짧은 카드·본문이 바뀐 카드·미검토 카드·Ref 카드는 넣지 않는다.
+  assert.deepEqual(audit.reviewedLongCards.map((item) => item.cardId), ['cleaned-long', 'accepted-long'])
+  assert.equal(audit.summary.reviewedLongCount, 2)
+  assert.deepEqual(audit.reviewedLongCards.map((item) => item.review.reviewResult), ['cleaned', 'accepted-long'])
+  assert.ok(audit.reviewedLongCards.every((item) => item.reviewState === 'current' && item.actionable === false))
+  assert.equal(audit.reviewedLongCards[0].documentTitle, '검토 완료 문서')
+  // 검토 완료 장문은 정리 후보로 되돌리지 않는다.
+  assert.deepEqual(audit.candidates.map((item) => item.cardId).sort(), ['stale-long', 'unreviewed-long'])
+  assert.equal(JSON.stringify(audit.reviewedLongCards).includes('가가가'), false, '원문은 목록에 넣지 않는다')
+})
+
 test('활성 문서의 공유 지식 카드와 실제 지식선 소비자를 우선순위대로 집계한다', () => {
   const sourceKnowledge = `외부에 노출되면 안 되는 원문\n${'가'.repeat(5_100)}`
   const priorityKnowledge = '나'.repeat(12_100)

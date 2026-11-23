@@ -190,6 +190,10 @@ test('검토 문맥 조회와 해시 조건부 일괄 저장을 원자적으로 
     const audit = (await auditResponse.json()).audit
     assert.equal(audit.summary.actionableCandidateCount, 0)
     assert.equal(audit.summary.reviewStateCounts.current, 2)
+    // 장문 유지로 승인한 8,100자 카드만 검토 완료 장문에 보인다. 정리로 짧아진 카드는 기준보다 짧아 빠진다.
+    assert.deepEqual(audit.reviewedLongCards.map((card) => card.cardId), ['second-review'])
+    assert.equal(audit.reviewedLongCards[0].review.reviewResult, 'accepted-long')
+    assert.equal(audit.summary.reviewedLongCount, 1)
 
     const changedMap = structuredClone(reviewedMap)
     changedMap.nodes.find((node) => node.id === 'second-review').data.sharedKnowledge = `${secondKnowledge}변경`
@@ -206,6 +210,9 @@ test('검토 문맥 조회와 해시 조건부 일괄 저장을 원자적으로 
     assert.ok(staleCard)
     assert.equal(staleCard.reviewState, 'stale')
     assert.equal(staleCard.actionable, true)
+    // 본문이 바뀌면 검토 완료 장문에서 빠지고 다시 검토 대기로 돌아간다.
+    assert.deepEqual(staleAudit.reviewedLongCards, [])
+    assert.equal(staleAudit.summary.reviewedLongCount, 0)
 
     const staleContextResponse = await fetch(
       `${baseUrl}/api/maps/${mapId}/cards/second-review/shared-knowledge-review-context?commentLimit=0`,

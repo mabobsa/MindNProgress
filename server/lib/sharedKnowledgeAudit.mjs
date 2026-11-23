@@ -164,6 +164,13 @@ export function buildSharedKnowledgeAudit(maps, {
     || second.length - first.length
     || String(first.documentTitle).localeCompare(String(second.documentTitle), 'ko')
     || String(first.label).localeCompare(String(second.label), 'ko'))
+  // 검토를 마쳤고(current) 본문이 그대로인 장문은 정리 후보가 아니지만, 정리 뒤에도 긴 카드를 화면에서 따로 확인할 수 있게 모은다.
+  // 길이 기준은 관심 단계 이상이다. Ref 카드는 원본 카드가 같은 목록에 보이므로 뺀다.
+  const reviewedLongCards = cards
+    .filter((card) => card.reviewState === 'current' && !card.isReference && card.lengthLevel !== 'normal')
+    .sort((first, second) => second.length - first.length
+      || String(first.documentTitle).localeCompare(String(second.documentTitle), 'ko')
+      || String(first.label).localeCompare(String(second.label), 'ko'))
 
   return {
     generatedAt,
@@ -174,6 +181,7 @@ export function buildSharedKnowledgeAudit(maps, {
       cardCount: documents.reduce((sum, document) => sum + document.cardCount, 0),
       cardsWithSharedKnowledge: cards.length,
       actionableCandidateCount: candidates.length,
+      reviewedLongCount: reviewedLongCards.length,
       referenceCardCount: cards.filter((card) => card.isReference).length,
       totalCharacters: cards.reduce((sum, card) => sum + card.length, 0),
       reviewLevelCounts: Object.fromEntries(
@@ -187,6 +195,7 @@ export function buildSharedKnowledgeAudit(maps, {
       ),
     },
     candidates,
+    reviewedLongCards,
     documents,
   }
 }

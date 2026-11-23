@@ -6,6 +6,13 @@ import './SharedKnowledgeReviewDialog.css'
 type ReviewLevel = 'attention' | 'recommended' | 'priority'
 type ReviewDecision = 'cleaned' | 'accepted-long'
 type ReviewState = 'unreviewed' | 'current' | 'stale'
+type ListMode = 'pending' | 'reviewed'
+
+type ReviewRecord = {
+  reviewedAt: string
+  reviewedBy: { id: string; name: string }
+  reviewResult: ReviewDecision
+}
 
 type AuditCandidate = {
   mapId: string
@@ -26,6 +33,8 @@ type AuditCandidate = {
   limitUsagePercent: number
   remainingCharacters: number
   lastKnownUpdatedAt: string | null
+  lastKnownUpdatedAtSource?: 'sharedKnowledge' | 'document' | 'unavailable'
+  review?: ReviewRecord | null
 }
 
 type SharedKnowledgeAudit = {
@@ -34,9 +43,12 @@ type SharedKnowledgeAudit = {
     documentCount: number
     cardsWithSharedKnowledge: number
     actionableCandidateCount: number
+    reviewedLongCount?: number
     totalCharacters: number
   }
   candidates: AuditCandidate[]
+  /** 검토를 마쳤고 본문이 그대로인 장문. 정리 후보가 아니며 확인용으로만 보여준다. 이전 서버 응답에는 없다. */
+  reviewedLongCards?: AuditCandidate[]
 }
 
 type RelatedCard = {
@@ -172,6 +184,11 @@ const reviewLevelLabels: Record<ReviewLevel, string> = {
   priority: '우선 정리',
 }
 
+const reviewResultLabels: Record<ReviewDecision, string> = {
+  cleaned: '정리 완료',
+  'accepted-long': '장문 유지',
+}
+
 const reasonLabels: Record<string, string> = {
   'length-attention': `${sharedKnowledgeAuditThresholds.attentionCharacters.toLocaleString('ko-KR')}자 이상`,
   'length-recommended': `${sharedKnowledgeAuditThresholds.recommendedCharacters.toLocaleString('ko-KR')}자 이상`,
@@ -200,6 +217,11 @@ function formatCount(value: number) {
 function formatDate(value: string | null) {
   if (!value) return '기록 없음'
   return new Date(value).toLocaleString('ko-KR')
+}
+
+function formatDay(value: string | null) {
+  if (!value) return '기록 없음'
+  return new Date(value).toLocaleDateString('ko-KR')
 }
 
 function errorMessage(error: unknown) {
@@ -232,6 +254,48 @@ function EmptyReviewState({ filtered }: { filtered: boolean }) {
   )
 }
 
+function EmptyReviewedLongState({ filtered }: { filtered: boolean }) {
+  return (
+    <div className="shared-knowledge-review-empty">
+      <span aria-hidden="true">✓</span>
+      <strong>{filtered ? '현재 문서에 검토 완료 장문이 없습니다.' : '검토 완료 장문이 없습니다.'}</strong>
+      <p>검토를 마쳤고 본문이 그대로인 {sharedKnowledgeAuditThresholds.attentionCharacters.toLocaleString('ko-KR')}자 이상 공유 지식이 여기에 표시됩니다.</p>
+    </div>
+  )
+}
+
+function ReviewedLongDetail({ card }: { card: AuditCandidate }) {
+  const resultLabel = card.review ? reviewResultLabels[card.review.reviewResult] : '검토 완료'
+  const updatedLabel = card.lastKnownUpdatedAtSource === 'sharedKnowledge' ? '공유 지식 수정' : '문서 수정'
+  return (
+    <>
+      <div className="shared-knowledge-review-card-header">
+        <div>
+          <span>{card.documentTitle}</span>
+          <strong>{card.label}</strong>
+          <small>{updatedLabel} {formatDate(card.lastKnownUpdatedAt)} · 문서 버전 {card.documentVersion}</small>
+        </div>
+        <div className="shared-knowledge-review-card-actions">
+          <a href={`/mindmap/${encodeURIComponent(card.mapId)}/${encodeURIComponent(card.cardId)}`} target="_blank" rel="noreferrer">카드 열기 ↗</a>
+        </div>
+      </div>
+
+      <div className="shared-knowledge-review-stats" aria-label="검토 완료 장문 정보">
+        <span><small>길이</small><strong>{formatCount(card.length)}자</strong></span>
+        <span><small>제한 사용</small><strong>{card.limitUsagePercent}%</strong></span>
+        <span><small>검토 결과</small><strong>{resultLabel}</strong></span>
+        <span><small>검토자</small><strong>{card.review?.reviewedBy.name ?? '기록 없음'}</strong></span>
+        <span><small>지식 소비 카드</small><strong>{formatCount(card.consumerCount)}</strong></span>
+      </div>
+
+      <div className="shared-knowledge-review-reviewed-note" role="note">
+        {formatDate(card.review?.reviewedAt ?? null)}에 {resultLabel}로 검토를 마쳤고, 그 뒤 본문이 바뀌지 않아 정리 후보에서 제외되었습니다.
+        본문이 바뀌면 다시 검토 대기로 돌아갑니다.
+      </div>
+    </>
+  )
+}
+
 export function SharedKnowledgeReviewDialog({
   activeMapId,
   clientId,
@@ -241,6 +305,8 @@ export function SharedKnowledgeReviewDialog({
   onClose,
 }: SharedKnowledgeReviewDialogProps) {
   const [scope, setScope] = useState<'all' | 'current'>(() => activeMapId ? 'current' : 'all')
+  const [listMode, setListMode] = useState<ListMode>('pending')
+  const [selectedReviewedKey, setSelectedReviewedKey] = useState<string | null>(null)
   const [audit, setAudit] = useState<SharedKnowledgeAudit | null>(null)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [context, setContext] = useState<SharedKnowledgeReviewContext | null>(null)
@@ -264,6 +330,11 @@ export function SharedKnowledgeReviewDialog({
     [candidates, selectedKey],
   )
   const contextKey = selectedCandidate ? candidateKey(selectedCandidate) : null
+  const reviewedLongCards = useMemo(() => audit?.reviewedLongCards ?? [], [audit])
+  const selectedReviewed = useMemo(
+    () => reviewedLongCards.find((card) => candidateKey(card) === selectedReviewedKey) ?? null,
+    [reviewedLongCards, selectedReviewedKey],
+  )
 
   useEffect(() => {
     closeButtonRef.current?.focus()
@@ -311,11 +382,16 @@ export function SharedKnowledgeReviewDialog({
         setSelectedKey((current) => nextAudit.candidates.some((candidate) => candidateKey(candidate) === current)
           ? current
           : nextAudit.candidates[0] ? candidateKey(nextAudit.candidates[0]) : null)
+        const nextReviewed = nextAudit.reviewedLongCards ?? []
+        setSelectedReviewedKey((current) => nextReviewed.some((card) => candidateKey(card) === current)
+          ? current
+          : nextReviewed[0] ? candidateKey(nextReviewed[0]) : null)
       })
       .catch((error) => {
         if (error instanceof DOMException && error.name === 'AbortError') return
         setAudit(null)
         setSelectedKey(null)
+        setSelectedReviewedKey(null)
         setListError(errorMessage(error))
       })
       .finally(() => {
@@ -470,21 +546,60 @@ export function SharedKnowledgeReviewDialog({
                 disabled={!activeMapId}
               >현재 문서</button>
             </div>
+            <div className="shared-knowledge-review-scope shared-knowledge-review-mode" role="group" aria-label="목록 종류">
+              <button
+                type="button"
+                className={listMode === 'pending' ? 'active' : ''}
+                aria-pressed={listMode === 'pending'}
+                onClick={() => setListMode('pending')}
+              >검토 대기</button>
+              <button
+                type="button"
+                className={listMode === 'reviewed' ? 'active' : ''}
+                aria-pressed={listMode === 'reviewed'}
+                onClick={() => setListMode('reviewed')}
+                title="검토를 마쳤지만 여전히 긴 공유 지식을 확인합니다. 정리 후보로 되돌리지 않습니다."
+              >검토 완료 장문</button>
+            </div>
             <div className="shared-knowledge-review-summary">
-              <span>검토 대기</span>
-              <strong>{listLoading ? '—' : formatCount(audit?.summary.actionableCandidateCount ?? 0)}</strong>
+              <span>{listMode === 'reviewed' ? '검토 완료 장문' : '검토 대기'}</span>
+              <strong>{listLoading ? '—' : formatCount(listMode === 'reviewed'
+                ? audit?.summary.reviewedLongCount ?? reviewedLongCards.length
+                : audit?.summary.actionableCandidateCount ?? 0)}</strong>
               <small>{scope === 'current' ? '현재 문서 기준' : `${formatCount(audit?.summary.documentCount ?? 0)}개 문서 기준`}</small>
             </div>
-            <div className="shared-knowledge-review-list" aria-label="공유 지식 정리 후보">
-              {listLoading && <div className="shared-knowledge-review-message">후보를 불러오는 중…</div>}
+            <div className="shared-knowledge-review-list" aria-label={listMode === 'reviewed' ? '검토 완료 장문' : '공유 지식 정리 후보'}>
+              {listLoading && <div className="shared-knowledge-review-message">{listMode === 'reviewed' ? '목록을 불러오는 중…' : '후보를 불러오는 중…'}</div>}
               {!listLoading && listError && (
                 <div className="shared-knowledge-review-message error">
                   <span>{listError}</span>
                   <button type="button" onClick={refresh}>다시 시도</button>
                 </div>
               )}
-              {!listLoading && !listError && candidates.length === 0 && <EmptyReviewState filtered={scope === 'current'} />}
-              {!listLoading && !listError && candidates.map((candidate) => (
+              {!listLoading && !listError && listMode === 'pending' && candidates.length === 0 && <EmptyReviewState filtered={scope === 'current'} />}
+              {!listLoading && !listError && listMode === 'reviewed' && reviewedLongCards.length === 0 && (
+                <EmptyReviewedLongState filtered={scope === 'current'} />
+              )}
+              {!listLoading && !listError && listMode === 'reviewed' && reviewedLongCards.map((card) => (
+                <button
+                  type="button"
+                  className={`shared-knowledge-review-candidate reviewed ${candidateKey(card) === selectedReviewedKey ? 'selected' : ''}`}
+                  key={candidateKey(card)}
+                  onClick={() => setSelectedReviewedKey(candidateKey(card))}
+                  aria-current={candidateKey(card) === selectedReviewedKey}
+                >
+                  <span className="shared-knowledge-review-candidate-topline">
+                    <em>{card.review ? reviewResultLabels[card.review.reviewResult] : '검토 완료'}</em>
+                    <small>{formatCount(card.length)}자</small>
+                  </span>
+                  <strong>{card.label}</strong>
+                  <span className="shared-knowledge-review-document">{card.documentTitle}</span>
+                  <span className="shared-knowledge-review-reasons">
+                    {[...card.reasons.map((reason) => reasonLabels[reason] ?? reason), `검토 ${formatDay(card.review?.reviewedAt ?? null)}`].join(' · ')}
+                  </span>
+                </button>
+              ))}
+              {!listLoading && !listError && listMode === 'pending' && candidates.map((candidate) => (
                 <button
                   type="button"
                   className={`shared-knowledge-review-candidate ${candidate.reviewLevel} ${candidateKey(candidate) === selectedKey ? 'selected' : ''}`}
@@ -514,21 +629,28 @@ export function SharedKnowledgeReviewDialog({
 
           <main className="shared-knowledge-review-main">
             {successMessage && <div className="shared-knowledge-review-success" role="status">{successMessage}</div>}
-            {contextLoading && <div className="shared-knowledge-review-detail-message">검토 문맥과 원문을 불러오는 중…</div>}
-            {!contextLoading && contextError && (
+            {listMode === 'reviewed' && !listLoading && !listError && selectedReviewed && <ReviewedLongDetail card={selectedReviewed} />}
+            {listMode === 'reviewed' && !listLoading && !listError && !selectedReviewed && reviewedLongCards.length > 0 && (
+              <div className="shared-knowledge-review-detail-message">왼쪽에서 확인할 카드를 선택해 주세요.</div>
+            )}
+            {listMode === 'reviewed' && !listLoading && !listError && reviewedLongCards.length === 0 && (
+              <EmptyReviewedLongState filtered={scope === 'current'} />
+            )}
+            {listMode === 'pending' && contextLoading && <div className="shared-knowledge-review-detail-message">검토 문맥과 원문을 불러오는 중…</div>}
+            {listMode === 'pending' && !contextLoading && contextError && (
               <div className="shared-knowledge-review-detail-message error">
                 <strong>검토 문맥을 불러오지 못했습니다.</strong>
                 <span>{contextError}</span>
                 <button type="button" onClick={refresh}>목록과 원문 새로고침</button>
               </div>
             )}
-            {!contextLoading && !contextError && !context && !successMessage && candidates.length > 0 && (
+            {listMode === 'pending' && !contextLoading && !contextError && !context && !successMessage && candidates.length > 0 && (
               <div className="shared-knowledge-review-detail-message">왼쪽에서 검토할 카드를 선택해 주세요.</div>
             )}
-            {!contextLoading && !contextError && !context && candidates.length === 0 && !listLoading && (
+            {listMode === 'pending' && !contextLoading && !contextError && !context && candidates.length === 0 && !listLoading && (
               <EmptyReviewState filtered={scope === 'current'} />
             )}
-            {context && (
+            {listMode === 'pending' && context && (
               <>
                 <div className="shared-knowledge-review-card-header">
                   <div>

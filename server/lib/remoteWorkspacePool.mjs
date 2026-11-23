@@ -630,11 +630,27 @@ export class RemoteWorkspacePool {
 }
 
 export function remoteWorkspaceFacade(local, remote) {
+  const resolvePoolHint = ({ machineId, poolId }) => {
+    identifier(poolId)
+    if (machineId === remote.mainMachineId()) {
+      if (local.registry?.poolId !== poolId || !local.registry?.integration?.root) {
+        throw workspaceError('AI_WORKSPACE_POOL_SCOPE_MISMATCH', '요청한 작업공간 풀이 실행 머신의 풀과 일치하지 않습니다.')
+      }
+      return local.registry.integration.root
+    }
+    const { pool, report } = remote.pool(machineId)
+    if (pool.poolId !== poolId || !report.workspaces[0]?.projectRoot) {
+      throw workspaceError('AI_WORKSPACE_POOL_SCOPE_MISMATCH', '요청한 작업공간 풀이 실행 머신의 풀과 일치하지 않습니다.')
+    }
+    // 풀 식별용 힌트이며 실제 유휴 worker 선택과 lease 배정은 acquire가 원자적으로 수행한다.
+    return report.workspaces[0].projectRoot
+  }
   const methods = new Set(['bindConversation', 'reuseLease', 'checkpoint', 'finalize', 'cancel', 'quarantine', 'reactivateQuarantinedLease'])
   const unsupported = new Set(['completeConflictResolution', 'resumeIntegrationConflict', 'prepareIntegrationResultCorrection', 'resumeIntegrationResultCorrection',
     'recoverCheckpointedFinalizationFailure', 'recoverLegacyDirtyIntegration', 'recoverLocalChangesIntegrationFailure', 'recoverUntrackedIntegrationFailure',
     'recoverIntegrationHeadChangedFailure', 'recoverIntegrationCandidateWorktreeFailure', 'recoverIntegrationGitStatusFailure', 'recoverCheckpointIntegrationFailure', 'releasePreservedIntegrationFailure'])
   return new Proxy(local, { get(target, property) {
+    if (property === 'resolvePoolHint') return resolvePoolHint
     if (property === 'state') return target.state ? { ...target.state, leases: { ...target.state.leases, ...remote.state?.leases } } : target.state
     if (property === 'initialize') return async (options) => { await remote.initialize(); return target.initialize(options) }
     if (property === 'poolForWorkspace') return (root, machineId) => remote.poolForWorkspace(root, machineId)
@@ -644,6 +660,14 @@ export function remoteWorkspaceFacade(local, remote) {
     if (property === 'acquire') return (options) => {
       const machineId = options.machineId || remote.mainMachineId()
       const prior = Object.values(remote.state?.leases ?? {}).find((lease) => lease.requestId === options.requestId)
+      if (options.workspacePoolId) {
+        const workspaceHint = resolvePoolHint({ machineId, poolId: options.workspacePoolId })
+        if (prior && (prior.poolId !== options.workspacePoolId || prior.ownership.machineId !== machineId)) {
+          throw workspaceError('AI_WORKSPACE_POOL_SCOPE_MISMATCH')
+        }
+        return machineId === remote.mainMachineId()
+          ? target.acquire({ ...options, workspaceHint }) : remote.acquire({ ...options, machineId, workspaceHint })
+      }
       const managed = remote.poolForWorkspace(options.workspaceHint, machineId) ?? remote.poolForWorkspace(options.workspaceHint)
       if (prior || managed) {
         if ((prior?.ownership.machineId ?? managed.machineId) !== machineId) throw workspaceError('REMOTE_WORKSPACE_SCOPE_MISMATCH')
@@ -655,7 +679,17 @@ export function remoteWorkspaceFacade(local, remote) {
       }
       return target.acquire(options)
     }
-    if (methods.has(property)) return (id, ...args) => remote.hasLease(id) ? remote[property](id, ...args) : target[property](id, ...args)
+    if (methods.has(property)) return (id, ...args) => {
+      if (property === 'reuseLease' && args[0]?.workspacePoolId) {
+        const { workspacePoolId, machineId = remote.mainMachineId() } = args[0]
+        resolvePoolHint({ machineId, poolId: workspacePoolId })
+        const lease = remote.state?.leases?.[id] ?? target.state?.leases?.[id]
+        if (!lease || lease.poolId !== workspacePoolId || (lease.ownership?.machineId ?? remote.mainMachineId()) !== machineId) {
+          throw workspaceError('AI_WORKSPACE_POOL_SCOPE_MISMATCH')
+        }
+      }
+      return remote.hasLease(id) ? remote[property](id, ...args) : target[property](id, ...args)
+    }
     if (unsupported.has(property)) return (id, ...args) => {
       if (remote.hasLease(id)) throw workspaceError('REMOTE_WORKSPACE_EXPLICIT_RECOVERY_REQUIRED')
       return target[property](id, ...args)

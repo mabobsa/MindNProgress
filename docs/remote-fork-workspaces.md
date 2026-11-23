@@ -60,6 +60,29 @@ registry 예시의 경로는 실제 설정에 사용할 값이 아니라 계약 
 
 전송은 256KiB chunk와 전체 SHA256, 고정 크기·manifest 검증을 사용하며 bundle당 상한은 8GiB다. 중복 chunk는 같은 내용만 허용한다. Git bundle verify는 수신 측의 선행 커밋 보유 여부까지 검사하며, 기준 커밋 조상 관계와 봉인 HEAD도 검증한다. 상한은 대용량 증분 전송을 허용한다는 뜻이 아니다. 실제 변경량·임시 디스크 여유·Windows↔Mac 전송 시간을 확인하기 전에는 운영 활성화하지 않는다.
 
+## worker 배정이 필수인 위임 요청
+
+`machineId`는 실행 머신을 선택하며 풀 배정을 보장하지 않는다. `newConversation.workspace`에 일반 integration 경로를 보내면 일반 대화로 실행될 수 있다. 최신 `mindnprogress_get_ai_workspace_pool`에서 확인한 `poolId`를 위임 요청의 `workspacePoolId`로 명시하면 worker lease가 필수가 된다. 서버가 해당 머신의 풀에서 worker를 원자적으로 선택하므로 호출자가 물리 worker를 골라 점유하지 않는다.
+
+```json
+{
+  "strategy": "resume",
+  "conversationId": "기존_카드_담당_ID",
+  "machineId": "macbook",
+  "workspacePoolId": "unity-macbook"
+}
+```
+
+위 예시는 추가할 실행 조건만 표시한다. 기존 도구의 문서·카드 ID, 최신 `sourceRevision`, `conversationAssessmentId`, 업무 지시, 위임 규칙, 새 `idempotencyKey` 등 필수 인자는 그대로 제공한다. `workspacePoolId`와 `newConversation.workspace`를 함께 보내면 `AI_WORKSPACE_POOL_PATH_CONFLICT`로 거부한다. 풀 ID는 중복 요청 서명에도 포함되므로 같은 키를 일반 실행과 풀 실행 사이에서 바꿔 재사용할 수 없다.
+
+- `new`가 기존 담당 재사용 규칙에 의해 `resume`으로 바뀌어도 필수 풀 조건과 최초 실행 머신을 유지한다. 다른 머신의 담당으로 바뀌거나 기존 재개 lease의 풀이 다르면 거부한다.
+- 미승인·만료·풀/머신 불일치 시 일반 대화로 우회하지 않는다. 일반 비-pool 요청에는 `workspacePoolId`를 생략하며 기존 동작을 유지한다.
+- 문서 간 조정 대화는 worker 배정 대상이 아니므로 이 필드를 거부한다. 구현은 해당 문서의 하위 카드에 위임한다.
+- lease 없이 종료된 integration 고정 대화도 유휴 상태·문맥 평가·진행 중 위임·중복 점유 검사 후 정식 pool lease를 받아 재사용할 수 있다. Runner가 예약과 session 소유권을 확인하고 AionCore가 turn을 확보한 뒤 runtime과 경로를 원자적으로 재귀속한다. 직접 DB나 대화 workspace를 변경하지 않는다.
+- 배정 대기 응답의 lease가 아직 없는 것은 비동기 준비 상태다. `AI_WORKSPACE_ALLOCATION_PENDING`의 동일 위임을 조회하고, `starting/running`에서 발급된 lease와 실제 session을 확인한다. 대기 중 중복 제출하지 않는다.
+- 성공적으로 lease 실행을 인계한 뒤 카드 연결의 workspace와 poolId도 갱신한다. 기존 대화 생성 시각·사용자가 변경한 담당 선택은 보존한다.
+- 이 인자를 사용하려면 메인 MnP 서버와 호출 머신의 MCP 도구 스키마를 함께 갱신해야 한다. 예전 서버·MCP가 필드를 무시하는 상태에서 재위임하지 않는다.
+
 ## 실패와 복구
 
 - prepare/result/release 응답 유실: 내구 operation receipt와 같은 요청 본문만 사용한다. 완료 receipt는 재시작 후에도 같은 결과를 반환한다.

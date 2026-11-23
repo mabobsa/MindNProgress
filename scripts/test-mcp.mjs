@@ -692,6 +692,9 @@ async function main() {
     assert.match(toolDescription('mindnprogress_checkpoint_ai_workspace'), /commit-changes.*confirm-no-changes.*검증 전에/)
     assert.deepEqual(commitCheckpointSchema?.properties?.commitMessage?.required, ['summary', 'background', 'cause', 'changes'])
     assert.match(toolDescription('mindnprogress_delegate_ai_work'), /같은 문서의 모든 깊이 하위 카드.*후보·작업 상태.*reasonCode와 message/)
+    assert.equal(toolSchema('mindnprogress_delegate_ai_work').properties.workspacePoolId.type, 'string')
+    assert.match(toolSchema('mindnprogress_delegate_ai_work').properties.workspacePoolId.description, /worker lease가 필수.*new와 resume.*일반 대화 실행으로 우회하지 않고 거부/s)
+    assert.match(toolSchema('mindnprogress_delegate_ai_work').properties.machineId.description, /승인된 원격 풀도 지원/)
     assert.match(toolDescription('mindnprogress_update_card'), /checklist.*전체 배열/)
     assert.match(toolSchema('mindnprogress_update_card')?.properties?.data?.properties?.checklist?.description ?? '', /전체 배열.*완료 비율로 progress와 status를 자동 계산/)
     assert.doesNotMatch(JSON.stringify(guide.guide), /# 사용자 승인과 실행 범위|# 그룹의 두 단계 사용자 승인/)
@@ -2936,6 +2939,7 @@ async function main() {
     const emptyInstructionList = await invoke('mindnprogress_list_group_document_instructions', { mapId: managedGroup.coordinator.id })
     assert.equal(emptyInstructionList.reasonCode, 'GROUP_DOCUMENT_INSTRUCTION_LISTED')
     assert.deepEqual(emptyInstructionList.instructions, [])
+    // 총괄 루트에 연결되지 않은 대화는 대상 대화 소유권 검사보다 먼저 거부한다.
     await invokeExpectError('mindnprogress_send_group_document_instruction', {
       mapId: managedGroup.coordinator.id,
       workType: 'other',
@@ -2951,7 +2955,7 @@ async function main() {
       sourceRevision: managedGroup.coordinator.version,
       idempotencyKey: 'mcp-group-instruction-origin-check',
       newConversation: { agentId: 'claude-code', modelId: 'claude-test' },
-    }, /대화 시작자와 실행 머신 권한/, 'AI_CONVERSATION_OWNER_DENIED')
+    }, /현재 AI 대화와 그룹 총괄 루트 카드의 연결/, 'GROUP_DOCUMENT_INSTRUCTION_ORIGIN_LINK_MISSING')
     const groupDocumentContext = await invoke('mindnprogress_get_context', { mapId: groupDocument.map.id, cardId: groupDocument.map.nodes.find((node) => node.data.kind === 'root').id })
     for (const value of [groupDocumentContext.groupProject.instruction, groupDocumentContext.nextStep, groupDocumentContext.selection.aiWorkCoordination.childDelegation.instruction]) {
       assert.doesNotMatch(value, /# 사용자 승인과 실행 범위|# 그룹의 두 단계 사용자 승인|미승인 분석·제안은|사용자 승인 근거와 허용 범위가 확인된/)

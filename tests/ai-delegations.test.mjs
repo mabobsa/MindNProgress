@@ -716,3 +716,12 @@ test('하위 작업이나 통합이 끝나지 않은 waking-parent 위임은 같
   assert.equal(aiDelegationBlocksResume({ ...base, integrationStatus: 'running' }, scope), true)
   assert.equal(aiDelegationBlocksResume({ ...base, workspaceError: '통합 실패' }, scope), true)
 })
+
+test('필수 풀은 중복 요청 서명에 포함되고 생략한 기존 요청은 호환된다', () => {
+  const original = { mapId: 'map', strategy: 'resume', conversationId: 'fixed-conversation' }
+  const legacy = createAiDelegationRequestSignature(original)
+  assert.equal(legacy, createAiDelegationRequestSignature({ ...original, workspacePoolId: undefined }))
+  assert.notEqual(legacy, createAiDelegationRequestSignature({ ...original, workspacePoolId: 'mac-pool' }))
+  assert.notEqual(createAiDelegationRequestSignature({ ...original, workspacePoolId: 'mac-pool' }),
+    createAiDelegationRequestSignature({ ...original, workspacePoolId: 'other-pool' }))
+})

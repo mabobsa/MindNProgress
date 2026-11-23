@@ -561,3 +561,25 @@ test('최초 Runner 보고 전에도 coordinator ID는 서버 재시작 후 유�
   await restarted.initialize()
   assert.equal(restarted.state.coordinatorId, first.state.coordinatorId)
 })
+
+test('실제 Git: 명시한 원격 풀은 고정 대화에 증분 기준선을 배정하고 요청 중복을 재사용한다', async (t) => {
+  const f = await fixture(t)
+  const baseline = await git(f.worker, ['rev-parse', 'HEAD'])
+  await writeFile(path.join(f.integration, 'main-latest.txt'), '메인 최신 변경\n')
+  await git(f.integration, ['add', 'main-latest.txt'])
+  await git(f.integration, ['commit', '-m', '[김용민] 메인 최신 기준'])
+  const latest = await git(f.integration, ['rev-parse', 'HEAD'])
+  const request = { machineId: 'macbook', workspacePoolId: 'mac-pool', requestId: 'fixed-to-pool',
+    mapId: 'map', cardId: 'card', conversationId: 'fixed-conversation' }
+  const lease = await f.facade.acquire(request)
+  assert.equal(lease.projectRoot, f.worker)
+  assert.equal(lease.baseCommit, latest)
+  assert.equal(lease.baselineCommit, baseline)
+  assert.equal(lease.baselineMode, 'delta')
+  assert.equal(lease.ownership.machineId, 'macbook')
+  assert.equal((await jsonFile(path.join(f.worker, '.ai-session.json'))).conversationId, 'fixed-conversation')
+  assert.equal(await git(f.worker, ['rev-parse', 'HEAD']), latest)
+  assert.equal((await f.facade.acquire(request)).leaseId, lease.leaseId)
+  await f.agent().validateDispatch({ strategy: 'resume', targetConversationId: 'fixed-conversation', workspaceLease: lease })
+  await assert.rejects(f.agent().validateDispatch({ strategy: 'resume', targetConversationId: 'other-conversation', workspaceLease: lease }), { reasonCode: 'REMOTE_WORKSPACE_CONVERSATION_MISMATCH' })
+})

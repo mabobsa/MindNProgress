@@ -3617,7 +3617,9 @@ function delegationParentMachineId(delegation) {
     || conversationHomeMachineId(delegation?.parentConversationId)
 }
 
-async function resolveAiDelegationWorkspacePool({ selection, targetCard, parentAttribution, requested, machineId }) {
+async function resolveAiDelegationWorkspacePool({ selection, targetCard, parentAttribution, requested, machineId, workspacePoolId }) {
+  if (workspacePoolId) return { known: true, expectsWorkspacePool: true,
+    workspaceHint: workspacePoolManager.resolvePoolHint({ machineId, poolId: workspacePoolId }) }
   const selectedWorkspace = String(selection?.workspace ?? '').trim()
   if (selectedWorkspace) return { known: true, workspaceHint: selectedWorkspace,
     expectsWorkspacePool: Boolean(workspacePoolManager.poolForWorkspace(selectedWorkspace, machineId)) }
@@ -3726,7 +3728,11 @@ async function linkAiDelegationConversation({ map, targetCard, targetConversatio
       const changed = primarySelection && ![primarySelection.expectedConversationId, targetConversationId].includes(currentPrimary)
       const previous = aiConversationLinksFromData(card.data).find((link) => link.conversationId === targetConversationId)
       if (strategy === 'resume' && !previous) throw new Error('담당 후보와 카드의 연결이 사라졌습니다.')
-      const link = strategy === 'resume' ? { ...previous, ...(runtimePolicyVerification ? { model: selection.model, thoughtLevel: selection.thoughtLevel } : {}) } : normalizeAiConversationLink({
+      const workspaceChanged = Boolean(workspaceLease && (previous?.workspace !== workspaceLease.projectRoot
+        || previous?.workspacePoolId !== workspaceLease.poolId))
+      const link = strategy === 'resume' ? { ...previous,
+        ...(workspaceLease ? { workspace: workspaceLease.projectRoot, workspacePoolId: workspaceLease.poolId } : {}),
+        ...(runtimePolicyVerification ? { model: selection.model, thoughtLevel: selection.thoughtLevel } : {}) } : normalizeAiConversationLink({
         conversationId: targetConversationId, homeMachineId: targetHomeMachineId,
         agent: selection.agent, model: selection.model, providerId: selection.providerId,
         mode: selection.mode, thoughtLevel: selection.thoughtLevel,
@@ -3736,7 +3742,7 @@ async function linkAiDelegationConversation({ map, targetCard, targetConversatio
         requestPreview: instruction, startedBy: { id: startedBy, label: users.find((candidate) => candidate.id === startedBy)?.name ?? startedBy }, startedAt, linkedAt: startedAt,
       })
       const linkError = changed ? '위임 전송 중 담당이 변경되어 기존 선택을 유지했습니다. 실행 대화와 담당을 확인해 주세요.' : null
-      if (strategy === 'resume' && (changed || currentPrimary === targetConversationId)
+      if (strategy === 'resume' && !workspaceChanged && (changed || currentPrimary === targetConversationId)
         && (!runtimePolicyVerification || (previous.model?.id === selection.model?.id
           && previous.thoughtLevel?.id === selection.thoughtLevel?.id))) return { updatedMap: current, linkError }
       const updatedMap = await saveMap(map.id, {
@@ -5645,6 +5651,8 @@ async function drainWaitingWorkspaceDelegations() {
     try {
       workspaceLease = resumedDelegation?.workspaceLease?.leaseId
         ? await workspacePoolManager.reuseLease(resumedDelegation.workspaceLease.leaseId, {
+            machineId: queued.targetHomeMachineId,
+            workspacePoolId: queued.workspacePoolId,
             mapId: map.id,
             cardId: targetCard.id,
             conversationId: queued.targetConversationId,
@@ -5653,6 +5661,7 @@ async function drainWaitingWorkspaceDelegations() {
             machineId: queued.targetHomeMachineId,
             requestId: queued.id,
             workspaceHint: queued.pendingWorkspaceHint,
+            workspacePoolId: queued.workspacePoolId,
             mapId: map.id,
             cardId: targetCard.id,
             conversationId: queued.strategy === 'resume' ? queued.targetConversationId : '',
@@ -12523,6 +12532,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       const instruction = String(body.instruction ?? '').trim()
       const decisionReason = String(body.decisionReason ?? '').trim()
       const taskSummary = body.taskSummary === undefined ? '' : body.taskSummary
+      const workspacePoolId = body.workspacePoolId
       const sourceRevision = Number(body.sourceRevision)
       if (!isValidAiDelegationId(id)
         || !targetCardId || targetCardId.length > 120
@@ -12532,11 +12542,19 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         || !instruction || instruction.length > 100_000
         || !decisionReason || decisionReason.length > 1_000
         || typeof taskSummary !== 'string' || taskSummary.length > 240
+        || (workspacePoolId !== undefined && (typeof workspacePoolId !== 'string'
+          || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(workspacePoolId)))
         || !Number.isInteger(sourceRevision) || sourceRevision < 1) {
         return sendAiDelegationResponse(
           response, 400, 'AI_DELEGATION_REQUEST_INVALID', 'AI 작업 위임 값이 올바르지 않습니다.',
         )
       }
+      if (workspacePoolId && body.newConversation?.workspace !== undefined) return sendAiDelegationResponse(
+        response, 400, 'AI_WORKSPACE_POOL_PATH_CONFLICT',
+        'workspacePoolId를 지정할 때는 newConversation.workspace를 생략하세요. 서버가 풀의 worker를 배정합니다.')
+      if (workspacePoolId && crossDocument) return sendAiDelegationResponse(
+        response, 400, 'AI_WORKSPACE_POOL_SCOPE_MISMATCH',
+        '문서 간 조정 대화에는 worker 풀을 배정하지 않습니다. 해당 문서의 하위 카드에 위임하세요.')
       // 기존 ID의 재요청은 그대로 받고, 새 ID만 서브 머신 Runner가 허용하는 문자로 제한한다.
       if (!isNewAiDelegationIdAllowed(id) && !aiDelegations.has(id) && !aiRequestReceipts.has(id)) {
         return sendAiDelegationResponse(response, 400, 'AI_DELEGATION_ID_UNSUPPORTED',
@@ -12591,6 +12609,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         throw error
       }
       requestContext.targetHomeMachineId = targetHomeMachineId
+      const requestedPoolMachineId = workspacePoolId ? targetHomeMachineId : null
       if (!await aionCoreSupportsExplicitCompletionAfterInterruption(targetHomeMachineId)) {
         const message = `${machineLabel(targetHomeMachineId)}의 AionCore가 중단 후 명시적 완료 신호를 지원하지 않습니다. AionCore를 최신 빌드로 재기동해 주세요.`
         return sendAiDelegationResponse(response, 503, 'AIONCORE_EXPLICIT_COMPLETION_UNAVAILABLE', message, {
@@ -12606,6 +12625,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         strategy,
         conversationId,
         machineId: targetHomeMachineId === machineRegistry.mainMachineId ? null : targetHomeMachineId,
+        workspacePoolId,
         instruction,
         decisionReason,
         sourceRevision,
@@ -12965,13 +12985,21 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         resumedDelegation = blockingDelegations[0] ?? null
       }
 
-      const workspacePoolResolution = crossDocument ? { known: true, workspaceHint: selection.workspace, expectsWorkspacePool: false } : await resolveAiDelegationWorkspacePool({
-        selection,
-        targetCard,
-        parentAttribution,
-        requested: body.newConversation,
-        machineId: targetHomeMachineId,
-      })
+      if (workspacePoolId && (targetHomeMachineId !== requestedPoolMachineId
+        || (resumedDelegation?.workspaceLease && (resumedDelegation.workspaceLease.poolId !== workspacePoolId
+          || (resumedDelegation.workspaceLease.ownership && resumedDelegation.workspaceLease.ownership.machineId !== targetHomeMachineId))))) {
+        return sendAiDelegationResponse(response, 409, 'AI_WORKSPACE_POOL_SCOPE_MISMATCH',
+          '기존 담당 또는 재개 lease가 요청한 머신·작업공간 풀과 일치하지 않습니다.')
+      }
+      let workspacePoolResolution
+      try {
+        workspacePoolResolution = crossDocument ? { known: true, workspaceHint: selection.workspace, expectsWorkspacePool: false } : await resolveAiDelegationWorkspacePool({
+          selection, targetCard, parentAttribution, requested: body.newConversation,
+          machineId: targetHomeMachineId, workspacePoolId,
+        })
+      } catch (error) {
+        return sendAiDelegationResponse(response, error.status ?? 409, error.reasonCode ?? 'AI_WORKSPACE_POOL_UNAVAILABLE', error.message)
+      }
       if (!workspacePoolResolution.known && !resumedDelegation?.workspaceLease?.leaseId) {
         return sendAiDelegationResponse(response, 503, 'AI_DELEGATION_WORKSPACE_SCOPE_UNKNOWN',
           '현재 AI 대화의 작업공간이 등록된 pool 대상인지 확인하지 못했습니다. AionUi 대화의 workspace 정보를 확인해 주세요.', {
@@ -13054,6 +13082,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           pendingSelection: selection,
           ...(resumeRuntimePolicy ? { resumeRuntimePolicy } : {}),
           pendingWorkspaceHint: workspacePoolHint,
+          ...(workspacePoolId ? { workspacePoolId } : {}),
           ...(resumedDelegation ? { resumesDelegationId: resumedDelegation.id } : {}),
           workspaceWaitStartedAt: now,
           workspaceWaitObservedAt: now,
@@ -13097,6 +13126,8 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       try {
         workspaceLease = crossDocument || !expectsWorkspacePool ? null : resumedDelegation?.workspaceLease?.leaseId
           ? await workspacePoolManager.reuseLease(resumedDelegation.workspaceLease.leaseId, {
+              machineId: targetHomeMachineId,
+              workspacePoolId,
               mapId,
               cardId: targetCard.id,
               conversationId: targetConversationId,
@@ -13105,6 +13136,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
               machineId: targetHomeMachineId,
               requestId: id,
               workspaceHint: workspacePoolHint ?? selection.workspace,
+              workspacePoolId,
               mapId,
               cardId: targetCard.id,
               conversationId: strategy === 'resume' ? targetConversationId : '',
@@ -13158,6 +13190,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
               pendingSelection: selection,
               ...(resumeRuntimePolicy ? { resumeRuntimePolicy } : {}),
               pendingWorkspaceHint: workspacePoolHint,
+              ...(workspacePoolId ? { workspacePoolId } : {}),
               ...(resumedDelegation ? { resumesDelegationId: resumedDelegation.id } : {}),
               workspaceWaitStartedAt: now,
               workspaceWaitReasonCode: 'CAPACITY_EXHAUSTED',

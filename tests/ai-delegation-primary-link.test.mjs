@@ -41,10 +41,10 @@ function harness(currentPrimary, { removeTarget = false } = {}) {
   })
   return {
     current: () => current, saves: () => saves, events,
-    run: strategy => execute({ map: original, targetCard: original.nodes[0], strategy,
+    run: (strategy, extra = {}) => execute({ map: original, targetCard: original.nodes[0], strategy,
       targetConversationId: strategy === 'new' ? 'created' : 'target', primarySelection: { expectedConversationId: 'old' },
       selection: { agent: { id: 'codex', label: 'Codex' }, model: { id: 'gpt-6.1-sol', label: 'Sol' }, enabledSkillIds: [], mcpIds: [] },
-      user: { id: 'editor' }, startedAt: '2026-11-11T00:00:00.000Z' }),
+      user: { id: 'editor' }, startedAt: '2026-11-11T00:00:00.000Z', ...extra }),
   }
 }
 
@@ -79,4 +79,17 @@ test('전송 중 해제된 카드 연결을 되살려 담당으로 저장하지 
   assert.match((await state.run('resume')).linkError, /저장하지 못했습니다/)
   assert.equal(state.saves(), 0)
   assert.equal(state.current().nodes[0].data.aiPrimaryConversationId, 'old')
+})
+
+for (const primary of ['target', 'human']) test(`lease 재배정 후 경로와 풀을 갱신하되 담당 ${primary}와 생성 시각을 보존한다`, async () => {
+  const state = harness(primary)
+  const result = await state.run('resume', { workspaceLease: { projectRoot: '/managed/worker', poolId: 'mac-pool' } })
+  assert.equal(Boolean(result.linkError), primary === 'human')
+  const data = state.current().nodes[0].data
+  assert.equal(data.aiPrimaryConversationId, primary)
+  const target = data.aiConversations.find(item => item.conversationId === 'target')
+  assert.equal(target.workspace, '/managed/worker')
+  assert.equal(target.workspacePoolId, 'mac-pool')
+  assert.equal(target.startedAt, createdAt)
+  assert.equal(state.saves(), 1)
 })

@@ -2499,6 +2499,7 @@ function sessionMessageRelayMachines() {
     return {
       machineId: machine.machineId,
       label: machine.label,
+      role: main ? 'main' : 'sub',
       enabled: main || (machine.enabled !== false && Boolean(machine.tokenHash)),
       online: main || Boolean(machine.lastSeenAt && now - Date.parse(machine.lastSeenAt) <= runnerOnlineWithinMs),
     }
@@ -10000,6 +10001,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           && [conversationHomeMachineId(from), conversationHomeMachineId(normalized.value.to)].includes(machine.machineId)),
         homeMachineIdOf: (conversationId) => aiConversationOrigins.get(conversationId)?.homeMachineId ?? null,
         callMachine: fetchAionUiOn,
+        createConversationUrl: (machineId, id) => createAionUiConversationWebUrl(aionUiWebBaseUrlForMachine(machineId), id),
       })
       return sendJson(response, result.status, result.body)
     }

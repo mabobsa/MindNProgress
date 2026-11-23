@@ -69,7 +69,7 @@ function failureReason(machine, error) {
 
 /**
  * 대상 대화가 있는 머신을 찾아 전달한다.
- * `listMachines()`는 `{ machineId, label, enabled, online }`, `callMachine`은 fetchAionUiOn과 같은 계약이다.
+ * `listMachines()`는 `{ machineId, label, role, enabled, online }`, `callMachine`은 fetchAionUiOn과 같은 계약이다.
  */
 export async function relaySessionMessage({
   request,
@@ -77,6 +77,7 @@ export async function relaySessionMessage({
   listMachines,
   homeMachineIdOf,
   callMachine,
+  createConversationUrl,
   probeTimeoutMs = SESSION_MESSAGE_PROBE_TIMEOUT_MS,
   deliveryTimeoutMs = SESSION_MESSAGE_DELIVERY_TIMEOUT_MS,
 }) {
@@ -110,10 +111,28 @@ export async function relaySessionMessage({
     return { status: 404, body: { code: 'target_not_found', error: '어느 머신에서도 대상 대화를 찾지 못했습니다.' } }
   }
 
+  // 표시 정보는 인증된 발신 머신으로만 구성한다. 주소가 없어도 본문은 전달한다.
+  let fromConversationUrl = null
+  try {
+    const candidate = createConversationUrl?.(sourceMachineId, request.fromConversationId)
+    if (candidate) {
+      const url = new URL(candidate)
+      if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search
+        && url.hash === `#/conversation/${encodeURIComponent(request.fromConversationId)}`) fromConversationUrl = url.toString()
+    }
+  } catch {
+    // Runner의 접속 주소를 아직 관측하지 못한 경우 로컬 대화로 대체하지 않는다.
+  }
   try {
     const data = await callMachine(target.machineId, REMOTE_SESSION_MESSAGE_PATH, {
       method: 'POST',
-      body: { ...request, fromMachine: source?.label || sourceMachineId },
+      body: {
+        ...request,
+        fromMachine: source?.label || sourceMachineId,
+        fromMachineId: sourceMachineId,
+        fromMachineRole: source?.role ?? null,
+        fromConversationUrl,
+      },
       timeoutMs: deliveryTimeoutMs,
     })
     return {

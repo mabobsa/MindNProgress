@@ -322,6 +322,9 @@ test('새 대화와 일반 AI 위임의 전체 경로는 선택한 서브 머신
           deliveredMessages++
           assert.equal(operation.body.fromConversationId, 'main-sender')
           assert.equal(operation.body.to, conversationId)
+          assert.equal(operation.body.fromMachineRole, 'main')
+          assert.ok(operation.body.fromMachineId)
+          assert.match(operation.body.fromConversationUrl, /^https?:\/\/[^/]+\/#\/conversation\/main-sender$/)
           return { accepted: true }
         }
         return subMachineResponse(operation, conversationId)

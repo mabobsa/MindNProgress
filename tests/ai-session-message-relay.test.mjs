@@ -7,9 +7,9 @@ import {
 } from '../server/lib/aiSessionMessageRelay.mjs'
 
 const machines = [
-  { machineId: 'main', label: '메인 PC', enabled: true, online: true },
-  { machineId: 'mac', label: 'MacBook', enabled: true, online: true },
-  { machineId: 'lab', label: '실험 PC', enabled: true, online: true },
+  { machineId: 'main', label: '메인 PC', role: 'main', enabled: true, online: true },
+  { machineId: 'mac', label: 'MacBook', role: 'sub', enabled: true, online: true },
+  { machineId: 'lab', label: '실험 PC', role: 'sub', enabled: true, online: true },
 ]
 
 const request = {
@@ -41,10 +41,11 @@ function relay(overrides = {}) {
   const { calls, callMachine } = fakeMachines(overrides)
   return relaySessionMessage({
     request,
-    sourceMachineId: 'main',
+    sourceMachineId: overrides.sourceMachineId ?? 'main',
     listMachines: () => overrides.machines ?? machines,
     homeMachineIdOf: overrides.homeMachineIdOf ?? (() => null),
     callMachine,
+    createConversationUrl: overrides.createConversationUrl ?? ((machineId, conversationId) => `https://${machineId}.example/#/conversation/${conversationId}`),
   }).then((result) => ({ result, calls }))
 }
 
@@ -75,7 +76,44 @@ test('대상 대화가 있는 머신을 찾아 보낸 머신 이름과 함께 �
   const delivery = calls.find((call) => call.pathname === REMOTE_SESSION_MESSAGE_PATH)
   assert.equal(delivery.machineId, 'mac')
   assert.equal(delivery.options.method, 'POST')
-  assert.deepEqual(delivery.options.body, { ...request, fromMachine: '메인 PC' })
+  assert.deepEqual(delivery.options.body, {
+    ...request, fromMachine: '메인 PC', fromMachineId: 'main', fromMachineRole: 'main',
+    fromConversationUrl: 'https://main.example/#/conversation/conv-main',
+  })
+})
+
+test('여러 서브 머신에서 메인으로 보내도 발신 머신별 이름과 웹 주소를 유지한다', async () => {
+  for (const machine of machines.slice(1)) {
+    const { calls } = await relay({ holder: 'main', sourceMachineId: machine.machineId })
+    const body = calls.find((call) => call.pathname === REMOTE_SESSION_MESSAGE_PATH).options.body
+    assert.equal(body.fromMachineRole, 'sub')
+    assert.deepEqual([body.fromMachineId, body.fromMachine], [machine.machineId, machine.label])
+    assert.equal(body.fromConversationUrl, `https://${machine.machineId}.example/#/conversation/conv-main`)
+  }
+})
+
+test('발신 머신 웹 주소가 없거나 안전하지 않아도 본문은 전달하고 링크만 비운다', async () => {
+  for (const createConversationUrl of [
+    () => { throw new Error('주소를 확인하지 못함') },
+    () => null,
+    () => 'javascript:alert(1)',
+    () => 'https://user:password@example.com/#/conversation/conv-main',
+    () => 'https://main.example/?token=secret#/conversation/conv-main',
+    () => 'https://main.example/#/conversation/wrong-id',
+  ]) {
+    const { calls, result } = await relay({ createConversationUrl })
+    const body = calls.find((call) => call.pathname === REMOTE_SESSION_MESSAGE_PATH).options.body
+    assert.equal(result.status, 200)
+    assert.equal(body.fromConversationUrl, null)
+    assert.equal(body.message, request.message)
+  }
+})
+
+test('클라이언트가 넣은 발신 머신과 링크는 중계 요청에 포함하지 않는다', () => {
+  const normalized = normalizeSessionMessageRelayRequest({
+    ...request, fromMachine: '위장 머신', fromMachineId: 'spoof', fromMachineRole: 'main', fromConversationUrl: 'https://spoof.example/',
+  })
+  assert.deepEqual(normalized.value, request)
 })
 
 test('대화 기록에 남은 머신을 먼저 확인한다', async () => {

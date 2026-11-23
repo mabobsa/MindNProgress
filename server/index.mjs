@@ -139,6 +139,8 @@ import {
   aiDelegationDisplayState,
   aiDelegationSucceeded,
   aiDelegationWorkspaceLeaseMatches,
+  aiDelegationFinalizedOwnLease,
+  aiDelegationLostCompletionResumable,
   aiDelegationSelectionFromSource,
   completedAiDelegationReplacement,
   createAiDelegationRequestSignature,
@@ -4230,6 +4232,15 @@ async function reconcileAiDelegationWorkspaceLeasesAfterListen() {
   }
 }
 
+const aiDelegationPollErrorKeys = new Map()
+
+function finalizedOwnWorkspaceLease(delegation) {
+  return aiDelegationFinalizedOwnLease(delegation, {
+    leases: localWorkspacePoolManager.state?.leases ?? {},
+    delegations: aiDelegations.values(),
+  })
+}
+
 async function reconcileAiDelegationWorkspaceLeaseStatus(delegation, status, source) {
   const actualLease = status?.workspaceLease ?? null
   const expectedLease = delegation.workspaceLease ?? null
@@ -4256,6 +4267,9 @@ async function reconcileAiDelegationWorkspaceLeaseStatus(delegation, status, sou
   }
 
   if (aiDelegationWorkspaceLeaseMatches(expectedLease, actualLease)) {
+    // 같은 실행이 끝났고 이 위임이 작업공간 마무리까지 마친 lease라면, 완료 기록 저장만 실패한 경우다.
+    // 끝난 lease에 다시 연결하면 충돌로 판단하므로 연결하지 않고 아래 완료 처리(마무리는 저장된 결과 반환)를 이어간다.
+    if (['completed', 'failed'].includes(status?.state) && finalizedOwnWorkspaceLease(delegation)) return true
     try {
       const reboundLease = await workspacePoolManager.bindConversation(
         actualLease.leaseId,
@@ -5988,7 +6002,17 @@ async function pollAiDelegations() {
             operationId: delegation.childOperationId ?? delegation.id, machineId: delegationTargetMachineId(delegation),
           })
           if (runnerRejection) await updateAiDelegation(delegation.id, runnerRejection)
-          if (error?.status !== 404) continue
+          if (error?.status !== 404) {
+            // 완료 처리 도중의 저장 실패 등을 조용히 넘기면 원인을 알 수 없다. 같은 오류는 바뀔 때만 한 번 남긴다.
+            const message = String(error?.message ?? error).slice(0, 300)
+            const key = `${delegation.state}:${error?.code ?? ''}:${error?.status ?? ''}:${message}`
+            if (aiDelegationPollErrorKeys.get(delegation.id) !== key) {
+              aiDelegationPollErrorKeys.set(delegation.id, key)
+              console.warn('[AI delegation poll item failed]', { id: delegation.id, state: delegation.state,
+                code: error?.code ?? null, status: error?.status ?? null, message })
+            }
+            continue
+          }
           if (delegation.coordinationOnly && delegation.state === 'waiting-document-work') {
             // 이 상태는 같은 child operation의 completed 응답을 이미 관측한 내구 증거다.
             // 재시작 뒤 AionCore가 operation을 잃어도 미완료 실행으로 되돌리지 않는다.
@@ -11516,6 +11540,23 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         && delegation.failureReasonCode === 'AI_WORKSPACE_CONVERSATION_CONFLICT'
         && Boolean(delegation.targetConversationId && delegation.workspaceLease && delegation.pendingSelection && delegation.childOperationId)
       await validateAiDelegationAction(request, delegation, body, true, { requireConversationLinks: !missingDispatchLink })
+      // 작업공간 마무리까지 끝났는데 완료 기록만 남기지 못해 lease 대조에서 복구 필요가 된 위임은 다시 실행하지 않는다.
+      // 같은 실행이 같은 lease로 끝났음을 AionCore에서 확인한 뒤 실행 중으로 되돌려 다음 확인 주기에 완료 처리를 이어간다.
+      if (delegation.state === 'recovery-required' && delegation.childStatus === 'interrupted-by-workspace-conflict') {
+        const finalizedLease = finalizedOwnWorkspaceLease(delegation)
+        if (finalizedLease) {
+          const dispatch = await fetchAionUiOn(delegationTargetMachineId(delegation),
+            `/api/internal/external-conversation-dispatches/${encodeURIComponent(delegation.childOperationId ?? delegation.id)}`)
+          if (aiDelegationLostCompletionResumable(delegation, finalizedLease, dispatch)) {
+            const resumedAt = new Date().toISOString()
+            const updated = await updateAiDelegation(delegation.id, { state: 'running', completionResumedAt: resumedAt, completionResumedBy: user.id })
+            return sendJson(response, 202, {
+              delegation: delegationPublicView(updated), executionRequested: false, completionResumed: true,
+              message: '작업공간 마무리는 끝났고 완료 기록만 남기지 못한 위임입니다. 다시 실행하지 않고 다음 확인 주기에 완료 처리를 이어갑니다.',
+            })
+          }
+        }
+      }
       if (resultCorrection && delegation.resultCorrection?.instructionHash
         && delegation.resultCorrection.instructionHash !== createHash('sha256').update(instruction).digest('hex')) {
         return sendJson(response, 409, { error: '기존 결과 정정 요청과 지시가 다릅니다. 기존 요청을 확인하세요.', code: 'AI_DELEGATION_RESULT_CORRECTION_REQUEST_MISMATCH' })

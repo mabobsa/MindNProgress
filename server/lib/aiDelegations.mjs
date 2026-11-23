@@ -780,6 +780,33 @@ export function aiDelegationIsTerminal(delegation) {
   return AI_DELEGATION_TERMINAL_STATES.has(String(delegation?.state ?? ''))
 }
 
+// 이 위임의 실행이 작업공간 마무리(finalize)까지 끝낸 로컬 lease를 찾는다. 마무리는 반복해도 저장된 결과를
+// 돌려주므로, 완료 기록 저장만 실패했다면 lease를 다시 연결하지 않고 완료 처리를 이어갈 근거가 된다.
+// 원격 풀 lease와, 같은 lease를 쓰는 다른 진행 중 위임이 있으면 판단하지 않는다.
+export function aiDelegationFinalizedOwnLease(delegation, { leases = {}, delegations = [] } = {}) {
+  const expected = delegation?.workspaceLease
+  if (!expected?.leaseId || expected.ownership) return null
+  const lease = leases?.[expected.leaseId]
+  if (!lease || lease.status !== 'completed' || lease.result?.status !== 'completed') return null
+  if (lease.jobId !== expected.jobId || lease.workspaceId !== expected.workspaceId
+    || lease.conversationId !== delegation.targetConversationId) return null
+  const shared = [...delegations].some((other) => other?.id !== delegation.id
+    && other?.workspaceLease?.leaseId === expected.leaseId && !aiDelegationIsTerminal(other))
+  return shared ? null : lease
+}
+
+// 작업공간 마무리 뒤 완료 기록을 남기지 못해 다음 확인 주기의 lease 대조에서 복구 필요로 바뀐 위임인지 판단한다.
+// 같은 실행(operation)이 같은 lease로 끝났다고 AionCore가 답할 때만 다시 실행하지 않고 완료 처리를 이어간다.
+export function aiDelegationLostCompletionResumable(delegation, finalizedLease, dispatchStatus) {
+  return Boolean(finalizedLease) && delegation?.state === 'recovery-required'
+    && delegation.childStatus === 'interrupted-by-workspace-conflict'
+    && !delegation.pendingRecovery && !delegation.resultCorrection
+    && ['completed', 'failed'].includes(dispatchStatus?.state)
+    && (!dispatchStatus.operationId || dispatchStatus.operationId === (delegation.childOperationId ?? delegation.id))
+    && aiDelegationWorkspaceLeaseMatches(delegation.workspaceLease, dispatchStatus.workspaceLease)
+    && (!delegation.childTurnId || !dispatchStatus.turnId || dispatchStatus.turnId === delegation.childTurnId)
+}
+
 // 통합을 시작하기 전에 격리된 실패 위임(마무리 정리 실패·하위 실행 실패 등)은 지원되는 복구가 없으면
 // 원 작업 브랜치를 참조로 보존하고 작업공간만 반환할 수 있다. 통합·업무 완료·AI 재실행은 하지 않는다.
 export function quarantinedWorkspaceReleaseCandidate(delegation) {

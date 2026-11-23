@@ -33,6 +33,11 @@ function displayDate(value?: string | null) {
   return new Date(value).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+function ConversationMachineBadge({ label, role, compact = false }: { label: string; role: ConversationListItem['homeMachineRole']; compact?: boolean }) {
+  const text = `${role === 'main' ? '메인' : '서브'} · ${label}`
+  return <span className={`ai-conversation-machine-badge ${role}${compact ? ' ai-conversation-compact-machine' : ''}`} title={`실행 머신: ${text}`}>{text}</span>
+}
+
 function runtimeLabel(runtime: AiConversationRuntime, available: boolean) {
   if (!available) return { className: 'unavailable', label: '상태 미확인' }
   if (runtime.state === 'running') return { className: 'running', label: 'AI 작업 중' }
@@ -247,7 +252,7 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
                           <span className="ai-conversation-compact-model" title={`MnP에 저장된 모델: ${conversation.model?.label ?? '정보 없음'}`}>{conversation.model?.label ?? '모델 정보 없음'}</span>
                           <span className="ai-conversation-compact-thought" title={`MnP에 저장된 사고 레벨: ${conversation.thoughtLevel?.label ?? '정보 없음'}`}>사고 {conversation.thoughtLevel?.label ?? '정보 없음'}</span>
                         </span>
-                        <span className="ai-conversation-compact-machine" title={conversation.homeMachineLabel}>{conversation.homeMachineLabel}</span>
+                        <ConversationMachineBadge label={conversation.homeMachineLabel} role={conversation.homeMachineRole} compact />
                         <time>{displayDate(conversation.startedAt ?? conversation.linkedAt)}</time>
                       </> : <>
                         <span className="ai-conversation-choice-heading">
@@ -261,7 +266,7 @@ export function AiConversationPickerDialog({ mapId, cardId, cardTitle, documentT
                           {' '}<span>({conversation.model?.label ?? '모델 정보 없음'})</span>
                         </span>
                         <span className="ai-conversation-choice-options">
-                          <span>실행 머신 {conversation.homeMachineLabel}{conversation.homeMachineRole === 'main' ? ' · 메인' : ' · 서브'}</span>
+                          <ConversationMachineBadge label={conversation.homeMachineLabel} role={conversation.homeMachineRole} />
                           {!conversation.accessible && <span>이 머신을 사용할 권한 없음</span>}
                           {conversation.accessible && conversation.machineOnline === false && <span>서브 머신이 다시 연결되면 열 수 있습니다</span>}
                         </span>

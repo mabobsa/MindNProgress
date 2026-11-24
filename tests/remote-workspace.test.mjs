@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, realpath, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -451,6 +451,86 @@ test('원격 통합 충돌은 main을 보존하고 메인 staging 수동 복구�
   const recovered = await f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: await git(result.stagingRoot, ['rev-parse', 'HEAD']) })
   assert.equal(recovered.status, 'completed')
   assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'merged result\n')
+})
+
+// 결과 봉인 뒤 staging clone만 실패하도록 메인 브랜치 이름을 잠시 바꾼다. 메인 내용과 HEAD 커밋은 그대로다.
+async function stagingPreparationFailure(f) {
+  const lease = await f.acquire()
+  await writeFile(path.join(f.worker, 'feature.txt'), 'remote change\n'); await f.checkpoint(lease)
+  const mainHead = await git(f.integration, ['rev-parse', 'HEAD'])
+  await git(f.integration, ['branch', '-m', 'main', 'main-hold'])
+  try { return { lease, mainHead, held: await f.remote.finalize(lease.leaseId, { childStatus: 'completed' }) } }
+  finally { await git(f.integration, ['branch', '-m', 'main-hold', 'main']) }
+}
+
+test('staging 준비 실패는 main을 바꾸지 않고 구분된 사유로 격리하며 통합 재시도는 staging을 다시 만들어 통합 대기로 돌린다', async (t) => {
+  const f = await fixture(t)
+  const { lease, mainHead, held } = await stagingPreparationFailure(f)
+  assert.equal(held.status, 'quarantined'); assert.equal(held.phase, 'staging-preparation'); assert.equal(held.childStatus, 'completed')
+  assert.equal(held.reasonCode, 'REMOTE_WORKSPACE_STAGING_PREPARATION_FAILED')
+  assert.match(held.reason, /^통합 준비용 staging을 만들지 못했습니다\. 메인과 완료된 작업 결과는 변경되지 않았습니다\. 원인: Command failed: git /)
+  assert.doesNotMatch(held.reason, /\n/)
+  const stored = f.remote.state.leases[lease.leaseId]
+  assert.equal(stored.sealed, true); assert.equal(stored.status, 'quarantined')
+  assert.equal(await git(f.integration, ['rev-parse', 'HEAD']), mainHead)
+  assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'baseline\n')
+  assert.equal(f.agent().state.leases[lease.leaseId].status, 'quarantined')
+
+  // 이전 시도가 남긴 미완성 staging 저장소는 지우지 않고 옆으로 옮긴 뒤 새로 만든다.
+  const stagingRoot = path.join(f.remote.root, 'staging', lease.leaseId)
+  await mkdir(path.join(stagingRoot, 'repository'), { recursive: true })
+  await writeFile(path.join(stagingRoot, 'repository', 'partial.txt'), 'partial checkout\n')
+  await assert.rejects(() => f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: 'a'.repeat(40) }),
+    { reasonCode: 'REMOTE_WORKSPACE_RECOVERY_CONFIRMATION_REQUIRED' })
+  assert.equal(stored.status, 'quarantined')
+  const leftovers = (await readdir(stagingRoot)).filter(name => name.startsWith('repository.incomplete-'))
+  assert.equal(leftovers.length, 1)
+  assert.equal(await readFile(path.join(stagingRoot, leftovers[0], 'partial.txt'), 'utf8'), 'partial checkout\n')
+  assert.equal(await git(path.join(stagingRoot, 'repository'), ['config', '--local', '--get', 'core.longpaths']), 'true')
+
+  const queued = await f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: stored.headCommit })
+  assert.equal(queued.status, 'waiting-integration'); assert.equal(queued.phase, 'staging-recreated')
+  assert.equal(queued.childStatus, 'completed'); assert.equal(queued.previousResult.phase, 'staging-preparation')
+  assert.equal(stored.status, 'waiting-integration')
+  assert.deepEqual(await f.remote.retryIntegration(lease.leaseId, {}), queued, '같은 재시도는 staging을 다시 만들지 않는다')
+  assert.equal((await readdir(stagingRoot)).filter(name => name.startsWith('repository.incomplete-')).length, 1)
+  assert.equal(await git(f.integration, ['rev-parse', 'HEAD']), mainHead, '재시도 접수만으로 main을 바꾸지 않는다')
+
+  const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(result.status, 'completed'); assert.equal(result.remoteReleased, true)
+  assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'remote change\n')
+  assert.equal(await git(f.worker, ['branch', '--show-current']), 'mnp/idle/fork1')
+  // 통합이 끝난 뒤에는 기존 완료 정리 규칙대로 staging 전체를 정리한다.
+  await assert.rejects(() => stat(stagingRoot), { code: 'ENOENT' })
+})
+
+test('수정 전 형식으로 저장된 staging 경로 초과 격리도 통합 재시도로 이어서 통합한다', async (t) => {
+  const f = await fixture(t)
+  const { lease } = await stagingPreparationFailure(f)
+  const stored = f.remote.state.leases[lease.leaseId]
+  const repository = path.join(f.remote.root, 'staging', lease.leaseId, 'repository')
+  // 수정 전 서버는 staging 실패의 Git 출력을 사유 코드 없이 격리 사유로 저장했다.
+  stored.result = { status: 'quarantined', leaseId: lease.leaseId, jobId: lease.jobId,
+    reason: `Command failed: git --no-optional-locks -C ${repository} switch ${lease.branch}\nerror: unable to create file Assets/Deep/Name.strings: Filename too long\n` }
+  await f.remote.persist()
+  await mkdir(repository, { recursive: true })
+  await writeFile(path.join(repository, 'partial.txt'), 'partial checkout\n')
+  const queued = await f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: stored.headCommit })
+  assert.equal(queued.phase, 'staging-recreated'); assert.match(queued.previousResult.reason, /Filename too long/)
+  const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(result.status, 'completed'); assert.equal(result.remoteReleased, true)
+  assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'remote change\n')
+})
+
+test('staging 준비가 아닌 사유로 격리된 봉인 결과는 staging 재생성 경로로 통합 대기에 돌리지 않는다', async (t) => {
+  const f = await fixture(t)
+  const { lease } = await stagingPreparationFailure(f)
+  const stored = f.remote.state.leases[lease.leaseId]
+  stored.result = { status: 'quarantined', leaseId: lease.leaseId, jobId: lease.jobId, reason: '원격 작업 취소: 실행 여부 확인 후 명시적 복구가 필요합니다.' }
+  await f.remote.persist()
+  const recovered = await f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: stored.headCommit })
+  assert.notEqual(recovered?.phase, 'staging-recreated')
+  assert.notEqual(stored.result?.phase, 'staging-recreated')
 })
 
 test('물리 잠금과 coordinator 소유권은 다른 풀의 동시 점유를 차단한다', async (t) => {

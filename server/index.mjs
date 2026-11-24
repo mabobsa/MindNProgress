@@ -293,6 +293,7 @@ import {
   resolveCommitAuthorAccount,
 } from './lib/workspacePool.mjs'
 import { RemoteWorkspacePool, UNSTARTED_RELEASE, remoteWorkspaceFacade } from './lib/remoteWorkspacePool.mjs'
+import { STAGING_RECREATED, remoteStagingHold } from './lib/remoteStagingFailure.mjs'
 
 // 모든 import 평가가 끝난 시점부터 listen까지 단계별 시간을 기록한다.
 const startupTiming = createStartupTiming()
@@ -11550,6 +11551,16 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           delegation: delegationPublicView(delegation),
         })
       }
+      // 원격 결과의 staging 준비 실패는 완료·봉인된 결과를 메인에 통합하기 전 서버 쪽 실패다.
+      // 하위 AI를 다시 실행해도 고칠 수 없으므로 재개 요청을 접수하지 않고 원격 작업공간 풀의 통합 재시도를 안내한다.
+      if (recoveryAvailability?.failureCategory === 'remote-staging-preparation') {
+        return sendJson(response, 409, {
+          error: recoveryAvailability.message,
+          code: 'AI_DELEGATION_REMOTE_STAGING_RETRY_REQUIRED',
+          recovery: recoveryAvailability,
+          delegation: delegationPublicView(delegation),
+        })
+      }
       const retryableParentWakeFailure = ['parent-wake-failed', 'failed', 'waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity'].includes(delegation.state)
         && recoveryAvailability?.recoveryAvailable === true
         && recoveryAvailability.recommendedAction === 'resume-existing'
@@ -13984,9 +13995,17 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
             await updateAiDelegation(delegation.id, { state: 'waiting-workspace', workspaceLease, childStatus: null, childError: null })
             return sendJson(response, 200, { workspaceLease, state: 'waiting-workspace' })
           }
-          const result = await remoteWorkspacePool.retryIntegration(lease.leaseId, await readJsonBody(request))
+          const input = await readJsonBody(request)
+          // staging 준비 실패를 통합 대기로 돌리면 위임 대기열이 통합을 이어간다. 이어갈 위임이 없으면 lease를 바꾸지 않는다.
+          if (remoteStagingHold(lease.leaseId, lease.result) && aiDelegations.get(lease.requestId)?.state !== 'integration-recovery-required') {
+            return sendJson(response, 409, { error: '통합을 이어갈 위임이 통합 복구 대기 상태가 아니어서 staging을 다시 만들지 않았습니다.',
+              reasonCode: 'REMOTE_WORKSPACE_STAGING_RETRY_DELEGATION_REQUIRED' })
+          }
+          const result = await remoteWorkspacePool.retryIntegration(lease.leaseId, input)
           const delegation = aiDelegations.get(lease.requestId)
-          if (delegation && ['integration-recovery-required', 'waiting-integration'].includes(delegation.state)
+          // staging 재생성 결과는 대기열이 통합을 시작하기 전의 위임만 통합 대기로 바꾼다. 이미 진행 중인 통합 결과를 덮어쓰지 않는다.
+          const eligibleStates = result?.phase === STAGING_RECREATED ? ['integration-recovery-required'] : ['integration-recovery-required', 'waiting-integration']
+          if (delegation && eligibleStates.includes(delegation.state)
             && ['completed', 'waiting-integration'].includes(result?.status)) {
             await updateAiDelegation(delegation.id, { state: result.status === 'completed' ? 'waiting-parent' : 'waiting-integration',
               workspaceResult: result, workspaceError: null, childStatus: 'completed', childError: null, integrationError: null })

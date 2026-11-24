@@ -1,14 +1,21 @@
 import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createResourceQueue, currentStorageBudget } from './storageBudget.mjs'
-import { copyFile, lstat, mkdir, rm } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { WorkspacePoolManager, WorkspacePoolUnavailableError, integrationWorktreeDirtyReasonCode } from './workspacePool.mjs'
 import { RemoteWorkspaceArtifacts } from './remoteWorkspaceArtifacts.mjs'
 import { aiDelegationBusyDispatchRejected, aiDelegationWorkspaceLeaseMatches } from './aiDelegations.mjs'
 import { completedWorkspaceLeaseIds } from './completedAiHistory.mjs'
 import { assertAiDelegationInterruptedLease } from './aiDelegationInterruptedRecovery.mjs'
+import { REMOTE_STAGING_PHASE, STAGING_RECREATED, remoteStagingHold, remoteStagingHoldReason } from './remoteStagingFailure.mjs'
 import { REMOTE_WORKSPACE_VERSION, identifier, commitId, git, hasCommit, jsonFile, saveJson, stableHash, workspaceError, assignmentMatches } from './remoteWorkspaceProtocol.mjs'
+
+// staging 준비 중 Git 오류를 구분된 사유 코드와 요약으로 바꾼다. 파일별 오류 전문은 남기지 않는다.
+function stagingError(error) {
+  const failure = remoteStagingHoldReason(error)
+  return Object.assign(workspaceError(failure.reasonCode, failure.message), failure.details ? { details: failure.details } : {})
+}
 
 // Remote paths are identities reported by the authenticated Runner, never local paths.
 function workspaceIdentity(root) {
@@ -461,10 +468,19 @@ export class RemoteWorkspacePool {
     await mkdir(root, { recursive: true })
     let state = await jsonFile(stateFile)
     if (!state) {
+      // state 저장 전에 멈춘 staging 저장소는 통합에 쓰인 적 없는 파생 복제본이다. 지우지 않고 옆으로 옮겨 다시 만든다.
+      const leftover = await lstat(workerPath).catch((error) => { if (error.code === 'ENOENT') return null; throw error })
+      if (leftover) {
+        const stamp = new Date(this.now()).toISOString().replace(/[:.]/g, '-')
+        await rename(workerPath, path.join(root, `repository.incomplete-${stamp}-${randomUUID().slice(0, 8)}`))
+      }
       // Keep staging refs and worktree separate while borrowing the integration repo's immutable Git objects.
-      try { await git(this.local.registry.integration.root, ['clone', '--shared', '--no-checkout', '--single-branch', '--branch', lease.baseBranch,
+      try { await git(this.local.registry.integration.root, ['-c', 'core.longpaths=true', 'clone', '--shared', '--no-checkout', '--single-branch', '--branch', lease.baseBranch,
         this.local.registry.integration.root, workerPath]) }
-      catch (error) { throw workspaceError('REMOTE_WORKSPACE_STAGING_RECOVERY_REQUIRED', error.message) }
+      catch (error) { throw stagingError(error) }
+      // staging은 데이터 폴더 아래 깊은 경로에 만들어진다. Windows 기본 경로 한도를 넘는 Unity 경로도 꺼낼 수 있게
+      // Git 긴 경로 지원을 켠다. Windows가 아닌 OS에서는 Git이 이 설정을 무시한다.
+      await git(workerPath, ['config', 'core.longpaths', 'true'])
       for (const key of ['user.name', 'user.email']) {
         const identity = await git(this.local.registry.integration.root, ['config', '--get', key]).catch((error) => {
           if (error.code === 1) return null
@@ -482,14 +498,20 @@ export class RemoteWorkspacePool {
         await mkdir(path.dirname(target), { recursive: true })
         await copyFile(source, target).catch((error) => { if (error.code !== 'ENOENT') throw error })
       }
-      if (lease.resultMode === 'delta') {
-        await git(workerPath, ['bundle', 'verify', this.artifacts.file(lease.leaseId, 'result')])
-        await git(workerPath, ['fetch', '--no-tags', this.artifacts.file(lease.leaseId, 'result'),
-          `refs/heads/${lease.branch}:refs/heads/${lease.branch}`])
-        await git(workerPath, ['switch', lease.branch])
-      } else if (lease.resultMode === 'present' && lease.headCommit === lease.baseCommit) {
-        await git(workerPath, ['switch', '-c', lease.branch, lease.baseCommit])
-      } else throw workspaceError('REMOTE_WORKSPACE_TRANSFER_CONTRACT_MISMATCH')
+      if (!['delta', 'present'].includes(lease.resultMode) || (lease.resultMode === 'present' && lease.headCommit !== lease.baseCommit)) {
+        throw workspaceError('REMOTE_WORKSPACE_TRANSFER_CONTRACT_MISMATCH')
+      }
+      try {
+        if (lease.resultMode === 'delta') {
+          await git(workerPath, ['bundle', 'verify', this.artifacts.file(lease.leaseId, 'result')])
+          await git(workerPath, ['fetch', '--no-tags', this.artifacts.file(lease.leaseId, 'result'),
+            `refs/heads/${lease.branch}:refs/heads/${lease.branch}`])
+          await git(workerPath, ['switch', lease.branch])
+        } else await git(workerPath, ['switch', '-c', lease.branch, lease.baseCommit])
+      } catch (error) {
+        // 결과를 꺼내는 Git 출력에는 프로젝트 전체의 파일별 오류가 섞인다. 구분된 사유와 요약만 남긴다.
+        throw stagingError(error)
+      }
       if (await git(workerPath, ['rev-parse', 'HEAD']) !== lease.headCommit) throw workspaceError('REMOTE_WORKSPACE_RESULT_HEAD_MISMATCH')
       await git(workerPath, ['merge-base', '--is-ancestor', lease.baseCommit, lease.headCommit])
       const staged = { ...lease, projectRoot: workerPath, status: 'leased', result: null }
@@ -538,7 +560,14 @@ export class RemoteWorkspacePool {
         lease.remoteDriftArchives = sealed.remoteDriftArchives ?? []
         lease.status = 'waiting-integration'; await this.persist()
       }
-      const stage = await this.outside(lease, () => this.stage(lease))
+      let stage
+      try { stage = await this.outside(lease, () => this.stage(lease)) } catch (error) {
+        if (error.storageResourceError) throw error
+        // staging 준비는 메인 통합 저장소를 바꾸기 전 단계다. 봉인 결과를 보존하고 구분된 사유로 격리한다.
+        const failure = remoteStagingHoldReason(error)
+        return this.hold(lease, failure.message, { reasonCode: failure.reasonCode, phase: REMOTE_STAGING_PHASE, childStatus: 'completed',
+          stagingRoot: path.join(this.root, 'staging', lease.leaseId), ...(failure.details ? { details: failure.details } : {}) })
+      }
       let result
       try { result = await this.outside(lease, () => stage.finalize(id, options)) } catch (error) {
         return this.hold(lease, error.message, { stagedResult: stage.state.leases[id].result, stagingRoot: stage.state.leases[id].projectRoot, reasonCode: error.reasonCode ?? error.code })
@@ -691,10 +720,22 @@ export class RemoteWorkspacePool {
       const lease = this.scoped(id)
       if (!lease.sealed) throw workspaceError('REMOTE_WORKSPACE_RESULT_NOT_SEALED')
       if (lease.status === 'completed') return lease.result
+      // 이미 통합 대기로 돌려보낸 staging 재생성은 다시 만들지 않고 같은 기록을 돌려준다.
+      if (lease.status === 'waiting-integration' && lease.result?.phase === STAGING_RECREATED) return lease.result
       const stage = await this.outside(lease, () => this.stage(lease))
       const head = await this.outside(lease, () => git(stage.state.leases[id].projectRoot, ['rev-parse', 'HEAD']))
       if (!confirmed || commitId(expectedHead) !== head) throw workspaceError('REMOTE_WORKSPACE_RECOVERY_CONFIRMATION_REQUIRED')
       if (stage.state.leases[id].status === 'completed') return this.release(lease, stage.state.leases[id].result)
+      // staging 준비에서 멈춘 lease는 staging 통합을 시도한 기록이 없다. 새로 만든 staging으로 일반 통합 대기에 돌려보내고
+      // 실제 통합은 위임 대기열의 기존 finalize 경로가 이어서 수행한다.
+      if (lease.status === 'quarantined' && remoteStagingHold(id, lease.result)
+        && stage.state.leases[id].status === 'leased' && !stage.state.leases[id].result) {
+        lease.status = 'waiting-integration'
+        lease.result = { status: 'waiting-integration', leaseId: id, jobId: lease.jobId, childStatus: 'completed',
+          phase: STAGING_RECREATED, previousResult: lease.result ?? null }
+        await this.persist()
+        return lease.result
+      }
       const result = await this.outside(lease, () => stage.state.leases[id].status === 'awaiting-conflict-resolution'
         ? stage.completeConflictResolution(id, { childStatus: 'completed' }) : stage.recoverCheckpointedFinalizationFailure(id))
       lease.status = result?.status ?? 'waiting-integration'; lease.result = result

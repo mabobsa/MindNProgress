@@ -2193,6 +2193,24 @@ function userDistributedWork(user) {
   return resolveDistributedWorkSettings(distributedWorkSettings.get(user.id), machineRegistry, machineViewer(user))
 }
 
+// 실행 전 실패 반환의 위임 쪽 근거다. 실패 위임에 실행 흔적이 없고 같은 lease를 쓰는 다른 진행 중 위임이 없어야 한다.
+function unstartedReleaseDelegationEvidence(lease, machineId) {
+  const delegation = aiDelegations.get(lease.requestId)
+  const otherActive = [...aiDelegations.values()].some((item) => item.id !== lease.requestId
+    && item.workspaceLease?.leaseId === lease.leaseId && !aiDelegationIsTerminal(item))
+  return { delegation, ok: !otherActive && aiDelegationUnstartedWorkspaceEvidence(delegation, lease, { machineId }) }
+}
+
+// 화면에서 실행 전 실패 반환을 확인할 때 보여 줄 최소 lease 값이다. 실제 반환 여부는 요청 때 서버가 다시 판정한다.
+function remoteWorkspaceLeaseSummary(leaseId, machineId) {
+  const lease = leaseId ? remoteWorkspacePool.state?.leases?.[leaseId] : null
+  if (!lease || lease.status === 'completed' || lease.ownership?.machineId !== machineId) return null
+  const { delegation, ok } = unstartedReleaseDelegationEvidence(lease, machineId)
+  return { leaseId: lease.leaseId, requestId: lease.requestId, generation: lease.ownership.generation, baseCommit: lease.baseCommit,
+    status: lease.status, delegationState: delegation?.state ?? null, failureReasonCode: delegation?.failureReasonCode ?? null,
+    unstartedReleaseCandidate: ['quarantined', 'release-pending'].includes(lease.status) && ok }
+}
+
 // 소유자 표시와 접속 상태는 화면에서만 쓰므로 순수 모듈이 아니라 응답 단계에서 붙인다.
 function machineRegistryResponse(user) {
   const registry = publicMachineRegistry(machineRegistry)
@@ -2200,7 +2218,8 @@ function machineRegistryResponse(user) {
   return {
     ...registry,
     remoteWorkspaceCoordinatorId: remoteWorkspacePool.state?.coordinatorId ?? null,
-    remotePools: (remoteWorkspacePool.snapshot().remotePools ?? []).filter((pool) => machineManageableBy(machineRegistry, pool.machineId, machineViewer(user))),
+    remotePools: (remoteWorkspacePool.snapshot().remotePools ?? []).filter((pool) => machineManageableBy(machineRegistry, pool.machineId, machineViewer(user)))
+      .map((pool) => ({ ...pool, workspaces: pool.workspaces.map((worker) => ({ ...worker, lease: remoteWorkspaceLeaseSummary(worker.leaseId, pool.machineId) })) })),
     runner: {
       apiUrl: runnerApiBaseUrl,
       lanReachable: runnerApiLanReachable,
@@ -13914,9 +13933,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
               const updated = await recordRelease(lease.result)
               return sendJson(response, 200, { result: lease.result, repeated: true, ...(updated ? { delegation: delegationPublicView(updated) } : {}) })
             }
-            const otherActive = [...aiDelegations.values()].some((item) => item.id !== lease.requestId
-              && item.workspaceLease?.leaseId === lease.leaseId && !aiDelegationIsTerminal(item))
-            if (otherActive || !aiDelegationUnstartedWorkspaceEvidence(delegation, lease, { machineId })) {
+            if (!unstartedReleaseDelegationEvidence(lease, machineId).ok) {
               return sendJson(response, 409, { error: '하위 실행이 시작되지 않았다는 위임 기록을 확인하지 못해 작업공간 격리를 유지했습니다.', reasonCode: 'REMOTE_WORKSPACE_UNSTARTED_EVIDENCE_REQUIRED' })
             }
             // Core에 같은 실행 기록이 없다는 조회는 보조 근거다. 조회 실패나 다른 응답이면 반환하지 않는다.

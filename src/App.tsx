@@ -572,6 +572,17 @@ type MachineRegistryResponse = {
   remotePools?: RemoteWorkspacePoolSummary[]
 }
 
+type RemoteWorkspaceLeaseSummary = {
+  leaseId: string
+  requestId: string
+  generation: number
+  baseCommit: string
+  status: string
+  delegationState: string | null
+  failureReasonCode: string | null
+  unstartedReleaseCandidate: boolean
+}
+
 type RemoteWorkspacePoolSummary = {
   machineId: string
   poolId: string
@@ -579,7 +590,7 @@ type RemoteWorkspacePoolSummary = {
   originUrl: string
   approved: boolean
   stale: boolean
-  workspaces: { workspaceId: string; projectRoot: string; status: string; dirty: boolean; branch: string; headCommit: string; runtimeIdle: boolean; leaseId?: string | null }[]
+  workspaces: { workspaceId: string; projectRoot: string; status: string; dirty: boolean; branch: string; headCommit: string; runtimeIdle: boolean; leaseId?: string | null; lease?: RemoteWorkspaceLeaseSummary | null }[]
 }
 
 type DistributedWorkSettings = {
@@ -2216,6 +2227,29 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
     finally { setSubmitting(false) }
   }
 
+  // 화면에 보인 위임·lease·세대·기준 커밋을 사람이 확인한 값으로 보낸다. 실행 흔적 판정은 서버가 다시 한다.
+  async function releaseUnstartedWorkspace(pool: RemoteWorkspacePoolSummary, lease: RemoteWorkspaceLeaseSummary) {
+    const details = [
+      `위임: ${lease.requestId}`,
+      `lease: ${lease.leaseId}`,
+      `세대: ${lease.generation}`,
+      `기준 커밋: ${lease.baseCommit}`,
+      `실패 코드: ${lease.failureReasonCode ?? '확인되지 않음'}`,
+    ].join('\n')
+    if (!window.confirm(`하위 실행 전에 실패해 격리된 작업공간을 결과 없이 반환할까요?\n\n${details}\n\n서버가 위임 기록, Runner 보고, AionCore 실행 기록 부재를 다시 확인한 뒤에만 반환합니다. 위임과 lease 기록은 지우지 않습니다.`)) return
+    setSubmitting(true); setError(''); setNotice('')
+    try {
+      const released = await apiRequest<{ result: { idleCommit?: string } }>(
+        `/api/machines/${encodeURIComponent(pool.machineId)}/workspace-pool/leases/${encodeURIComponent(lease.leaseId)}/release-unstarted`, {
+          method: 'POST', body: JSON.stringify({ confirmed: true, delegationId: lease.requestId, expectedLeaseId: lease.leaseId,
+            expectedGeneration: lease.generation, expectedBaseCommit: lease.baseCommit }),
+        })
+      await reload()
+      setNotice(`작업공간을 결과 없이 반환했습니다. 반환 기준 커밋: ${released.result.idleCommit?.slice(0, 10) ?? '확인 필요'}`)
+    } catch (failure) { setError(failure instanceof Error ? failure.message : '작업공간을 반환하지 못했습니다.') }
+    finally { setSubmitting(false) }
+  }
+
   return (
     <div className="history-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <section ref={dialogRef} className="history-modal distributed-work-modal" role="dialog" aria-modal="true" aria-label="분산 작업 설정">
@@ -2271,13 +2305,19 @@ function DistributedWorkDialog({ onClose }: { onClose: () => void }) {
                 <section className="distributed-work-pool" key={`${pool.machineId}:${pool.poolId}`}>
                   <strong className="distributed-work-pool-heading">{pool.machineId} · {pool.poolId} · {pool.stale ? '보고 만료' : pool.approved ? '승인됨' : '승인 대기'}</strong>
                   <p className="distributed-work-pool-meta">origin: <code>{pool.originUrl.replace(/(https?:\/\/)[^/@]+@/, '$1[인증정보 생략]@')}</code></p>
-                  <ul>{pool.workspaces.map((worker) => (
-                    <li key={worker.workspaceId}>
-                      <code>{worker.projectRoot}</code>
-                      <span>{worker.status}{worker.dirty ? ' · 미커밋 변경 있음' : ''}{worker.leaseId ? ` · ${worker.leaseId}` : ''}</span>
-                      <small>Git 보고: {worker.branch} · {worker.headCommit.slice(0, 10)} · AI runtime {worker.runtimeIdle ? '유휴' : '사용 중'}</small>
-                    </li>
-                  ))}</ul>
+                  <ul>{pool.workspaces.map((worker) => {
+                    const lease = worker.lease
+                    return (
+                      <li key={worker.workspaceId}>
+                        <code>{worker.projectRoot}</code>
+                        <span>{worker.status}{worker.dirty ? ' · 미커밋 변경 있음' : ''}{worker.leaseId ? ` · ${worker.leaseId}` : ''}</span>
+                        <small>Git 보고: {worker.branch} · {worker.headCommit.slice(0, 10)} · AI runtime {worker.runtimeIdle ? '유휴' : '사용 중'}</small>
+                        {lease?.unstartedReleaseCandidate && (
+                          <button type="button" disabled={submitting} onClick={() => void releaseUnstartedWorkspace(pool, lease)}>실행 전 실패 작업공간 반환</button>
+                        )}
+                      </li>
+                    )
+                  })}</ul>
                   <button type="button" disabled={submitting || pool.stale && !pool.approved} onClick={() => void registerWorkspacePool(pool)}>{pool.approved ? '새 배정 비활성화' : '풀 등록 승인'}</button>
                 </section>
               ))}

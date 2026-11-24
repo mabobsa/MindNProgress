@@ -149,6 +149,10 @@ test('운영자 반환 API: 권한·확인값·Core 판정·반환 기록·재�
     const route = `/api/machines/macbook/workspace-pool/leases/${lease.leaseId}/release-unstarted`
     const body = { confirmed: true, delegationId: lease.requestId, expectedLeaseId: lease.leaseId, expectedGeneration: 1, expectedBaseCommit: lease.baseCommit }
     assert.deepEqual(Object.keys(e.pool.body.operationQueue).sort(), ['dispatched', 'pending', 'waiting'])
+    const screenLease = async () => (await e.as(e.owner, '/api/machines')).body.remotePools[0].workspaces.find(item => item.workspaceId === 'fork1').lease
+    // 화면은 반환 확인에 필요한 값과 후보 여부만 받고, 실제 판정은 반환 요청 때 서버가 다시 한다.
+    assert.deepEqual(await screenLease(), { leaseId: lease.leaseId, requestId: lease.requestId, generation: 1, baseCommit: lease.baseCommit,
+      status: 'quarantined', delegationState: 'failed', failureReasonCode: 'AI_DELEGATION_POLICY_RUNTIME_UNAVAILABLE', unstartedReleaseCandidate: true })
 
     await t.test('로그인하지 않았거나 다른 사용자이거나 AI 통합 토큰이면 실행 전에 거절한다', async () => {
       assert.equal((await e.api.call(route, 'POST', body, { Authorization: '' })).status, 401)
@@ -182,6 +186,7 @@ test('운영자 반환 API: 권한·확인값·Core 판정·반환 기록·재�
       assert.equal(released.body.repeated, undefined)
       assert.equal(released.body.result.status, 'cancelled'); assert.equal(released.body.result.releaseKind, 'unstarted')
       assert.equal(released.body.delegation.workspaceResult.releaseKind, 'unstarted')
+      assert.equal(await screenLease(), null, '반환이 끝난 worker에는 반환 버튼 정보를 주지 않는다')
       const saved = await e.delegation(lease.requestId)
       assert.equal(saved.workspaceResult.status, 'cancelled'); assert.equal(saved.workspaceResult.releaseKind, 'unstarted')
       assert.equal(saved.workspaceResult.idleCommit, mainHead)
@@ -222,6 +227,8 @@ for (const variant of ['하위 turn 기록', '같은 lease의 진행 중 위임'
   } })
   try {
     const before = e.calls.filter(item => item.path.startsWith('/api/internal/external-conversation-dispatches/')).length
+    const screen = (await e.as(e.owner, '/api/machines')).body.remotePools[0].workspaces.find(item => item.workspaceId === 'fork1').lease
+    assert.equal(screen.unstartedReleaseCandidate, false, '실행 흔적이 있으면 화면에 반환 버튼을 표시하지 않는다')
     const result = await e.as(e.owner, `/api/machines/macbook/workspace-pool/leases/${lease.leaseId}/release-unstarted`, 'POST',
       { confirmed: true, delegationId: lease.requestId, expectedLeaseId: lease.leaseId, expectedGeneration: 1, expectedBaseCommit: lease.baseCommit })
     assert.equal(result.status, 409, JSON.stringify(result))

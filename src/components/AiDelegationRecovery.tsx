@@ -254,7 +254,9 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
 
   async function closeDelegation(item: Delegation) {
     if (acting.current || !closeDraft || closeDraft.id !== item.id || closeDraft.note.trim().length < 3) return
-    if (!window.confirm(item.closure?.quarantinedRelease
+    if (!window.confirm(item.closure?.targetDeletedRelease
+      ? '대상 AI 대화가 삭제되어 이 위임은 이어 갈 수 없습니다. 위임을 종료하고 격리된 작업공간을 반환할까요? 서버가 대화 삭제와 작업공간에 보존할 변경이 없는지 다시 확인하며, 변경이 있으면 반환하지 않습니다. 업무 완료나 결과 전달로 기록하지 않습니다.'
+      : item.closure?.quarantinedRelease
       ? '격리된 작업공간을 반환할까요? 원 작업 브랜치의 체크포인트와 실패 이력은 Git 참조와 기록으로 보존합니다. 결과를 main에 통합하거나 AI를 다시 실행하지 않으며, 미커밋 변경이 있으면 반환하지 않습니다.'
       : item.closure?.workspaceReleaseRequired
       ? '이 위임의 통합을 종료하고 작업공간을 반환할까요? 원본 커밋·부분 통합 후보·실패 이력은 보존합니다. 업무를 완료 처리하거나 결과를 main에 통합하지 않으며 다른 위임은 유지합니다.'
@@ -279,7 +281,9 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
       })
       if (mounted.current) {
         setCloseDraft(null)
-        setNotice(item.closure?.workspaceReleaseRequired
+        setNotice(item.closure?.targetDeletedRelease
+          ? '삭제된 대화의 위임을 종료하고 작업공간을 반환했습니다. 업무 완료나 결과 전달로 기록하지 않았습니다.'
+          : item.closure?.workspaceReleaseRequired
           ? '결과를 보존하고 작업공간을 반환했습니다. 업무 완료나 결과 전달로 기록하지 않았습니다.'
           : '완료나 결과 전달로 기록하지 않고 사용자 종료 상태로 전환했습니다.')
       }
@@ -421,7 +425,9 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
           </div>}
         </>}
         {!history && !cardAttention && closing ? <div className="ai-delegation-close-form">
-          {item.closure?.workspaceReleaseRequired && <p>{item.closure.quarantinedRelease
+          {item.closure?.workspaceReleaseRequired && <p>{item.closure.targetDeletedRelease
+            ? '대상 AI 대화가 삭제되어 기다려도 이어 갈 수 없는 위임입니다. 대화 삭제와 작업공간에 보존할 변경이 없는지 다시 확인한 뒤 격리된 작업공간을 반환하고 종료합니다. 서브 머신 작업공간은 기준 커밋 그대로이고 변경이 없을 때만 반환합니다.'
+            : item.closure.quarantinedRelease
             ? '원 작업 브랜치의 체크포인트와 실패 이력을 보존하고 격리된 작업공간만 반환합니다. main 반영·AI 재실행·업무 완료 처리는 하지 않으며, 대화가 실행 중이거나 미커밋 변경이 있으면 반환하지 않습니다.'
             : '원본 커밋·부분 통합 결과·실패 이력을 보존하고 작업공간을 반환합니다. main 반영이나 업무 완료 처리는 하지 않습니다.'}</p>}
           <label><span>종료 사유</span><select disabled={busy} value={closeDraft.reason} onChange={(event) => setCloseDraft({ ...closeDraft, reason: event.target.value as CloseReason })}>{Object.entries(closeReasonLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
@@ -436,9 +442,9 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
           {item.recovery?.recoveryAvailable && <button type="button" {...actionAccessibility(correctResult ? '통합 대기 결과 정정' : retryIntegration ? '통합 재시도' : '기존 작업 재개', correctResult ? actionHints.correctResult : retryIntegration ? actionHints.retryIntegration : actionHints.recover)} disabled={busy || checking || unconfirmed} onClick={() => void action(item, 'recover')}>{correctResult ? '통합 대기 결과 정정' : retryIntegration ? '통합 재시도' : '기존 작업 재개'}</button>}
           {item.recovery?.reportRetryAvailable && <button type="button" {...actionAccessibility('결과 전달 재시도', actionHints.retryReport)} disabled={busy} onClick={() => void action(item, 'retry-report')}>결과 전달 재시도</button>}
           {candidates.length > 0 && <button type="button" {...actionAccessibility('후속 성공으로 종료', actionHints.supersede)} disabled={busy} onClick={() => void action(item, 'supersede')}>후속 성공으로 종료</button>}
-          {item.closure?.closeAvailable && <button type="button" {...actionAccessibility(item.closure.workspaceReleaseRequired ? '결과 보존 후 반환' : '보고하지 않고 종료', item.closure.workspaceReleaseRequired ? '보존 반환 사유 입력 창을 엽니다. 마지막 확인 전에는 작업공간을 변경하지 않습니다.' : actionHints.openClose)} className="danger" disabled={busy} onClick={() => setCloseDraft({ id: item.id, reason: item.workCompleted ? 'result-invalidated' : 'no-longer-needed', note: '' })}>{item.closure.workspaceReleaseRequired ? '결과 보존 후 반환' : '보고하지 않고 종료'}</button>}
+          {item.closure?.closeAvailable && <button type="button" {...actionAccessibility(item.closure.targetDeletedRelease ? '삭제된 대화 위임 종료' : item.closure.workspaceReleaseRequired ? '결과 보존 후 반환' : '보고하지 않고 종료', item.closure.targetDeletedRelease ? '종료 사유 입력 창을 엽니다. 마지막 확인 전에는 작업공간을 변경하지 않습니다.' : item.closure.workspaceReleaseRequired ? '보존 반환 사유 입력 창을 엽니다. 마지막 확인 전에는 작업공간을 변경하지 않습니다.' : actionHints.openClose)} className="danger" disabled={busy} onClick={() => setCloseDraft({ id: item.id, reason: item.closure?.targetDeletedRelease ? 'conversation-removed' : item.workCompleted ? 'result-invalidated' : 'no-longer-needed', note: '' })}>{item.closure.targetDeletedRelease ? '삭제된 대화 위임 종료' : item.closure.workspaceReleaseRequired ? '결과 보존 후 반환' : '보고하지 않고 종료'}</button>}
         </div>}
-        {!history && !cardAttention && item.closure?.reason === 'workspace-changes-preserved' && <p className="ai-delegation-recovery-guidance">보존할 작업공간 변경이 있어 종료할 수 없습니다. 기존 변경을 보존한 채 작업공간을 먼저 복구하세요.</p>}
+        {!history && !cardAttention && item.closure?.reason === 'workspace-changes-preserved' && <p className="ai-delegation-recovery-guidance">보존할 작업공간 변경이 있어 종료할 수 없습니다. 기존 변경을 보존한 채 작업공간을 먼저 복구하세요. 대상 AI 대화를 삭제했다면 「상태 다시 확인」으로 삭제를 확인한 뒤 종료할 수 있습니다.</p>}
         {!history && !cardAttention && item.closure?.reason === 'runner-rejected-operation' && <p className="ai-delegation-recovery-guidance">서브 머신 Runner가 이 위임의 실행 ID를 거부해 진행 상태를 확인할 수 없습니다. 대상 AI 대화가 끝났다면 보고하지 않고 종료로 정리하세요.</p>}
       </div>
   }

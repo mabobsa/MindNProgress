@@ -1,7 +1,7 @@
 import { mainMachineAllowed, conversationOwners, conversationOwnedBy, conversationStarterId, integrationIdentityMatches, redactAttributionTokens } from './lib/aiAccessPolicy.mjs'
 import { createServer } from 'node:http'
 import { aiDelegationNotificationStatus, withAiDelegationNotificationStatus } from './lib/aiDelegationNotifications.mjs'
-import { createAiConversationRemoval, conversationRemovalError } from './lib/aiConversationRemoval.mjs'
+import { createAiConversationRemoval, conversationRemovalError, readConversationArchiveState } from './lib/aiConversationRemoval.mjs'
 import { createAiConversationConnection, conversationConnectionError } from './lib/aiConversationConnection.mjs'
 import { createDocumentReadStore } from './lib/documentReadStore.mjs'
 import { mapFields, referenceTargets, reviewMap, commentProjection, commentPage } from './lib/readProjections.mjs'
@@ -123,6 +123,8 @@ import {
   aiDelegationWaitPollDue,
   aiDelegationBlocksResume,
   aiDelegationClosureAvailability,
+  aiDelegationDeletedTargetReleaseCandidate,
+  aiDelegationTargetConversationMissing,
   laterCompletedDelegationForCard,
   reconcilePreservedReleaseClosures,
   aiDelegationRecoveryAvailability,
@@ -4808,6 +4810,69 @@ async function restoreConfirmedAiDelegationDispatch(delegation, map, parentMap, 
   if (!delegation.primarySelection) broadcastEvent({ type: 'ai-conversation-linked', mapId: map.id, nodeId: delegation.targetCardId,
     conversationId, conversation: link, sourceClientId: null, updatedAt: updatedMap.updatedAt, updatedBy: publicUser(user) })
   return { delegation: updated, map: updatedMap }
+}
+
+// 대상 AI 대화의 삭제를 Aion 보관 상태 조회로 확인한다. exists=false 응답만 삭제로 인정하고,
+// 404·연결 실패·형식 오류는 삭제 근거가 아니다(대화 연결 삭제와 같은 기준).
+async function aiDelegationTargetConversationDeleted(delegation) {
+  const conversationId = delegation?.targetConversationId
+  if (!conversationId) return false
+  const machineId = delegationTargetMachineId(delegation)
+  const state = await readConversationArchiveState({ conversationId, call: (pathname, options) => fetchAionUiOn(machineId, pathname, options) })
+  return state.exists === false
+}
+
+// 삭제가 확인된 대상 대화의 근거를 위임 기록에 남긴다. 한도 대기 중 격리 작업공간을 가진 위임만 종료·반환 후보가 된다.
+async function recordAiDelegationTargetConversationMissing(delegation, source) {
+  if (aiDelegationTargetConversationMissing(delegation)) return delegation
+  return updateAiDelegation(delegation.id, { targetConversationMissing: {
+    conversationId: delegation.targetConversationId, machineId: delegationTargetMachineId(delegation),
+    observedAt: new Date().toISOString(), source,
+  } })
+}
+
+// 대화 연결 삭제에서 Aion 부재가 확인된 대화를 대상으로 한 한도 대기 위임에 근거를 남긴다.
+// 처리 중인 위임은 건너뛴다. 기록 실패(저장 지연 포함)는 이미 끝난 연결 삭제 결과를 바꾸지 않고, 상태 다시 확인에서 다시 기록한다.
+async function recordRemovedConversationDelegations(conversationId, machineId) {
+  for (const delegation of [...aiDelegations.values()]) {
+    if (delegation.targetConversationId !== conversationId || delegationTargetMachineId(delegation) !== machineId
+      || aiDelegationActions.has(delegation.id) || aiDelegationTargetConversationMissing(delegation)
+      || !aiDelegationDeletedTargetReleaseCandidate(delegation, { requireEvidence: false })) continue
+    try {
+      await recordAiDelegationTargetConversationMissing(delegation, 'conversation-removal')
+    } catch (error) {
+      console.warn('[AI delegation target missing record failed]', { id: delegation.id, message: String(error?.message ?? error).slice(0, 300) })
+    }
+  }
+}
+
+// 대상 대화가 삭제된 한도 대기 위임의 격리 작업공간을 반환한다.
+// 원격 worker는 lease에 실행 흔적(체크포인트·결과 커밋)이 없고 Runner가 기준 커밋 그대로·변경 없음·유휴로 보고할 때만 결과 없이 반환한다.
+// 로컬 worker는 기존 보존 반환으로 체크포인트를 참조로 남기고, 미커밋 변경이 있으면 반환하지 않는다.
+async function releaseDeletedTargetWorkspace(delegation, scope, note) {
+  const leaseId = delegation.workspaceLease.leaseId
+  if (!delegation.workspaceLease.ownership && !remoteWorkspacePool.hasLease(leaseId)) {
+    // 변경 없는 격리 lease는 서버 시작 복구 등으로 이미 반환(failed-clean)됐을 수 있다. 보존할 것이 없으므로 그 결과로 종료한다.
+    const local = localWorkspacePoolManager.state?.leases?.[leaseId]
+    if (local?.status === 'cancelled' && local.result?.status === 'failed-clean' && local.jobId === delegation.workspaceLease.jobId
+      && local.conversationId === delegation.targetConversationId) return local.result
+    return workspacePoolManager.releasePreservedQuarantinedResult(leaseId, scope, { reason: note })
+  }
+  const lease = remoteWorkspacePool.scoped(leaseId, { mapId: delegation.mapId, cardId: delegation.targetCardId, conversationId: delegation.targetConversationId })
+  if (lease.requestId !== delegation.id) throw Object.assign(new Error('반환할 위임과 작업공간 lease의 소유권이 일치하지 않습니다.'), { reasonCode: 'MNP_WORKSPACE_ASSIGNMENT_MISMATCH' })
+  try {
+    return await remoteWorkspacePool.releaseUnstarted(leaseId, {
+      reason: '대상 AI 대화가 삭제되어 변경 없는 격리 작업공간을 결과 없이 반환했습니다.',
+      evidence: { kind: 'target-conversation-deleted', delegationId: delegation.id, conversationId: delegation.targetConversationId,
+        archiveState: 'missing', note, requestedBy: scope.userId },
+    })
+  } catch (error) {
+    if ((error?.reasonCode ?? error?.code) === 'REMOTE_WORKSPACE_UNSTARTED_EVIDENCE_REQUIRED') {
+      throw Object.assign(new Error('서브 머신 작업공간에 체크포인트·변경이 있거나 Runner 보고가 lease와 맞지 않아 반환하지 않았습니다. 작업공간을 확인한 뒤 다시 시도하세요.'),
+        { reasonCode: 'AI_DELEGATION_DELETED_TARGET_WORKSPACE_NOT_CLEAN' })
+    }
+    throw error
+  }
 }
 
 async function ensureAiDelegationTargetConversationIdle(delegation) {
@@ -9797,7 +9862,10 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
         const finalizeCoordination = actionRoute[3] === 'finalize-coordination'
         const supersede = actionRoute[3] === 'supersede'
         const close = actionRoute[3] === 'close'
-        const validated = await validateAiDelegationAction(request, delegation, body, retryReport || finalizeCoordination, { requireConversationLinks: !supersede && !close })
+        // 대상 대화가 삭제된 한도 대기 위임은 대상 카드 연결도 지워졌을 수 있다. 상태 다시 확인은 실행하지 않고 상태 조회·삭제 근거 기록만 하므로
+        // 이 후보에 한해 대화 연결 검사 없이 진행한다(사용자·상위 카드 권한과 버전 확인은 그대로).
+        const deletedTargetRefresh = actionRoute[3] === 'refresh' && aiDelegationDeletedTargetReleaseCandidate(delegation, { requireEvidence: false })
+        const validated = await validateAiDelegationAction(request, delegation, body, retryReport || finalizeCoordination, { requireConversationLinks: !supersede && !close && !deletedTargetRefresh })
         if (actionRoute[3] === 'refresh' && integrationRecoveryPending(delegation)) return sendJson(response, 200, {
           delegation: delegationPublicView(delegation), executionRequested: false, cardChanged: false,
         })
@@ -9812,9 +9880,20 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
             const archived = await archiveAiDelegationReport(acknowledged)
             return sendJson(response, 200, { delegation: delegationPublicView(archived), executionRequested: false, resultAcknowledged: true, cardChanged: false })
           }
+          // 대상 대화가 삭제된 한도 대기 위임은 기다려도 이어 갈 수 없다. 삭제가 확인되면 근거를 남겨 사용자 종료·작업공간 반환을 연다.
+          // 조회 실패는 삭제 근거가 아니므로 기존 상태 확인만 계속한다.
+          let refreshTarget = delegation
+          if (!aiDelegationTargetConversationMissing(delegation) && aiDelegationDeletedTargetReleaseCandidate(delegation, { requireEvidence: false })) {
+            try {
+              if (await aiDelegationTargetConversationDeleted(delegation)) refreshTarget = await recordAiDelegationTargetConversationMissing(delegation, 'refresh')
+            } catch (error) {
+              throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+              if (error?.storageResourceError) throw error
+            }
+          }
           let refreshed
           try {
-            refreshed = await refreshSuspendedAiDelegation(delegation)
+            refreshed = await refreshSuspendedAiDelegation(refreshTarget)
           } catch (error) {
             if (!isRunnerOperationRejected(error)) throw error
             const runnerRejection = aiDelegationReadsChildOperation(delegation)
@@ -9849,23 +9928,38 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           }
           const releasePreserved = closure.workspaceReleaseRequired === true
           const quarantinedRelease = releasePreserved && closure.quarantinedRelease === true
-          if ((!releasePreserved || quarantinedRelease) && body.trackedEolRecovery !== undefined) return sendJson(response, 400, {
+          const targetDeletedRelease = releasePreserved && closure.targetDeletedRelease === true
+          if ((!releasePreserved || quarantinedRelease || targetDeletedRelease) && body.trackedEolRecovery !== undefined) return sendJson(response, 400, {
             error: '줄바꿈 복구는 통합 중단 결과의 명시적인 보존 반환에만 지정할 수 있습니다.' })
+          if (targetDeletedRelease && reason !== 'conversation-removed') return sendJson(response, 400, {
+            error: '대상 AI 대화가 삭제된 위임은 종료 사유를 「실행 또는 상위 대화가 삭제됨」으로 선택하세요.' })
           if (releasePreserved && body.confirmPreserveWorkspaceResult !== true) return sendJson(response, 400, {
             error: '미통합 결과와 부분 후보를 보존하고 작업공간만 반환할지 명시적으로 확인해야 합니다.' })
           if (releasePreserved && [...aiDelegations.values()].some(other => other.id !== id
             && other.workspaceLease?.leaseId === delegation.workspaceLease.leaseId && !aiDelegationIsTerminal(other))) {
             return sendJson(response, 409, { error: '같은 lease를 사용 중인 다른 위임이 있어 반환할 수 없습니다.' })
           }
+          // 기록된 삭제 근거만으로 반환하지 않는다. 종료 직전에 Aion 보관 상태로 다시 확인한다.
+          if (targetDeletedRelease) {
+            let deleted = false
+            try { deleted = await aiDelegationTargetConversationDeleted(delegation) } catch (error) {
+              throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+            }
+            if (!deleted) return sendJson(response, 409, {
+              error: '대상 AI 대화의 삭제를 다시 확인하지 못해 위임을 종료하지 않았습니다. 대화가 남아 있다면 한도가 풀린 뒤 기존 작업을 재개하세요.',
+              reasonCode: 'AI_DELEGATION_TARGET_CONVERSATION_NOT_CONFIRMED_DELETED' })
+          }
           await ensureAiDelegationTerminalResolutionIdle(delegation, {
-            completedIntegration: quarantinedRelease ? delegation.childStatus === 'completed' : releasePreserved })
+            completedIntegration: targetDeletedRelease ? false : quarantinedRelease ? delegation.childStatus === 'completed' : releasePreserved })
           // 실패 뒤 사용자가 같은 대화에서 직접 이어 간 실행은 실행 영수증에 없다. 대화가 실행 중이면 작업공간을 반환하지 않는다.
           if (quarantinedRelease) await ensureAiDelegationTargetConversationIdle(delegation)
           let workspaceResult = delegation.workspaceResult
           if (releasePreserved) {
             try {
               const scope = { mapId: delegation.mapId, cardId: delegation.targetCardId, conversationId: delegation.targetConversationId, userId: user.id }
-              workspaceResult = quarantinedRelease
+              workspaceResult = targetDeletedRelease
+                ? await releaseDeletedTargetWorkspace(delegation, scope, note)
+                : quarantinedRelease
                 ? await workspacePoolManager.releasePreservedQuarantinedResult(delegation.workspaceLease.leaseId, scope, { reason: note })
                 : await workspacePoolManager.releasePreservedIntegrationFailure(delegation.workspaceLease.leaseId, scope,
                   { reason: note, trackedEolRecovery: body.trackedEolRecovery })
@@ -13668,6 +13762,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
       try {
         const removed = await aiConversationRemoval.remove(user, mapId, cardId, conversationId)
         broadcastMapChange(request, mapId, 'content', user)
+        if (removed.archiveState === 'missing' && removed.machineId) await recordRemovedConversationDelegations(conversationId, removed.machineId)
         console.info('[AI conversation removal]', { mapId, cardId, conversationId, archiveState: removed.archiveState })
         return sendJson(response, 200, removed)
       } catch (error) {

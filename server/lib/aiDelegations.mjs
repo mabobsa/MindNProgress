@@ -844,6 +844,30 @@ export function laterCompletedDelegationForCard(delegation, delegations) {
     && String(candidate.createdAt ?? '') > String(delegation.createdAt ?? '')) ?? null
 }
 
+export const TARGET_CONVERSATION_DELETED_CLOSURE_REASON = 'target-conversation-deleted'
+const LIMIT_WAITING_STATES = new Set(['waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity'])
+
+// 서버가 Aion 보관 상태 조회(exists=false)로 대상 대화의 삭제를 확인해 남긴 근거인지 본다.
+// 대화 ID와 실행 머신이 현재 위임과 같을 때만 인정한다. 실제 종료 직전에는 다시 조회한다.
+export function aiDelegationTargetConversationMissing(delegation) {
+  const evidence = delegation?.targetConversationMissing
+  return Boolean(evidence?.observedAt && delegation.targetConversationId
+    && evidence.conversationId === delegation.targetConversationId
+    && (!delegation.targetHomeMachineId || evidence.machineId === delegation.targetHomeMachineId))
+}
+
+// 대상 대화가 삭제된 한도 대기 위임은 이어 갈 대화가 없어 기다려도 끝나지 않는다.
+// 격리된 작업공간이 이 위임의 lease일 때만 반환 후보로 본다(변경 여부는 반환할 때 풀이 다시 확인한다).
+// requireEvidence=false는 삭제 여부를 조회할 대상을 고를 때만 쓴다.
+export function aiDelegationDeletedTargetReleaseCandidate(delegation, { requireEvidence = true } = {}) {
+  const leaseId = delegation?.workspaceLease?.leaseId
+  return LIMIT_WAITING_STATES.has(delegation?.state) && !delegation.groupId && !delegation.pendingRecovery
+    && !integrationRecoveryPending(delegation) && !delegation.resultCorrection
+    && Boolean(leaseId) && delegation.workspaceResult?.status === 'quarantined'
+    && delegation.workspaceResult.leaseId === leaseId && Boolean(delegation.targetConversationId)
+    && (!requireEvidence || aiDelegationTargetConversationMissing(delegation))
+}
+
 export function aiDelegationClosureAvailability(delegation) {
   if (delegation?.state === 'failed' && !delegation.groupId && !delegation.pendingRecovery
     && !integrationRecoveryPending(delegation) && !delegation.resultCorrection && !delegation.workspaceLease?.ownership
@@ -860,9 +884,13 @@ export function aiDelegationClosureAvailability(delegation) {
   if (delegation.state === 'parent-wake-failed' && aiDelegationSucceeded(delegation)) {
     return { closeAvailable: true, reason: 'completed-child-report-abandonment' }
   }
-  if (['waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity'].includes(delegation.state)) {
+  if (LIMIT_WAITING_STATES.has(delegation.state)) {
     const workspaceSafe = !delegation.workspaceLease?.leaseId
       || ['failed-clean', 'cancelled'].includes(delegation.workspaceResult?.status)
+    if (!workspaceSafe && aiDelegationDeletedTargetReleaseCandidate(delegation)) {
+      return { closeAvailable: true, reason: TARGET_CONVERSATION_DELETED_CLOSURE_REASON,
+        workspaceReleaseRequired: true, targetDeletedRelease: true }
+    }
     return {
       closeAvailable: workspaceSafe,
       reason: workspaceSafe ? 'failed-child-no-preserved-changes' : 'workspace-changes-preserved',

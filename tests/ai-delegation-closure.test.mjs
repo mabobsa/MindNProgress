@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   aiDelegationCanBeSupersededBy,
   aiDelegationClosureAvailability,
+  aiDelegationDeletedTargetReleaseCandidate,
   aiDelegationIsTerminal,
   aiDelegationRecoveryAvailability,
   aiDelegationWorkPending,
@@ -51,6 +52,38 @@ test('변경이 보존된 한도 중단은 사용자 종료를 막고 변경 없
   }
   assert.equal(aiDelegationClosureAvailability(waiting)?.closeAvailable, false)
   assert.equal(aiDelegationClosureAvailability({ ...waiting, workspaceResult: { status: 'failed-clean' } })?.closeAvailable, true)
+})
+
+test('대상 대화 삭제가 확인된 한도 대기 위임만 격리 작업공간 반환 종료 후보로 표시한다', () => {
+  const waiting = {
+    ...completedAttempt, state: 'waiting-usage-limit', childStatus: 'failed', childError: 'usage limit', targetHomeMachineId: 'macbook',
+    workspaceLease: { leaseId: 'lease-a', ownership: { machineId: 'macbook' } }, workspaceResult: { status: 'quarantined', leaseId: 'lease-a' },
+  }
+  const evidence = { conversationId: 'removed-child', machineId: 'macbook', observedAt: '2026-11-24T10:20:00.000Z', source: 'refresh' }
+  // 삭제 근거가 없으면 기존처럼 보존 변경으로 막고, 근거 없이도 조회 대상인지만 따로 판단한다.
+  assert.deepEqual(aiDelegationClosureAvailability(waiting), { closeAvailable: false, reason: 'workspace-changes-preserved' })
+  assert.equal(aiDelegationDeletedTargetReleaseCandidate(waiting), false)
+  assert.equal(aiDelegationDeletedTargetReleaseCandidate(waiting, { requireEvidence: false }), true)
+  const deleted = { ...waiting, targetConversationMissing: evidence }
+  assert.deepEqual(aiDelegationClosureAvailability(deleted),
+    { closeAvailable: true, reason: 'target-conversation-deleted', workspaceReleaseRequired: true, targetDeletedRelease: true })
+  for (const state of ['waiting-rate-limit', 'waiting-model-capacity']) {
+    assert.equal(aiDelegationClosureAvailability({ ...deleted, state }).reason, 'target-conversation-deleted', state)
+  }
+  // 다른 대화·다른 머신·시각 없는 근거, 다른 lease의 격리 결과는 반환 후보가 아니다.
+  for (const variant of [
+    { targetConversationMissing: { ...evidence, conversationId: 'other-child' } },
+    { targetConversationMissing: { ...evidence, machineId: 'other-machine' } },
+    { targetConversationMissing: { ...evidence, observedAt: null } },
+    { workspaceResult: { status: 'quarantined', leaseId: 'lease-other' } },
+  ]) assert.equal(aiDelegationClosureAvailability({ ...deleted, ...variant }).reason, 'workspace-changes-preserved', JSON.stringify(variant))
+  // 그룹 위임과 실행 중인 위임은 기존 판정을 그대로 따른다.
+  assert.equal(aiDelegationClosureAvailability({ ...deleted, groupId: 'group-a' }).reason, 'group-managed')
+  assert.equal(aiDelegationClosureAvailability({ ...deleted, state: 'running' }).reason, 'execution-or-recovery-still-active')
+  assert.equal(aiDelegationDeletedTargetReleaseCandidate({ ...deleted, pendingRecovery: { id: 'r' } }), false)
+  // 변경 없는 한도 중단은 기존 종료 경로를 그대로 쓴다.
+  assert.deepEqual(aiDelegationClosureAvailability({ ...deleted, workspaceResult: { status: 'failed-clean' } }),
+    { closeAvailable: true, reason: 'failed-child-no-preserved-changes' })
 })
 
 test('사용자 종료는 완료가 아니지만 미종료 작업 차단에서는 제외한다', () => {

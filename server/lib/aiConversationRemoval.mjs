@@ -2,19 +2,24 @@ export function conversationRemovalError(message, status = 409, code = 'AI_CONVE
   return Object.assign(new Error(message), { status, code, conversationRemovalError: true })
 }
 
-// 연결을 삭제하기 전 Aion의 실제 보관 상태를 읽는다. 404는 구버전 API일 수도 있어 부재 증거로 쓰지 않는다.
+// Aion의 실제 보관 상태를 읽는다. 404는 구버전 API일 수도 있어 부재 증거로 쓰지 않고,
+// 같은 대화 ID와 형식이 맞는 응답만 인정한다. 대화 연결 삭제와 삭제된 대화의 위임 정리가 같은 기준을 쓴다.
+export async function readConversationArchiveState({ call, conversationId }) {
+  const base = `/api/sidebar/conversation/${encodeURIComponent(conversationId)}`
+  const state = await call(`${base}/archive-state`, { strictJson: true, singleTarget: true })
+  if (state?.conversation_id !== conversationId || typeof state.exists !== 'boolean'
+    || !(state.archived_at === null || (Number.isSafeInteger(state.archived_at) && state.archived_at > 0))
+    || (!state.exists && state.archived_at !== null)) {
+    throw conversationRemovalError('Aion 대화의 보관 상태 응답을 확인할 수 없습니다. 연결을 유지합니다.', 502, 'AIONUI_ARCHIVE_STATE_INVALID')
+  }
+  return state
+}
+
+// 연결을 삭제하기 전 Aion의 실제 보관 상태를 읽는다.
 // 존재 여부를 안전 확인보다 먼저 읽는다. 대화가 없으면 남은 위임·지시·작업공간 기록은 끝날 수 없으므로 삭제를 막지 않는다.
 export async function ensureConversationArchived({ call, conversationId, assertIdle, assertSafe = async () => {} }) {
   const base = `/api/sidebar/conversation/${encodeURIComponent(conversationId)}`
-  const readState = async () => {
-    const state = await call(`${base}/archive-state`, { strictJson: true, singleTarget: true })
-    if (state?.conversation_id !== conversationId || typeof state.exists !== 'boolean'
-      || !(state.archived_at === null || (Number.isSafeInteger(state.archived_at) && state.archived_at > 0))
-      || (!state.exists && state.archived_at !== null)) {
-      throw conversationRemovalError('Aion 대화의 보관 상태 응답을 확인할 수 없습니다. 연결을 유지합니다.', 502, 'AIONUI_ARCHIVE_STATE_INVALID')
-    }
-    return state
-  }
+  const readState = () => readConversationArchiveState({ call, conversationId })
   const state = await readState()
   if (!state.exists) return 'missing'
   await assertSafe()
@@ -63,7 +68,7 @@ export function createAiConversationRemoval({ readContext, assertSafe, call, ass
             // 부재가 확인된 대화는 보관할 대상이 없고 기록이 끝날 수도 없으므로 이 카드의 연결만 정리한다.
             if (archiveState !== 'missing') await assertSafe(current, conversationId)
           }
-          return { ...await unlink(current, conversationId, user), archiveState }
+          return { ...await unlink(current, conversationId, user), archiveState, machineId: initial.machineId ?? null }
         }
         if (withMutation) return await withMutation(mapId, commit)
         const release = await acquireMutation()

@@ -25,6 +25,14 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 4175,
     strictPort: true,
+    fs: {
+      // 4175는 Runner·서브 머신 브라우저를 위해 LAN에 열려 있다. 기본값(프로젝트 루트 전체)으로 두면
+      // server/data의 연동 토큰·계정·세션 파일과 서버 소스까지 제공되므로 프런트엔드에 필요한 경로만 허용한다.
+      allow: ['index.html', 'src', 'public', 'node_modules'],
+      // deny를 지정하면 Vite 기본값과 합치지 않고 대체하므로 기본 항목을 함께 적는다.
+      deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**',
+        '**/server/data/**', '**/.tmp/**'],
+    },
     watch: {
       // 실행 데이터·이력 파일과 .tmp의 작업 사본·빌드 사본은 프런트엔드 변경 감시에서 제외한다.
       // .tmp에 MnP 사본이 쌓이면 감시 핸들이 수만 개로 늘어 웹 기동·종료가 느려진다.

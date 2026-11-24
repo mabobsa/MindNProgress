@@ -51,12 +51,13 @@ registry 예시의 경로는 실제 설정에 사용할 값이 아니라 계약 
 ## API
 
 - `POST /api/machines/:machineId/runner/heartbeat`: 인증된 Runner의 `workspacePool` 보고. 메인이 받은 시각 기준 180초 뒤 만료한다. 보고 중단도 기존 풀을 일반 작업공간으로 바꾸지 않는다.
-- `GET/PUT /api/machines/:machineId/workspace-pool`: 소유자/관리자 전용 조회·승인. PUT `{poolId,registryDigest,enabled}`. 비활성화는 새 배정만 막고 기존 lease는 보존한다.
+- `GET/PUT /api/machines/:machineId/workspace-pool`: 소유자/관리자 전용 조회·승인. PUT `{poolId,registryDigest,enabled}`. 비활성화는 새 배정만 막고 기존 lease는 보존한다. GET의 `operationQueue`는 메인 서버 메모리에서 해당 머신 Runner로 전달을 기다리는(`pending`)·가져간(`dispatched`) 요청 수와 대기 중인 long-poll 수다. Runner 내부에서 처리 중인 Git·전송·콜백 작업은 포함하지 않는다.
 - Runner 큐의 `POST /mnp/workspaces`: `{operationId,action,lease,options}`. 로컬 AionCore에 전달하지 않는 Runner 전용 경로다.
 - `GET .../runner/workspace-artifacts/:leaseId/{baseline|release}/manifest`, `/chunks/:index`: 필요한 경우에만 기준선/반환 증분 bundle 다운로드.
 - `POST .../runner/workspace-artifacts/:leaseId/result/chunks/:index`, `/complete`: 결과 bundle 업로드. 인증된 머신과 lease 귀속을 검사한다.
 - `POST /api/machines/:machineId/workspace-pool/leases/:leaseId/retry-integration`: 메인 staging을 직접 검토·해결한 소유자/관리자만 `{confirmed:true,expectedHead:<검토한 staging HEAD>}`로 통합 복구한다. Mac 대화에 메인 staging 경로를 전달하지 않는다.
 - `POST /api/machines/:machineId/workspace-pool/leases/:leaseId/retry-preparation`: prepare 응답 유실로 보존된 원 위임에 대해 `{confirmed:true,expectedLeaseId,generation}`으로 같은 prepare receipt를 확인한다. 완료 receipt가 확인된 경우에만 원 위임을 다시 배정 대기로 돌린다. 중단된 started receipt를 강제 재실행하지 않는다.
+- `POST /api/machines/:machineId/workspace-pool/leases/:leaseId/release-unstarted`: 하위 실행 전에 실패해 격리된 lease를 소유자/관리자가 `{confirmed:true,delegationId,expectedLeaseId,expectedGeneration,expectedBaseCommit}`로 결과 없이 반환한다. 위임이 `failed/rejected`이고 실패 코드가 dispatch 전 코드(`AI_DELEGATION_POLICY_RUNTIME_*`, `AI_DELEGATION_PRIMARY_CHANGED`)이며 하위 turn·결과·복구·재개 기록이 없어야 한다. 같은 lease를 쓰는 다른 진행 중 위임이 없어야 하고, Core 조회가 정확히 `EXTERNAL_DISPATCH_NOT_FOUND`여야 한다. 이 404는 보조 근거이며 단독 근거가 아니다. 위임 기록과 lease·영수증은 지우지 않고, 위임의 `workspaceResult`에 반환 결과를 남긴다. 같은 요청을 반복하면 저장된 결과를 돌려준다.
 
 전송은 256KiB chunk와 전체 SHA256, 고정 크기·manifest 검증을 사용하며 bundle당 상한은 8GiB다. 중복 chunk는 같은 내용만 허용한다. Git bundle verify는 수신 측의 선행 커밋 보유 여부까지 검사하며, 기준 커밋 조상 관계와 봉인 HEAD도 검증한다. 상한은 대용량 증분 전송을 허용한다는 뜻이 아니다. 실제 변경량·임시 디스크 여유·Windows↔Mac 전송 시간을 확인하기 전에는 운영 활성화하지 않는다.
 
@@ -89,6 +90,13 @@ registry 예시의 경로는 실제 설정에 사용할 값이 아니라 계약 
 - 중단된 `started` receipt 또는 남은 물리/mutation 잠금: 자동 재실행·잠금 탈취를 하지 않고 복구 필요로 중단한다. 실제 Runner/Core runtime·Git 상태·session·receipt를 검토한 운영자 절차가 필요하다. 현재 자동 중단 복구나 강제 lease 반환 API는 제공하지 않는다.
 - 머신/대화/generation/branch/session 불일치: Git 변경이나 dispatch를 시작하지 않는다.
 - 취소·실행 실패: 원격 lease를 격리해서 보존한다. Git clean만으로 실패 작업을 자동 회수하지 않는다. 기존 서버의 확인된 dispatch/외부 한도 복구 흐름에서 소유권과 유휴 상태를 확인한 경우에만 재활성화한다.
+- dispatch 전송 전 실패(대기 중 담당 변경, 실행 정책 준비 실패): 서버가 전송 전임을 확인한 경우만 lease를 결과 없이 반환한다. 반환 조건은 다음과 같다.
+  - 서버 기록: 원격 명령은 prepare·bind·quarantine과 이전 반환 시도뿐이고, 체크포인트·봉인·재사용·복구 기록과 진행 중 명령이 없다.
+  - Runner 보고가 이 lease를 반영한 경우: 같은 경로·세대·branch·HEAD=baseCommit, clean, runtime idle이어야 한다. 운영자 반환은 보고 반영이 필수다.
+  - 메인: 원 기준선에서 이어진 HEAD여야 하며, 이 HEAD까지의 증분으로 worker를 `mnp/idle/<worker>`에 둔다. 메인이 진행한 경우도 이 반환 증분으로 전달한다.
+  - Runner의 봉인 전 `release`(`cancel:true`)는 marker 소유권, session, branch, dirty, runtime을 다시 검사한다. session 파일만 지우고 소유권 marker와 영수증은 보존한다.
+  - 하나라도 맞지 않거나 Runner가 명확히 거절하면 격리를 유지한다. 전달 결과가 미확정이면 `release-pending`에 같은 시도 ID를 보존하고, 같은 영수증으로만 결과를 다시 확인한다.
+  - dispatch를 보낸 뒤의 실패, Core 거절 응답, 대체·불일치 복구는 기존처럼 격리한다.
 - 메인 dirty/untracked 충돌: 기존 manager의 통합 대기와 재검증을 사용한다. 사용자 파일을 정리하지 않는다.
 - 메인 staging 통합 충돌: 원격 Fork와 staging을 보존하고 `REMOTE_INTEGRATION_CONFLICT_MANUAL_REVIEW`로 격리한다. 자동 충돌 해결 대화를 Mac에 잘못 보내지 않는다. 통합 잠금은 명시적 복구 전까지 보존한다.
 - 통합 성공/반환 실패: `release-pending`으로 유지한다. 반환 ack 전까지 용량으로 계산하지 않는다.

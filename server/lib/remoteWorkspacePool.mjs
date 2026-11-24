@@ -18,6 +18,36 @@ function workspaceIdentity(root) {
   return /^[a-z]:\//i.test(raw) || raw.startsWith('//') ? value.toLowerCase() : value
 }
 
+export const UNSTARTED_RELEASE = 'unstarted'
+const UNSTARTED_OPERATIONS = new Set(['prepare', 'bind', 'quarantine'])
+// 외부 호출 뒤 서버 재검증 단계의 코드는 Runner가 반환을 처리했는지 알려 주지 않는다.
+const UNCONFIRMED_RELEASE_CODES = new Set(['REMOTE_WORKSPACE_RESPONSE_PENDING', 'REMOTE_WORKSPACE_REVALIDATION_PENDING',
+  'REMOTE_WORKSPACE_RESERVATION_CHANGED', 'REMOTE_WORKSPACE_REGISTRATION_MISMATCH', 'REMOTE_WORKSPACE_OPERATION_PENDING',
+  'REMOTE_WORKSPACE_RECOVERY_REQUIRED'])
+
+// 서버 기록으로 하위 실행 흔적이 없는 lease인지 확인한다. 체크포인트·봉인·재사용·복구 명령이 있으면 반환하지 않는다.
+function assertUnstartedLease(lease) {
+  const operations = Object.values(lease.operations ?? {})
+  if (lease.sealed || lease.headCommit || lease.checkpoints?.length || lease.recoveryHistory?.length || lease.pendingOperation
+    || !['leased', 'quarantined'].includes(lease.status)
+    || !operations.some((operation) => operation.action === 'prepare')
+    || operations.some((operation) => !UNSTARTED_OPERATIONS.has(operation.action)
+      && !(operation.action === 'release' && operation.options?.cancel === true))
+    || operations.some((operation) => ['prepare', 'bind'].includes(operation.action) && !assignmentMatches(lease, operation.lease))) {
+    throw unstartedEvidenceError()
+  }
+}
+
+function unstartedEvidenceError() {
+  return workspaceError('REMOTE_WORKSPACE_UNSTARTED_EVIDENCE_REQUIRED', '하위 실행이 시작되지 않았다는 근거를 확인하지 못해 작업공간 격리를 유지했습니다.')
+}
+
+// Runner가 반환 명령을 처리하고 거절 코드를 돌려준 경우만 결정적 거절로 본다. 전송·응답 오류는 미확정이다.
+function definitiveRunnerRejection(error) {
+  const code = String(error?.reasonCode ?? error?.code ?? '')
+  return /^(REMOTE_WORKSPACE_|MNP_WORKSPACE_)/.test(code) && !UNCONFIRMED_RELEASE_CODES.has(code)
+}
+
 export class RemoteWorkspacePool {
   constructor({ local, stateFile, mainMachineId, callRunner, now = () => Date.now() }) {
     Object.assign(this, { local, stateFile, mainMachineId, callRunner, now })
@@ -526,12 +556,31 @@ export class RemoteWorkspacePool {
   async release(lease, result) {
     lease.status = 'release-pending'; lease.result = { ...result, status: 'waiting-integration', phase: 'release-pending' }
     await this.persist()
-    const integration = this.local.registry.integration
+    await this.prepareRelease(lease)
+    const released = await this.command(lease, 'release', { integratedCommit: lease.releaseCommit })
+    if (!released.released || released.idleCommit !== lease.releaseCommit) throw workspaceError('REMOTE_WORKSPACE_RELEASE_MISMATCH')
+    lease.status = 'completed'; lease.result = { ...result, remoteReleased: true, remoteDriftArchives: released.remoteDriftArchives ?? lease.remoteDriftArchives ?? [] }
+    lease.cleanupPending = true
+    await this.persist()
+    // A cleanup failure never turns a confirmed remote release back into an incomplete lease.
+    await this.cleanupCompletedLease(lease).catch(() => {})
+    return lease.result
+  }
+  // 반환 기준 커밋과 증분 bundle은 처음 한 번만 정해 저장한다. 재시도는 저장된 값으로 같은 영수증을 쓴다.
+  async prepareRelease(lease, { requireBaseAncestor = false } = {}) {
     if (!lease.releaseCommit) {
+      const integration = this.local.registry.integration
       const { integratedCommit, releaseMode } = await this.outside(lease, async () => {
       const integratedCommit = commitId(await git(integration.root, ['rev-parse', 'HEAD']))
       if (await git(integration.root, ['branch', '--show-current']) !== lease.baseBranch
         || await git(integration.root, ['rev-parse', 'HEAD']) !== integratedCommit) throw workspaceError('REMOTE_WORKSPACE_BASE_MOVED')
+      // 결과 없는 반환은 메인이 원 기준선에서 이어진 경우만 증분을 만든다. 이력이 바뀌었으면 반환하지 않는다.
+      if (requireBaseAncestor && integratedCommit !== lease.baseCommit) {
+        try { await git(integration.root, ['merge-base', '--is-ancestor', lease.baseCommit, integratedCommit]) } catch (error) {
+          if (error.code === 1) throw workspaceError('REMOTE_WORKSPACE_BASE_DIVERGED', '메인 이력이 원 기준선에서 이어지지 않아 작업공간을 반환하지 않았습니다.')
+          throw error
+        }
+      }
       const releaseMode = [lease.baseCommit, lease.headCommit].includes(integratedCommit) ? 'present' : 'delta'
       if (releaseMode === 'delta') {
         const file = this.artifacts.file(lease.leaseId, 'release')
@@ -545,14 +594,68 @@ export class RemoteWorkspacePool {
       lease.releaseMode = releaseMode; lease.releaseCommit = integratedCommit; await this.persist()
     }
     if (!['present', 'delta'].includes(lease.releaseMode)) throw workspaceError('REMOTE_WORKSPACE_TRANSFER_CONTRACT_MISMATCH')
-    const released = await this.command(lease, 'release', { integratedCommit: lease.releaseCommit })
-    if (!released.released || released.idleCommit !== lease.releaseCommit) throw workspaceError('REMOTE_WORKSPACE_RELEASE_MISMATCH')
-    lease.status = 'completed'; lease.result = { ...result, remoteReleased: true, remoteDriftArchives: released.remoteDriftArchives ?? lease.remoteDriftArchives ?? [] }
-    lease.cleanupPending = true
-    await this.persist()
-    // A cleanup failure never turns a confirmed remote release back into an incomplete lease.
-    await this.cleanupCompletedLease(lease).catch(() => {})
-    return lease.result
+  }
+  // 하위 실행 전에 끝난 lease만 결과 없이 반환한다. 근거가 하나라도 맞지 않으면 기존 계약대로 격리를 유지한다.
+  // evidence.kind=before-dispatch는 서버가 dispatch 전송 전임을 확인한 호출이다. 그 밖에는 최신 Runner 보고가 이 lease를 반영해야 한다.
+  async releaseUnstarted(id, { reason, evidence = null } = {}) {
+    return this.exclusive(async () => {
+      const lease = this.scoped(id)
+      if (lease.status === 'completed' && lease.result?.releaseKind === UNSTARTED_RELEASE) return lease.result
+      // 이미 반환 명령을 보냈을 수 있으면 보고 대신 같은 영수증으로만 결과를 확인한다.
+      if (!(lease.status === 'release-pending' && lease.unstartedRelease?.attempt)) {
+        assertUnstartedLease(lease)
+        const { pool, report } = this.pool(lease.ownership.machineId)
+        const worker = report.workspaces.find((item) => item.workspaceId === lease.workspaceId)
+        const reflected = worker?.leaseId === id
+        if (pool.poolId !== lease.poolId || !worker || (worker.leaseId && !reflected)
+          || (evidence?.kind !== 'before-dispatch' && !reflected)
+          || (reflected && (worker.projectRoot !== lease.projectRoot || worker.generation !== lease.ownership.generation
+            || worker.branch !== lease.branch || worker.headCommit !== lease.baseCommit || worker.dirty || !worker.runtimeIdle
+            || !['leased', 'quarantined'].includes(worker.status)))) throw unstartedEvidenceError()
+        if (this.local.state.integrationLeaseId) throw workspaceError('REMOTE_WORKSPACE_INTEGRATION_BUSY', '메인 통합이 진행 중이라 작업공간 반환을 보류했습니다.')
+        const releaseReason = String(reason ?? '').trim() || '하위 실행 전 실패로 작업공간을 결과 없이 반환합니다.'
+        lease.unstartedRelease = { reason: releaseReason, evidence, previousStatus: lease.status, previousResult: lease.result ?? null,
+          requestedAt: new Date(this.now()).toISOString(), attempt: randomUUID(), attempts: lease.unstartedRelease?.attempts ?? [] }
+        lease.status = 'release-pending'
+        lease.result = { status: 'release-pending', releaseKind: UNSTARTED_RELEASE, leaseId: id, jobId: lease.jobId, reason: releaseReason }
+        await this.persist()
+      }
+      let stage = 'prepare', released
+      try {
+        await this.prepareRelease(lease, { requireBaseAncestor: true })
+        stage = 'command'
+        released = await this.command(lease, 'release', { integratedCommit: lease.releaseCommit, cancel: true, attempt: lease.unstartedRelease.attempt })
+      } catch (error) {
+        // 명령 전 실패나 Runner가 결정적으로 거절한 경우만 원래 격리로 되돌린다. 전달 결과 미확정은 같은 시도로만 다시 확인한다.
+        if (!error.storageResourceError && (stage === 'prepare' || definitiveRunnerRejection(error))) await this.restoreUnstartedQuarantine(lease, error)
+        throw error
+      }
+      if (!released?.released || released.idleCommit !== lease.releaseCommit) throw workspaceError('REMOTE_WORKSPACE_RELEASE_MISMATCH')
+      const completedAt = new Date(this.now()).toISOString()
+      lease.unstartedRelease = { ...lease.unstartedRelease, completedAt }
+      lease.status = 'completed'
+      lease.result = { status: 'cancelled', releaseKind: UNSTARTED_RELEASE, leaseId: id, jobId: lease.jobId,
+        reason: lease.unstartedRelease.reason, idleCommit: released.idleCommit, releaseMode: lease.releaseMode, remoteReleased: true,
+        remoteDriftArchives: released.remoteDriftArchives ?? [], previousResult: lease.unstartedRelease.previousResult ?? null, completedAt }
+      lease.cleanupPending = true
+      await this.persist()
+      // A cleanup failure never turns a confirmed remote release back into an incomplete lease.
+      await this.cleanupCompletedLease(lease).catch(() => {})
+      return lease.result
+    })
+  }
+  async restoreUnstartedQuarantine(lease, error) {
+    const release = lease.unstartedRelease
+    const code = error?.reasonCode ?? error?.code ?? null
+    release.attempts = [...(release.attempts ?? []), { attempt: release.attempt, code, failedAt: new Date(this.now()).toISOString() }].slice(-20)
+    release.attempt = null
+    if (release.previousStatus === 'quarantined') {
+      lease.status = 'quarantined'; lease.result = release.previousResult
+      await this.persist()
+      return
+    }
+    // dispatch 전 자동 반환이 실패하면 기존 계약대로 격리를 Runner에도 전달한다.
+    await this.hold(lease, release.reason, { unstartedReleaseFailure: code })
   }
   async hold(lease, reason, details = {}) {
     if (lease.status === 'completed') return lease.result
@@ -678,6 +781,21 @@ export function remoteWorkspaceFacade(local, remote) {
         return null
       }
       return target.acquire(options)
+    }
+    if (property === 'releaseUnstarted') return (id, ...args) => {
+      if (!remote.hasLease(id)) throw workspaceError('REMOTE_WORKSPACE_LEASE_NOT_FOUND')
+      return remote.releaseUnstarted(id, ...args)
+    }
+    // dispatch 전송 전 실패만 사용한다. 원격 lease는 실행 흔적이 없을 때 반환하고, 근거가 부족하면 기존 계약대로 격리한다.
+    if (property === 'cancelBeforeDispatch') return async (id, reason) => {
+      if (!remote.hasLease(id)) return target.cancel(id, reason)
+      try { return await remote.releaseUnstarted(id, { reason, evidence: { kind: 'before-dispatch' } }) } catch (error) {
+        if (error.storageResourceError) throw error
+        const current = remote.state.leases[id]
+        // 반환 결과가 미확정이면 같은 시도로만 확인한다. 격리로 덮어쓰지 않는다.
+        if (['release-pending', 'quarantined', 'completed'].includes(current?.status)) return current.result ?? null
+        return remote.quarantine(id, reason)
+      }
     }
     if (methods.has(property)) return (id, ...args) => {
       if (property === 'reuseLease' && args[0]?.workspacePoolId) {

@@ -583,3 +583,112 @@ test('실제 Git: 명시한 원격 풀은 고정 대화에 증분 기준선을 �
   await f.agent().validateDispatch({ strategy: 'resume', targetConversationId: 'fixed-conversation', workspaceLease: lease })
   await assert.rejects(f.agent().validateDispatch({ strategy: 'resume', targetConversationId: 'other-conversation', workspaceLease: lease }), { reasonCode: 'REMOTE_WORKSPACE_CONVERSATION_MISMATCH' })
 })
+
+async function commitMain(f, file, text) {
+  await writeFile(path.join(f.integration, file), text)
+  await git(f.integration, ['add', file]); await git(f.integration, ['commit', '-m', '[김용민] 메인 진행'])
+  return git(f.integration, ['rev-parse', 'HEAD'])
+}
+
+test('실행 전 정책 실패로 격리된 lease는 최신 메인 증분으로 결과 없이 반환하고 기록을 보존한다', async (t) => {
+  const f = await fixture(t), lease = await f.acquire('unstarted-policy')
+  await f.remote.bindConversation(lease.leaseId, 'conversation-1')
+  const failure = '대상 대화의 위임 규칙 적용·확인에 실패해 작업을 시작하지 않았습니다.'
+  await f.remote.quarantine(lease.leaseId, failure)
+  const mainHead = await commitMain(f, 'main-next.txt', '메인 진행\n')
+  await f.observe()
+  const result = await f.remote.releaseUnstarted(lease.leaseId, { reason: '실행 전 실패 반환', evidence: { kind: 'operator' } })
+  assert.equal(result.status, 'cancelled'); assert.equal(result.releaseKind, 'unstarted'); assert.equal(result.remoteReleased, true)
+  assert.equal(result.idleCommit, mainHead); assert.equal(result.releaseMode, 'delta')
+  assert.equal(result.previousResult.status, 'quarantined'); assert.equal(result.previousResult.reason, failure)
+  const stored = f.remote.state.leases[lease.leaseId]
+  assert.equal(stored.status, 'completed'); assert.equal(stored.cleanupPending, false)
+  assert.equal(stored.unstartedRelease.previousStatus, 'quarantined')
+  assert.deepEqual(Object.values(stored.operations).map((item) => item.action).sort(), ['bind', 'prepare', 'quarantine', 'release'])
+  assert.equal(await git(f.worker, ['rev-parse', 'HEAD']), mainHead)
+  assert.equal(await git(f.worker, ['branch', '--show-current']), 'mnp/idle/fork1')
+  assert.equal(await git(f.worker, ['rev-parse', `refs/heads/${lease.branch}`]), lease.baseCommit)
+  assert.equal(await jsonFile(path.join(f.worker, '.ai-session.json')), null)
+  assert.ok(await jsonFile(path.join(f.worker, '.git', 'mnp-remote-owner.json')))
+  assert.equal(f.agent().state.leases[lease.leaseId].status, 'completed')
+  await assert.rejects(() => f.agent().validateDispatch({ workspaceLease: lease, strategy: 'resume', targetConversationId: 'conversation-1' }), /RECOVERY_REQUIRED/)
+  assert.deepEqual(await f.remote.releaseUnstarted(lease.leaseId, { reason: '같은 요청 반복' }), result)
+  await f.observe()
+  const next = await f.acquire('after-unstarted')
+  assert.equal(next.ownership.generation, 2); assert.equal(next.baseCommit, mainHead); assert.equal(next.baselineMode, 'present')
+})
+
+test('실행 흔적이나 근거가 부족하면 결과 없는 반환을 거절하고 격리를 유지한다', async (t) => {
+  const checkpointed = await fixture(t), withCheckpoint = await checkpointed.acquire('checkpointed')
+  await writeFile(path.join(checkpointed.worker, 'feature.txt'), 'remote change\n'); await checkpointed.checkpoint(withCheckpoint)
+  await checkpointed.remote.quarantine(withCheckpoint.leaseId, '확인 필요'); await checkpointed.observe()
+  await assert.rejects(() => checkpointed.remote.releaseUnstarted(withCheckpoint.leaseId, { evidence: { kind: 'operator' } }), { code: 'REMOTE_WORKSPACE_UNSTARTED_EVIDENCE_REQUIRED' })
+  assert.equal(checkpointed.remote.state.leases[withCheckpoint.leaseId].status, 'quarantined')
+
+  const dirty = await fixture(t), dirtyLease = await dirty.acquire('dirty')
+  await dirty.remote.quarantine(dirtyLease.leaseId, '정책 준비 실패')
+  await writeFile(path.join(dirty.worker, 'unexpected.txt'), '실행 흔적\n'); await dirty.observe()
+  await assert.rejects(() => dirty.remote.releaseUnstarted(dirtyLease.leaseId, { evidence: { kind: 'operator' } }), { code: 'REMOTE_WORKSPACE_UNSTARTED_EVIDENCE_REQUIRED' })
+  assert.equal(await git(dirty.worker, ['branch', '--show-current']), dirtyLease.branch)
+  assert.equal(dirty.remote.state.leases[dirtyLease.leaseId].status, 'quarantined')
+
+  const running = await fixture(t), runningLease = await running.acquire('running')
+  await running.remote.quarantine(runningLease.leaseId, '정책 준비 실패')
+  running.active(true); await running.observe()
+  await assert.rejects(() => running.remote.releaseUnstarted(runningLease.leaseId, { evidence: { kind: 'operator' } }), { code: 'REMOTE_WORKSPACE_UNSTARTED_EVIDENCE_REQUIRED' })
+
+  // 운영자 반환은 최신 Runner 보고가 lease를 반영해야 한다.
+  const stale = await fixture(t), staleLease = await stale.acquire('stale-report')
+  await stale.remote.quarantine(staleLease.leaseId, '정책 준비 실패')
+  await assert.rejects(() => stale.remote.releaseUnstarted(staleLease.leaseId, { evidence: { kind: 'operator' } }), { code: 'REMOTE_WORKSPACE_UNSTARTED_EVIDENCE_REQUIRED' })
+  assert.equal(stale.remote.state.leases[staleLease.leaseId].status, 'quarantined')
+  assert.equal(stale.remote.state.leases[staleLease.leaseId].unstartedRelease, undefined)
+
+  const diverged = await fixture(t), divergedLease = await diverged.acquire('diverged')
+  const failure = '정책 준비 실패'
+  await diverged.remote.quarantine(divergedLease.leaseId, failure); await diverged.observe()
+  const tree = await git(diverged.integration, ['rev-parse', 'HEAD^{tree}'])
+  await git(diverged.integration, ['reset', '--hard', await git(diverged.integration, ['commit-tree', tree, '-m', '[김용민] 이력 재작성'])])
+  await assert.rejects(() => diverged.remote.releaseUnstarted(divergedLease.leaseId, { evidence: { kind: 'operator' } }), { code: 'REMOTE_WORKSPACE_BASE_DIVERGED' })
+  const restored = diverged.remote.state.leases[divergedLease.leaseId]
+  assert.equal(restored.status, 'quarantined'); assert.equal(restored.result.reason, failure)
+  assert.equal(restored.unstartedRelease.attempt, null); assert.equal(restored.unstartedRelease.attempts[0].code, 'REMOTE_WORKSPACE_BASE_DIVERGED')
+  assert.equal(Object.values(restored.operations).some((item) => item.action === 'release'), false)
+  assert.equal(await git(diverged.worker, ['branch', '--show-current']), divergedLease.branch)
+})
+
+test('결과 없는 반환의 응답 유실은 같은 시도 영수증으로만 확인하고 그동안 새 배정을 막는다', async (t) => {
+  const f = await fixture(t), lease = await f.acquire('lost-unstarted-release')
+  await f.remote.quarantine(lease.leaseId, '정책 준비 실패'); await f.observe()
+  f.lose('release')
+  await assert.rejects(() => f.remote.releaseUnstarted(lease.leaseId, { evidence: { kind: 'operator' } }), /lost response/)
+  const stored = f.remote.state.leases[lease.leaseId]
+  assert.equal(stored.status, 'release-pending')
+  const attempt = stored.unstartedRelease.attempt
+  assert.ok(attempt)
+  await assert.rejects(() => f.acquire('other'), /사용 가능한 원격 worker/)
+  await f.restartAgent()
+  const result = await f.remote.releaseUnstarted(lease.leaseId, { evidence: { kind: 'operator' } })
+  assert.equal(result.releaseKind, 'unstarted'); assert.equal(stored.unstartedRelease.attempt, attempt)
+  assert.equal(Object.values(stored.operations).filter((item) => item.action === 'release').length, 1)
+})
+
+test('dispatch 전 실패 정리는 보고 갱신 전에도 반환하고 실행 흔적이 있으면 기존처럼 격리한다', async (t) => {
+  const f = await fixture(t)
+  const lease = await f.facade.acquire({ machineId: 'macbook', workspacePoolId: 'mac-pool', requestId: 'before-dispatch',
+    mapId: 'map', cardId: 'card', conversationId: 'conversation-1' })
+  await f.facade.bindConversation(lease.leaseId, 'conversation-1')
+  const mainHead = await commitMain(f, 'main-before-dispatch.txt', '정책 실패 사이 메인 진행\n')
+  const result = await f.facade.cancelBeforeDispatch(lease.leaseId, '실행 정책 준비 실패')
+  assert.equal(result.status, 'cancelled'); assert.equal(result.releaseKind, 'unstarted'); assert.equal(result.idleCommit, mainHead)
+  assert.equal(f.remote.state.leases[lease.leaseId].unstartedRelease.evidence.kind, 'before-dispatch')
+  assert.equal(f.remote.state.leases[lease.leaseId].unstartedRelease.previousStatus, 'leased')
+  assert.equal(await f.facade.cancelBeforeDispatch('missing-local-lease', '로컬 경로'), null)
+  await f.observe()
+  const second = await f.acquire('with-checkpoint-before-dispatch')
+  await writeFile(path.join(f.worker, 'feature.txt'), 'remote change\n'); await f.checkpoint(second)
+  const held = await f.facade.cancelBeforeDispatch(second.leaseId, '실행 정책 준비 실패')
+  assert.equal(held.status, 'quarantined')
+  assert.equal(f.remote.state.leases[second.leaseId].status, 'quarantined')
+  assert.equal(f.agent().state.leases[second.leaseId].status, 'quarantined')
+})

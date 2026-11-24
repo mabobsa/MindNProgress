@@ -235,6 +235,7 @@ import {
 import { verifyAiDelegationOriginalMessage } from './lib/aiDelegationDispatchRecovery.mjs'
 import { AiDelegationSourceCompletionError, assertAiDelegationSourceCompletionLease, readAiDelegationSourceCompletionProof } from './lib/aiDelegationSourceCompletion.mjs'
 import { readAiDelegationInterruptedProof } from './lib/aiDelegationInterruptedRecovery.mjs'
+import { aiDelegationUnstartedWorkspaceEvidence } from './lib/aiDelegationUnstartedWorkspace.mjs'
 import { buildSharedKnowledgeAudit } from './lib/sharedKnowledgeAudit.mjs'
 import {
   GlobalSearchInputError,
@@ -291,7 +292,7 @@ import {
   integrationWorktreeDirtyReasonCode,
   resolveCommitAuthorAccount,
 } from './lib/workspacePool.mjs'
-import { RemoteWorkspacePool, remoteWorkspaceFacade } from './lib/remoteWorkspacePool.mjs'
+import { RemoteWorkspacePool, UNSTARTED_RELEASE, remoteWorkspaceFacade } from './lib/remoteWorkspacePool.mjs'
 
 // 모든 import 평가가 끝난 시점부터 listen까지 단계별 시간을 기록한다.
 const startupTiming = createStartupTiming()
@@ -3762,6 +3763,17 @@ async function linkAiDelegationConversation({ map, targetCard, targetConversatio
   }
 }
 
+// dispatch 전송 전에 끝난 위임의 작업공간을 정리한다. 원격 lease는 실행 흔적이 없을 때만 반환하고 나머지는 기존처럼 격리한다.
+// 서버 종료 중에는 새 원격 명령을 시작하지 않는다. 반환 결과는 실패 기록에 남기도록 오류에 붙인다.
+async function cancelWorkspaceBeforeDispatch(leaseId, error) {
+  const reason = error?.message ?? String(error)
+  if (runtimeLifecycle.signal.aborted) return workspacePoolManager.cancel(leaseId, reason)
+  const workspaceResult = await workspacePoolManager.cancelBeforeDispatch(leaseId, reason)
+  if (workspaceResult?.releaseKind === UNSTARTED_RELEASE && workspaceResult.status === 'cancelled'
+    && error && typeof error === 'object') error.workspaceResult = workspaceResult
+  return workspaceResult
+}
+
 async function dispatchPreparedAiDelegation({
   queuedDelegation = null,
   id,
@@ -3792,7 +3804,7 @@ async function dispatchPreparedAiDelegation({
       if (!card || current.trashedAt) throw aiDelegationDispatchError('대기 중 대상 카드가 변경되었습니다.', 409, 'AI_DELEGATION_PRIMARY_CHANGED')
       assertAiDelegationPrimaryUnchanged(card.data, queuedDelegation.primarySelection)
     } catch (error) {
-      if (workspaceLease && !resumedDelegation) await workspacePoolManager.cancel(workspaceLease.leaseId, error.message)
+      if (workspaceLease && !resumedDelegation) await cancelWorkspaceBeforeDispatch(workspaceLease.leaseId, error)
       throw error
     }
   }
@@ -3831,7 +3843,7 @@ async function dispatchPreparedAiDelegation({
       fetchOn: fetchAionUiOn, machineId: targetHomeMachineId, signal: runtimeLifecycle.signal })
     applyDelegationRuntimeSelection(selection, runtimePolicyVerification)
   } catch (error) {
-    if (workspaceLease && !resumedDelegation) await workspacePoolManager.cancel(workspaceLease.leaseId, error.message)
+    if (workspaceLease && !resumedDelegation) await cancelWorkspaceBeforeDispatch(workspaceLease.leaseId, error)
     throw error
   }
   let targetConversationId = requestedConversationId
@@ -5789,6 +5801,7 @@ async function drainWaitingWorkspaceDelegations() {
         childError: error?.message ?? String(error),
         failureReasonCode: error?.reasonCode ?? error?.code ?? 'AI_DELEGATION_START_REJECTED',
         ...(needsRecovery ? { recoveryRequiredAt: new Date().toISOString(), recoveryDetails: error?.details ?? null } : {}),
+        ...(error?.workspaceResult ? { workspaceResult: error.workspaceResult } : {}),
         resource: null,
       })
       clearAiDelegationWaitPoll(queued.id)
@@ -13225,7 +13238,7 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
           startTimeoutMs: AI_DELEGATION_RUNTIME_READY_TIMEOUT_MS })
         applyDelegationRuntimeSelection(selection, runtimePolicyVerification)
       } catch (error) {
-        if (workspaceLease && !resumedDelegation) await workspacePoolManager.cancel(workspaceLease.leaseId, error.message)
+        if (workspaceLease && !resumedDelegation) await cancelWorkspaceBeforeDispatch(workspaceLease.leaseId, error)
         throw error
       }
       if (resumedDelegation) {
@@ -13872,18 +13885,58 @@ const server = createServer(runtimeLifecycle.request((request, response) => with
     }
 
     const remotePoolRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/workspace-pool$/)
-    const remoteRecoveryRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/workspace-pool\/leases\/([^/]+)\/(retry-integration|retry-preparation)$/)
+    const remoteRecoveryRoute = url.pathname.match(/^\/api\/machines\/([^/]+)\/workspace-pool\/leases\/([^/]+)\/(retry-integration|retry-preparation|release-unstarted)$/)
     if (remotePoolRoute || remoteRecoveryRoute) {
       const user = requireSignedInUser(request, response)
       if (!user) return
       const machineId = normalizeMachineId((remotePoolRoute ?? remoteRecoveryRoute)[1])
       if (!canEdit(user) || !machineManageableBy(machineRegistry, machineId, machineViewer(user))) return sendJson(response, 403, { error: '본인 소유 머신의 풀만 관리할 수 있습니다.' })
       try {
-        if (remotePoolRoute && request.method === 'GET') return sendJson(response, 200, remoteWorkspacePool.snapshot(machineId))
+        // 서버 메모리의 Runner 전달 대기열 수도 함께 보여 준다. Runner 내부 진행 중 작업은 이 값에 포함되지 않는다.
+        if (remotePoolRoute && request.method === 'GET') return sendJson(response, 200, {
+          ...remoteWorkspacePool.snapshot(machineId), operationQueue: machineOperationQueue.snapshot(machineId),
+        })
         if (remotePoolRoute && request.method === 'PUT') return sendJson(response, 200, await remoteWorkspacePool.approve(machineId, await readJsonBody(request)))
         if (remoteRecoveryRoute && request.method === 'POST') {
           const lease = remoteWorkspacePool.scoped(remoteRecoveryRoute[2])
           if (lease.ownership.machineId !== machineId) return sendJson(response, 403, { error: 'lease 머신 귀속이 다릅니다.' })
+          if (remoteRecoveryRoute[3] === 'release-unstarted') {
+            const input = await readJsonBody(request)
+            const delegation = aiDelegations.get(lease.requestId)
+            // 사람이 보존 기록과 현재 lease 값을 대조한 요청만 받는다. 같은 값의 재요청은 저장된 결과를 돌려준다.
+            if (input?.confirmed !== true || input.delegationId !== lease.requestId || input.expectedLeaseId !== lease.leaseId
+              || input.expectedGeneration !== lease.ownership.generation || input.expectedBaseCommit !== lease.baseCommit) {
+              return sendJson(response, 409, { error: '반환할 위임·lease·세대·기준 커밋을 확인한 요청이 필요합니다.', reasonCode: 'REMOTE_WORKSPACE_RELEASE_CONFIRMATION_REQUIRED' })
+            }
+            const recordRelease = (result) => delegation && delegation.workspaceResult?.releaseKind !== UNSTARTED_RELEASE
+              ? updateAiDelegation(delegation.id, { workspaceResult: result }) : delegation
+            if (lease.status === 'completed' && lease.result?.releaseKind === UNSTARTED_RELEASE) {
+              const updated = await recordRelease(lease.result)
+              return sendJson(response, 200, { result: lease.result, repeated: true, ...(updated ? { delegation: delegationPublicView(updated) } : {}) })
+            }
+            const otherActive = [...aiDelegations.values()].some((item) => item.id !== lease.requestId
+              && item.workspaceLease?.leaseId === lease.leaseId && !aiDelegationIsTerminal(item))
+            if (otherActive || !aiDelegationUnstartedWorkspaceEvidence(delegation, lease, { machineId })) {
+              return sendJson(response, 409, { error: '하위 실행이 시작되지 않았다는 위임 기록을 확인하지 못해 작업공간 격리를 유지했습니다.', reasonCode: 'REMOTE_WORKSPACE_UNSTARTED_EVIDENCE_REQUIRED' })
+            }
+            // Core에 같은 실행 기록이 없다는 조회는 보조 근거다. 조회 실패나 다른 응답이면 반환하지 않는다.
+            try {
+              await readAiDelegationDispatchStatus(fetchAionUiOn, { machineId, operationId: delegation.childOperationId ?? delegation.id })
+              return sendJson(response, 409, { error: 'AionCore에 같은 위임의 실행 기록이 있어 작업공간을 반환하지 않았습니다.', reasonCode: 'REMOTE_WORKSPACE_DISPATCH_RECORDED' })
+            } catch (error) {
+              throwIfRuntimeStopping(error, runtimeLifecycle.signal)
+              if (error.code !== 'AI_DELEGATION_STATUS_NOT_FOUND' || error.cause?.code !== 'EXTERNAL_DISPATCH_NOT_FOUND') {
+                return sendJson(response, 409, { error: 'AionCore의 실행 기록 부재를 확인하지 못해 작업공간을 반환하지 않았습니다.', reasonCode: 'REMOTE_WORKSPACE_DISPATCH_UNCONFIRMED' })
+              }
+            }
+            const result = await remoteWorkspacePool.releaseUnstarted(lease.leaseId, {
+              reason: '하위 실행 전에 끝난 위임의 격리 작업공간을 결과 없이 반환했습니다.',
+              evidence: { kind: 'operator', delegationId: delegation.id, failureReasonCode: delegation.failureReasonCode,
+                instructionHash: delegation.instructionHash ?? null, dispatchLookup: 'EXTERNAL_DISPATCH_NOT_FOUND', requestedBy: user.id },
+            })
+            const updated = await recordRelease(result)
+            return sendJson(response, 200, { result, ...(updated ? { delegation: delegationPublicView(updated) } : {}) })
+          }
           if (remoteRecoveryRoute[3] === 'retry-preparation') {
             const delegation = aiDelegations.get(lease.requestId)
             if (!delegation || delegation.targetHomeMachineId !== machineId || delegation.mapId !== lease.mapId

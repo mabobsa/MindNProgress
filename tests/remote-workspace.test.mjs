@@ -65,7 +65,7 @@ async function fixture(t, { remoteCommitPrefix } = {}) {
     agent: () => agent, restartAgent: async () => { agent = await buildAgent() }, lose: (action) => { lostAction = action }, active: (value) => { active = value } }
 }
 
-test('실제 Git: 원격 prepare → checkpoint → staging 통합 → 반환 확인', async (t) => {
+test('실제 Git: 원격 prepare → checkpoint → Git 객체 통합 → 반환 확인', async (t) => {
   const f = await fixture(t)
   const localBefore = JSON.stringify(f.local.state.leases)
   const lease = await f.acquire()
@@ -88,6 +88,7 @@ test('실제 Git: 원격 prepare → checkpoint → staging 통합 → 반환 �
   await assert.rejects(() => stat(path.join(f.remote.artifacts.root, lease.leaseId)), { code: 'ENOENT' })
   await assert.rejects(() => stat(path.join(f.root, 'remote-shared', 'remote-runner', 'artifacts', lease.leaseId)), { code: 'ENOENT' })
   await assert.rejects(() => stat(path.join(f.remote.root, 'staging', lease.leaseId)), { code: 'ENOENT' })
+  await assert.rejects(() => stat(f.remote.integrationStore(lease.leaseId)), { code: 'ENOENT' })
   assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'remote change\n')
   assert.equal(await jsonFile(path.join(f.worker, '.ai-session.json')), null)
   assert.equal(JSON.stringify(f.local.state.leases), localBefore)
@@ -223,28 +224,27 @@ test('완료 후 산출물 정리가 실패하면 결과는 유지하고 다음 
   await assert.rejects(() => stat(path.join(f.remote.artifacts.root, lease.leaseId)), { code: 'ENOENT' })
 })
 
-test('완료 정리는 staging 밖의 추적·미추적 drift 복구 자료와 결과 기록을 보존한다', async (t) => {
+test('원격 통합은 메인 서버에 작업 트리를 만들지 않고 통합 저장소는 완료 후 정리한다', async (t) => {
   const f = await fixture(t), lease = await f.acquire()
-  await writeFile(path.join(f.worker, 'feature.txt'), 'checkpointed result\n')
-  await f.checkpoint(lease)
-  const stored = f.remote.state.leases[lease.leaseId]
-  const sealed = await f.remote.command(stored, 'seal', { checkpointRound: 1 })
-  stored.headCommit = sealed.headCommit; stored.resultMode = sealed.resultMode
-  const stage = await f.remote.stage(stored)
-  const projectRoot = stage.state.leases[lease.leaseId].projectRoot
-  await writeFile(path.join(projectRoot, 'feature.txt'), 'uncheckpointed review\n')
-  await writeFile(path.join(projectRoot, 'operator-review.txt'), 'preserve review material\n')
-
-  const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
-  assert.equal(result.status, 'completed')
-  const recoveryRoot = path.join(f.remote.root, 'recovery', lease.leaseId)
-  assert.ok(result.driftArchive.startsWith(`${recoveryRoot}${path.sep}`))
-  assert.equal(await readFile(path.join(result.driftArchive, 'untracked', 'operator-review.txt'), 'utf8'), 'preserve review material\n')
-  assert.match(await readFile(path.join(result.driftArchive, 'tracked.diff'), 'utf8'), /uncheckpointed review/)
-  assert.equal((await jsonFile(path.join(recoveryRoot, 'job-results', `${lease.jobId}.json`))).driftArchive, result.driftArchive)
-  assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'checkpointed result\n')
+  await writeFile(path.join(f.worker, 'incoming.txt'), 'remote file\n'); await f.checkpoint(lease, ['incoming.txt'])
+  // 메인에 같은 경로의 미추적 파일이 있으면 통합하지 않고 기다린다. 그동안 통합 저장소를 확인한다.
+  await writeFile(path.join(f.integration, 'incoming.txt'), 'user untracked\n')
+  const waiting = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(waiting.status, 'waiting-integration'); assert.equal(waiting.reasonCode, 'integration-untracked-collision')
+  assert.deepEqual(waiting.untrackedChanges, ['incoming.txt'])
+  assert.equal(waiting.integrationHeadCommit, undefined, '로컬 전용 결과 정정 복구를 원격 결과에 제시하지 않는다')
+  const store = f.remote.integrationStore(lease.leaseId)
+  assert.equal(await git(store, ['rev-parse', '--is-bare-repository']), 'true')
+  for (const name of ['incoming.txt', 'feature.txt', '.gitignore']) await assert.rejects(() => stat(path.join(store, name)), { code: 'ENOENT' })
   await assert.rejects(() => stat(path.join(f.remote.root, 'staging', lease.leaseId)), { code: 'ENOENT' })
-  await assert.rejects(() => stat(path.join(f.remote.artifacts.root, lease.leaseId)), { code: 'ENOENT' })
+  assert.equal(await readFile(path.join(f.integration, 'incoming.txt'), 'utf8'), 'user untracked\n')
+  assert.equal(f.local.state.integrationLeaseId, null, '대기 중에는 메인 통합 잠금을 잡지 않는다')
+  await rm(path.join(f.integration, 'incoming.txt'))
+  const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(result.status, 'completed'); assert.equal(result.remoteReleased, true); assert.equal(result.replayed, false)
+  assert.equal(await readFile(path.join(f.integration, 'incoming.txt'), 'utf8'), 'remote file\n')
+  assert.equal(await git(f.integration, ['rev-parse', 'HEAD']), f.remote.state.leases[lease.leaseId].headCommit, '메인이 그대로면 체크포인트 커밋을 그대로 반영한다')
+  await assert.rejects(() => stat(store), { code: 'ENOENT' })
 })
 
 test('재시작 후 이전 버전의 staging 복구 경로는 유지하고 큰 저장소만 정리한다', async (t) => {
@@ -347,54 +347,39 @@ test('완료 정리·Runner 재시작 후 receipt 재조회는 파일 없이 멱
   await assert.rejects(() => stat(path.join(f.remote.artifacts.root, lease.leaseId)), { code: 'ENOENT' })
 })
 
-test('staging은 로컬 속성·메타데이터 제외를 복사하고 미설정 신원·실제 변경을 안전하게 처리한다', async (t) => {
+test('메인이 진행했으면 원격 결과를 Git 객체로 다시 쌓고 CRLF 기준선·속성과 원 작성자·메시지를 유지한다', async (t) => {
   const f = await fixture(t)
   const relative = 'ProjectSettings/AudioManager.asset'
   const attributes = `${relative} -text -eol\n`
   const baseline = '%YAML 1.1\r\nAudioManager:\r\n  m_Volume: 1\r\n'
   await mkdir(path.join(f.integration, 'ProjectSettings'))
-  await writeFile(path.join(f.integration, '.gitignore'), '')
   await writeFile(path.join(f.integration, '.gitattributes'), '*.txt text eol=lf\n*.asset merge=unityyamlmerge eol=lf\n')
   await writeFile(path.join(f.integration, '.git', 'info', 'attributes'), attributes)
-  await writeFile(path.join(f.integration, '.git', 'info', 'exclude'), '/.ai-session.json\n')
   await writeFile(path.join(f.integration, relative), baseline)
   await git(f.integration, ['add', '.']); await git(f.integration, ['commit', '-m', '[김용민] 기존 CRLF 기준선 검증'])
   await writeFile(path.join(f.worker, '.git', 'info', 'attributes'), attributes)
-  await writeFile(path.join(f.worker, '.git', 'info', 'exclude'), '/.ai-session.json\n')
   await git(f.worker, ['fetch', f.integration, 'main']); await git(f.worker, ['merge', '--ff-only', 'FETCH_HEAD'])
   await f.observe()
   const lease = await f.acquire()
   await writeFile(path.join(f.worker, 'feature.txt'), 'attribute-safe result\n'); await f.checkpoint(lease)
-  const stored = f.remote.state.leases[lease.leaseId]
-  const sealed = await f.remote.command(stored, 'seal', { checkpointRound: 1 })
-  stored.headCommit = sealed.headCommit; stored.resultMode = sealed.resultMode
-  await git(f.integration, ['config', '--unset', 'user.name'])
-  await git(f.integration, ['config', '--unset', 'user.email'])
-  const stage = await f.remote.stage(stored)
-  const projectRoot = stage.state.leases[lease.leaseId].projectRoot
-  assert.equal(await readFile(path.join(projectRoot, '.git', 'info', 'attributes'), 'utf8'), attributes)
-  assert.equal(await readFile(path.join(projectRoot, '.git', 'info', 'exclude'), 'utf8'), '/.ai-session.json\n')
-  assert.equal(await readFile(path.join(projectRoot, relative), 'utf8'), baseline)
-  assert.equal(await git(projectRoot, ['status', '--porcelain', '--untracked-files=all']), '')
-  for (const key of ['user.name', 'user.email']) {
-    const identity = await git(f.integration, ['config', '--get', key]).catch((error) => {
-      if (error.code === 1) return null
-      throw error
-    })
-    const copied = await git(projectRoot, ['config', '--local', '--get', key]).catch((error) => {
-      if (error.code === 1) return null
-      throw error
-    })
-    assert.equal(copied, identity)
-  }
-  await git(f.integration, ['config', 'user.name', 'MnP test'])
-  await git(f.integration, ['config', 'user.email', 'mnp@example.invalid'])
-
+  const mainMoved = await commitMain(f, 'other.txt', 'main progressed\n')
+  // 통합 저장소에 신원이 없으면 원 커밋의 신원으로 다시 쌓는다.
+  await git(f.integration, ['config', '--unset', 'user.name']); await git(f.integration, ['config', '--unset', 'user.email'])
   await writeFile(path.join(f.integration, relative), baseline.replace('m_Volume: 1', 'm_Volume: 2'))
   assert.equal((await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })).status, 'waiting-integration')
   assert.match(await readFile(path.join(f.integration, relative), 'utf8'), /m_Volume: 2/)
   await writeFile(path.join(f.integration, relative), baseline)
-  assert.equal((await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })).status, 'completed')
+  const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(result.status, 'completed'); assert.equal(result.replayed, true)
+  assert.equal(result.integrationBaseCommit, mainMoved)
+  assert.equal(await git(f.integration, ['rev-parse', 'HEAD^']), mainMoved)
+  assert.equal(await readFile(path.join(f.integration, relative), 'utf8'), baseline)
+  assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'attribute-safe result\n')
+  assert.equal(await readFile(path.join(f.integration, 'other.txt'), 'utf8'), 'main progressed\n')
+  assert.equal(await git(f.integration, ['status', '--porcelain', '--untracked-files=all']), '')
+  const format = '--format=%an%n%ae%n%ad%n%cn%n%ce%n%B'
+  const original = await git(f.worker, ['log', '-1', '--date=raw', format, f.remote.state.leases[lease.leaseId].headCommit])
+  assert.equal(await git(f.integration, ['log', '-1', '--date=raw', format, 'HEAD']), original)
 })
 
 test('원격 결과 통합은 최신 main 미커밋 변경을 보존하고 자동 대기한다', async (t) => {
@@ -436,101 +421,186 @@ test('release 응답 유실은 통합 완료와 worker 반환을 구분하고 �
   assert.equal(result.remoteReleased, true)
 })
 
-test('원격 통합 충돌은 main을 보존하고 메인 staging 수동 복구로만 해제한다', async (t) => {
-  const f = await fixture(t), lease = await f.acquire()
+// 원격 결과와 메인이 같은 줄을 바꾼 충돌 상황을 만든다.
+async function remoteConflict(f) {
+  const lease = await f.acquire()
   await writeFile(path.join(f.worker, 'feature.txt'), 'remote change\n'); await f.checkpoint(lease)
-  await writeFile(path.join(f.integration, 'feature.txt'), 'main change\n')
-  await git(f.integration, ['add', 'feature.txt']); await git(f.integration, ['commit', '-m', '[김용민] 메인 변경'])
-  const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
-  assert.equal(result.status, 'quarantined'); assert.equal(result.reasonCode, 'REMOTE_INTEGRATION_CONFLICT_MANUAL_REVIEW')
-  assert.notEqual(result.stagingRoot, f.worker)
-  assert.ok((await readFile(path.join(result.stagingRoot, '.git', 'objects', 'info', 'alternates'), 'utf8')).includes(path.basename(f.integration)))
+  const mainHead = await commitMain(f, 'feature.txt', 'main change\n')
+  return { lease, mainHead, awaiting: await f.remote.finalize(lease.leaseId, { childStatus: 'completed' }) }
+}
+
+test('메인 충돌은 원격 Fork의 통합 브랜치에서 하위 AI가 해결하고 해결 후보만 메인에 반영한다', async (t) => {
+  const f = await fixture(t)
+  const { lease, mainHead, awaiting } = await remoteConflict(f)
+  assert.equal(awaiting.status, 'awaiting-conflict-resolution'); assert.deepEqual(awaiting.unmergedFiles, ['feature.txt'])
+  assert.equal(awaiting.conflictRound, 1); assert.equal(awaiting.integrationBaseCommit, mainHead)
+  assert.equal(awaiting.integrationBranch, `mnp/integrate/${lease.jobId}-1`)
+  // 메인은 바뀌지 않고 잠금도 잡지 않는다. Fork는 최신 메인 기준 통합 브랜치에 충돌을 남긴다.
+  assert.equal(await git(f.integration, ['rev-parse', 'HEAD']), mainHead)
   assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'main change\n')
-  await writeFile(path.join(result.stagingRoot, 'feature.txt'), 'merged result\n')
-  await git(result.stagingRoot, ['add', 'feature.txt'])
-  const recovered = await f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: await git(result.stagingRoot, ['rev-parse', 'HEAD']) })
-  assert.equal(recovered.status, 'completed')
+  assert.equal(f.local.state.integrationLeaseId, null)
+  assert.equal(await git(f.worker, ['branch', '--show-current']), awaiting.integrationBranch)
+  assert.match(await readFile(path.join(f.worker, 'feature.txt'), 'utf8'), /<<<<<<<[\s\S]*main change[\s\S]*remote change/)
+  const session = await jsonFile(path.join(f.worker, '.ai-session.json'))
+  assert.equal(session.branch, lease.branch); assert.equal(session.integration.branch, awaiting.integrationBranch)
+  // 충돌 해결 대화의 실행 전 검증은 통합 브랜치에서도 같은 lease로 통과한다.
+  await f.agent().validateDispatch({ workspaceLease: lease, strategy: 'resume', targetConversationId: 'conversation-1' })
+  assert.deepEqual(await f.remote.finalize(lease.leaseId, { childStatus: 'completed' }), awaiting, 'AI 해결 전에는 다시 준비하지 않는다')
+  // 하위 AI가 해결한 것처럼 파일을 정리하고 stage한다. cherry-pick 마무리는 Runner가 한다.
+  await writeFile(path.join(f.worker, 'feature.txt'), 'merged result\n'); await git(f.worker, ['add', 'feature.txt'])
+  const result = await f.remote.completeConflictResolution(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(result.status, 'completed'); assert.equal(result.remoteReleased, true); assert.equal(result.conflictResolvedByAi, true)
+  assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'merged result\n')
+  assert.equal(await git(f.integration, ['rev-parse', 'HEAD^']), mainHead)
+  assert.equal(await git(f.integration, ['status', '--porcelain', '--untracked-files=all']), '')
+  assert.equal(await git(f.worker, ['branch', '--show-current']), 'mnp/idle/fork1')
+  assert.equal(await git(f.worker, ['rev-parse', 'HEAD']), await git(f.integration, ['rev-parse', 'HEAD']))
+  await assert.rejects(() => stat(f.remote.integrationStore(lease.leaseId)), { code: 'ENOENT' })
+})
+
+test('충돌 해결 중 메인이 더 진행하면 해결 후보를 최신 메인 위에 다시 쌓는다', async (t) => {
+  const f = await fixture(t)
+  const { lease, awaiting } = await remoteConflict(f)
+  assert.equal(awaiting.status, 'awaiting-conflict-resolution')
+  const later = await commitMain(f, 'other.txt', 'while resolving\n')
+  await writeFile(path.join(f.worker, 'feature.txt'), 'merged result\n'); await git(f.worker, ['add', 'feature.txt'])
+  const result = await f.remote.completeConflictResolution(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(result.status, 'completed'); assert.equal(result.replayed, true); assert.equal(result.integrationBaseCommit, later)
+  assert.equal(await git(f.integration, ['rev-parse', 'HEAD^']), later)
+  assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'merged result\n')
+  assert.equal(await readFile(path.join(f.integration, 'other.txt'), 'utf8'), 'while resolving\n')
+})
+
+test('하위 AI가 충돌을 남기면 같은 통합 브랜치로 다시 요청하고 한도를 넘거나 실패하면 메인을 바꾸지 않고 격리한다', async (t) => {
+  const f = await fixture(t)
+  const { lease, mainHead, awaiting } = await remoteConflict(f)
+  const second = await f.remote.completeConflictResolution(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(second.status, 'awaiting-conflict-resolution'); assert.equal(second.conflictRound, 2)
+  assert.equal(second.integrationBranch, awaiting.integrationBranch)
+  const third = await f.remote.completeConflictResolution(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(third.conflictRound, 3)
+  const held = await f.remote.completeConflictResolution(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(held.status, 'quarantined'); assert.equal(held.reasonCode, 'REMOTE_INTEGRATION_CONFLICT_LIMIT')
+  assert.equal(held.phase, 'remote-integration'); assert.deepEqual(held.unmergedFiles, ['feature.txt'])
+  assert.equal(await git(f.integration, ['rev-parse', 'HEAD']), mainHead)
+
+  const g = await fixture(t)
+  const failed = await remoteConflict(g)
+  const unresolved = await g.remote.completeConflictResolution(failed.lease.leaseId, { childStatus: 'failed', childError: '충돌 해결 중 중단' })
+  assert.equal(unresolved.status, 'quarantined'); assert.equal(unresolved.reasonCode, 'REMOTE_INTEGRATION_CONFLICT_UNRESOLVED')
+  assert.equal(unresolved.reason, '충돌 해결 중 중단')
+  assert.equal(await git(g.integration, ['rev-parse', 'HEAD']), failed.mainHead)
+})
+
+test('충돌 해결 명령을 모르는 이전 Runner는 메인을 바꾸지 않고 갱신 안내로 격리하며 갱신 후 재시도로 이어간다', async (t) => {
+  const f = await fixture(t)
+  const callRunner = f.remote.callRunner
+  f.remote.callRunner = async (machineId, pathname, options) => {
+    if (String(options?.body?.action).startsWith('integrate-')) throw Object.assign(new Error('REMOTE_WORKSPACE_ACTION_INVALID'), { code: 'REMOTE_WORKSPACE_ACTION_INVALID' })
+    return callRunner(machineId, pathname, options)
+  }
+  const { lease, mainHead, awaiting: held } = await remoteConflict(f)
+  assert.equal(held.status, 'quarantined'); assert.equal(held.reasonCode, 'REMOTE_WORKSPACE_ACTION_INVALID')
+  assert.match(held.reason, /서브 머신의 MnP를 갱신/)
+  assert.equal(f.remote.state.leases[lease.leaseId].pendingOperation, undefined)
+  assert.equal(await git(f.integration, ['rev-parse', 'HEAD']), mainHead)
+  f.remote.callRunner = callRunner
+  const queued = await f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: f.remote.state.leases[lease.leaseId].headCommit })
+  assert.equal(queued.phase, 'integration-requeued')
+  const awaiting = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(awaiting.status, 'awaiting-conflict-resolution'); assert.equal(awaiting.integrationBranch, `mnp/integrate/${lease.jobId}-2`)
+  assert.equal(f.remote.state.leases[lease.leaseId].integrationHistory.length, 1)
+})
+
+test('충돌 해결이 중단된 원격 통합도 재시도로 Fork의 진행 중 충돌을 보존 정리하고 새 회차로 다시 준비한다', async (t) => {
+  const f = await fixture(t)
+  const { lease, awaiting } = await remoteConflict(f)
+  await writeFile(path.join(f.worker, 'scratch.txt'), 'partial resolution note\n')
+  await assert.rejects(() => f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: 'a'.repeat(40) }),
+    { reasonCode: 'REMOTE_WORKSPACE_RECOVERY_CONFIRMATION_REQUIRED' })
+  const queued = await f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: f.remote.state.leases[lease.leaseId].headCommit })
+  assert.equal(queued.status, 'waiting-integration'); assert.equal(queued.previousResult.status, 'awaiting-conflict-resolution')
+  const again = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(again.status, 'awaiting-conflict-resolution'); assert.equal(again.conflictRound, 1)
+  assert.equal(again.integrationBranch, `mnp/integrate/${lease.jobId}-2`); assert.notEqual(again.integrationBranch, awaiting.integrationBranch)
+  assert.equal(await git(f.worker, ['branch', '--show-current']), again.integrationBranch)
+  const drift = f.agent().state.leases[lease.leaseId].remoteDriftArchives.at(-1)
+  assert.equal(await readFile(path.join(drift, 'untracked', 'scratch.txt'), 'utf8'), 'partial resolution note\n')
+  await writeFile(path.join(f.worker, 'feature.txt'), 'merged result\n'); await git(f.worker, ['add', 'feature.txt'])
+  assert.equal((await f.remote.completeConflictResolution(lease.leaseId, { childStatus: 'completed' })).status, 'completed')
   assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'merged result\n')
 })
 
-// 결과 봉인 뒤 staging clone만 실패하도록 메인 브랜치 이름을 잠시 바꾼다. 메인 내용과 HEAD 커밋은 그대로다.
-async function stagingPreparationFailure(f) {
-  const lease = await f.acquire()
+test('fast-forward 뒤 기록 전에 중단돼도 같은 후보를 다시 쌓지 않고 반환만 이어간다', async (t) => {
+  const f = await fixture(t), lease = await f.acquire()
   await writeFile(path.join(f.worker, 'feature.txt'), 'remote change\n'); await f.checkpoint(lease)
-  const mainHead = await git(f.integration, ['rev-parse', 'HEAD'])
-  await git(f.integration, ['branch', '-m', 'main', 'main-hold'])
-  try { return { lease, mainHead, held: await f.remote.finalize(lease.leaseId, { childStatus: 'completed' }) } }
-  finally { await git(f.integration, ['branch', '-m', 'main-hold', 'main']) }
-}
-
-test('staging 준비 실패는 main을 바꾸지 않고 구분된 사유로 격리하며 통합 재시도는 staging을 다시 만들어 통합 대기로 돌린다', async (t) => {
-  const f = await fixture(t)
-  const { lease, mainHead, held } = await stagingPreparationFailure(f)
-  assert.equal(held.status, 'quarantined'); assert.equal(held.phase, 'staging-preparation'); assert.equal(held.childStatus, 'completed')
-  assert.equal(held.reasonCode, 'REMOTE_WORKSPACE_STAGING_PREPARATION_FAILED')
-  assert.match(held.reason, /^통합 준비용 staging을 만들지 못했습니다\. 메인과 완료된 작업 결과는 변경되지 않았습니다\. 원인: Command failed: git /)
-  assert.doesNotMatch(held.reason, /\n/)
-  const stored = f.remote.state.leases[lease.leaseId]
-  assert.equal(stored.sealed, true); assert.equal(stored.status, 'quarantined')
-  assert.equal(await git(f.integration, ['rev-parse', 'HEAD']), mainHead)
-  assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'baseline\n')
-  assert.equal(f.agent().state.leases[lease.leaseId].status, 'quarantined')
-
-  // 이전 시도가 남긴 미완성 staging 저장소는 지우지 않고 옆으로 옮긴 뒤 새로 만든다.
-  const stagingRoot = path.join(f.remote.root, 'staging', lease.leaseId)
-  await mkdir(path.join(stagingRoot, 'repository'), { recursive: true })
-  await writeFile(path.join(stagingRoot, 'repository', 'partial.txt'), 'partial checkout\n')
-  await assert.rejects(() => f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: 'a'.repeat(40) }),
-    { reasonCode: 'REMOTE_WORKSPACE_RECOVERY_CONFIRMATION_REQUIRED' })
-  assert.equal(stored.status, 'quarantined')
-  const leftovers = (await readdir(stagingRoot)).filter(name => name.startsWith('repository.incomplete-'))
-  assert.equal(leftovers.length, 1)
-  assert.equal(await readFile(path.join(stagingRoot, leftovers[0], 'partial.txt'), 'utf8'), 'partial checkout\n')
-  assert.equal(await git(path.join(stagingRoot, 'repository'), ['config', '--local', '--get', 'core.longpaths']), 'true')
-
-  const queued = await f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: stored.headCommit })
-  assert.equal(queued.status, 'waiting-integration'); assert.equal(queued.phase, 'staging-recreated')
-  assert.equal(queued.childStatus, 'completed'); assert.equal(queued.previousResult.phase, 'staging-preparation')
-  assert.equal(stored.status, 'waiting-integration')
-  assert.deepEqual(await f.remote.retryIntegration(lease.leaseId, {}), queued, '같은 재시도는 staging을 다시 만들지 않는다')
-  assert.equal((await readdir(stagingRoot)).filter(name => name.startsWith('repository.incomplete-')).length, 1)
-  assert.equal(await git(f.integration, ['rev-parse', 'HEAD']), mainHead, '재시도 접수만으로 main을 바꾸지 않는다')
-
-  const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
-  assert.equal(result.status, 'completed'); assert.equal(result.remoteReleased, true)
+  await commitMain(f, 'other.txt', 'main progressed\n')
+  const release = f.remote.release
+  f.remote.release = async () => { throw new Error('simulated stop after fast-forward') }
+  await assert.rejects(() => f.remote.finalize(lease.leaseId, { childStatus: 'completed' }), /simulated stop/)
+  const applied = await git(f.integration, ['rev-parse', 'HEAD'])
   assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'remote change\n')
-  assert.equal(await git(f.worker, ['branch', '--show-current']), 'mnp/idle/fork1')
-  // 통합이 끝난 뒤에는 기존 완료 정리 규칙대로 staging 전체를 정리한다.
-  await assert.rejects(() => stat(stagingRoot), { code: 'ENOENT' })
+  f.remote.release = release
+  const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(result.status, 'completed'); assert.equal(result.integratedCommit, applied)
+  assert.equal(await git(f.integration, ['rev-parse', 'HEAD']), applied, '같은 변경을 다시 쌓지 않는다')
 })
 
-test('수정 전 형식으로 저장된 staging 경로 초과 격리도 통합 재시도로 이어서 통합한다', async (t) => {
-  const f = await fixture(t)
-  const { lease } = await stagingPreparationFailure(f)
+test('메인에 이미 같은 변경이 있으면 빈 커밋을 만들지 않고 기록만 남긴 뒤 반환한다', async (t) => {
+  const f = await fixture(t), lease = await f.acquire()
+  await writeFile(path.join(f.worker, 'feature.txt'), 'same change\n'); await f.checkpoint(lease)
+  const mainHead = await commitMain(f, 'feature.txt', 'same change\n')
+  const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
+  assert.equal(result.status, 'completed'); assert.equal(result.integratedCommit, mainHead)
+  assert.deepEqual(result.droppedCommits, [f.remote.state.leases[lease.leaseId].headCommit])
+  assert.equal(await git(f.integration, ['rev-parse', 'HEAD']), mainHead)
+  assert.equal(await git(f.worker, ['rev-parse', 'HEAD']), mainHead)
+})
+
+test('수정 전 staging 방식에서 격리된 기록도 재시도로 봉인 결과부터 통합하고 남은 staging 사본을 정리한다', async (t) => {
+  const f = await fixture(t), lease = await f.acquire()
+  await writeFile(path.join(f.worker, 'feature.txt'), 'remote change\n'); await f.checkpoint(lease)
+  // 봉인까지만 진행하고, 수정 전 서버가 남긴 형식의 격리 기록과 미완성 staging 사본을 만든다.
   const stored = f.remote.state.leases[lease.leaseId]
+  const sealed = await f.remote.command(stored, 'seal', { checkpointRound: stored.checkpoints.length })
+  Object.assign(stored, { headCommit: sealed.headCommit, checkpoints: sealed.checkpoints, sealed: true, resultMode: sealed.resultMode, status: 'quarantined' })
   const repository = path.join(f.remote.root, 'staging', lease.leaseId, 'repository')
-  // 수정 전 서버는 staging 실패의 Git 출력을 사유 코드 없이 격리 사유로 저장했다.
   stored.result = { status: 'quarantined', leaseId: lease.leaseId, jobId: lease.jobId,
     reason: `Command failed: git --no-optional-locks -C ${repository} switch ${lease.branch}\nerror: unable to create file Assets/Deep/Name.strings: Filename too long\n` }
   await f.remote.persist()
-  await mkdir(repository, { recursive: true })
-  await writeFile(path.join(repository, 'partial.txt'), 'partial checkout\n')
+  await mkdir(repository, { recursive: true }); await writeFile(path.join(repository, 'partial.txt'), 'partial checkout\n')
+  await assert.rejects(() => f.remote.retryIntegration(lease.leaseId, { confirmed: false, expectedHead: stored.headCommit }),
+    { reasonCode: 'REMOTE_WORKSPACE_RECOVERY_CONFIRMATION_REQUIRED' })
   const queued = await f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: stored.headCommit })
-  assert.equal(queued.phase, 'staging-recreated'); assert.match(queued.previousResult.reason, /Filename too long/)
+  assert.equal(queued.status, 'waiting-integration'); assert.equal(queued.phase, 'integration-requeued')
+  assert.match(queued.previousResult.reason, /Filename too long/)
+  assert.deepEqual(await f.remote.retryIntegration(lease.leaseId, {}), queued, '같은 재시도는 같은 기록을 돌려준다')
   const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
   assert.equal(result.status, 'completed'); assert.equal(result.remoteReleased, true)
   assert.equal(await readFile(path.join(f.integration, 'feature.txt'), 'utf8'), 'remote change\n')
+  await assert.rejects(() => stat(path.join(f.remote.root, 'staging', lease.leaseId)), { code: 'ENOENT' })
 })
 
-test('staging 준비가 아닌 사유로 격리된 봉인 결과는 staging 재생성 경로로 통합 대기에 돌리지 않는다', async (t) => {
+test('원격 통합 반복은 메인 서버에 staging이나 통합 저장소를 남기지 않는다', { timeout: 900_000 }, async (t) => {
   const f = await fixture(t)
-  const { lease } = await stagingPreparationFailure(f)
-  const stored = f.remote.state.leases[lease.leaseId]
-  stored.result = { status: 'quarantined', leaseId: lease.leaseId, jobId: lease.jobId, reason: '원격 작업 취소: 실행 여부 확인 후 명시적 복구가 필요합니다.' }
-  await f.remote.persist()
-  const recovered = await f.remote.retryIntegration(lease.leaseId, { confirmed: true, expectedHead: stored.headCommit })
-  assert.notEqual(recovered?.phase, 'staging-recreated')
-  assert.notEqual(stored.result?.phase, 'staging-recreated')
+  const count = Number(process.env.MNP_REMOTE_INTEGRATION_LOAD_COUNT ?? 30)
+  const started = Date.now()
+  for (let index = 0; index < count; index++) {
+    await f.observe()
+    const lease = await f.acquire(`load-${index}`)
+    await writeFile(path.join(f.worker, `load-${index}.txt`), `remote ${index}\n`)
+    await f.checkpoint(lease, [`load-${index}.txt`], `checkpoint-${index}`)
+    // 다른 통합이 먼저 끝난 상황: 매 건 Git 객체로 메인 위에 다시 쌓는다.
+    await commitMain(f, `main-${index}.txt`, `main ${index}\n`)
+    const result = await f.remote.finalize(lease.leaseId, { childStatus: 'completed' })
+    assert.equal(result.status, 'completed'); assert.equal(result.replayed, true)
+  }
+  const elapsed = Date.now() - started
+  t.diagnostic(`remote integrations=${count} elapsedMs=${elapsed} averageMs=${Math.round(elapsed / count)}`)
+  await assert.rejects(() => stat(path.join(f.remote.root, 'staging')), { code: 'ENOENT' })
+  assert.deepEqual(await readdir(path.join(f.remote.root, 'integration')).catch((error) => { if (error.code === 'ENOENT') return []; throw error }), [])
+  assert.equal(await git(f.integration, ['status', '--porcelain', '--untracked-files=all']), '')
+  assert.equal(Number(await git(f.integration, ['rev-list', '--count', 'HEAD'])), 1 + count * 2)
 })
 
 test('물리 잠금과 coordinator 소유권은 다른 풀의 동시 점유를 차단한다', async (t) => {

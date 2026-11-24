@@ -32,8 +32,8 @@ test('작업공간 풀 코드가 작업공간·lease에 쓰는 상태 값은 모
   }
   // lease 종료·결과 파일 전용 값은 조회 결과의 작업공간 status로 노출되지 않는다(문서의 lease·결과 파일 상태 표).
   const doc = await read('docs/ai-workspace-pool-states.md')
-  // sealed는 Runner seal 동작의 응답 값이며 작업공간 상태가 아니다.
-  const nonWorkspace = new Set([...documentedStatuses(doc, 'lease 상태'), ...documentedStatuses(doc, '결과 파일 상태'), 'sealed'])
+  // sealed와 candidate-ready는 Runner seal·통합 충돌 명령의 응답 값이며 작업공간 상태가 아니다.
+  const nonWorkspace = new Set([...documentedStatuses(doc, 'lease 상태'), ...documentedStatuses(doc, '결과 파일 상태'), 'sealed', 'candidate-ready'])
   for (const status of used) {
     if (nonWorkspace.has(status) && !WORKSPACE_POOL_STATUS_GUIDE[status]) continue
     assert.ok(WORKSPACE_POOL_STATUS_GUIDE[status], `${status} 설명 누락`)

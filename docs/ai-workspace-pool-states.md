@@ -28,7 +28,8 @@ registry에서 `enabled=false`인 항목은 풀에 올리지 않는다(운영자
 | `finalizing` | 결과와 작업공간 상태를 회수하는 중이다. |
 | `waiting-integration` | 결과를 보존한 채 통합을 기다린다. 다른 작업의 통합 잠금, 통합 작업공간의 미커밋 변경·미추적 충돌, 일시적인 Git 상태 확인 실패 등이 원인이다. 원인이 정리되면 자동으로 다시 통합하므로 재위임하지 않는다. 세부 사유는 [작업 완료 후 통합 정리 대기](./ai-workspace-integration-retry.md)를 따른다. |
 | `integrating` | 최신 통합 기준에서 만든 통합 브랜치(`mnp/integrate/<jobId>`)에 체크포인트를 적용하는 중이다. |
-| `resolving-integration-conflict` | 통합 충돌을 같은 worker에서 같은 하위 AI 대화가 해결하는 중이다. 이때 lease 상태는 `awaiting-conflict-resolution`이다. |
+| `resolving-integration-conflict` | 통합 충돌을 같은 worker에서 같은 하위 AI 대화가 해결하는 중이다. 이때 lease 상태는 `awaiting-conflict-resolution`이다. 원격 풀에서는 원격 Fork의 통합 브랜치(`mnp/integrate/<jobId>-<회차>`)에서 해결한다. |
+| `integration-candidate` | 원격 풀 Runner 보고. 원격 Fork에서 충돌을 해결한 후보를 메인에 보냈고 메인 통합을 기다린다. 재위임하지 않는다. |
 | `result-correction-preparing`, `correcting-result` | 통합 대기 결과의 명시적 정정을 준비하거나 진행하는 중이다. [통합 대기 결과 정정](./ai-workspace-integration-retry.md#통합-대기-결과-정정)을 따른다. |
 | `quarantined` | dirty 상태, 준비 실패, 기준선 불일치, 비정상 종료처럼 자동 재사용할 수 없는 상태다. 사용자 변경을 자동 삭제하지 않으며, 원인을 확인하고 명시적으로 복구해야 한다. 일부 안전한 경우(변경 없는 과거 실패 등)만 다음 배정 전에 자동 회수한다. |
 
@@ -39,6 +40,7 @@ lease 상태는 위 작업공간 상태와 대부분 같은 이름을 쓰고, �
 | 상태 | 의미 |
 | --- | --- |
 | `awaiting-conflict-resolution` | 통합 충돌 해결을 기다리거나 진행 중이다(작업공간은 `resolving-integration-conflict`). |
+| `integration-preparing` | 원격 풀 전용. 메인 통합이 충돌해 원격 Fork에 통합 브랜치를 준비하는 중이다. 메인은 바뀌지 않았다. |
 | `result-correction-held` | 결과 정정 중 통합을 보류했다. |
 | `completed` | 통합까지 끝나 작업공간을 회수했다. |
 | `cancelled` | 변경 없이 종료되었거나 결과를 보존한 채 반환했다. 결과 파일 상태(`failed-clean`, `released-preserved`, `cancelled`)로 구분한다. |
@@ -83,7 +85,7 @@ lease 상태는 위 작업공간 상태와 대부분 같은 이름을 쓰고, �
 
 ## 원격 풀
 
-서브 머신 원격 풀은 위 상태에 더해 `release-pending`(통합 성공 후 Runner 반환 확인 대기)과 `cleanup-pending`(완료 산출물 정리 재시도 중, 새 배정 차단)을 쓴다. 세부 계약은 [서브 머신 Unity Fork 풀](./remote-fork-workspaces.md)을 따른다. Runner는 배정 기록이 없는 작업공간을 미커밋 변경이 있으면 `dirty`, 이 Runner가 만들지 않은 `.ai-session.json`이 있으면 `foreign-session`, 다른 코디네이터나 로컬 풀이 소유하면 `foreign-owner`로 보고하며, 이 상태들은 새 배정 후보가 아니다.
+서브 머신 원격 풀은 위 상태에 더해 `release-pending`(통합 성공 후 Runner 반환 확인 대기)과 `cleanup-pending`(완료 산출물 정리 재시도 중, 새 배정 차단)을 쓴다. 메인 서버는 원격 결과를 작업 트리 없이 Git 객체로 통합한다. 메인 통합이 충돌하면 lease는 `integration-preparing`을 거쳐 `awaiting-conflict-resolution`이 되고, 원격 Fork의 같은 하위 AI 대화가 충돌을 해결한다. 원격 lease의 통합 단계 격리와 중단된 원격 충돌 해결은 아래 로컬 재개 대신 원격 작업공간 풀의 `retry-integration`으로 봉인된 결과부터 다시 통합한다. 세부 계약은 [서브 머신 Unity Fork 풀](./remote-fork-workspaces.md)을 따른다. Runner는 배정 기록이 없는 작업공간을 미커밋 변경이 있으면 `dirty`, 이 Runner가 만들지 않은 `.ai-session.json`이 있으면 `foreign-session`, 다른 코디네이터나 로컬 풀이 소유하면 `foreign-owner`로 보고하며, 이 상태들은 새 배정 후보가 아니다.
 
 원격 Fork 체크포인트도 Runner에서 `WorkspacePoolManager.checkpoint`를 거치므로 아래 경로 제한이 똑같이 적용되고, 거부 사유는 코디네이터에서도 같은 `reasonCode`로 보인다. Runner 머신이 이 방어가 없는 이전 코드로 실행 중이면 적용되지 않으므로 Runner도 함께 갱신해야 한다.
 

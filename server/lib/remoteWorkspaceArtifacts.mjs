@@ -2,9 +2,8 @@ import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { ARTIFACT_CHUNK_BYTES, identifier, jsonFile, saveJson, workspaceError } from './remoteWorkspaceProtocol.mjs'
+import { ARTIFACT_CHUNK_BYTES, identifier, jsonFile, remoteArtifactKind, saveJson, workspaceError } from './remoteWorkspaceProtocol.mjs'
 
-const artifactKinds = new Set(['baseline', 'result', 'release'])
 export async function digestFile(file) {
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(file)) hash.update(chunk)
@@ -15,7 +14,7 @@ export class RemoteWorkspaceArtifacts {
   constructor(root, { maxBytes = 8 * 1024 ** 3 } = {}) { this.root = path.resolve(root); this.maxBytes = maxBytes }
   directory(leaseId, kind) {
     identifier(leaseId)
-    if (!artifactKinds.has(kind)) throw workspaceError('REMOTE_ARTIFACT_KIND_INVALID')
+    remoteArtifactKind(kind)
     return path.join(this.root, leaseId, kind)
   }
   file(leaseId, kind) { return path.join(this.directory(leaseId, kind), 'artifact.bundle') }

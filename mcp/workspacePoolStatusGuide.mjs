@@ -13,6 +13,8 @@ export const WORKSPACE_POOL_STATUS_GUIDE = Object.freeze({
   'resolving-integration-conflict': '통합 충돌을 같은 worker에서 같은 하위 AI 대화가 해결하는 중입니다.',
   'result-correction-preparing': '통합 대기 결과의 명시적 정정을 준비하는 중입니다.',
   'correcting-result': '통합 대기 결과의 명시적 정정을 진행하는 중입니다.',
+  'integration-preparing': '원격 풀 전용. 메인 통합이 충돌해 원격 Fork에 통합 브랜치를 준비하는 중입니다. 메인은 바뀌지 않았으며 같은 하위 AI 대화가 충돌을 해결합니다.',
+  'integration-candidate': '원격 풀 Runner 보고. 원격 Fork에서 충돌을 해결한 후보를 메인에 보냈고 메인 통합을 기다립니다. 재위임하지 마세요.',
   'release-pending': '원격 풀 전용. 통합 성공 후 Runner의 작업공간 반환 확인을 기다립니다.',
   'cleanup-pending': '원격 풀 전용. 완료 산출물 정리를 재시도하는 중이며 새 배정이 차단됩니다.',
   dirty: '원격 풀 Runner 보고. 배정 기록 없이 미커밋 변경이 있어 새 배정 후보가 아닙니다.',

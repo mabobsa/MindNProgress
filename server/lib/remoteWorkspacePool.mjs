@@ -1,21 +1,22 @@
 import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createResourceQueue, currentStorageBudget } from './storageBudget.mjs'
-import { copyFile, lstat, mkdir, rename, rm } from 'node:fs/promises'
+import { lstat, mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
-import { WorkspacePoolManager, WorkspacePoolUnavailableError, integrationWorktreeDirtyReasonCode } from './workspacePool.mjs'
+import { WorkspacePoolUnavailableError, integrationStatusRetryReasonCode, integrationUntrackedCollisionMessage, integrationUntrackedCollisionReasonCode,
+  integrationWorktreeDirtyMessage, integrationWorktreeDirtyReasonCode } from './workspacePool.mjs'
 import { RemoteWorkspaceArtifacts } from './remoteWorkspaceArtifacts.mjs'
 import { aiDelegationBusyDispatchRejected, aiDelegationWorkspaceLeaseMatches } from './aiDelegations.mjs'
 import { completedWorkspaceLeaseIds } from './completedAiHistory.mjs'
 import { assertAiDelegationInterruptedLease } from './aiDelegationInterruptedRecovery.mjs'
-import { REMOTE_STAGING_PHASE, STAGING_RECREATED, remoteStagingHold, remoteStagingHoldReason } from './remoteStagingFailure.mjs'
-import { REMOTE_WORKSPACE_VERSION, identifier, commitId, git, hasCommit, jsonFile, saveJson, stableHash, workspaceError, assignmentMatches } from './remoteWorkspaceProtocol.mjs'
+import { INTEGRATION_REQUEUED, REMOTE_INTEGRATION_PHASE, remoteIntegrationFailureReason } from './remoteIntegrationFailure.mjs'
+import { LONG_GIT_TIMEOUT_MS, committerIdentity, createRangeBundle, fetchBundle, isAncestor, linearCommits, openIntegrationStore, replayCommits } from './remoteObjectIntegration.mjs'
+import { REMOTE_INTEGRATION_ROUND_LIMIT, REMOTE_WORKSPACE_VERSION, identifier, commitId, git, hasCommit, jsonFile, remoteArtifactKind, saveJson, stableHash, workspaceError, assignmentMatches } from './remoteWorkspaceProtocol.mjs'
 
-// staging 준비 중 Git 오류를 구분된 사유 코드와 요약으로 바꾼다. 파일별 오류 전문은 남기지 않는다.
-function stagingError(error) {
-  const failure = remoteStagingHoldReason(error)
-  return Object.assign(workspaceError(failure.reasonCode, failure.message), failure.details ? { details: failure.details } : {})
-}
+// 원격 통합은 메인에서 이 회수만큼 하위 AI 충돌 해결을 요청한다. 로컬 Fork의 충돌 해결 한도와 같다.
+const REMOTE_CONFLICT_ROUND_LIMIT = 3
+// 같은 lease의 다른 외부 처리나 메인 상태 확인 지연은 격리하지 않고 다음 확인에서 다시 통합한다.
+const TRANSIENT_INTEGRATION_CODES = new Set(['REMOTE_WORKSPACE_OPERATION_PENDING', 'REMOTE_WORKSPACE_RESERVATION_CHANGED', integrationStatusRetryReasonCode])
 
 // Remote paths are identities reported by the authenticated Runner, never local paths.
 function workspaceIdentity(root) {
@@ -65,7 +66,6 @@ export class RemoteWorkspacePool {
     this.reservations = new Map()
     this.artifactQueues = new Map()
     this.artifactLocks = createResourceQueue()
-    this.stages = new Map()
   }
   async exclusive(action) {
     const scope = { release: await this.queue.acquire('state:remote-workspace-pool'), active: true }
@@ -131,7 +131,6 @@ export class RemoteWorkspacePool {
       this.state = { ...previous, workerGenerations: generations, completedRequests,
         leases: Object.fromEntries(Object.entries(previous.leases).filter(([id]) => !ids.has(id))) }
       try { await this.persist() } catch (error) { this.state = previous; throw error }
-      for (const id of ids) this.stages.delete(id)
       return { removed: ids.size }
     })
   }
@@ -207,7 +206,8 @@ export class RemoteWorkspacePool {
   }
   hasLease(id) { return Boolean(this.state?.leases[id]) }
   publicLease(lease) {
-    const { checkpoints, result: _result, operations: _operations, sealed: _sealed, pendingOperation: _pendingOperation, ...publicFields } = lease
+    const { checkpoints, result: _result, operations: _operations, sealed: _sealed, pendingOperation: _pendingOperation,
+      integration: _integration, integrationHistory: _integrationHistory, releaseResult: _releaseResult, ...publicFields } = lease
     return { ...publicFields, checkpointCount: checkpoints?.length ?? 0 }
   }
   poolForWorkspace(root, machineId) {
@@ -289,11 +289,13 @@ export class RemoteWorkspacePool {
   async cleanupCompletedLease(lease) {
     if (lease.status !== 'completed' || !lease.cleanupPending) return
     if (this.reservations.has(lease.leaseId)) return
+    const artifactKeys = () => [...this.artifactQueues.keys()].filter((key) => key.startsWith(`${lease.leaseId}:`))
     await this.outside(lease, async () => {
-    const artifactKeys = ['baseline', 'result', 'release'].map((kind) => `${lease.leaseId}:${kind}`)
     // Closing the lease rejects new requests; drain accepted reads/writes before deleting their files.
-    await Promise.all(artifactKeys.map((key) => (this.artifactQueues.get(key) ?? Promise.resolve()).catch(() => {})))
+    await Promise.all(artifactKeys().map((key) => (this.artifactQueues.get(key) ?? Promise.resolve()).catch(() => {})))
     await this.artifacts.cleanup(lease.leaseId)
+    // 작업 트리 없는 통합 저장소와 이전 형식의 staging 사본을 함께 정리한다.
+    await rm(this.integrationStore(lease.leaseId), { recursive: true, force: true, maxRetries: 6, retryDelay: 100 })
     const stagingRoot = path.join(this.root, 'staging', lease.leaseId)
     const legacyRecovery = await lstat(path.join(stagingRoot, 'workspace-drift')).catch((error) => {
       if (error.code === 'ENOENT') return null
@@ -306,9 +308,7 @@ export class RemoteWorkspacePool {
       await rm(path.join(stagingRoot, 'state.json'), removalOptions)
     } else await rm(stagingRoot, removalOptions)
     }, { checkPool: false })
-    this.stages.delete(lease.leaseId)
-    const artifactKeys = ['baseline', 'result', 'release'].map((kind) => `${lease.leaseId}:${kind}`)
-    for (const key of artifactKeys) this.artifactQueues.delete(key)
+    for (const key of artifactKeys()) this.artifactQueues.delete(key)
     lease.cleanupPending = false
     await this.persist()
   }
@@ -461,86 +461,22 @@ export class RemoteWorkspacePool {
       return { ...result, lease: this.publicLease(lease) }
     })
   }
-  async stage(lease) {
-    if (this.stages.has(lease.leaseId)) return this.stages.get(lease.leaseId)
-    const root = path.join(this.root, 'staging', lease.leaseId)
-    const stateFile = path.join(root, 'state.json'), workerPath = path.join(root, 'repository')
-    await mkdir(root, { recursive: true })
-    let state = await jsonFile(stateFile)
-    if (!state) {
-      // state 저장 전에 멈춘 staging 저장소는 통합에 쓰인 적 없는 파생 복제본이다. 지우지 않고 옆으로 옮겨 다시 만든다.
-      const leftover = await lstat(workerPath).catch((error) => { if (error.code === 'ENOENT') return null; throw error })
-      if (leftover) {
-        const stamp = new Date(this.now()).toISOString().replace(/[:.]/g, '-')
-        await rename(workerPath, path.join(root, `repository.incomplete-${stamp}-${randomUUID().slice(0, 8)}`))
-      }
-      // Keep staging refs and worktree separate while borrowing the integration repo's immutable Git objects.
-      try { await git(this.local.registry.integration.root, ['-c', 'core.longpaths=true', 'clone', '--shared', '--no-checkout', '--single-branch', '--branch', lease.baseBranch,
-        this.local.registry.integration.root, workerPath]) }
-      catch (error) { throw stagingError(error) }
-      // staging은 데이터 폴더 아래 깊은 경로에 만들어진다. Windows 기본 경로 한도를 넘는 Unity 경로도 꺼낼 수 있게
-      // Git 긴 경로 지원을 켠다. Windows가 아닌 OS에서는 Git이 이 설정을 무시한다.
-      await git(workerPath, ['config', 'core.longpaths', 'true'])
-      for (const key of ['user.name', 'user.email']) {
-        const identity = await git(this.local.registry.integration.root, ['config', '--get', key]).catch((error) => {
-          if (error.code === 1) return null
-          throw error
-        })
-        // Preserve configured identities without inventing a user or replacing Git's normal fallback.
-        if (identity) await git(workerPath, ['config', key, identity])
-      }
-      await git(workerPath, ['remote', 'set-url', 'origin', this.local.registry.originUrl])
-      // A clone does not inherit local checkout/ignore policy, including exclusions for lease metadata.
-      for (const file of ['attributes', 'exclude']) {
-        const source = path.resolve(this.local.registry.integration.root,
-          await git(this.local.registry.integration.root, ['rev-parse', '--git-path', `info/${file}`]))
-        const target = path.resolve(workerPath, await git(workerPath, ['rev-parse', '--git-path', `info/${file}`]))
-        await mkdir(path.dirname(target), { recursive: true })
-        await copyFile(source, target).catch((error) => { if (error.code !== 'ENOENT') throw error })
-      }
-      if (!['delta', 'present'].includes(lease.resultMode) || (lease.resultMode === 'present' && lease.headCommit !== lease.baseCommit)) {
-        throw workspaceError('REMOTE_WORKSPACE_TRANSFER_CONTRACT_MISMATCH')
-      }
-      try {
-        if (lease.resultMode === 'delta') {
-          await git(workerPath, ['bundle', 'verify', this.artifacts.file(lease.leaseId, 'result')])
-          await git(workerPath, ['fetch', '--no-tags', this.artifacts.file(lease.leaseId, 'result'),
-            `refs/heads/${lease.branch}:refs/heads/${lease.branch}`])
-          await git(workerPath, ['switch', lease.branch])
-        } else await git(workerPath, ['switch', '-c', lease.branch, lease.baseCommit])
-      } catch (error) {
-        // 결과를 꺼내는 Git 출력에는 프로젝트 전체의 파일별 오류가 섞인다. 구분된 사유와 요약만 남긴다.
-        throw stagingError(error)
-      }
-      if (await git(workerPath, ['rev-parse', 'HEAD']) !== lease.headCommit) throw workspaceError('REMOTE_WORKSPACE_RESULT_HEAD_MISMATCH')
-      await git(workerPath, ['merge-base', '--is-ancestor', lease.baseCommit, lease.headCommit])
-      const staged = { ...lease, projectRoot: workerPath, status: 'leased', result: null }
-      await saveJson(path.join(workerPath, '.ai-session.json'), staged)
-      state = { leases: { [lease.leaseId]: staged }, workspaces: { [lease.workspaceId]: { status: 'leased', leaseId: lease.leaseId } }, integrationLeaseId: null }
-      await saveJson(stateFile, state)
-    }
-    const manager = new WorkspacePoolManager({ stateFile })
-    manager.registry = { ...this.local.registry, sharedRoot: path.join(this.root, 'recovery', lease.leaseId),
-      workers: [{ id: lease.workspaceId, root: workerPath, role: 'worker' }],
-      workspaces: [this.local.registry.integration, { id: lease.workspaceId, root: workerPath, role: 'worker' }] }
-    manager.state = state
-    const persist = manager.persist.bind(manager)
-    manager.persist = async () => {
-      await persist()
-      this.local.state.integrationLeaseId = manager.state.integrationLeaseId
-      await this.local.persist()
-    }
-    manager.runExclusive = (action) => this.local.runExclusive(async () => {
-      manager.state.integrationLeaseId = this.local.state.integrationLeaseId
-      return action()
-    })
-    this.stages.set(lease.leaseId, manager)
-    return manager
+  integrationStore(leaseId) { return path.join(this.root, 'integration', `${identifier(leaseId)}.git`) }
+  waitingResult(lease, fields = {}) {
+    return { status: 'waiting-integration', leaseId: lease.leaseId, jobId: lease.jobId, childStatus: 'completed', childError: null,
+      headCommit: lease.headCommit ?? null, integratedCommit: null, blockingLeaseId: null, reasonCode: null, waitingReason: null,
+      trackedChanges: [], untrackedChanges: [], phase: REMOTE_INTEGRATION_PHASE, ...fields, updatedAt: new Date(this.now()).toISOString() }
   }
   async finalize(id, options = {}) {
     return this.exclusive(async () => {
       const lease = this.scoped(id)
       if (['completed', 'quarantined'].includes(lease.status)) return lease.result ?? null
+      if (lease.status === 'release-pending') return this.release(lease, this.pendingReleaseResult(lease))
+      // 원격 Fork의 충돌 준비·완료 명령 응답을 확인하지 못했으면 같은 명령으로만 이어서 확인한다.
+      if (lease.status === 'integration-preparing') return this.prepareRemoteConflict(lease)
+      if (lease.status === 'awaiting-conflict-resolution') {
+        return lease.integration?.completeAttempt ? this.completeConflictStep(lease) : lease.result ?? null
+      }
       if (options.childStatus !== 'completed') return this.hold(lease, options.childError ?? '하위 실행이 완료되지 않았습니다.')
       if (!lease.sealed) {
         const sealed = await this.command(lease, 'seal', { checkpointRound: lease.checkpoints.length })
@@ -560,35 +496,268 @@ export class RemoteWorkspacePool {
         lease.remoteDriftArchives = sealed.remoteDriftArchives ?? []
         lease.status = 'waiting-integration'; await this.persist()
       }
-      let stage
-      try { stage = await this.outside(lease, () => this.stage(lease)) } catch (error) {
-        if (error.storageResourceError) throw error
-        // staging 준비는 메인 통합 저장소를 바꾸기 전 단계다. 봉인 결과를 보존하고 구분된 사유로 격리한다.
-        const failure = remoteStagingHoldReason(error)
-        return this.hold(lease, failure.message, { reasonCode: failure.reasonCode, phase: REMOTE_STAGING_PHASE, childStatus: 'completed',
-          stagingRoot: path.join(this.root, 'staging', lease.leaseId), ...(failure.details ? { details: failure.details } : {}) })
-      }
-      let result
-      try { result = await this.outside(lease, () => stage.finalize(id, options)) } catch (error) {
-        return this.hold(lease, error.message, { stagedResult: stage.state.leases[id].result, stagingRoot: stage.state.leases[id].projectRoot, reasonCode: error.reasonCode ?? error.code })
-      }
-      if (result?.status === 'awaiting-conflict-resolution') {
-        return this.hold(lease, '원격 결과의 메인 staging 통합 충돌입니다. staging에서 명시적으로 복구해야 합니다.', { stagedResult: result, stagingRoot: stage.state.leases[id].projectRoot, reasonCode: 'REMOTE_INTEGRATION_CONFLICT_MANUAL_REVIEW' })
-      }
-      if (result?.status !== 'completed') {
-        lease.status = result?.status ?? 'waiting-integration'; lease.result = result
-        await this.persist(); return result
-      }
-      return this.release(lease, result)
+      return this.integrate(lease)
     })
   }
+  // 봉인된 결과나 원격 Fork가 충돌을 해결한 후보를 메인에 통합한다.
+  // 메인 서버에는 작업 트리를 만들지 않고, 메인 잠금은 tree 계산과 fast-forward 동안만 잡는다.
+  async integrate(lease) {
+    let outcome
+    try { outcome = await this.outside(lease, () => this.integrateMain(lease), { checkPool: false }) } catch (error) {
+      if (error.storageResourceError) throw error
+      if (TRANSIENT_INTEGRATION_CODES.has(error.reasonCode ?? error.code)) {
+        lease.status = 'waiting-integration'
+        lease.result = this.waitingResult(lease, { reasonCode: error.reasonCode ?? error.code, waitingReason: '같은 작업공간의 다른 처리나 메인 상태 확인이 끝나면 다시 통합합니다.' })
+        await this.persist(); return lease.result
+      }
+      const failure = remoteIntegrationFailureReason(error)
+      return this.hold(lease, failure.message, { reasonCode: failure.reasonCode, phase: REMOTE_INTEGRATION_PHASE, childStatus: 'completed' })
+    }
+    if (outcome.kind === 'waiting') {
+      lease.status = 'waiting-integration'
+      lease.result = this.waitingResult(lease, outcome.fields)
+      await this.persist(); return lease.result
+    }
+    if (outcome.kind === 'conflict') return this.prepareRemoteConflict(lease, outcome)
+    const result = { status: 'completed', leaseId: lease.leaseId, jobId: lease.jobId, childStatus: 'completed', childError: null,
+      headCommit: lease.headCommit, integratedCommit: outcome.integratedCommit, integrationBaseCommit: outcome.integrationBaseCommit,
+      replayed: outcome.replayed, droppedCommits: outcome.droppedCommits, conflictResolvedByAi: Boolean(lease.integration?.candidateCommit),
+      // 하위 AI가 충돌을 해결한 결과에 메인 대비 변경이 남지 않았으면 검토할 수 있게 표시한다.
+      ...(lease.integration?.candidateMode === 'present' ? { conflictResolutionEmpty: true } : {}),
+      completedAt: new Date(this.now()).toISOString() }
+    return this.release(lease, result)
+  }
+  // 통합할 커밋 구간을 작업 트리 없는 저장소로 가져온다. 충돌 해결 후보가 있으면 그 후보를, 없으면 봉인된 결과를 쓴다.
+  async integrationSource(lease, store) {
+    const integration = lease.integration
+    if (integration?.candidateCommit) {
+      if (integration.candidateMode === 'delta') {
+        const fetched = await fetchBundle(store, this.artifacts.file(lease.leaseId, `candidate-${integration.round}`),
+          `refs/heads/${integration.branch}`, 'refs/mnp/candidate-source')
+        if (fetched !== integration.candidateCommit) throw workspaceError('REMOTE_WORKSPACE_RESULT_HEAD_MISMATCH', '원격 Fork의 충돌 해결 후보가 기록된 HEAD와 다릅니다.')
+      } else if (integration.candidateMode !== 'present' || integration.candidateCommit !== integration.baseCommit) {
+        throw workspaceError('REMOTE_WORKSPACE_TRANSFER_CONTRACT_MISMATCH')
+      }
+      return { base: integration.baseCommit, head: integration.candidateCommit,
+        commits: await linearCommits(store, integration.baseCommit, integration.candidateCommit) }
+    }
+    if (lease.resultMode === 'delta') {
+      const fetched = await fetchBundle(store, this.artifacts.file(lease.leaseId, 'result'), `refs/heads/${lease.branch}`, 'refs/mnp/result')
+      if (fetched !== lease.headCommit) throw workspaceError('REMOTE_WORKSPACE_RESULT_HEAD_MISMATCH', '원격 결과 bundle의 HEAD가 봉인된 HEAD와 다릅니다.')
+    } else if (lease.resultMode !== 'present' || lease.headCommit !== lease.baseCommit) {
+      throw workspaceError('REMOTE_WORKSPACE_TRANSFER_CONTRACT_MISMATCH')
+    }
+    return { base: lease.baseCommit, head: lease.headCommit, commits: await linearCommits(store, lease.baseCommit, lease.headCommit) }
+  }
+  // 메인 통합 저장소 잠금 안에서 후보를 만들고 fast-forward한다. lease 기록은 바꾸지 않고 결과만 돌려준다.
+  async integrateMain(lease) {
+    const integration = this.local.registry?.integration
+    if (!integration || !this.local.state) throw workspaceError('REMOTE_WORKSPACE_MAIN_POOL_UNAVAILABLE')
+    return this.local.runExclusive(async () => {
+      const waiting = (fields) => ({ kind: 'waiting', fields })
+      const holder = this.local.state.integrationLeaseId
+      if (holder && holder !== lease.leaseId) return waiting({ blockingLeaseId: holder, waitingReason: '다른 위임의 메인 통합이 끝나기를 기다립니다.' })
+      const changes = await this.local.integrationTrackedChanges(integration)
+      if (changes.dirty) return waiting({ reasonCode: integrationWorktreeDirtyReasonCode, waitingReason: integrationWorktreeDirtyMessage, trackedChanges: changes.paths })
+      if (await git(integration.root, ['branch', '--show-current']) !== lease.baseBranch) {
+        throw workspaceError('REMOTE_INTEGRATION_BRANCH_MISMATCH', `통합 작업공간 브랜치가 ${lease.baseBranch}가 아닙니다.`)
+      }
+      const mainHead = commitId(await git(integration.root, ['rev-parse', 'HEAD']))
+      const store = await openIntegrationStore(this.integrationStore(lease.leaseId), integration.root)
+      const recordFile = path.join(store, 'mnp-integration.json')
+      // fast-forward 뒤 기록 전에 멈춘 경우: 기록한 후보가 이미 메인에 있으면 다시 쌓지 않는다.
+      const recorded = await jsonFile(recordFile)
+      if (recorded?.candidate && await hasCommit(integration.root, recorded.candidate) && await isAncestor(integration.root, recorded.candidate, mainHead)) {
+        return { kind: 'applied', integratedCommit: recorded.candidate, integrationBaseCommit: recorded.base,
+          replayed: recorded.replayed === true, droppedCommits: recorded.droppedCommits ?? [] }
+      }
+      const source = await this.integrationSource(lease, store)
+      if (!await isAncestor(store, source.base, mainHead)) {
+        throw workspaceError('REMOTE_WORKSPACE_BASE_DIVERGED', '메인 이력이 원격 결과의 기준 커밋에서 이어지지 않아 통합하지 않았습니다.')
+      }
+      this.local.state.integrationLeaseId = lease.leaseId
+      await this.local.persist()
+      try {
+        let candidate = source.head, replayed = false, droppedCommits = []
+        if (source.commits.length && mainHead !== source.base) {
+          const replay = await replayCommits(store, source.commits, mainHead, { committer: await committerIdentity(integration.root) })
+          if (replay.conflict) {
+            return { kind: 'conflict', mainHead, unmergedFiles: replay.unmergedFiles, sourceBase: source.base, sourceCommits: source.commits }
+          }
+          candidate = replay.head; replayed = true; droppedCommits = replay.dropped
+        }
+        if (!source.commits.length || candidate === mainHead) {
+          return { kind: 'applied', integratedCommit: mainHead, integrationBaseCommit: mainHead, replayed, droppedCommits }
+        }
+        const scope = { baseBranch: lease.baseBranch, integrationBaseCommit: mainHead, integrationHeadCommit: candidate }
+        const collisions = await this.local.integrationUntrackedChanges(scope, { root: store }, integration)
+        if (collisions.length) {
+          return waiting({ reasonCode: integrationUntrackedCollisionReasonCode, waitingReason: integrationUntrackedCollisionMessage, untrackedChanges: collisions })
+        }
+        await saveJson(recordFile, { base: mainHead, candidate, replayed, droppedCommits, recordedAt: new Date(this.now()).toISOString() })
+        await git(store, ['update-ref', 'refs/mnp/candidate', candidate])
+        await git(integration.root, ['fetch', '--no-tags', store, 'refs/mnp/candidate'], { timeoutMs: LONG_GIT_TIMEOUT_MS })
+        if (await git(integration.root, ['rev-parse', 'HEAD']) !== mainHead) {
+          return waiting({ waitingReason: '통합 직전에 메인이 바뀌어 다음 확인에서 최신 메인 기준으로 다시 통합합니다.' })
+        }
+        try {
+          await git(integration.root, ['merge', '--ff-only', '--no-overwrite-ignore', candidate], { timeoutMs: LONG_GIT_TIMEOUT_MS })
+        } catch (error) {
+          // 검사 직후 생긴 메인 변경·미추적 파일은 대기로 처리한다. 그 밖의 반영 실패는 격리한다.
+          if (await git(integration.root, ['rev-parse', 'HEAD']) !== mainHead) throw error
+          const tracked = await this.local.integrationTrackedChanges(integration)
+          if (tracked.dirty) return waiting({ reasonCode: integrationWorktreeDirtyReasonCode, waitingReason: integrationWorktreeDirtyMessage, trackedChanges: tracked.paths })
+          const again = await this.local.integrationUntrackedChanges(scope, { root: store }, integration)
+          if (again.length) return waiting({ reasonCode: integrationUntrackedCollisionReasonCode, waitingReason: integrationUntrackedCollisionMessage, untrackedChanges: again })
+          throw error
+        }
+        if (await git(integration.root, ['rev-parse', 'HEAD']) !== candidate) {
+          throw workspaceError('REMOTE_INTEGRATION_APPLY_MISMATCH', '통합 직후 메인 HEAD가 후보 커밋과 다릅니다.')
+        }
+        return { kind: 'applied', integratedCommit: candidate, integrationBaseCommit: mainHead, replayed, droppedCommits }
+      } finally {
+        if (this.local.state.integrationLeaseId === lease.leaseId) {
+          this.local.state.integrationLeaseId = null
+          await this.local.persist()
+        }
+      }
+    })
+  }
+  // 메인에서 충돌한 결과는 원격 Fork의 하위 AI가 해결한다. 최신 메인 구간을 Fork에 보내 통합 브랜치에 충돌을 남긴다.
+  // 해결하는 동안 메인 잠금은 잡지 않는다. 해결된 후보는 그 사이 진행된 메인 위에 다시 쌓는다.
+  async prepareRemoteConflict(lease, conflict = null) {
+    if (lease.status !== 'integration-preparing') {
+      const round = Number(lease.integrationRound ?? 0) + 1
+      if (round > REMOTE_INTEGRATION_ROUND_LIMIT || Number(lease.conflictRound ?? 0) >= REMOTE_CONFLICT_ROUND_LIMIT) {
+        return this.hold(lease, `AI 충돌 해결 재시도 한도(${REMOTE_CONFLICT_ROUND_LIMIT}회)를 초과했습니다. 메인과 완료된 작업 결과는 변경되지 않았습니다.`,
+          { reasonCode: 'REMOTE_INTEGRATION_CONFLICT_LIMIT', phase: REMOTE_INTEGRATION_PHASE, childStatus: 'completed', unmergedFiles: conflict.unmergedFiles })
+      }
+      lease.integrationRound = round
+      lease.integration = { round, branch: `mnp/integrate/${lease.jobId}-${round}`, baseCommit: conflict.mainHead,
+        sourceBase: conflict.sourceBase, sourceCommits: conflict.sourceCommits, unmergedFiles: conflict.unmergedFiles,
+        mainMode: conflict.mainHead === lease.baseCommit ? 'present' : 'delta', step: 'preparing' }
+      lease.status = 'integration-preparing'
+      lease.result = this.waitingResult(lease, { waitingReason: '메인 충돌을 원격 Fork에서 해결하도록 통합 브랜치를 준비합니다.', unmergedFiles: conflict.unmergedFiles })
+      await this.persist()
+    }
+    const integration = lease.integration
+    const kind = `integration-${integration.round}`
+    try {
+      if (integration.mainMode === 'delta' && !await this.artifacts.manifest(lease.leaseId, kind).catch((error) => {
+        if (error.reasonCode === 'REMOTE_ARTIFACT_NOT_FOUND') return null
+        throw error
+      })) {
+        await this.outside(lease, async () => {
+          await createRangeBundle(this.integrationStore(lease.leaseId), this.artifacts.file(lease.leaseId, kind),
+            lease.baseCommit, integration.baseCommit, `refs/mnp/main-${integration.round}`)
+          await this.artifacts.publish(lease.leaseId, kind)
+        }, { checkPool: false })
+      }
+      const step = await this.command(lease, 'integrate-prepare', { round: integration.round, integrationBranch: integration.branch,
+        integrationBaseCommit: integration.baseCommit, mainMode: integration.mainMode, commits: integration.sourceCommits })
+      return await this.recordConflictStep(lease, step)
+    } catch (error) {
+      return this.conflictCommandFailure(lease, error, '원격 Runner가 통합 충돌 준비 명령을 처리하지 못했습니다.')
+    }
+  }
+  // Runner가 결정적으로 거절한 명령만 격리한다. 응답을 확인하지 못한 명령은 같은 명령으로 다시 확인하도록 대기로 둔다.
+  async conflictCommandFailure(lease, error, fallback) {
+    if (error.storageResourceError) throw error
+    const code = error.reasonCode ?? error.code
+    if (definitiveRunnerRejection(error)) {
+      // Runner가 처리 후 거절한 명령은 결과가 확정됐다. 이후 재시도 명령이 막히지 않게 대기 표시를 지운다.
+      delete lease.pendingOperation
+      const reason = code === 'REMOTE_WORKSPACE_ACTION_INVALID'
+        ? '원격 Runner가 통합 충돌 해결 명령을 지원하지 않습니다. 서브 머신의 MnP를 갱신하고 Runner를 다시 시작한 뒤 통합 재시도를 요청하세요. 메인과 완료된 작업 결과는 변경되지 않았습니다.'
+        : remoteIntegrationFailureReason(error).message
+      if (lease.integration) delete lease.integration.completeAttempt
+      return this.hold(lease, reason, { reasonCode: code ?? 'REMOTE_INTEGRATION_FAILED', phase: REMOTE_INTEGRATION_PHASE,
+        childStatus: 'completed', unmergedFiles: lease.integration?.unmergedFiles ?? [] })
+    }
+    lease.result = this.waitingResult(lease, { reasonCode: code ?? null, waitingReason: `${fallback} 같은 명령의 결과를 다음 확인에서 다시 확인합니다.` })
+    await this.persist()
+    return lease.result
+  }
+  async recordConflictStep(lease, step) {
+    const integration = lease.integration
+    if (step?.integrationBranch !== integration.branch || step?.integrationBaseCommit !== integration.baseCommit) {
+      throw workspaceError('MNP_WORKSPACE_ASSIGNMENT_MISMATCH')
+    }
+    if (step.status === 'awaiting-conflict-resolution') {
+      lease.conflictRound = Number(lease.conflictRound ?? 0) + 1
+      const unmergedFiles = Array.isArray(step.unmergedFiles) ? step.unmergedFiles.map(String) : []
+      lease.integration = { ...integration, step: 'resolving', unmergedFiles }
+      if (lease.conflictRound > REMOTE_CONFLICT_ROUND_LIMIT) {
+        return this.hold(lease, `AI 충돌 해결 재시도 한도(${REMOTE_CONFLICT_ROUND_LIMIT}회)를 초과했습니다. 메인과 완료된 작업 결과는 변경되지 않았습니다.`,
+          { reasonCode: 'REMOTE_INTEGRATION_CONFLICT_LIMIT', phase: REMOTE_INTEGRATION_PHASE, childStatus: 'completed', unmergedFiles })
+      }
+      lease.status = 'awaiting-conflict-resolution'
+      lease.result = { status: 'awaiting-conflict-resolution', leaseId: lease.leaseId, jobId: lease.jobId, childStatus: 'completed',
+        headCommit: lease.headCommit, integrationBaseCommit: integration.baseCommit, integrationBranch: integration.branch,
+        conflictRound: lease.conflictRound, unmergedFiles, phase: REMOTE_INTEGRATION_PHASE, updatedAt: new Date(this.now()).toISOString() }
+      await this.persist()
+      return lease.result
+    }
+    if (step.status !== 'candidate-ready') throw workspaceError('REMOTE_WORKSPACE_RESULT_INVALID')
+    const candidateCommit = commitId(step.candidateCommit)
+    if (step.candidateMode === 'delta') {
+      const manifest = await this.artifacts.manifest(lease.leaseId, `candidate-${integration.round}`)
+      if (stableHash(manifest) !== stableHash(step.manifest)) throw workspaceError('REMOTE_WORKSPACE_ARTIFACT_HASH_MISMATCH')
+    } else if (step.candidateMode !== 'present' || candidateCommit !== integration.baseCommit) {
+      throw workspaceError('REMOTE_WORKSPACE_TRANSFER_CONTRACT_MISMATCH')
+    }
+    lease.integration = { ...integration, step: 'candidate-ready', candidateCommit, candidateMode: step.candidateMode }
+    lease.status = 'waiting-integration'
+    lease.result = this.waitingResult(lease, { waitingReason: '원격 Fork가 충돌을 해결한 후보를 메인에 통합합니다.' })
+    await this.persist()
+    return this.integrate(lease)
+  }
+  // 하위 AI가 원격 Fork에서 충돌 해결을 마치면 Fork에 남은 cherry-pick을 끝내고 후보를 받아 메인에 통합한다.
+  async completeConflictResolution(id, { childStatus, childError } = {}) {
+    return this.exclusive(async () => {
+      const lease = this.scoped(id)
+      if (['completed', 'quarantined'].includes(lease.status)) return lease.result ?? null
+      if (lease.status === 'release-pending') return this.release(lease, this.pendingReleaseResult(lease))
+      if (lease.status === 'integration-preparing') return this.prepareRemoteConflict(lease)
+      if (lease.status === 'waiting-integration' && lease.integration?.candidateCommit) return this.integrate(lease)
+      if (lease.status !== 'awaiting-conflict-resolution' || !lease.integration) throw workspaceError('REMOTE_WORKSPACE_RECOVERY_REQUIRED')
+      if (childStatus !== 'completed' && !lease.integration.completeAttempt) {
+        return this.hold(lease, childError ?? '충돌 해결 AI 작업이 완료되지 않았습니다. 메인과 완료된 작업 결과는 변경되지 않았습니다.',
+          { reasonCode: 'REMOTE_INTEGRATION_CONFLICT_UNRESOLVED', phase: REMOTE_INTEGRATION_PHASE, childStatus: childStatus ?? null,
+            unmergedFiles: lease.integration.unmergedFiles ?? [] })
+      }
+      return this.completeConflictStep(lease)
+    })
+  }
+  async completeConflictStep(lease) {
+    const integration = lease.integration
+    // 같은 완료 시도는 응답을 잃어도 같은 명령으로만 다시 확인한다. 결과를 받은 뒤의 새 시도는 새 명령이다.
+    if (!integration.completeAttempt) { integration.completeAttempt = randomUUID(); await this.persist() }
+    let step
+    try {
+      step = await this.command(lease, 'integrate-complete', { round: integration.round, integrationBranch: integration.branch,
+        integrationBaseCommit: integration.baseCommit, attempt: integration.completeAttempt })
+    } catch (error) {
+      return this.conflictCommandFailure(lease, error, '원격 Runner가 통합 충돌 해결 결과를 처리하지 못했습니다.')
+    }
+    delete lease.integration.completeAttempt
+    return this.recordConflictStep(lease, step)
+  }
+  // 반환 대기 중 재시작한 lease는 저장한 통합 결과로 같은 반환을 이어간다. 이전 형식 기록은 상태만 완료로 바꾼다.
+  pendingReleaseResult(lease) {
+    if (lease.releaseResult) return lease.releaseResult
+    const { phase: _phase, ...result } = lease.result ?? {}
+    return { ...result, status: 'completed' }
+  }
   async release(lease, result) {
-    lease.status = 'release-pending'; lease.result = { ...result, status: 'waiting-integration', phase: 'release-pending' }
+    lease.status = 'release-pending'; lease.releaseResult = result
+    lease.result = { ...result, status: 'waiting-integration', phase: 'release-pending' }
     await this.persist()
     await this.prepareRelease(lease)
     const released = await this.command(lease, 'release', { integratedCommit: lease.releaseCommit })
     if (!released.released || released.idleCommit !== lease.releaseCommit) throw workspaceError('REMOTE_WORKSPACE_RELEASE_MISMATCH')
     lease.status = 'completed'; lease.result = { ...result, remoteReleased: true, remoteDriftArchives: released.remoteDriftArchives ?? lease.remoteDriftArchives ?? [] }
+    delete lease.releaseResult
     lease.cleanupPending = true
     await this.persist()
     // A cleanup failure never turns a confirmed remote release back into an incomplete lease.
@@ -715,40 +884,40 @@ export class RemoteWorkspacePool {
       return this.publicLease(lease)
     })
   }
+  // 사람이 확인한 재시도는 봉인된 결과부터 메인 통합을 다시 시작한다. 이전 통합 기록은 이력으로 보존한다.
+  // 이 방식에서는 메인 작업 트리를 만들지 않으므로 이전 staging 방식에서 멈춘 lease도 같은 경로로 이어간다.
   async retryIntegration(id, { confirmed = false, expectedHead } = {}) {
     return this.exclusive(async () => {
       const lease = this.scoped(id)
       if (!lease.sealed) throw workspaceError('REMOTE_WORKSPACE_RESULT_NOT_SEALED')
       if (lease.status === 'completed') return lease.result
-      // 이미 통합 대기로 돌려보낸 staging 재생성은 다시 만들지 않고 같은 기록을 돌려준다.
-      if (lease.status === 'waiting-integration' && lease.result?.phase === STAGING_RECREATED) return lease.result
-      const stage = await this.outside(lease, () => this.stage(lease))
-      const head = await this.outside(lease, () => git(stage.state.leases[id].projectRoot, ['rev-parse', 'HEAD']))
-      if (!confirmed || commitId(expectedHead) !== head) throw workspaceError('REMOTE_WORKSPACE_RECOVERY_CONFIRMATION_REQUIRED')
-      if (stage.state.leases[id].status === 'completed') return this.release(lease, stage.state.leases[id].result)
-      // staging 준비에서 멈춘 lease는 staging 통합을 시도한 기록이 없다. 새로 만든 staging으로 일반 통합 대기에 돌려보내고
-      // 실제 통합은 위임 대기열의 기존 finalize 경로가 이어서 수행한다.
-      if (lease.status === 'quarantined' && remoteStagingHold(id, lease.result)
-        && stage.state.leases[id].status === 'leased' && !stage.state.leases[id].result) {
-        lease.status = 'waiting-integration'
-        lease.result = { status: 'waiting-integration', leaseId: id, jobId: lease.jobId, childStatus: 'completed',
-          phase: STAGING_RECREATED, previousResult: lease.result ?? null }
-        await this.persist()
-        return lease.result
+      if (lease.status === 'waiting-integration' && lease.result?.phase === INTEGRATION_REQUEUED) return lease.result
+      if (!['quarantined', 'awaiting-conflict-resolution'].includes(lease.status)) {
+        throw workspaceError('REMOTE_WORKSPACE_RECOVERY_REQUIRED', '격리됐거나 충돌 해결이 중단된 원격 통합만 다시 시도할 수 있습니다.')
       }
-      const result = await this.outside(lease, () => stage.state.leases[id].status === 'awaiting-conflict-resolution'
-        ? stage.completeConflictResolution(id, { childStatus: 'completed' }) : stage.recoverCheckpointedFinalizationFailure(id))
-      lease.status = result?.status ?? 'waiting-integration'; lease.result = result
+      if (!confirmed || commitId(expectedHead) !== lease.headCommit) throw workspaceError('REMOTE_WORKSPACE_RECOVERY_CONFIRMATION_REQUIRED')
+      const requeuedAt = new Date(this.now()).toISOString()
+      lease.integrationHistory = [...(lease.integrationHistory ?? []), { integration: lease.integration ?? null, result: lease.result ?? null, requeuedAt }].slice(-20)
+      delete lease.integration
+      lease.conflictRound = 0
+      lease.status = 'waiting-integration'
+      lease.result = this.waitingResult(lease, { phase: INTEGRATION_REQUEUED, waitingReason: '봉인된 원격 결과부터 메인 통합을 다시 시도합니다.',
+        previousResult: lease.result ?? null })
       await this.persist()
-      return result?.status === 'completed' ? this.release(lease, result) : result
+      return lease.result
     })
   }
   async artifactRequest(machineId, leaseId, kind, suffix, method, body) {
     const validate = () => {
       const lease = this.scoped(leaseId, { allowPending: true })
-      if (lease.ownership.machineId !== machineId || !['baseline', 'result', 'release'].includes(kind)) throw workspaceError('MNP_WORKSPACE_ASSIGNMENT_MISMATCH')
+      const artifact = remoteArtifactKind(kind)
+      if (lease.ownership.machineId !== machineId) throw workspaceError('MNP_WORKSPACE_ASSIGNMENT_MISMATCH')
       if (lease.status === 'completed') throw workspaceError('REMOTE_WORKSPACE_ARTIFACT_LEASE_COMPLETED')
-      if (kind === 'result' ? method !== 'POST' || lease.sealed : method !== 'GET') throw workspaceError('REMOTE_WORKSPACE_ARTIFACT_DIRECTION_INVALID')
+      // result와 candidate만 Runner가 올린다. candidate는 진행 중인 충돌 해결 회차의 후보만 받는다.
+      const upload = artifact.base === 'result' ? !lease.sealed
+        : artifact.base === 'candidate' ? lease.integration?.round === artifact.round
+          && ['integration-preparing', 'awaiting-conflict-resolution'].includes(lease.status) : null
+      if (upload === null ? method !== 'GET' : method !== 'POST' || !upload) throw workspaceError('REMOTE_WORKSPACE_ARTIFACT_DIRECTION_INVALID')
     }
     validate()
     const key = `${leaseId}:${kind}`
@@ -789,8 +958,9 @@ export function remoteWorkspaceFacade(local, remote) {
     // 풀 식별용 힌트이며 실제 유휴 worker 선택과 lease 배정은 acquire가 원자적으로 수행한다.
     return report.workspaces[0].projectRoot
   }
-  const methods = new Set(['bindConversation', 'reuseLease', 'checkpoint', 'finalize', 'cancel', 'quarantine', 'reactivateQuarantinedLease'])
-  const unsupported = new Set(['completeConflictResolution', 'resumeIntegrationConflict', 'prepareIntegrationResultCorrection', 'resumeIntegrationResultCorrection',
+  const methods = new Set(['bindConversation', 'reuseLease', 'checkpoint', 'finalize', 'cancel', 'quarantine', 'reactivateQuarantinedLease',
+    'completeConflictResolution'])
+  const unsupported = new Set(['resumeIntegrationConflict', 'prepareIntegrationResultCorrection', 'resumeIntegrationResultCorrection',
     'recoverCheckpointedFinalizationFailure', 'recoverLegacyDirtyIntegration', 'recoverLocalChangesIntegrationFailure', 'recoverUntrackedIntegrationFailure',
     'recoverIntegrationHeadChangedFailure', 'recoverIntegrationCandidateWorktreeFailure', 'recoverIntegrationGitStatusFailure', 'recoverCheckpointIntegrationFailure', 'releasePreservedIntegrationFailure'])
   return new Proxy(local, { get(target, property) {

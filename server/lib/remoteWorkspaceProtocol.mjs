@@ -8,7 +8,16 @@ import { replaceFileWithRetry } from './replaceFileWithRetry.mjs'
 const execute = promisify(execFile)
 export const REMOTE_WORKSPACE_VERSION = 2
 export const ARTIFACT_CHUNK_BYTES = 256 * 1024
-export const REMOTE_WORKSPACE_ACTIONS = new Set(['prepare', 'bind', 'reuse', 'checkpoint', 'seal', 'release', 'quarantine', 'recover'])
+export const REMOTE_WORKSPACE_ACTIONS = new Set(['prepare', 'bind', 'reuse', 'checkpoint', 'seal', 'release', 'quarantine', 'recover',
+  'integrate-prepare', 'integrate-complete'])
+// 원격 통합 충돌 해결 회차별 산출물이다. integration은 메인 → Fork, candidate는 Fork → 메인 방향으로만 쓴다.
+export const REMOTE_INTEGRATION_ROUND_LIMIT = 99
+export function remoteArtifactKind(kind) {
+  if (['baseline', 'result', 'release'].includes(kind)) return { kind, base: kind, round: null }
+  const match = /^(integration|candidate)-([1-9][0-9]?)$/.exec(String(kind ?? ''))
+  if (!match) throw workspaceError('REMOTE_ARTIFACT_KIND_INVALID')
+  return { kind, base: match[1], round: Number(match[2]) }
+}
 
 export function workspaceError(code, message = code) {
   return Object.assign(new Error(message), { code, reasonCode: code, status: 409 })

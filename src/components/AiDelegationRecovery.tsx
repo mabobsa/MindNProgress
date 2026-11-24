@@ -352,9 +352,9 @@ export function AiDelegationRecovery({ mapId, cardId, focusRequestId, onFocusHan
         ? { error: true, message: `이전 복구 시도 (${item.integrationRecoveryRequest.completedAt || item.integrationRecoveryRequest.requestedAt}): ${item.integrationRecoveryRequest.message} 현재 Git 상태를 실시간 확인한 결과는 아닙니다.` }
         : checking ? { message: item.integrationRecoveryRequest!.message }
           : unconfirmed ? { message: '접수 여부를 확인 중입니다. 다시 실행하지 않고 상태를 조회합니다.' } : feedback[item.id]
-      // 원격 staging 준비 실패는 Git 출력 전문 대신 서버가 구분한 요약과 다음 조치를 보여 준다.
-      const stagingFailure = item.recovery?.failureCategory === 'remote-staging-preparation' ? item.recovery.message : ''
-      const errorDetail = cardAttention ? '' : (requestFailure ? `${item.reasonCode}: ${item.message}` : '') || stagingFailure || item.recoveryDispatchError || item.childError || item.workspaceError || item.workspaceResult?.error || item.integrationError || item.parentError
+      // 원격 통합 단계에서 멈춘 위임은 Git 출력 전문 대신 서버가 구분한 요약과 다음 조치를 보여 준다.
+      const remoteIntegrationFailure = item.recovery?.failureCategory === 'remote-integration' ? item.recovery.message : ''
+      const errorDetail = cardAttention ? '' : (requestFailure ? `${item.reasonCode}: ${item.message}` : '') || remoteIntegrationFailure || item.recoveryDispatchError || item.childError || item.workspaceError || item.workspaceResult?.error || item.integrationError || item.parentError
       return <div
         className={`ai-delegation-recovery-item${history ? ' ai-delegation-history-item' : ''}`}
         key={item.id}

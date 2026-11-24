@@ -3,7 +3,7 @@ import { aiConversationTitle } from '../../src/utils/aiConversationLaunch.mjs'
 import { integrationRecoveryPending } from './aiIntegrationRecovery.mjs'
 import { aiDelegationResultCaptureMetadata } from './aiDelegationResultCapture.mjs'
 import { aiDelegationRunnerRejectedClosable, RUNNER_REJECTED_CLOSURE_REASON } from './runnerSafeIds.mjs'
-import { REMOTE_STAGING_RECOVERY_GUIDANCE, remoteStagingPreparationFailure } from './remoteStagingFailure.mjs'
+import { REMOTE_INTEGRATION_RECOVERY_GUIDANCE, remoteIntegrationFailure } from './remoteIntegrationFailure.mjs'
 
 export const AI_DELEGATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$/
 export const AI_DELEGATION_WAIT_POLL_DELAYS_MS = Object.freeze([3_000, 5_000, 10_000, 30_000])
@@ -175,10 +175,10 @@ export function aiDelegationStateReason(delegation) {
         ? '하위 AI 실행이 중단됐으며 상위 AI로의 실패 보고도 전달하지 못했습니다. 보존된 작업의 복구가 필요합니다.'
         : '하위 업무 또는 필요한 통합을 완료하지 못했으며 상위 AI로의 상태 보고도 전달하지 못했습니다. 보존된 작업의 복구 상태를 확인하세요.')
   }
-  const stagingFailure = displayState === 'integration-recovery-required' ? remoteStagingPreparationFailure(delegation) : null
-  if (stagingFailure) {
-    return requiredAiDelegationReason(stagingFailure.reasonCode,
-      `${stagingFailure.message} ${REMOTE_STAGING_RECOVERY_GUIDANCE}`)
+  const remoteFailure = displayState === 'integration-recovery-required' ? remoteIntegrationFailure(delegation) : null
+  if (remoteFailure) {
+    return requiredAiDelegationReason(remoteFailure.reasonCode,
+      `${remoteFailure.message} ${REMOTE_INTEGRATION_RECOVERY_GUIDANCE}`)
   }
   const configured = AI_DELEGATION_STATE_REASONS[displayState]
   if (configured) return requiredAiDelegationReason(configured.reasonCode, configured.message)
@@ -708,12 +708,12 @@ export function aiDelegationRecoveryAvailability(delegation) {
     return { failurePhase: 'integration', failureCategory: integrationGitStatusFailureReasonCode, recoveryAvailable: true,
       recommendedAction: 'retry-integration', recoveryTool: 'mindnprogress_recover_ai_delegation' }
   }
-  // 원격 staging 준비 실패는 하위 AI가 고칠 수 없는 서버 쪽 통합 준비 실패다. AI 재개 대신 원격 풀의 통합 재시도를 안내한다.
-  const stagingFailure = delegation?.state === 'integration-recovery-required' ? remoteStagingPreparationFailure(delegation) : null
-  if (stagingFailure) {
-    return { failurePhase: 'integration', failureCategory: 'remote-staging-preparation', recoveryAvailable: false,
-      recommendedAction: 'retry-remote-integration', reasonCode: stagingFailure.reasonCode,
-      leaseId: delegation.workspaceLease.leaseId, message: `${stagingFailure.message} ${REMOTE_STAGING_RECOVERY_GUIDANCE}` }
+  // 원격 결과의 메인 통합 단계에서 멈춘 위임은 봉인된 결과를 다시 통합하면 된다. 하위 AI 재개 대신 원격 풀의 통합 재시도를 안내한다.
+  const remoteFailure = delegation?.state === 'integration-recovery-required' ? remoteIntegrationFailure(delegation) : null
+  if (remoteFailure) {
+    return { failurePhase: 'integration', failureCategory: 'remote-integration', recoveryAvailable: false,
+      recommendedAction: 'retry-remote-integration', reasonCode: remoteFailure.reasonCode,
+      leaseId: delegation.workspaceLease.leaseId, message: `${remoteFailure.message} ${REMOTE_INTEGRATION_RECOVERY_GUIDANCE}` }
   }
   if (!['parent-wake-failed', 'failed', 'waiting-usage-limit', 'waiting-rate-limit', 'waiting-model-capacity', 'recovery-required', 'integration-recovery-required', 'waiting-child-resume'].includes(delegation?.state)) return null
   if (['recovery-required', 'integration-recovery-required', 'waiting-child-resume'].includes(delegation.state)) {

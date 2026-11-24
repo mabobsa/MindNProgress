@@ -407,13 +407,13 @@ function checkpointMessage(commitMessage, mnpContext, commitPrefix = '') {
   }
 }
 
-function latestMessageCheckpoint(lease) {
+export function latestMessageCheckpoint(lease) {
   return [...(Array.isArray(lease?.checkpoints) ? lease.checkpoints : [])]
     .reverse()
     .find((candidate) => candidate?.commitMessage)
 }
 
-function integrationConflictCheckpointMessage(lease, legacyCommitPrefix = '') {
+export function integrationConflictCheckpointMessage(lease, legacyCommitPrefix = '') {
   const checkpoint = latestMessageCheckpoint(lease)
   const source = checkpoint?.commitMessage
   if (!source) {

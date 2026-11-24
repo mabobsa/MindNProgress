@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { isolatedProcessEnvironment } from './isolated-runner.mjs'
 
 export const actor = { id: 'fixture', name: '격리 검증', role: 'editor' }
 export const knowledge = '검증용 공유 지식입니다. '.repeat(400)
@@ -41,7 +42,8 @@ export async function storageApi(t, { documents = 96, seed = async () => {}, moc
   let output = ''
   const spawnOptions = {
     cwd: process.env.MNP_STORAGE_TEST_SOURCE_ROOT || path.resolve(import.meta.dirname, '../..'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-    env: { ...process.env, MNP_DATA_DIR: data, MNP_TOKEN_FILE: path.join(data, '_integration-token'),
+    env: { ...isolatedProcessEnvironment(), MNP_DATA_DIR: data, MNP_TOKEN_FILE: path.join(data, '_integration-token'),
+      TMPDIR: directory, TMP: directory, TEMP: directory,
       MNP_API_HOST: '127.0.0.1', MNP_API_PORT: String(port), MNP_WEB_PORT: String(port), MNP_API_URL: base, MNP_PUBLIC_URL: base,
       MNP_MACHINE_ID: 'isolated-storage', MNP_MCP_USAGE_DISABLED: '1', MNP_COMPLETED_AI_CLEANUP_DISABLED: '1',
       MNP_WORKSPACE_POOL_REGISTRY: path.join(directory, 'no-pool.json'), MNP_AIONUI_URL: `http://127.0.0.1:${fakeAion.address().port}`,

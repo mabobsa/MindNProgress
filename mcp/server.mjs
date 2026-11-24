@@ -311,7 +311,7 @@ async function apiRequestOnce(pathname, init = {}) {
     const prepared = await storageRequests.prepare(pathname, init)
     pathname = prepared.pathname; init = prepared.init
   }
-  const connection = await apiConnectionResolver.resolve()
+  let connection = await apiConnectionResolver.resolve()
   const {
     aiMapId,
     aiCardId,
@@ -366,12 +366,11 @@ async function apiRequestOnce(pathname, init = {}) {
   const storageWrite = storageScope && (storageResultOnly || mutatesState && !pathname.startsWith('/api/integrations/'))
   const remainingMs = storageScope && !storageResultOnly ? Math.min(timeoutMs, storageScope.deadlineAt - Date.now()) : timeoutMs
   if (remainingMs <= 0) throw requestDeadlineError()
-  let response
-  try { response = await fetch(`${connection.apiBaseUrl}${pathname}`, {
+  const send = (target, waitMs) => fetch(`${target.apiBaseUrl}${pathname}`, {
     ...requestInit,
     headers: {
       Accept: 'application/json',
-      Authorization: `Bearer ${connection.token}`,
+      Authorization: `Bearer ${target.token}`,
       ...(scopedAttributionToken ? { 'X-MNP-AI-Attribution': scopedAttributionToken } : {}),
       ...(scopedEditorId ? { 'X-MNP-AI-Editor-Id': scopedEditorId } : {}),
       ...(!scopedAttributionToken && scopedAiType && scopedAiModel
@@ -389,10 +388,23 @@ async function apiRequestOnce(pathname, init = {}) {
         ...(storageResultOnly ? { 'X-MNP-Result-Only': '1' } : {}) } : {}),
       ...requestInit.headers,
     },
-    signal: AbortSignal.timeout(Math.max(1, remainingMs)),
-  }) } catch (error) {
-    if (storageWrite) Object.assign(error, { outcome: 'unknown', reasonCode: 'REQUEST_RESPONSE_UNKNOWN', requestId: storageScope.requestId })
-    throw error
+    signal: AbortSignal.timeout(Math.max(1, waitMs)),
+  })
+  const sendMarked = async (target, waitMs) => {
+    try { return await send(target, waitMs) } catch (error) {
+      if (storageWrite) Object.assign(error, { outcome: 'unknown', reasonCode: 'REQUEST_RESPONSE_UNKNOWN', requestId: storageScope.requestId })
+      throw error
+    }
+  }
+  let response = await sendMarked(connection, remainingMs)
+  // 연동 토큰이 교체되면 이 프로세스가 기억한 토큰은 401을 받는다. 서버는 인증을 처리 전에 확인하므로
+  // 토큰 파일을 다시 읽어 값이 바뀐 경우에만 같은 요청(같은 Idempotency-Key)을 한 번 더 보낸다.
+  if (response.status === 401 && await apiConnectionResolver.refreshAfterUnauthorized(connection)) {
+    await response.body?.cancel().catch(() => {})
+    connection = await apiConnectionResolver.resolve()
+    const retryMs = storageScope && !storageResultOnly ? Math.min(timeoutMs, storageScope.deadlineAt - Date.now()) : timeoutMs
+    if (retryMs <= 0) throw requestDeadlineError()
+    response = await sendMarked(connection, retryMs)
   }
   let responseText
   try { responseText = await response.text() } catch (error) {

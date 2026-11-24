@@ -107,3 +107,57 @@ test('종료된 프로세스나 외부 주소를 가리키는 Runner 탐색 정�
   assert.equal(normalizeMnpRunnerRelayDescriptor({ ...common, baseUrl: 'http://10.0.0.9:43129' }, () => true), null)
   assert.equal(normalizeMnpRunnerRelayDescriptor({ ...common, baseUrl: 'http://127.0.0.1:43129' }, () => false), null)
 })
+
+test('401 뒤에는 토큰 파일을 다시 읽어 값이 바뀐 경우에만 연결을 갱신한다', async () => {
+  const files = { [tokenFile]: integrationToken }
+  const resolver = createMnpApiConnectionResolver({
+    tokenFile,
+    relayFile,
+    readFileImpl: readFiles(files),
+    fetchImpl: async () => new Response(JSON.stringify({ status: 'ok', publicBaseUrl: 'http://main.example:4175' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  })
+  const first = await resolver.resolve()
+  assert.equal(await resolver.refreshAfterUnauthorized(first), false, '토큰이 그대로면 다른 이유의 401이므로 재시도하지 않는다')
+  assert.equal(await resolver.resolve(), first)
+
+  const rotatedToken = 'n'.repeat(43)
+  files[tokenFile] = `${rotatedToken}
+`
+  assert.equal(await resolver.refreshAfterUnauthorized(first), true)
+  const refreshed = await resolver.resolve()
+  assert.deepEqual(refreshed, { ...first, token: rotatedToken })
+  assert.equal(await resolver.refreshAfterUnauthorized(first), true, '동시에 401을 받은 요청도 이미 갱신된 새 토큰으로 다시 보낸다')
+  assert.equal(await resolver.refreshAfterUnauthorized(refreshed), false)
+
+  delete files[tokenFile]
+  assert.equal(await resolver.refreshAfterUnauthorized(refreshed), false, '토큰 파일을 읽지 못하면 기존 연결을 유지한다')
+  assert.equal(await resolver.resolve(), refreshed)
+})
+
+test('명시 주소와 Runner 중계도 401 뒤 바뀐 자격 증명만 다시 읽는다', async () => {
+  const files = { [tokenFile]: integrationToken }
+  const explicit = createMnpApiConnectionResolver({ explicitApiBaseUrl: 'http://main.example:4176', tokenFile, relayFile, readFileImpl: readFiles(files) })
+  const before = await explicit.resolve()
+  files[tokenFile] = 'e'.repeat(43)
+  assert.equal(await explicit.refreshAfterUnauthorized(before), true)
+  assert.equal((await explicit.resolve()).token, 'e'.repeat(43))
+
+  const descriptor = { schemaVersion: 1, baseUrl: 'http://127.0.0.1:43129', token: relayToken, instanceId: 'relay_instance_123456', pid: 1234 }
+  const relayFiles = { [relayFile]: JSON.stringify(descriptor) }
+  const relay = createMnpApiConnectionResolver({
+    tokenFile,
+    relayFile,
+    readFileImpl: readFiles(relayFiles),
+    fetchImpl: async () => new Response('{}', { status: 503 }),
+    processExists: (pid) => pid === 1234,
+  })
+  const relayConnection = await relay.resolve()
+  assert.equal(await relay.refreshAfterUnauthorized(relayConnection), false)
+  const reissued = `mnprl_${'s'.repeat(43)}`
+  relayFiles[relayFile] = JSON.stringify({ ...descriptor, token: reissued })
+  assert.equal(await relay.refreshAfterUnauthorized(relayConnection), true)
+  assert.equal((await relay.resolve()).token, reissued)
+})

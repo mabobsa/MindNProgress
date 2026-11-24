@@ -129,5 +129,31 @@ export function createMnpApiConnectionResolver({
       if (resolvedConnection) return resolvedConnection
       throw new Error('MindNProgress API에 연결할 수 없습니다. 메인 MnP 또는 이 머신의 AionUi Runner 연결을 확인해 주세요.')
     },
+
+    // 401을 받은 연결의 토큰이 그사이 교체됐는지 확인한다. 바뀌었으면 연결 정보를 갱신하고 true를 반환해
+    // 호출자가 한 번만 다시 보내게 한다. 토큰이 그대로면(신원 불일치 등 다른 이유의 401) false를 반환한다.
+    async refreshAfterUnauthorized(connection) {
+      if (!connection) return false
+      // 동시에 401을 받은 다른 요청이 먼저 갱신했으면 새 토큰으로 다시 보내면 된다.
+      if (resolvedConnection && resolvedConnection !== connection) return resolvedConnection.token !== connection.token
+      if (connection.mode === 'local' || connection.mode === 'explicit') {
+        let token
+        try {
+          token = await readIntegrationToken(tokenFile, readFileImpl)
+        } catch {
+          return false
+        }
+        if (token === connection.token) return false
+        resolvedConnection = { ...connection, token }
+        return true
+      }
+      if (connection.mode === 'runner-relay') {
+        const currentRelay = await readRelayConnection()
+        if (!currentRelay || currentRelay.token === connection.token) return false
+        resolvedConnection = currentRelay
+        return true
+      }
+      return false
+    },
   }
 }

@@ -1275,8 +1275,24 @@ function getSignedInUser(request) {
   return users.find((user) => user.id === session.userId && user.active !== false) ?? null
 }
 
+// 연동 토큰으로 인증한 요청의 사용자는 X-MNP-AI-Editor-Id 헤더로 고른 편집자 권한을 쓰지만,
+// 관리자 기능(계정 관리·타인 머신 관리)은 로그인 세션으로만 연다. 토큰을 가진 프로세스가
+// 헤더 하나로 관리자가 되지 않도록 연동 경로에서 만든 사용자 객체를 따로 표시한다.
+const integrationActors = new WeakSet()
+
+function isIntegrationActor(user) {
+  return Boolean(user) && integrationActors.has(user)
+}
+
 function getCurrentUser(request) {
-  if (hasValidIntegrationBearer(request)) return attributedIntegrationUser(request)
+  if (hasValidIntegrationBearer(request)) {
+    const user = attributedIntegrationUser(request)
+    if (!user) return user
+    // 사본에 표시해 users 배열의 원본 객체(쿠키 세션이 쓰는 객체)에는 영향을 주지 않는다.
+    const actor = { ...user }
+    integrationActors.add(actor)
+    return actor
+  }
   return getSignedInUser(request)
 }
 
@@ -1345,6 +1361,10 @@ function requireAdmin(request, response) {
   if (!user) return null
   if (user.role !== 'admin') {
     sendJson(response, 403, { error: '관리자 권한이 필요합니다.' })
+    return null
+  }
+  if (isIntegrationActor(user)) {
+    sendJson(response, 403, { error: '관리자 기능은 로그인한 관리자만 사용할 수 있습니다.', code: 'ADMIN_SESSION_REQUIRED' })
     return null
   }
   return user
@@ -2185,8 +2205,10 @@ const runnerApiLanReachable = (() => {
 })()
 
 function machineViewer(user) {
+  // 원본 사용자로 바꾸기 전에 연동 경로 여부를 확인한다. 메인 머신 위임 허용(mainMachineAllowed)은 그대로 둔다.
+  const integrationActor = isIntegrationActor(user)
   user = users.find((item) => item.id === user.id) ?? user
-  return { userId: user.id, isAdmin: user.role === 'admin', mainMachineAllowed: mainMachineAllowed(user) }
+  return { userId: user.id, isAdmin: user.role === 'admin' && !integrationActor, mainMachineAllowed: mainMachineAllowed(user) }
 }
 
 function userDistributedWork(user) {
